@@ -111,9 +111,16 @@ public sealed partial class RentalBillingAssetOption : ObservableObject
     [ObservableProperty] private string _paidSupplyItems = string.Empty;
     [ObservableProperty] private bool _isLinkedToCurrentProfile;
     [ObservableProperty] private bool _isLinkedToAnotherProfile;
+    [ObservableProperty] private bool _isReferenceOnly;
     [ObservableProperty] private bool _isRepresentativeAsset;
     [ObservableProperty] private bool _isSelected;
 
+    public bool CanEditInLinkDialog => IsSelected && !IsReferenceOnly;
+    public string LinkModeDisplay => IsReferenceOnly
+        ? "참조 전용"
+        : IsLinkedToAnotherProfile
+            ? "다른 청구에서 이동"
+            : "자산 원본 연동";
     public string PurchaseDateDisplay => PurchaseDate?.ToString("yyyy-MM-dd") ?? string.Empty;
     public string InstallDateDisplay => InstallDate?.ToString("yyyy-MM-dd") ?? string.Empty;
     public string ContractDateDisplay => ContractDate?.ToString("yyyy-MM-dd") ?? string.Empty;
@@ -130,4 +137,16 @@ public sealed partial class RentalBillingAssetOption : ObservableObject
 
     partial void OnRentalEndDateChanged(DateTime? value)
         => OnPropertyChanged(nameof(RentalEndDateDisplay));
+
+    partial void OnIsSelectedChanged(bool value)
+        => OnPropertyChanged(nameof(CanEditInLinkDialog));
+
+    partial void OnIsReferenceOnlyChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanEditInLinkDialog));
+        OnPropertyChanged(nameof(LinkModeDisplay));
+    }
+
+    partial void OnIsLinkedToAnotherProfileChanged(bool value)
+        => OnPropertyChanged(nameof(LinkModeDisplay));
 }

@@ -508,7 +508,7 @@ try {
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
 
     if (-not [string]::IsNullOrWhiteSpace($PackageRoot)) {
-        foreach ($relativePath in @('App\거래플랜.exe', 'App\Updater\거래플랜.Updater.exe')) {
+        foreach ($relativePath in @('App\거래플랜.Desktop.App.exe', 'App\거래플랜.exe', 'App\Updater\거래플랜.Updater.exe')) {
             $candidate = Resolve-FullPath -Path (Join-Path $PackageRoot $relativePath)
             if ($seen.Add($candidate)) {
                 $targetPaths.Add($candidate) | Out-Null

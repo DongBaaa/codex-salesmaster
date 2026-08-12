@@ -10,6 +10,7 @@ namespace 거래플랜.Desktop.App.ViewModels;
 public sealed partial class MainViewModel
 {
     private int _previewCustomerContractVersion;
+    private CancellationTokenSource? _previewCustomerContractCts;
 
     [ObservableProperty]
     private LocalCustomerContract? _previewCustomerContract;
@@ -29,9 +30,22 @@ public sealed partial class MainViewModel
 
     private void RequestRefreshPreviewCustomerContract(LocalCustomer? customer)
     {
+        _previewCustomerContractCts?.Cancel();
+        _previewCustomerContractCts?.Dispose();
+        _previewCustomerContractCts = new CancellationTokenSource();
         var version = Interlocked.Increment(ref _previewCustomerContractVersion);
+        var token = _previewCustomerContractCts.Token;
+        var task = _ownerScopeBackgroundWork.TryStart(
+            () => RefreshPreviewCustomerContractAsync(customer, version, token));
+        if (task is null)
+        {
+            _previewCustomerContractCts.Cancel();
+            _previewCustomerContractCts.Dispose();
+            _previewCustomerContractCts = null;
+            return;
+        }
         UiTaskHelper.Forget(
-            RefreshPreviewCustomerContractAsync(customer, version),
+            task,
             "MAIN",
             "거래처 대표 계약서 미리보기 갱신",
             ex =>
@@ -41,8 +55,12 @@ public sealed partial class MainViewModel
             });
     }
 
-    private async Task RefreshPreviewCustomerContractAsync(LocalCustomer? customer, int version)
+    private async Task RefreshPreviewCustomerContractAsync(
+        LocalCustomer? customer,
+        int version,
+        CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         if (customer is null)
         {
             if (!IsCurrentPreviewCustomerContract(version))
@@ -52,7 +70,18 @@ public sealed partial class MainViewModel
             return;
         }
 
-        var contract = await _local.GetPreferredCustomerContractAsync(customer.Id, _session);
+        LocalCustomerContract? contract;
+        await _customerInlineDataGate.WaitAsync(ct);
+        try
+        {
+            contract = await _local.GetPreferredCustomerContractAsync(customer.Id, _session, ct);
+        }
+        finally
+        {
+            _customerInlineDataGate.Release();
+        }
+
+        ct.ThrowIfCancellationRequested();
         if (!IsCurrentPreviewCustomerContract(version))
             return;
 

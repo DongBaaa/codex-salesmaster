@@ -1,8 +1,10 @@
+using System.Data.Common;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.ViewModels;
@@ -156,7 +158,12 @@ public sealed class InvoiceScreenCacheBehaviorTests
                 Assert.Single(viewModel.InvoiceRows);
                 var selectedCustomer = Assert.Single(viewModel.FilteredCustomers);
                 viewModel.SelectedCustomerFilter = selectedCustomer;
-                await InvokeNonPublicTaskAsync(viewModel, "LoadInvoiceListCoreAsync", false);
+                await InvokeNonPublicTaskAsync(
+                    viewModel,
+                    "LoadInvoiceListCoreAsync",
+                    false,
+                    CancellationToken.None,
+                    false);
                 Assert.Single(viewModel.InvoiceRows);
 
                 var invoiceB = CreateInvoice(customer.Id, "MAIN-002", new DateOnly(2026, 7, 2), 95_000m);
@@ -165,12 +172,22 @@ public sealed class InvoiceScreenCacheBehaviorTests
                 await db.SaveChangesAsync();
 
                 viewModel.SelectedCustomerFilter = null;
-                await InvokeNonPublicTaskAsync(viewModel, "LoadInvoiceListCoreAsync", false);
+                await InvokeNonPublicTaskAsync(
+                    viewModel,
+                    "LoadInvoiceListCoreAsync",
+                    false,
+                    CancellationToken.None,
+                    false);
                 Assert.Single(viewModel.InvoiceRows);
                 Assert.DoesNotContain(viewModel.InvoiceRows, row => row.DisplayNumber == "MAIN-002");
 
                 viewModel.SelectedCustomerFilter = Assert.Single(viewModel.FilteredCustomers);
-                await InvokeNonPublicTaskAsync(viewModel, "LoadInvoiceListCoreAsync", false);
+                await InvokeNonPublicTaskAsync(
+                    viewModel,
+                    "LoadInvoiceListCoreAsync",
+                    false,
+                    CancellationToken.None,
+                    false);
                 Assert.Single(viewModel.InvoiceRows);
                 Assert.DoesNotContain(viewModel.InvoiceRows, row => row.DisplayNumber == "MAIN-002");
 
@@ -182,7 +199,187 @@ public sealed class InvoiceScreenCacheBehaviorTests
             }
             finally
             {
-                viewModel.CancelPendingBackgroundWorkForShutdown();
+                await viewModel.DrainPendingBackgroundWorkForShutdownAsync();
+            }
+        }
+        finally
+        {
+            CleanupDatabaseRoot(dbRoot);
+        }
+    }
+
+    [Fact]
+    public async Task MainViewModel_SerializesContractPreviewAndInvoiceReloadOnSharedLocalContext()
+    {
+        var dbRoot = PrepareDatabaseRoot("main-shared-context-gate");
+        var queryGate = new ReadQueryGate("CustomerContracts");
+
+        try
+        {
+            await using var db = CreateDbContext(dbRoot, queryGate);
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customer = CreateCustomer("Shared context customer");
+            var invoice = CreateInvoice(customer.Id, "GATE-001", new DateOnly(2026, 7, 3), 180_000m);
+            db.Customers.Add(customer);
+            db.Invoices.Add(invoice);
+            db.InvoiceLines.Add(CreateInvoiceLine(invoice.Id, "Gate item"));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var dispatcher = new SyncRequestDispatcher();
+            var local = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
+            var rental = new RentalStateService(db, local);
+            var diagnostics = new SyncDiagnosticsService(session);
+            var api = new ErpApiClient(new HttpClient(new StubHttpMessageHandler()) { BaseAddress = new Uri("http://localhost/") }, session);
+            var sync = new SyncService(db, local, rental, api, session, dispatcher, diagnostics);
+            var viewModel = new MainViewModel(local, sync, new BackupService(), rental, diagnostics, api, session);
+            Task? contractPreviewTask = null;
+            Task? invoiceReloadTask = null;
+
+            try
+            {
+                await viewModel.LoadAsync();
+
+                queryGate.Arm();
+                contractPreviewTask = InvokeNonPublicTaskAsync(
+                    viewModel,
+                    "RefreshPreviewCustomerContractAsync",
+                    customer,
+                    int.MinValue,
+                    CancellationToken.None);
+                await queryGate.WaitUntilBlockedAsync(TimeSpan.FromSeconds(5));
+
+                invoiceReloadTask = InvokeNonPublicTaskAsync(
+                    viewModel,
+                    "LoadInvoiceListCoreAsync",
+                    true,
+                    CancellationToken.None,
+                    false);
+
+                var firstCompleted = await Task.WhenAny(invoiceReloadTask, Task.Delay(TimeSpan.FromMilliseconds(150)));
+                Assert.NotSame(invoiceReloadTask, firstCompleted);
+
+                queryGate.Release();
+                await Task.WhenAll(contractPreviewTask, invoiceReloadTask);
+                Assert.Single(viewModel.InvoiceRows);
+            }
+            finally
+            {
+                queryGate.Release();
+                await viewModel.DrainPendingBackgroundWorkForShutdownAsync();
+                await ObserveFailureAsync(contractPreviewTask);
+                await ObserveFailureAsync(invoiceReloadTask);
+            }
+        }
+        finally
+        {
+            CleanupDatabaseRoot(dbRoot);
+        }
+    }
+
+    [Fact]
+    public async Task MainViewModel_SerializesSelectedInvoiceOpenBehindRunningPreview()
+    {
+        var dbRoot = PrepareDatabaseRoot("selected-invoice-preview-gate");
+        var queryGate = new ReadQueryGate("Invoices");
+
+        try
+        {
+            await using var db = CreateDbContext(dbRoot, queryGate);
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customer = CreateCustomer("Selected invoice gate customer");
+            var invoice = CreateInvoice(customer.Id, "OPEN-GATE-001", new DateOnly(2026, 7, 5), 125_000m);
+            db.Customers.Add(customer);
+            db.Invoices.Add(invoice);
+            db.InvoiceLines.Add(CreateInvoiceLine(invoice.Id, "Open gate item"));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var dispatcher = new SyncRequestDispatcher();
+            var local = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
+            var rental = new RentalStateService(db, local);
+            var diagnostics = new SyncDiagnosticsService(session);
+            var api = new ErpApiClient(new HttpClient(new StubHttpMessageHandler()) { BaseAddress = new Uri("http://localhost/") }, session);
+            var sync = new SyncService(db, local, rental, api, session, dispatcher, diagnostics);
+            var viewModel = new MainViewModel(local, sync, new BackupService(), rental, diagnostics, api, session);
+            Task<LocalInvoice?>? openTask = null;
+
+            try
+            {
+                await viewModel.LoadAsync();
+
+                queryGate.Arm();
+                viewModel.SelectedInvoiceRow = Assert.Single(viewModel.InvoiceRows);
+                await queryGate.WaitUntilBlockedAsync(TimeSpan.FromSeconds(5));
+
+                openTask = viewModel.GetLatestSelectedInvoiceAsync();
+                var firstCompleted = await Task.WhenAny(openTask, Task.Delay(TimeSpan.FromMilliseconds(150)));
+                Assert.NotSame(openTask, firstCompleted);
+
+                queryGate.Release();
+                var resolved = await openTask.WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.NotNull(resolved);
+                Assert.Equal(invoice.Id, resolved!.Id);
+            }
+            finally
+            {
+                queryGate.Release();
+                await viewModel.DrainPendingBackgroundWorkForShutdownAsync();
+                await ObserveFailureAsync(openTask);
+            }
+        }
+        finally
+        {
+            CleanupDatabaseRoot(dbRoot);
+        }
+    }
+
+    [Fact]
+    public async Task MainViewModel_BusinessDatabaseReload_CleansHiddenFiltersWithoutReenteringDataGate()
+    {
+        var dbRoot = PrepareDatabaseRoot("business-reload-filter-gate");
+
+        try
+        {
+            await using var db = CreateDbContext(dbRoot);
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customer = CreateCustomer("Business reload customer");
+            var invoice = CreateInvoice(customer.Id, "BUSINESS-001", new DateOnly(2026, 7, 4), 75_000m);
+            db.Customers.Add(customer);
+            db.Invoices.Add(invoice);
+            db.InvoiceLines.Add(CreateInvoiceLine(invoice.Id, "Business reload item"));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var dispatcher = new SyncRequestDispatcher();
+            var local = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
+            var rental = new RentalStateService(db, local);
+            var diagnostics = new SyncDiagnosticsService(session);
+            var api = new ErpApiClient(new HttpClient(new StubHttpMessageHandler()) { BaseAddress = new Uri("http://localhost/") }, session);
+            var sync = new SyncService(db, local, rental, api, session, dispatcher, diagnostics);
+            var viewModel = new MainViewModel(local, sync, new BackupService(), rental, diagnostics, api, session);
+            var accountKey = $"InvoiceFilter.CustomerName.{TenantScopeCatalog.GetDatabaseName(session.SelectedBusinessDatabaseName)}.cache-admin";
+
+            try
+            {
+                await local.SetSettingAsync(accountKey, "legacy hidden customer filter");
+
+                await viewModel.RunBusinessDatabaseTransitionAsync(
+                        viewModel.ReloadForBusinessDatabaseChangeAsync)
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+
+                Assert.Equal(string.Empty, await local.GetSettingAsync(accountKey));
+                Assert.Single(viewModel.InvoiceRows);
+            }
+            finally
+            {
+                await viewModel.DrainPendingBackgroundWorkForShutdownAsync();
             }
         }
         finally
@@ -311,12 +508,63 @@ public sealed class InvoiceScreenCacheBehaviorTests
         return root;
     }
 
-    private static LocalDbContext CreateDbContext(string root)
+    private static LocalDbContext CreateDbContext(
+        string root,
+        DbCommandInterceptor? interceptor = null)
     {
-        var options = new DbContextOptionsBuilder<LocalDbContext>()
-            .UseSqlite($"Data Source={Path.Combine(root, "거래플랜-tests.db")}")
-            .Options;
+        var optionsBuilder = new DbContextOptionsBuilder<LocalDbContext>()
+            .UseSqlite($"Data Source={Path.Combine(root, "거래플랜-tests.db")}");
+        if (interceptor is not null)
+            optionsBuilder.AddInterceptors(interceptor);
+
+        var options = optionsBuilder.Options;
         return new LocalDbContext(options);
+    }
+
+    private static async Task ObserveFailureAsync(Task? task)
+    {
+        if (task is null)
+            return;
+
+        try
+        {
+            await task;
+        }
+        catch
+        {
+            // Preserve the assertion that initiated cleanup while observing any losing task failure.
+        }
+    }
+
+    private sealed class ReadQueryGate(string tableName) : DbCommandInterceptor
+    {
+        private readonly TaskCompletionSource _blocked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _armed;
+
+        public void Arm() => Volatile.Write(ref _armed, 1);
+
+        public Task WaitUntilBlockedAsync(TimeSpan timeout)
+            => _blocked.Task.WaitAsync(timeout);
+
+        public void Release() => _released.TrySetResult();
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Volatile.Read(ref _armed) == 1 &&
+                command.CommandText.Contains(tableName, StringComparison.OrdinalIgnoreCase) &&
+                Interlocked.Exchange(ref _armed, 0) == 1)
+            {
+                _blocked.TrySetResult();
+                await _released.Task.WaitAsync(cancellationToken);
+            }
+
+            return result;
+        }
     }
 
     private static void CleanupDatabaseRoot(string root)

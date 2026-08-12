@@ -324,16 +324,31 @@ public sealed class ItemsPage : ContentPage
         await MobileErrorHandler.RunGuardedAsync(
             async () =>
             {
-try
-        {
-            await _viewModel.PrepareForEntryAsync();
-            RebuildCategoryButtons();
-            _seenItemsVersion = _refreshCoordinator.ItemsVersion;
-        }
-        catch (Exception ex)
-        {
-            _viewModel.StatusMessage = $"품목 화면 진입 실패: {ex.Message}";
-        }
+                var owner = _viewModel.EnsureCurrentOwner();
+                try
+                {
+                    await _viewModel.PrepareForEntryAsync();
+                    if (!_viewModel.IsCurrentOwner(owner))
+                    {
+                        owner = _viewModel.EnsureCurrentOwner();
+                        await _viewModel.PrepareForEntryAsync();
+                    }
+
+                    if (_viewModel.IsCurrentOwner(owner))
+                    {
+                        RebuildCategoryButtons();
+                        _seenItemsVersion =
+                            _refreshCoordinator.ItemsVersion;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (_viewModel.IsCurrentOwner(owner))
+                    {
+                        _viewModel.StatusMessage =
+                            $"품목 화면 진입 실패: {ex.Message}";
+                    }
+                }
             },
             "품목 화면 초기화");
     }
@@ -346,9 +361,15 @@ try
                 {
                     if (Shell.Current?.CurrentPage == this && _seenItemsVersion != _refreshCoordinator.ItemsVersion)
                     {
+                        var owner =
+                            _viewModel.EnsureCurrentOwner();
                         await _viewModel.PrepareForEntryAsync();
-                        RebuildCategoryButtons();
-                        _seenItemsVersion = _refreshCoordinator.ItemsVersion;
+                        if (_viewModel.IsCurrentOwner(owner))
+                        {
+                            RebuildCategoryButtons();
+                            _seenItemsVersion =
+                                _refreshCoordinator.ItemsVersion;
+                        }
                     }
                 },
                 "품목 실시간 갱신"));
@@ -415,9 +436,15 @@ try
         await Navigation.PushModalAsync(new ItemEditPage(
             null,
             _viewModel.SelectedCategory?.Name,
-            async saved =>
+            async (saved, apiOwner) =>
             {
+                if (!_viewModel.IsCurrentOwner(apiOwner))
+                    return;
+
                 await _viewModel.RefreshAsync();
+                if (!_viewModel.IsCurrentOwner(apiOwner))
+                    return;
+
                 RebuildCategoryButtons();
                 if (saved is not null)
                     await _viewModel.SelectItemAsync(saved);
@@ -436,8 +463,11 @@ try
         await Navigation.PushModalAsync(new ItemEditPage(
             _viewModel.SelectedItem,
             _viewModel.SelectedCategory?.Name,
-            async saved =>
+            async (saved, apiOwner) =>
             {
+                if (!_viewModel.IsCurrentOwner(apiOwner))
+                    return;
+
                 if (saved is null || saved.IsDeleted)
                 {
                     _viewModel.RemoveDeletedItemFromCurrentView(editedItemId);
@@ -446,6 +476,9 @@ try
                 }
 
                 await _viewModel.RefreshAsync();
+                if (!_viewModel.IsCurrentOwner(apiOwner))
+                    return;
+
                 RebuildCategoryButtons();
                 await _viewModel.SelectItemAsync(saved);
             }));
@@ -463,8 +496,11 @@ try
         await Navigation.PushModalAsync(new ItemEditPage(
             _viewModel.SelectedItem,
             _viewModel.SelectedCategory?.Name,
-            async saved =>
+            async (saved, apiOwner) =>
             {
+                if (!_viewModel.IsCurrentOwner(apiOwner))
+                    return;
+
                 if (saved?.IsDeleted == true)
                 {
                     _viewModel.RemoveDeletedItemFromCurrentView(deletedItemId);
@@ -473,6 +509,9 @@ try
                 }
 
                 await _viewModel.RefreshAsync();
+                if (!_viewModel.IsCurrentOwner(apiOwner))
+                    return;
+
                 RebuildCategoryButtons();
             }));
     }

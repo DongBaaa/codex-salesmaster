@@ -30,6 +30,10 @@ public sealed class CustomersViewModel : ObservableObject
     private bool _isDetailBusy;
     private string _detailStatusMessage = "거래처를 선택하면 상세 정보가 표시됩니다.";
     private CustomerDetailSection _selectedDetailSection = CustomerDetailSection.Summary;
+    private CacheOwnerSession? _visibleOwnerSession;
+    private long _refreshOperationToken;
+    private long _detailOperationToken;
+    private bool _deferredRefreshRequested;
 
     public CustomersViewModel(
         GeoraePlanApiClient api,
@@ -41,7 +45,8 @@ public sealed class CustomersViewModel : ObservableObject
         _cacheStore = cacheStore;
         _syncCoordinator = syncCoordinator;
         _sessionStore = sessionStore;
-        RefreshCommand = new AsyncCommand(RefreshAsync);
+        RefreshCommand = new AsyncCommand(
+            () => RefreshAsync());
     }
 
     public ObservableCollection<CustomerDto> Customers { get; } = new();
@@ -138,22 +143,91 @@ public sealed class CustomersViewModel : ObservableObject
     public bool NeedsRefresh(TimeSpan maxAge)
         => !_lastRefreshUtc.HasValue || DateTime.UtcNow - _lastRefreshUtc.Value >= maxAge;
 
-    public async Task RefreshAsync()
+    public async Task RefreshAsync(
+        CacheOwnerSession? expectedOwnerSession = null)
     {
+        var ownerSession = expectedOwnerSession ??
+                           _cacheStore.CaptureOwnerSession();
+        _cacheStore.ThrowIfOwnerSessionStale(ownerSession);
+        EnsureVisibleOwner(ownerSession);
         if (IsBusy)
+        {
+            RequestDeferredRefresh(ownerSession);
             return;
+        }
 
+        var apiOwner = _sessionStore.CaptureOwner();
+        ThrowIfOwnerPairChanged(ownerSession, apiOwner);
+        var operation = BeginRefreshOperation(ownerSession);
+        var searchTextSnapshot = SearchText;
         try
         {
-            IsBusy = true;
             StatusMessage = "거래처를 조회하고 있습니다.";
-            await _syncCoordinator.RefreshIfServerChangedAsync("customers-refresh", TimeSpan.FromSeconds(5));
+            if (expectedOwnerSession is null)
+            {
+                await _syncCoordinator.RefreshIfServerChangedAsync(
+                    "customers-refresh",
+                    TimeSpan.FromSeconds(5));
+            }
+            else
+            {
+                _cacheStore.ThrowIfOwnerSessionStale(
+                    expectedOwnerSession);
+            }
 
-            var result = await _api.GetCustomersAsync(SearchText);
-            ReplaceCustomers(result);
+            _cacheStore.ThrowIfOwnerSessionStale(
+                ownerSession);
+            ThrowIfOperationStale(operation);
+            var result = await _api.GetCustomersAsync(
+                searchTextSnapshot,
+                apiOwner);
+            ThrowIfOperationStale(operation);
+            IReadOnlyList<CustomerDto> displayResult = result;
 
-            if (string.IsNullOrWhiteSpace(SearchText))
-                await _cacheStore.SaveCustomersAsync(result);
+            if (string.IsNullOrWhiteSpace(
+                    searchTextSnapshot))
+            {
+                await _cacheStore.SaveCustomersAsync(
+                    ownerSession,
+                    result);
+                displayResult =
+                    await _cacheStore.LoadCustomersAsync(
+                        ownerSession);
+            }
+            else
+            {
+                _cacheStore.ThrowIfOwnerSessionStale(
+                    ownerSession);
+                var cachedById =
+                    (await _cacheStore.LoadCustomersAsync(
+                            ownerSession))
+                    .Where(customer =>
+                        customer.Id != Guid.Empty)
+                    .GroupBy(customer => customer.Id)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group
+                            .OrderByDescending(customer =>
+                                customer.Revision)
+                            .ThenByDescending(customer =>
+                                customer.UpdatedAtUtc)
+                            .First());
+                displayResult = result
+                    .Select(customer =>
+                        cachedById.TryGetValue(
+                            customer.Id,
+                            out var cached) &&
+                        IsCustomerStrictlyNewer(
+                            cached,
+                            customer)
+                            ? cached
+                            : customer)
+                    .ToList();
+            }
+            _cacheStore.ThrowIfOwnerSessionStale(
+                ownerSession);
+            ThrowIfOperationStale(operation);
+            ReplaceCustomers(displayResult);
 
             _lastRefreshUtc = DateTime.UtcNow;
             StatusMessage = $"거래처 {Customers.Count:N0}건";
@@ -161,19 +235,32 @@ public sealed class CustomersViewModel : ObservableObject
             if (SelectedCustomer is null)
                 return;
 
+            _cacheStore.ThrowIfOwnerSessionStale(
+                ownerSession);
             var updatedSelection = Customers.FirstOrDefault(customer => customer.Id == SelectedCustomer.Id);
             if (updatedSelection is not null)
-                await SelectCustomerAsync(updatedSelection);
+            {
+                await SelectCustomerAsync(
+                    updatedSelection,
+                    ownerSession);
+            }
             else
                 ClearSelectedCustomer();
         }
+        catch (StaleCacheOwnerSessionException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
+            ThrowIfOperationStale(operation);
             if (MobileRetryableNetworkFailure.IsRetryable(ex))
             {
-                var cached = await LoadCachedCustomersAsync();
+                var cached = await LoadCachedCustomersAsync(
+                    ownerSession);
                 if (cached.Count > 0)
                 {
+                    ThrowIfOperationStale(operation);
                     ReplaceCustomers(cached);
                     _lastRefreshUtc = DateTime.UtcNow;
                     StatusMessage = $"서버 연결 실패: {ex.Message} / 캐시 {Customers.Count:N0}건 표시";
@@ -187,30 +274,47 @@ public sealed class CustomersViewModel : ObservableObject
         }
         finally
         {
-            IsBusy = false;
+            CompleteRefreshOperation(operation);
+            if (TryTakeDeferredRefresh(ownerSession))
+            {
+                await RefreshAsync(ownerSession);
+            }
         }
     }
 
-    public async Task SelectCustomerAsync(CustomerDto customer)
+    public async Task SelectCustomerAsync(
+        CustomerDto customer,
+        CacheOwnerSession? expectedOwnerSession = null)
     {
         if (customer is null)
             return;
 
+        var ownerSession = expectedOwnerSession ??
+                           _cacheStore.CaptureOwnerSession();
+        _cacheStore.ThrowIfOwnerSessionStale(
+            ownerSession);
+        EnsureVisibleOwner(ownerSession);
+        var apiOwner = _sessionStore.CaptureOwner();
+        ThrowIfOwnerPairChanged(ownerSession, apiOwner);
         if (!MobileSessionScopeFilter.CanAccessCustomer(_sessionStore.GetSnapshot(), customer))
         {
+            _cacheStore.ThrowIfOwnerSessionStale(
+                ownerSession);
             ClearSelectedCustomer();
             StatusMessage = "선택한 거래처는 현재 로그인 담당지점/업체 범위 밖입니다.";
             DetailStatusMessage = StatusMessage;
             return;
         }
 
+        _cacheStore.ThrowIfOwnerSessionStale(
+            ownerSession);
         SelectedCustomer = customer;
         SelectedDetailSection = CustomerDetailSection.Summary;
         ReplaceInvoices(Array.Empty<InvoiceDto>());
         ReplaceContracts(Array.Empty<CustomerContractDto>());
         ReplacePayments(Array.Empty<CustomerPaymentHistoryRow>());
         ReplaceRentals(Array.Empty<CustomerRentalLinkRow>());
-        IsDetailBusy = true;
+        var operation = BeginDetailOperation(ownerSession);
         DetailStatusMessage = "거래처 상세 정보를 불러오고 있습니다.";
 
         Exception? detailError = null;
@@ -225,7 +329,18 @@ public sealed class CustomersViewModel : ObservableObject
         {
             try
             {
-                detail = await _api.GetCustomerDetailAsync(customer.Id);
+                detail = await _api.GetCustomerDetailAsync(
+                    customer.Id,
+                    apiOwner);
+                ThrowIfOperationStale(operation);
+            }
+            catch (StaleMobileSessionOwnerException)
+            {
+                throw;
+            }
+            catch (StaleCacheOwnerSessionException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -234,6 +349,7 @@ public sealed class CustomersViewModel : ObservableObject
 
             if (detailError is not null && !MobileRetryableNetworkFailure.IsRetryable(detailError))
             {
+                ThrowIfOperationStale(operation);
                 ClearSelectedCustomer();
                 DetailStatusMessage = $"거래처 상세를 사용할 수 없습니다. 삭제되었거나 현재 권한/담당지점 범위 밖일 수 있습니다. ({detailError.Message})";
                 StatusMessage = DetailStatusMessage;
@@ -242,15 +358,39 @@ public sealed class CustomersViewModel : ObservableObject
 
             try
             {
-                var contractResult = await _api.GetCustomerContractsAsync(customer.Id);
+                var contractResult =
+                    await _api.GetCustomerContractsAsync(
+                        customer.Id,
+                        apiOwner);
+                ThrowIfOperationStale(operation);
                 contracts = contractResult;
-                await _cacheStore.SaveContractsAsync(customer.Id, contractResult);
+                await _cacheStore.SaveContractsAsync(
+                    ownerSession,
+                    customer.Id,
+                    contractResult);
+                contracts =
+                    await _cacheStore.LoadContractsAsync(
+                        ownerSession,
+                        customer.Id);
+                ThrowIfOperationStale(operation);
+            }
+            catch (StaleMobileSessionOwnerException)
+            {
+                throw;
+            }
+            catch (StaleCacheOwnerSessionException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
                 contractError = ex;
                 if (MobileRetryableNetworkFailure.IsRetryable(ex))
-                    contracts = await _cacheStore.LoadContractsAsync(customer.Id);
+                {
+                    contracts = await _cacheStore.LoadContractsAsync(
+                        ownerSession,
+                        customer.Id);
+                }
             }
 
             var displayCustomer = detail?.Customer ?? customer;
@@ -258,7 +398,16 @@ public sealed class CustomersViewModel : ObservableObject
             try
             {
                 syncState = await _syncCoordinator.LoadAsync();
+                ThrowIfOperationStale(operation);
                 rentals = BuildCustomerRentalRows(displayCustomer, syncState);
+            }
+            catch (StaleMobileSessionOwnerException)
+            {
+                throw;
+            }
+            catch (StaleCacheOwnerSessionException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -270,6 +419,8 @@ public sealed class CustomersViewModel : ObservableObject
                 ? BuildCustomerPaymentRowsFromSyncedState(displayCustomer, invoices, syncState)
                 : BuildPaymentRows(detail);
 
+            _cacheStore.ThrowIfOwnerSessionStale(ownerSession);
+            ThrowIfOperationStale(operation);
             SelectedCustomer = displayCustomer;
             ReplaceInvoices(invoices);
             ReplaceContracts(contracts);
@@ -299,7 +450,7 @@ public sealed class CustomersViewModel : ObservableObject
         }
         finally
         {
-            IsDetailBusy = false;
+            CompleteDetailOperation(operation);
         }
     }
 
@@ -308,6 +459,132 @@ public sealed class CustomersViewModel : ObservableObject
     public void ShowInvoicesTab() => SelectedDetailSection = CustomerDetailSection.Invoices;
     public void ShowPaymentsTab() => SelectedDetailSection = CustomerDetailSection.Payments;
     public void ShowRentalsTab() => SelectedDetailSection = CustomerDetailSection.Rentals;
+
+    private void EnsureVisibleOwner(
+        CacheOwnerSession ownerSession)
+    {
+        if (_visibleOwnerSession is not null &&
+            _visibleOwnerSession.HasSameOwnerAndSession(
+                ownerSession))
+        {
+            return;
+        }
+
+        ResetForOwner(ownerSession);
+    }
+
+    private void ResetForOwner(
+        CacheOwnerSession ownerSession)
+    {
+        _refreshOperationToken++;
+        _detailOperationToken++;
+        _visibleOwnerSession = ownerSession;
+        _deferredRefreshRequested = false;
+        Customers.Clear();
+        ClearSelectedCustomer();
+        _lastRefreshUtc = null;
+        SearchText = string.Empty;
+        StatusMessage = "거래처를 불러오세요.";
+        IsBusy = false;
+        IsDetailBusy = false;
+    }
+
+    private CustomerUiOperation BeginRefreshOperation(
+        CacheOwnerSession ownerSession)
+    {
+        var token = ++_refreshOperationToken;
+        IsBusy = true;
+        return new CustomerUiOperation(
+            token,
+            ownerSession,
+            IsDetail: false);
+    }
+
+    private void CompleteRefreshOperation(
+        CustomerUiOperation operation)
+    {
+        if (_refreshOperationToken != operation.Token)
+            return;
+
+        IsBusy = false;
+    }
+
+    private CustomerUiOperation BeginDetailOperation(
+        CacheOwnerSession ownerSession)
+    {
+        var token = ++_detailOperationToken;
+        IsDetailBusy = true;
+        return new CustomerUiOperation(
+            token,
+            ownerSession,
+            IsDetail: true);
+    }
+
+    private void CompleteDetailOperation(
+        CustomerUiOperation operation)
+    {
+        if (_detailOperationToken != operation.Token)
+            return;
+
+        IsDetailBusy = false;
+    }
+
+    private void ThrowIfOperationStale(
+        CustomerUiOperation operation)
+    {
+        var currentToken = operation.IsDetail
+            ? _detailOperationToken
+            : _refreshOperationToken;
+        if (currentToken != operation.Token ||
+            _visibleOwnerSession is null ||
+            !_visibleOwnerSession.HasSameOwnerAndSession(
+                operation.OwnerSession) ||
+            !_cacheStore.IsOwnerSessionCurrent(
+                operation.OwnerSession))
+        {
+            throw new StaleCacheOwnerSessionException(
+                "The customer UI operation belongs to a stale mobile owner/session.");
+        }
+    }
+
+    private static void ThrowIfOwnerPairChanged(
+        CacheOwnerSession cacheOwner,
+        MobileSessionOwner apiOwner)
+    {
+        if (!cacheOwner.HasSameOwnerAndSession(apiOwner))
+        {
+            throw new StaleCacheOwnerSessionException(
+                "The customer cache and API owner snapshots do not match.");
+        }
+    }
+
+    private void RequestDeferredRefresh(
+        CacheOwnerSession ownerSession)
+    {
+        if (_visibleOwnerSession is not null &&
+            _visibleOwnerSession.HasSameOwnerAndSession(
+                ownerSession))
+        {
+            _deferredRefreshRequested = true;
+        }
+    }
+
+    private bool TryTakeDeferredRefresh(
+        CacheOwnerSession ownerSession)
+    {
+        if (!_deferredRefreshRequested ||
+            _visibleOwnerSession is null ||
+            !_visibleOwnerSession.HasSameOwnerAndSession(
+                ownerSession) ||
+            !_cacheStore.IsOwnerSessionCurrent(
+                ownerSession))
+        {
+            return false;
+        }
+
+        _deferredRefreshRequested = false;
+        return true;
+    }
 
     public void ClearSelectedCustomer()
     {
@@ -321,30 +598,46 @@ public sealed class CustomersViewModel : ObservableObject
         DetailStatusMessage = "거래처를 선택하면 상세 정보가 표시됩니다.";
     }
 
-    public async Task RemoveDeletedCustomerFromCurrentViewAsync(Guid customerId)
+    private sealed record CustomerUiOperation(
+        long Token,
+        CacheOwnerSession OwnerSession,
+        bool IsDetail);
+
+    public async Task RemoveDeletedCustomerFromCurrentViewAsync(
+        Guid customerId,
+        CacheOwnerSession requestOwnerSession)
     {
         if (customerId == Guid.Empty)
             return;
-
-        var removed = Customers.FirstOrDefault(customer => customer.Id == customerId);
-        if (removed is not null)
-            Customers.Remove(removed);
-
-        var selectedWasRemoved = SelectedCustomer?.Id == customerId;
-        if (selectedWasRemoved)
-            ClearSelectedCustomer();
+        _cacheStore.ThrowIfOwnerSessionStale(
+            requestOwnerSession);
 
         try
         {
-            var cached = (await _cacheStore.LoadCustomersAsync())
-                .Where(customer => customer.Id != customerId)
-                .ToList();
-            await _cacheStore.SaveCustomersAsync(cached);
+            await _cacheStore.RemoveCustomerFromIndexAsync(
+                requestOwnerSession,
+                customerId);
+        }
+        catch (StaleCacheOwnerSessionException)
+        {
+            throw;
         }
         catch
         {
             // Cache cleanup must not block the visible offline-delete result.
         }
+
+        _cacheStore.ThrowIfOwnerSessionStale(
+            requestOwnerSession);
+        var removed = Customers.FirstOrDefault(customer =>
+            customer.Id == customerId);
+        if (removed is not null)
+            Customers.Remove(removed);
+
+        var selectedWasRemoved =
+            SelectedCustomer?.Id == customerId;
+        if (selectedWasRemoved)
+            ClearSelectedCustomer();
 
         if (removed is null && !selectedWasRemoved)
             return;
@@ -376,13 +669,18 @@ public sealed class CustomersViewModel : ObservableObject
 
         try
         {
-            var path = await _cacheStore.EnsureCachedPdfAsync(SelectedCustomer.Id, contract);
+            var ownerSession = _cacheStore.CaptureOwnerSession();
+            var path = await _cacheStore.EnsureCachedPdfAsync(
+                ownerSession,
+                SelectedCustomer.Id,
+                contract);
             if (string.IsNullOrWhiteSpace(path))
             {
                 DetailStatusMessage = "계약서 PDF 캐시가 없습니다. 네트워크 연결 후 다시 시도하세요.";
                 return;
             }
 
+            _cacheStore.ThrowIfOwnerSessionStale(ownerSession);
             await Launcher.Default.OpenAsync(new OpenFileRequest(contract.FileName, new ReadOnlyFile(path)));
             DetailStatusMessage = $"계약서 열기 완료: {contract.FileName}";
         }
@@ -448,6 +746,14 @@ public sealed class CustomersViewModel : ObservableObject
         var visibleRows = Math.Min(count, maxVisibleRows);
         return (visibleRows * rowHeight) + Math.Max(0, visibleRows - 1) * 6;
     }
+
+    private static bool IsCustomerStrictlyNewer(
+        CustomerDto candidate,
+        CustomerDto baseline)
+        => candidate.Revision > baseline.Revision ||
+           candidate.Revision == baseline.Revision &&
+           candidate.UpdatedAtUtc >
+           baseline.UpdatedAtUtc;
 
     private static IReadOnlyList<CustomerPaymentHistoryRow> BuildPaymentRows(CustomerDetailDto? detail)
     {
@@ -734,10 +1040,15 @@ public sealed class CustomersViewModel : ObservableObject
             ? string.Empty
             : string.Concat(value.Trim().Where(ch => !char.IsWhiteSpace(ch)));
 
-    private async Task<List<CustomerDto>> LoadCachedCustomersAsync()
+    private async Task<List<CustomerDto>> LoadCachedCustomersAsync(
+        CacheOwnerSession? ownerSession = null)
     {
         var snapshot = _sessionStore.GetSnapshot();
-        var cached = (await _cacheStore.LoadCustomersAsync()).ToList();
+        var cached = (ownerSession is null
+                ? await _cacheStore.LoadCustomersAsync()
+                : await _cacheStore.LoadCustomersAsync(
+                    ownerSession))
+            .ToList();
         cached = cached
             .Where(customer => MobileSessionScopeFilter.CanAccessCustomer(snapshot, customer))
             .ToList();

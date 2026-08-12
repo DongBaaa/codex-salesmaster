@@ -1,7 +1,13 @@
+using System.Data;
 using System.Diagnostics;
 using System.IO;
+using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Shared.Contracts;
@@ -35,13 +41,17 @@ public static class DataIntegrityIssueCodes
     public const string RentalCustomerNameMismatch = "rental_customer_name_mismatch";
     public const string RentalAssetInMultipleProfileTemplates = "rental_asset_in_multiple_profile_templates";
     public const string RentalProfileWithoutLinkedAssets = "rental_profile_without_linked_assets";
+    public const string RentalProfileLinkedAssetsOutsideCurrentScope = "rental_profile_linked_assets_outside_current_scope";
     public const string RentalBillableAssetWithoutMonthlyFee = "rental_billable_asset_without_monthly_fee";
+    public const string RentalAssetBillingEligibilityUnconfirmed = "rental_asset_billing_eligibility_unconfirmed";
     public const string RentalAssetMissingBillingProfile = "rental_asset_missing_billing_profile";
     public const string RentalAssignmentMissingReference = "rental_assignment_missing_reference";
     public const string RentalAssignmentHistoricalStaleReference = "rental_assignment_historical_stale_reference";
     public const string RentalAssetMultipleCurrentAssignments = "rental_asset_multiple_current_assignments";
     public const string RentalBillingRunSettlementMismatch = "rental_billing_run_settlement_mismatch";
     public const string RentalBillingRunMissingRunId = "rental_billing_run_missing_run_id";
+    public const string RentalBillingRunKeyConflictingRunIds = "rental_billing_run_key_conflicting_run_ids";
+    public const string RentalBillingRunsJsonMalformed = "rental_billing_runs_json_malformed";
     public const string RentalBillingProfileSummaryMismatch = "rental_billing_profile_summary_mismatch";
     public const string CustomerDuplicateCandidate = "customer_duplicate_candidate";
     public const string ItemDuplicateCandidate = "item_duplicate_candidate";
@@ -121,11 +131,17 @@ public sealed class DataIntegrityIssueDetail
     public DataIntegrityDirectActionKind DirectActionKind { get; init; }
     public IReadOnlyList<Guid> RelatedEntityIds { get; init; } = Array.Empty<Guid>();
     public string ReviewInfo { get; init; } = string.Empty;
+    public DataIntegrityItemDuplicateComparison? ItemDuplicateComparison { get; init; }
 
     public bool HasDirectAction => DirectActionKind != DataIntegrityDirectActionKind.None;
     public bool CanMergeDuplicates => RelatedEntityIds.Count > 1 &&
                                       (string.Equals(Code, DataIntegrityIssueCodes.CustomerDuplicateCandidate, StringComparison.OrdinalIgnoreCase) ||
-                                       string.Equals(Code, DataIntegrityIssueCodes.ItemDuplicateCandidate, StringComparison.OrdinalIgnoreCase));
+                                       (string.Equals(Code, DataIntegrityIssueCodes.ItemDuplicateCandidate, StringComparison.OrdinalIgnoreCase) &&
+                                        ItemDuplicateComparison?.CanMerge == true));
+    public bool CanReviewDuplicateCandidates =>
+        string.Equals(Code, DataIntegrityIssueCodes.ItemDuplicateCandidate, StringComparison.OrdinalIgnoreCase)
+            ? ItemDuplicateComparison?.Candidates.Count > 1
+            : CanMergeDuplicates;
     public string SeverityDisplay => DataIntegritySeverityFormatter.ToDisplayText(Severity);
     public string RelatedEntityIdText => RelatedEntityIds.Count == 0
         ? string.Empty
@@ -146,7 +162,16 @@ public sealed class DataIntegrityIssueDetail
                 : $"{target} · {SuggestedAction}";
         }
     }
-    public string MergeActionText => CanMergeDuplicates ? "중복 병합" : "병합 대상 아님";
+    public string MergeActionText => CanMergeDuplicates
+        ? "중복 병합"
+        : CanReviewDuplicateCandidates
+            ? "후보 비교"
+            : "병합 대상 아님";
+    public string DuplicateReviewActionText =>
+        string.Equals(Code, DataIntegrityIssueCodes.ItemDuplicateCandidate, StringComparison.OrdinalIgnoreCase) &&
+        ItemDuplicateComparison?.Candidates.Count > 1
+            ? "후보 비교"
+            : MergeActionText;
     public string DirectActionText => DirectActionKind switch
     {
         DataIntegrityDirectActionKind.OpenRentalAsset => "자산 바로가기",
@@ -167,6 +192,108 @@ public sealed class DataIntegrityIssueDetail
     }
 }
 
+public sealed class DataIntegrityItemDuplicateComparison
+{
+    public IReadOnlyList<DataIntegrityItemDuplicateCandidate> Candidates { get; init; } = Array.Empty<DataIntegrityItemDuplicateCandidate>();
+    public string SnapshotToken { get; init; } = string.Empty;
+    public bool CanMerge { get; init; }
+    public IReadOnlyList<string> BlockingConflictFields { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> BlockingReasons { get; init; } = Array.Empty<string>();
+    public string BlockingReasonText => BlockingReasons.Count == 0 ? "병합 가능" : string.Join(" / ", BlockingReasons);
+    public string SummaryText { get; init; } = string.Empty;
+    public Guid? RecommendedCanonicalId { get; init; }
+    public int TotalReferenceCount => Candidates.Sum(candidate => candidate.TotalReferenceCount);
+    public decimal CurrentStockTotal => Candidates.Sum(candidate => candidate.CurrentStock);
+    public decimal WarehouseStockTotal => Candidates.Sum(candidate => candidate.WarehouseStock);
+}
+
+public sealed class DataIntegrityItemDuplicateReviewPreparation
+{
+    public DataIntegrityItemDuplicateComparison Comparison { get; init; } = new();
+    public IReadOnlyList<string> PermissionBlockingReasons { get; init; } = Array.Empty<string>();
+    public bool CanMerge => Comparison.CanMerge && PermissionBlockingReasons.Count == 0;
+    public string BlockingReasonText
+    {
+        get
+        {
+            var reasons = Comparison.BlockingReasons
+                .Concat(PermissionBlockingReasons)
+                .Where(reason => !string.IsNullOrWhiteSpace(reason))
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            return reasons.Count == 0 ? "병합 가능" : string.Join(" / ", reasons);
+        }
+    }
+}
+
+public sealed class DataIntegrityItemDuplicateCandidate
+{
+    public Guid ItemId { get; init; }
+    public string ItemIdText => ItemId.ToString("N")[..8];
+    public string TenantCode { get; init; } = string.Empty;
+    public string OfficeCode { get; init; } = string.Empty;
+    public long Revision { get; init; }
+    public DateTime UpdatedAtUtc { get; init; }
+    public bool IsDirty { get; init; }
+    public int UnresolvedOutboxCount { get; init; }
+    public string NameOriginal { get; init; } = string.Empty;
+    public string SpecificationOriginal { get; init; } = string.Empty;
+    public string CategoryName { get; init; } = string.Empty;
+    public string ItemKind { get; init; } = string.Empty;
+    public string TrackingType { get; init; } = string.Empty;
+    public string Unit { get; init; } = string.Empty;
+    public decimal BoxQuantity { get; init; }
+    public string StorageLocation { get; init; } = string.Empty;
+    public decimal CurrentStock { get; init; }
+    public decimal WarehouseStock { get; init; }
+    public decimal SafetyStock { get; init; }
+    public decimal PurchasePrice { get; init; }
+    public decimal SalePrice { get; init; }
+    public decimal RetailPrice { get; init; }
+    public decimal PriceGradeA { get; init; }
+    public decimal PriceGradeB { get; init; }
+    public decimal PriceGradeC { get; init; }
+    public DateOnly? LastPurchaseDate { get; init; }
+    public DateOnly? LastSaleDate { get; init; }
+    public bool CatalogExtensionSyncPending { get; init; }
+    public string SimpleMemo { get; init; } = string.Empty;
+    public bool IsRental { get; init; }
+    public bool IsSale { get; init; }
+    public string SerialNumber { get; init; } = string.Empty;
+    public string MaterialNumber { get; init; } = string.Empty;
+    public string InstallLocation { get; init; } = string.Empty;
+    public DateOnly? RentalStartDate { get; init; }
+    public DateOnly? RentalEndDate { get; init; }
+    public string Notes { get; init; } = string.Empty;
+    public int InvoiceLineCount { get; init; }
+    public int InvoiceLineSerialCount { get; init; }
+    public int RentalAssetCount { get; init; }
+    public int RentalBillingTemplateCount { get; init; }
+    public int InventoryTransferLineCount { get; init; }
+    public int InventoryMovementCount { get; init; }
+    public int StockLayerCount { get; init; }
+    public int SerialLedgerCount { get; init; }
+    public int ItemWarehouseStockRowCount { get; init; }
+    public int ItemPriceGradeCount { get; init; }
+    public int TotalReferenceCount { get; init; }
+    public string ReferenceIdentityFingerprint { get; init; } = string.Empty;
+    public bool IsRecommended { get; init; }
+    public string RecommendationText { get; init; } = string.Empty;
+    public string NameAndSpecification => $"{NameOriginal} / {SpecificationOriginal}";
+    public string ScopeText => $"{TenantCode} / {OfficeCode}";
+    public string StockSummary => $"현재 {CurrentStock:N2} / 창고 {WarehouseStock:N2}";
+    public string ReferenceSummary =>
+        $"전표 {InvoiceLineCount:N0}, 시리얼 {InvoiceLineSerialCount:N0}, 자산 {RentalAssetCount:N0}, 청구템플릿 {RentalBillingTemplateCount:N0}, 이동 {InventoryTransferLineCount:N0}, 재고원장 {InventoryMovementCount:N0}, 재고층 {StockLayerCount:N0}, 시리얼원장 {SerialLedgerCount:N0}, 창고재고 {ItemWarehouseStockRowCount:N0}, 사용자등급가 {ItemPriceGradeCount:N0}";
+    public string MasterDataSummary =>
+        $"분류 {Display(CategoryName)} / 종류 {Display(ItemKind)} / 추적 {Display(TrackingType)} / 단위 {Display(Unit)} / 보관 {Display(StorageLocation)} / 매입 {PurchasePrice:N0} / 매출 {SalePrice:N0} / 소매 {RetailPrice:N0}";
+    public string AssetDataSummary =>
+        $"대여 {IsRental} / 판매 {IsSale} / 시리얼 {Display(SerialNumber)} / 자재 {Display(MaterialNumber)} / 설치 {Display(InstallLocation)} / 대여기간 {Display(RentalStartDate)}~{Display(RentalEndDate)} / 메모 {Display(Notes)}";
+    public string SyncStateText => $"rev {Revision:N0} / {UpdatedAtUtc:yyyy-MM-dd HH:mm:ss}Z / dirty {(IsDirty ? "Y" : "N")} / outbox {UnresolvedOutboxCount:N0}";
+
+    private static string Display(string? value) => string.IsNullOrWhiteSpace(value) ? "-" : value.Trim();
+    private static string Display(DateOnly? value) => value?.ToString("yyyy-MM-dd") ?? "-";
+}
+
 public sealed class DataIntegrityIssueFilterOption
 {
     public string Code { get; init; } = string.Empty;
@@ -177,27 +304,44 @@ public sealed class DataIntegrityIssueFilterOption
 
 internal static class DataIntegritySeverityFormatter
 {
+    public static string Normalize(string? severity)
+    {
+        var value = severity?.Trim();
+        if (string.Equals(value, "Error", StringComparison.OrdinalIgnoreCase))
+            return "Error";
+        if (string.Equals(value, "Info", StringComparison.OrdinalIgnoreCase))
+            return "Info";
+
+        return "Warning";
+    }
+
     public static string ToDisplayText(string? severity)
-        => severity?.Trim() switch
+        => Normalize(severity) switch
         {
-            { } value when value.Equals("Error", StringComparison.OrdinalIgnoreCase) => "오류",
-            { } value when value.Equals("Warning", StringComparison.OrdinalIgnoreCase) => "주의",
-            { } value when value.Equals("Info", StringComparison.OrdinalIgnoreCase) => "참고",
-            { Length: > 0 } value => value,
+            "Error" => "오류",
+            "Info" => "참고",
             _ => "주의"
         };
 
     public static int GetSortWeight(string? severity)
-        => severity?.Trim() switch
+        => Normalize(severity) switch
         {
-            { } value when value.Equals("Error", StringComparison.OrdinalIgnoreCase) => 3,
-            { } value when value.Equals("Warning", StringComparison.OrdinalIgnoreCase) => 2,
-            { } value when value.Equals("Info", StringComparison.OrdinalIgnoreCase) => 1,
-            _ => 0
+            "Error" => 3,
+            "Info" => 1,
+            _ => 2
         };
 
     public static bool IsActionRequired(string? severity)
-        => !string.Equals(severity?.Trim(), "Info", StringComparison.OrdinalIgnoreCase);
+        => Normalize(severity) != "Info";
+
+    public static bool IsError(string? severity)
+        => Normalize(severity) == "Error";
+
+    public static bool IsWarning(string? severity)
+        => Normalize(severity) == "Warning";
+
+    public static bool IsInformational(string? severity)
+        => Normalize(severity) == "Info";
 }
 
 public sealed class DataIntegrityScanResult
@@ -214,8 +358,11 @@ public sealed class DataIntegrityScanResult
     public IReadOnlyList<DataIntegrityIssueSummary> Summaries { get; }
     public IReadOnlyList<DataIntegrityIssueDetail> Issues { get; }
     public int TotalIssueCount => Issues.Count;
+    public int ErrorIssueCount => Issues.Count(issue => DataIntegritySeverityFormatter.IsError(issue.Severity));
+    public int WarningIssueCount => Issues.Count(issue => DataIntegritySeverityFormatter.IsWarning(issue.Severity));
     public int ActionRequiredIssueCount => Issues.Count(issue => DataIntegritySeverityFormatter.IsActionRequired(issue.Severity));
-    public int InformationalIssueCount => Issues.Count(issue => !DataIntegritySeverityFormatter.IsActionRequired(issue.Severity));
+    public int InformationalIssueCount => Issues.Count(issue => DataIntegritySeverityFormatter.IsInformational(issue.Severity));
+    public int PassiveStartupNoticeIssueCount => Issues.Count(IntegrityIssueReviewPolicy.RequiresPassiveStartupNotice);
     public bool HasIssues => Issues.Count > 0;
     public bool HasActionRequiredIssues => ActionRequiredIssueCount > 0;
     public bool HasPassiveStartupNoticeIssues => Issues.Any(IntegrityIssueReviewPolicy.RequiresPassiveStartupNotice);
@@ -228,6 +375,14 @@ public sealed class DataIntegrityScanResult
             .Select(group => $"{group.Key}:{group.Count()}"));
     public string IssueSignature { get; }
     public string ScannedAtText => ScannedAtLocal.ToString("yyyy-MM-dd HH:mm:ss");
+
+    public string BuildPassiveStartupStatusMessage()
+    {
+        var counts = $"오류 {ErrorIssueCount:N0}건, 주의 {WarningIssueCount:N0}건, 참고 {InformationalIssueCount:N0}건";
+        return ErrorIssueCount > 0
+            ? $"운영 점검 알림: {counts}입니다. 오류가 있어 모든 업무가 안전하다고 볼 수 없습니다. 영향받을 수 있는 저장·청구 업무 전 환경설정 > 동기화 진단 > 무결성 리포트에서 상세 내용을 확인하세요."
+            : $"운영 점검 알림: {counts}입니다. 업무는 계속할 수 있으며, 상세 내용은 환경설정 > 동기화 진단 > 무결성 리포트에서 확인하세요.";
+    }
 }
 
 public sealed class DataIntegrityIssueService
@@ -325,6 +480,13 @@ public sealed class DataIntegrityIssueService
             "렌탈 연결",
             "청구 프로필에 연결된 자산이 없습니다.",
             "청구관리에서 자산을 연결하거나 더 이상 쓰지 않는 프로필이면 보류/삭제 검토하세요."),
+        [DataIntegrityIssueCodes.RentalProfileLinkedAssetsOutsideCurrentScope] = new(
+            DataIntegrityIssueCodes.RentalProfileLinkedAssetsOutsideCurrentScope,
+            "현재 범위 밖 연결 자산 존재",
+            "Warning",
+            "렌탈 연결",
+            "현재 업무 범위에는 보이지 않지만 다른 운영 범위의 활성 자산이 이 청구 프로필을 참조합니다.",
+            "프로필을 미사용으로 판단하거나 삭제하지 말고, 권한이 있는 담당자가 해당 운영 범위의 연결 상태를 확인하세요."),
         [DataIntegrityIssueCodes.RentalBillableAssetWithoutMonthlyFee] = new(
             DataIntegrityIssueCodes.RentalBillableAssetWithoutMonthlyFee,
             "청구대상 자산 월요금 없음",
@@ -332,6 +494,13 @@ public sealed class DataIntegrityIssueService
             "렌탈 자산",
             "청구대상 자산인데 월요금이 0원입니다.",
             "자산 화면에서 월요금을 입력한 뒤 연결 청구 프로필에 반영하세요."),
+        [DataIntegrityIssueCodes.RentalAssetBillingEligibilityUnconfirmed] = new(
+            DataIntegrityIssueCodes.RentalAssetBillingEligibilityUnconfirmed,
+            "청구상태 확인 필요",
+            "Warning",
+            "렌탈 자산",
+            "운용 중인 자산의 청구대상 여부를 현재 저장값만으로 확정할 수 없습니다.",
+            "자산 화면에서 실제 청구대상 또는 청구제외 상태를 명시적으로 선택하고 저장하세요."),
         [DataIntegrityIssueCodes.RentalAssetMissingBillingProfile] = new(
             DataIntegrityIssueCodes.RentalAssetMissingBillingProfile,
             "자산의 청구 프로필 누락",
@@ -374,6 +543,20 @@ public sealed class DataIntegrityIssueService
             "렌탈 청구",
             "렌탈 청구 프로필에 run ID가 비어 있는 과거 청구 JSON이 있습니다.",
             "청구관리에서 해당 프로필을 열고 전표/수금 근거를 확인한 뒤 필요 시 수동 정리하세요."),
+        [DataIntegrityIssueCodes.RentalBillingRunKeyConflictingRunIds] = new(
+            DataIntegrityIssueCodes.RentalBillingRunKeyConflictingRunIds,
+            "렌탈 청구 RunKey-RunId 식별자 충돌",
+            "Error",
+            "렌탈 청구",
+            "동일 normalized RunKey의 여러 non-empty RunId 또는 동일 RunId의 여러 normalized RunKey 때문에 재무 작업 대상을 안전하게 식별할 수 없습니다.",
+            "청구관리에서 표시된 프로필과 RunKey/RunId의 전표·수금 근거를 확인해 수동으로 정리하세요."),
+        [DataIntegrityIssueCodes.RentalBillingRunsJsonMalformed] = new(
+            DataIntegrityIssueCodes.RentalBillingRunsJsonMalformed,
+            "렌탈 청구 실행 이력 JSON 손상",
+            "Error",
+            "렌탈 청구",
+            "BillingRunsJson이 올바른 JSON 배열이 아니어서 청구 실행 이력을 안전하게 읽을 수 없습니다.",
+            "청구관리에서 프로필과 전표/수금 근거를 확인한 뒤 원문을 보존하며 수동으로 복구하세요."),
         [DataIntegrityIssueCodes.RentalBillingProfileSummaryMismatch] = new(
             DataIntegrityIssueCodes.RentalBillingProfileSummaryMismatch,
             "렌탈 청구 프로필 요약 불일치",
@@ -518,14 +701,48 @@ public sealed class DataIntegrityIssueService
 
     private readonly LocalDbContext _db;
     private readonly SyncRequestDispatcher? _syncRequestDispatcher;
+    private readonly SemaphoreSlim? _ownerScopeDataGate;
+    private readonly IServiceScopeFactory? _scopeFactory;
+    private readonly LocalStateService? _localStateService;
+    private readonly ErpApiClient? _erpApiClient;
+    private readonly SyncService? _syncService;
+    private DataIntegrityIssueService? _isolatedOperationOwner;
 
-    public DataIntegrityIssueService(LocalDbContext db, SyncRequestDispatcher? syncRequestDispatcher = null)
+    public DataIntegrityIssueService(
+        LocalDbContext db,
+        SyncRequestDispatcher? syncRequestDispatcher = null,
+        LocalStateService? localStateService = null,
+        IServiceScopeFactory? scopeFactory = null,
+        ErpApiClient? erpApiClient = null,
+        SyncService? syncService = null)
     {
         _db = db;
         _syncRequestDispatcher = syncRequestDispatcher;
+        _ownerScopeDataGate = localStateService?.OwnerScopeDataGate;
+        _scopeFactory = scopeFactory;
+        _localStateService = localStateService;
+        _erpApiClient = erpApiClient;
+        _syncService = syncService;
     }
 
-    public async Task<DataIntegrityScanResult> ScanAsync(SessionState session, CancellationToken ct = default)
+    internal Func<CancellationToken, Task>? TestOnlyBeforeDuplicateMergeSaveAsync { get; set; }
+    internal Action<DataIntegrityIssueService>? TestOnlyConfigureIsolatedChild { get; set; }
+    internal Func<ItemDuplicateMergePreviewRequestDto, CancellationToken, Task<ItemDuplicateMergePreviewDto?>>? TestOnlyPreviewItemDuplicateMergeAsync { get; set; }
+    internal Func<ItemDuplicateMergeRequestDto, CancellationToken, Task<ItemDuplicateMergeResultDto?>>? TestOnlyExecuteItemDuplicateMergeAsync { get; set; }
+    internal Func<SessionState, CancellationToken, Task<int>>? TestOnlyCountDirtyAsync { get; set; }
+    internal Func<CancellationToken, Task<bool>>? TestOnlyRefreshCurrentBusinessScopeAsync { get; set; }
+#if DEBUG
+    internal bool TestOnlyUseLegacyLocalItemDuplicateMerge { get; set; }
+#endif
+
+    public Task<DataIntegrityScanResult> ScanAsync(SessionState session, CancellationToken ct = default)
+        => ExecuteCoordinatedDbContextOperationAsync(
+            () => ExecuteUsingIsolatedScopeAsync(
+                child => child.ScanCoreAsync(session, ct),
+                () => ScanCoreAsync(session, ct)),
+            ct);
+
+    private async Task<DataIntegrityScanResult> ScanCoreAsync(SessionState session, CancellationToken ct)
     {
         var totalStopwatch = Stopwatch.StartNew();
         var stepStopwatch = Stopwatch.StartNew();
@@ -559,12 +776,18 @@ public sealed class DataIntegrityIssueService
                     .Where(item => !item.IsDeleted),
                 session))
             .ToListAsync(ct);
-        var activeWarehouses = await SelectIntegrityWarehouseProjection(ApplyOperationalAlertWarehouseScopePrefilter(
+        var sessionTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            session.TenantCode,
+            session.OfficeCode);
+        var activeTenantWarehouses = (await SelectIntegrityWarehouseProjection(
                 _db.Warehouses
                     .AsNoTracking()
-                    .Where(warehouse => !warehouse.IsDeleted && warehouse.IsActive),
-                session))
-            .ToListAsync(ct);
+                    .Where(warehouse => !warehouse.IsDeleted && warehouse.IsActive))
+            .ToListAsync(ct))
+            .Where(warehouse => IsConsistentWarehouseReferenceInTenant(
+                warehouse,
+                sessionTenantCode))
+            .ToList();
         var activeInvoices = await ApplyOperationalAlertInvoiceScopePrefilter(
                 _db.Invoices
                     .AsNoTracking()
@@ -611,6 +834,31 @@ public sealed class DataIntegrityIssueService
             .ToDictionary(group => group.Key, group => group.ToList());
 
         var allAssetsById = activeAssets.ToDictionary(asset => asset.Id);
+        var parsedTemplateItemsByProfileId = scopedProfiles
+            .ToDictionary(profile => profile.Id, ParseTemplateItems);
+        var profilesRequiringGlobalLinkedAssetLookup = scopedProfiles
+            .Where(profile =>
+                !scopedAssetsByBillingProfileId.ContainsKey(profile.Id) &&
+                parsedTemplateItemsByProfileId.TryGetValue(profile.Id, out var parsed) &&
+                parsed.Success &&
+                !parsed.Items
+                    .SelectMany(item => item.IncludedAssetIds ?? [])
+                    .Any(assetId => assetId != Guid.Empty))
+            .Select(profile => profile.Id)
+            .ToList();
+        var profileIdsWithActiveAssetsOutsideCurrentScope = await LoadActiveRentalProfileIdsReferencedByAssetsAsync(
+            profilesRequiringGlobalLinkedAssetLookup,
+            ct);
+        var templateReferencedAssetIdsOutsidePrefilter = parsedTemplateItemsByProfileId.Values
+            .Where(parsed => parsed.Success)
+            .SelectMany(parsed => parsed.Items)
+            .SelectMany(item => item.IncludedAssetIds ?? [])
+            .Where(id => id != Guid.Empty && !allAssetsById.ContainsKey(id))
+            .Distinct()
+            .ToList();
+        var activeReferencedAssetIdsOutsidePrefilter = await LoadActiveRentalAssetIdsByIdsAsync(
+            templateReferencedAssetIdsOutsidePrefilter,
+            ct);
         var activeProfilesById = activeProfiles.ToDictionary(profile => profile.Id);
         var linkedCustomerIds = activeProfiles
             .Where(profile => profile.CustomerId.HasValue && profile.CustomerId.Value != Guid.Empty)
@@ -640,6 +888,9 @@ public sealed class DataIntegrityIssueService
         var scopedCustomers = activeCustomers
             .Where(customer =>
             {
+                if (session.HasGlobalDataScope)
+                    return true;
+
                 var customerScope = ResolveCustomerScope(customer);
                 return IsInSessionScope(customerScope.TenantCode, customerScope.OfficeCode, session);
             })
@@ -647,11 +898,14 @@ public sealed class DataIntegrityIssueService
         var scopedItems = activeItems
             .Where(item =>
             {
+                if (session.HasGlobalDataScope)
+                    return true;
+
                 var itemScope = ResolveItemScope(item);
                 return IsInSessionScope(itemScope.TenantCode, itemScope.OfficeCode, session);
             })
             .ToList();
-        var scopedWarehouses = activeWarehouses
+        var scopedWarehouses = activeTenantWarehouses
             .Where(warehouse => IsInSessionScope(null, ResolveWarehouseOfficeCode(warehouse), session))
             .ToList();
         var scopedInvoices = activeInvoices
@@ -683,6 +937,7 @@ public sealed class DataIntegrityIssueService
         stepStopwatch.Restart();
         var customerDuplicateUsages = await LoadCustomerDuplicateUsagesAsync(duplicateCustomerCandidateIds, ct);
         var itemDuplicateUsages = await LoadItemDuplicateUsagesAsync(duplicateItemCandidateIds, ct);
+        var itemDuplicateOutboxCounts = await LoadItemUnresolvedOutboxCountsAsync(duplicateItemCandidateIds, ct);
         LogIntegrityScanStep(
             "Integrity scan duplicate usage load",
             stepStopwatch,
@@ -706,11 +961,13 @@ public sealed class DataIntegrityIssueService
             scopedCustomers,
             scopedItems,
             scopedWarehouses,
+            activeTenantWarehouses,
             scopedInvoices,
             invoiceLineTotalsByInvoiceId,
             invoicePaymentTotalsByInvoiceId,
             customerDuplicateUsages,
             itemDuplicateUsages,
+            itemDuplicateOutboxCounts,
             itemWarehouseStocks,
             inventoryMovements,
             session);
@@ -731,6 +988,22 @@ public sealed class DataIntegrityIssueService
             "Integrity scan rental billing run missing run id",
             stepStopwatch,
             $"issues={rentalBillingRunMissingRunIdIssues.Count:N0}");
+
+        stepStopwatch.Restart();
+        var malformedRentalBillingRunsJsonIssues = LoadMalformedRentalBillingRunsJsonIssues(scopedProfiles);
+        details.AddRange(malformedRentalBillingRunsJsonIssues);
+        LogIntegrityScanStep(
+            "Integrity scan malformed rental billing runs json",
+            stepStopwatch,
+            $"issues={malformedRentalBillingRunsJsonIssues.Count:N0}");
+
+        stepStopwatch.Restart();
+        var rentalBillingRunKeyConflictIssues = LoadRentalBillingRunKeyConflictingRunIdIssues(scopedProfiles);
+        details.AddRange(rentalBillingRunKeyConflictIssues);
+        LogIntegrityScanStep(
+            "Integrity scan rental billing run key conflicts",
+            stepStopwatch,
+            $"issues={rentalBillingRunKeyConflictIssues.Count:N0}");
 
         stepStopwatch.Restart();
         var rentalBillingProfileSummaryMismatchIssues = await LoadRentalBillingProfileSummaryMismatchIssuesAsync(scopedProfiles, session, ct);
@@ -920,7 +1193,7 @@ public sealed class DataIntegrityIssueService
                     directActionKind: DataIntegrityDirectActionKind.OpenRentalBillingProfile);
             }
 
-            var parsed = ParseTemplateItems(profile);
+            var parsed = parsedTemplateItemsByProfileId[profile.Id];
             if (!parsed.Success)
             {
                 AddIssue(details, DataIntegrityIssueCodes.RentalBillingTemplateInvalid, profile, null,
@@ -986,6 +1259,9 @@ public sealed class DataIntegrityIssueService
                     profileAssetIds.Add(assetId);
                     if (!allAssetsById.TryGetValue(assetId, out var asset))
                     {
+                        if (activeReferencedAssetIdsOutsidePrefilter.Contains(assetId))
+                            continue;
+
                         AddIssue(details, DataIntegrityIssueCodes.RentalTemplateMissingAsset, profile, null,
                             entityType: "청구 품목",
                             entityId: profile.Id,
@@ -1004,7 +1280,12 @@ public sealed class DataIntegrityIssueService
                         assetTemplateRefs[asset.Id] = refs;
                     }
 
-                    refs.Add(new AssetTemplateReference(profile.Id, BuildProfileDisplay(profile), item.DisplayItemName));
+                    refs.Add(new AssetTemplateReference(
+                        profile.Id,
+                        BuildProfileDisplay(profile),
+                        item.DisplayItemName,
+                        ResolveTemplateMonthlyAmount(item),
+                        itemAssetIds.Count));
 
                     var hasConflictingProfile = asset.BillingProfileId.HasValue &&
                                                 asset.BillingProfileId.Value != Guid.Empty &&
@@ -1053,13 +1334,27 @@ public sealed class DataIntegrityIssueService
 
             if (linkedAssets.Count == 0 && profileAssetIds.Count == 0)
             {
-                AddIssue(details, DataIntegrityIssueCodes.RentalProfileWithoutLinkedAssets, profile, null,
-                    entityType: "청구 프로필",
-                    entityId: profile.Id,
-                    currentValue: "연결 자산 0개",
-                    expectedValue: "연결 자산 1개 이상",
-                    message: $"{BuildProfileDisplay(profile)} 프로필에 연결된 자산이 없습니다.",
-                    directActionKind: DataIntegrityDirectActionKind.OpenRentalBillingProfile);
+                if (profileIdsWithActiveAssetsOutsideCurrentScope.Contains(profile.Id))
+                {
+                    AddIssue(details, DataIntegrityIssueCodes.RentalProfileLinkedAssetsOutsideCurrentScope, profile, null,
+                        entityType: "청구 프로필",
+                        entityId: profile.Id,
+                        currentValue: "현재 범위 연결 자산 0개 / 범위 밖 연결 존재",
+                        expectedValue: "권한 범위별 연결 상태 확인",
+                        message: $"{BuildProfileDisplay(profile)} 프로필은 현재 범위 밖의 활성 자산에서 참조되고 있습니다.",
+                        directActionKind: DataIntegrityDirectActionKind.OpenRentalBillingProfile,
+                        reviewInfo: "현재 세션 범위 연결 0개 / DB 전체 활성 자산 연결 존재 / 자산 식별정보 비표시");
+                }
+                else
+                {
+                    AddIssue(details, DataIntegrityIssueCodes.RentalProfileWithoutLinkedAssets, profile, null,
+                        entityType: "청구 프로필",
+                        entityId: profile.Id,
+                        currentValue: "연결 자산 0개",
+                        expectedValue: "연결 자산 1개 이상",
+                        message: $"{BuildProfileDisplay(profile)} 프로필에 연결된 자산이 없습니다.",
+                        directActionKind: DataIntegrityDirectActionKind.OpenRentalBillingProfile);
+                }
             }
         }
 
@@ -1127,7 +1422,14 @@ public sealed class DataIntegrityIssueService
                     directActionKind: DataIntegrityDirectActionKind.OpenRentalAsset);
             }
 
-            if (IsBillableOperatingAsset(asset) && asset.MonthlyFee <= 0m)
+            var hasValidLinkedProfile = asset.BillingProfileId.HasValue &&
+                                        asset.BillingProfileId.Value != Guid.Empty &&
+                                        activeProfilesById.ContainsKey(asset.BillingProfileId.Value);
+            var billingEligibility = ClassifyOperatingAssetBillingEligibility(asset, hasValidLinkedProfile);
+            var billingReviewInfo = BuildAssetBillingReviewInfo(
+                asset,
+                assetTemplateRefs.GetValueOrDefault(asset.Id) ?? []);
+            if (billingEligibility == RentalAssetBillingEligibility.Billable && asset.MonthlyFee <= 0m)
             {
                 AddIssue(details, DataIntegrityIssueCodes.RentalBillableAssetWithoutMonthlyFee, null, asset,
                     entityType: "렌탈 자산",
@@ -1135,7 +1437,19 @@ public sealed class DataIntegrityIssueService
                     currentValue: FormatMoney(asset.MonthlyFee),
                     expectedValue: "1원 이상",
                     message: $"{BuildAssetDisplay(asset)} 자산은 청구대상이나 월요금이 없습니다.",
-                    directActionKind: DataIntegrityDirectActionKind.OpenRentalAsset);
+                    directActionKind: DataIntegrityDirectActionKind.OpenRentalAsset,
+                    reviewInfo: billingReviewInfo);
+            }
+            else if (billingEligibility == RentalAssetBillingEligibility.NeedsReview)
+            {
+                AddIssue(details, DataIntegrityIssueCodes.RentalAssetBillingEligibilityUnconfirmed, null, asset,
+                    entityType: "렌탈 자산",
+                    entityId: asset.Id,
+                    currentValue: NormalizeDisplay(asset.BillingEligibilityStatus, "공백"),
+                    expectedValue: "청구대상 또는 청구제외",
+                    message: $"{BuildAssetDisplay(asset)} 자산의 청구상태를 확인해야 합니다.",
+                    directActionKind: DataIntegrityDirectActionKind.OpenRentalAsset,
+                    reviewInfo: billingReviewInfo);
             }
         }
 
@@ -1164,7 +1478,7 @@ public sealed class DataIntegrityIssueService
                     HasDirectAction = group.Any(issue => issue.HasDirectAction)
                 };
             })
-            .OrderByDescending(summary => string.Equals(summary.Severity, "Error", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(summary => DataIntegritySeverityFormatter.GetSortWeight(summary.Severity))
             .ThenByDescending(summary => summary.Count)
             .ThenBy(summary => summary.Title, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
@@ -1180,21 +1494,850 @@ public sealed class DataIntegrityIssueService
         return result;
     }
 
+    private async Task<T> ExecuteCoordinatedDbContextOperationAsync<T>(
+        Func<Task<T>> operation,
+        CancellationToken ct)
+    {
+        var enteredOwnerScopeGate = false;
+        try
+        {
+            if (_ownerScopeDataGate is not null)
+            {
+                await _ownerScopeDataGate.WaitAsync(ct);
+                enteredOwnerScopeGate = true;
+            }
+
+            return await SyncService.ExecuteWithGlobalSyncOperationLockAsync(operation, ct);
+        }
+        finally
+        {
+            if (enteredOwnerScopeGate)
+                _ownerScopeDataGate!.Release();
+        }
+    }
+
+    private async Task<T> ExecuteUsingIsolatedScopeAsync<T>(
+        Func<DataIntegrityIssueService, Task<T>> isolatedOperation,
+        Func<Task<T>> fallbackOperation)
+    {
+        if (_scopeFactory is null || _isolatedOperationOwner is not null)
+            return await fallbackOperation();
+
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var child = scope.ServiceProvider.GetRequiredService<DataIntegrityIssueService>();
+        if (ReferenceEquals(child, this))
+            return await fallbackOperation();
+
+        child._isolatedOperationOwner = this;
+        try
+        {
+            TestOnlyConfigureIsolatedChild?.Invoke(child);
+            return await isolatedOperation(child);
+        }
+        finally
+        {
+            child._isolatedOperationOwner = null;
+        }
+    }
+
+    private async Task<OfficeMutationResult> ExecuteDuplicateMergeTransactionAsync(
+        Func<Task<OfficeMutationResult>> operation,
+        CancellationToken ct)
+    {
+        if (_db.Database.CurrentTransaction is not null)
+            return OfficeMutationResult.Denied("다른 로컬 데이터 작업이 진행 중이어서 중복 병합을 시작할 수 없습니다. 잠시 후 다시 시도하세요.");
+
+        if (_db.ChangeTracker.HasChanges())
+            return OfficeMutationResult.Denied("아직 저장되지 않은 로컬 변경이 있어 중복 병합을 중단했습니다. 열려 있는 편집 화면을 저장하거나 취소한 뒤 다시 시도하세요.");
+
+        // A tracking query can otherwise reuse stale Unchanged entities left by a previous screen.
+        // There are no pending changes at this point, so detaching them is safe and forces a fresh read.
+        _db.ChangeTracker.Clear();
+
+        await using var transaction = await _db.BeginRuntimeMutationTransactionAsync(IsolationLevel.Serializable, ct);
+        try
+        {
+            var result = await operation();
+            if (!result.Success)
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                _db.ChangeTracker.Clear();
+                return result;
+            }
+
+            await transaction.CommitAsync(ct);
+            _db.ChangeTracker.Clear();
+            return result;
+        }
+        catch
+        {
+            try
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+            }
+            finally
+            {
+                _db.ChangeTracker.Clear();
+            }
+
+            throw;
+        }
+    }
+
+    private async Task<OfficeMutationResult> ExecuteDuplicateMutationWithIsolationAsync(
+        Func<DataIntegrityIssueService, Task<OfficeMutationResult>> isolatedOperation,
+        Func<Task<OfficeMutationResult>> fallbackOperation)
+    {
+        if (_db.ChangeTracker.HasChanges())
+        {
+            return OfficeMutationResult.Denied(
+                "아직 저장되지 않은 로컬 변경이 있어 중복 병합을 중단했습니다. 열려 있는 편집 화면을 저장하거나 취소한 뒤 다시 시도하세요.");
+        }
+
+        var result = await ExecuteUsingIsolatedScopeAsync(isolatedOperation, fallbackOperation);
+        if (!result.Success)
+            return result;
+
+        // A successful child-scope commit can make Unchanged entities cached by the long-lived UI
+        // context stale. Detach only Unchanged entries so a later query reads the committed rows,
+        // while any concurrently staged Added/Modified/Deleted work remains intact.
+        foreach (var entry in _db.ChangeTracker.Entries().Where(entry => entry.State == EntityState.Unchanged).ToList())
+            entry.State = EntityState.Detached;
+
+        return result;
+    }
+
     public async Task<OfficeMutationResult> MergeDuplicateIssueAsync(
         DataIntegrityIssueDetail issue,
         SessionState session,
         CancellationToken ct = default)
     {
+        var result = await ExecuteCoordinatedDbContextOperationAsync(
+            () => ExecuteDuplicateMutationWithIsolationAsync(
+                child => child.MergeDuplicateIssueCoreAsync(issue, session, ct),
+                () => MergeDuplicateIssueCoreAsync(issue, session, ct)),
+            ct);
+        if (result.Success)
+            _syncRequestDispatcher?.RequestFlushSync();
+        return result;
+    }
+
+    private async Task<OfficeMutationResult> MergeDuplicateIssueCoreAsync(
+        DataIntegrityIssueDetail issue,
+        SessionState session,
+        CancellationToken ct)
+    {
         if (issue.RelatedEntityIds.Count <= 1)
             return OfficeMutationResult.Missing("병합할 중복 후보가 2건 이상 필요합니다. 운영점검을 새로고침한 뒤 다시 시도하세요.");
 
         if (string.Equals(issue.Code, DataIntegrityIssueCodes.CustomerDuplicateCandidate, StringComparison.OrdinalIgnoreCase))
-            return await MergeDuplicateCustomersAsync(issue.RelatedEntityIds, session, ct);
+        {
+            return await ExecuteDuplicateMergeTransactionAsync(
+                () => MergeDuplicateCustomersAsync(issue.RelatedEntityIds, session, ct),
+                ct);
+        }
 
         if (string.Equals(issue.Code, DataIntegrityIssueCodes.ItemDuplicateCandidate, StringComparison.OrdinalIgnoreCase))
-            return await MergeDuplicateItemsAsync(issue.RelatedEntityIds, session, ct);
+            return OfficeMutationResult.Denied("품목 중복 병합은 비교 화면에서 대표 품목과 최신 스냅샷을 명시해야 합니다.");
 
         return OfficeMutationResult.Denied("현재 항목은 자동 병합 대상이 아닙니다. 원본 화면에서 확인 후 수동 정리하세요.");
+    }
+
+    public async Task<OfficeMutationResult> MergeDuplicateItemIssueAsync(
+        DataIntegrityIssueDetail issue,
+        Guid canonicalItemId,
+        string expectedSnapshotToken,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+#if DEBUG
+        if (TestOnlyUseLegacyLocalItemDuplicateMerge)
+        {
+            var legacyResult = await ExecuteCoordinatedDbContextOperationAsync(
+                () => ExecuteDuplicateMutationWithIsolationAsync(
+                    child => child.ExecuteDuplicateMergeTransactionAsync(
+                            () => child.MergeDuplicateItemIssueLocallyForTestsAsync(
+                                issue,
+                                canonicalItemId,
+                                expectedSnapshotToken,
+                                session,
+                                ct),
+                            ct),
+                    () => ExecuteDuplicateMergeTransactionAsync(
+                            () => MergeDuplicateItemIssueLocallyForTestsAsync(
+                                issue,
+                                canonicalItemId,
+                                expectedSnapshotToken,
+                                session,
+                                ct),
+                            ct)),
+                ct);
+            if (legacyResult.Success)
+                _syncRequestDispatcher?.RequestFlushSync();
+            return legacyResult;
+        }
+#endif
+
+        return await ExecuteCoordinatedDbContextOperationAsync(
+            () => ExecuteServerAuthoritativeItemDuplicateMergeAndRefreshInsideLocksAsync(
+                issue,
+                canonicalItemId,
+                expectedSnapshotToken,
+                session,
+                ct),
+            ct);
+    }
+
+    private async Task<OfficeMutationResult> ExecuteServerAuthoritativeItemDuplicateMergeAndRefreshInsideLocksAsync(
+        DataIntegrityIssueDetail issue,
+        Guid canonicalItemId,
+        string expectedSnapshotToken,
+        SessionState session,
+        CancellationToken ct)
+    {
+        await using var runtimeMutationLease =
+            await LocalDbContext.AcquireRuntimeMutationGateAsync(ct);
+
+        var outcome = await ExecuteServerAuthoritativeItemDuplicateMergeWithIsolationAsync(
+            issue,
+            canonicalItemId,
+            expectedSnapshotToken,
+            session,
+            ct);
+        if (outcome.CommitState == ItemDuplicateServerCommitState.NotStarted)
+            return outcome.Result;
+
+        bool refreshed;
+        var localMergeStateVerificationFailed = false;
+        var refreshToken = ct.IsCancellationRequested ? CancellationToken.None : ct;
+        try
+        {
+            await using (LocalDbContext.EnterRuntimeMutationGateOwnerScope(runtimeMutationLease))
+            {
+                refreshed = TestOnlyRefreshCurrentBusinessScopeAsync is not null
+                    ? await TestOnlyRefreshCurrentBusinessScopeAsync(refreshToken)
+                    : _syncService is not null &&
+                      await _syncService.RefreshCurrentBusinessScopeFromServerInsideGlobalOperationAsync(refreshToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("INTEGRITY", "서버 품목 중복 병합 후 로컬 캐시 새로고침 실패", ex);
+            refreshed = false;
+        }
+
+        if (refreshed && outcome.CommitState == ItemDuplicateServerCommitState.Committed)
+        {
+            try
+            {
+                localMergeStateVerificationFailed =
+                    !await HasExpectedAuthoritativeItemMergeStateAsync(
+                        canonicalItemId,
+                        outcome.TombstonedItemIds ?? [],
+                        refreshToken);
+                if (localMergeStateVerificationFailed)
+                {
+                    AppLogger.Warn(
+                        "INTEGRITY",
+                        "Server item duplicate merge refresh returned success without the complete clean canonical/tombstone state in the local cache.");
+                    refreshed = false;
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error(
+                    "INTEGRITY",
+                    "서버 품목 중복 병합 후 로컬 대표 품목/tombstone 상태 검증 실패",
+                    ex);
+                localMergeStateVerificationFailed = true;
+                refreshed = false;
+            }
+        }
+
+        if (refreshed)
+        {
+            try
+            {
+                refreshed = await TryReloadOwnerContextAfterAuthoritativeRefreshAsync(refreshToken);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error(
+                    "INTEGRITY",
+                    "서버 품목 중복 병합 후 공유 화면 컨텍스트 다시 읽기 실패",
+                    ex);
+                refreshed = false;
+            }
+        }
+
+        _db.AdvanceRuntimeMutationEpoch();
+        if (refreshed)
+        {
+            _db.AcceptCurrentRuntimeMutationEpoch();
+        }
+        else if (_db.ChangeTracker.HasChanges())
+        {
+            AppLogger.Warn(
+                "INTEGRITY",
+                "Server item duplicate merge completed while the owner context gained pending local changes; the context remains stale and must be recreated.");
+            refreshed = false;
+        }
+
+        if (!refreshed)
+        {
+            return outcome.CommitState == ItemDuplicateServerCommitState.Unknown
+                ? OfficeMutationResult.Denied(
+                    "서버 병합 요청의 완료 여부를 확인할 수 없고 이 PC 캐시 새로고침도 실패했습니다. 병합을 다시 실행하지 말고 먼저 동기화를 실행한 뒤 운영점검을 다시 확인하세요.")
+                : OfficeMutationResult.Denied(
+                    localMergeStateVerificationFailed
+                        ? "서버 병합은 완료됐지만 이 PC 캐시에 대표 품목과 중복 tombstone이 모두 반영됐는지 확인할 수 없습니다. 병합을 다시 실행하지 말고 동기화를 다시 실행하세요."
+                        : "서버 병합은 완료됐지만 이 PC 캐시 새로고침에 실패했습니다. 병합을 다시 실행하지 말고 동기화를 다시 실행하세요.");
+        }
+
+        if (outcome.CommitState == ItemDuplicateServerCommitState.Unknown)
+        {
+            return OfficeMutationResult.Denied(
+                "서버 병합 요청의 응답은 확인하지 못했지만 이 PC 캐시는 서버 기준으로 새로고쳤습니다. 병합을 바로 다시 실행하지 말고 운영점검을 새로고쳐 후보가 남아 있는지 먼저 확인하세요.");
+        }
+
+        return outcome.Result;
+    }
+
+    private async Task<bool> TryReloadOwnerContextAfterAuthoritativeRefreshAsync(
+        CancellationToken ct)
+    {
+        _db.ChangeTracker.DetectChanges();
+        if (_db.ChangeTracker.HasChanges())
+            return false;
+
+        var trackedEntries = _db.ChangeTracker.Entries().ToList();
+        foreach (var entry in trackedEntries)
+        {
+            _db.ChangeTracker.DetectChanges();
+            if (_db.ChangeTracker.HasChanges())
+                return false;
+            if (entry.State == EntityState.Unchanged)
+                await entry.ReloadAsync(ct);
+        }
+
+        _db.ChangeTracker.DetectChanges();
+        return !_db.ChangeTracker.HasChanges();
+    }
+
+    private async Task<bool> HasExpectedAuthoritativeItemMergeStateAsync(
+        Guid canonicalItemId,
+        IReadOnlyCollection<Guid> tombstonedItemIds,
+        CancellationToken ct)
+    {
+        var expectedTombstoneIds = tombstonedItemIds
+            .Where(id => id != Guid.Empty && id != canonicalItemId)
+            .Distinct()
+            .ToList();
+        if (canonicalItemId == Guid.Empty ||
+            expectedTombstoneIds.Count == 0 ||
+            expectedTombstoneIds.Count != tombstonedItemIds.Count)
+        {
+            return false;
+        }
+
+        var expectedItemIds = expectedTombstoneIds
+            .Append(canonicalItemId)
+            .ToList();
+        var localStates = await _db.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => expectedItemIds.Contains(item.Id))
+            .Select(item => new
+            {
+                item.Id,
+                item.IsDeleted,
+                item.IsDirty
+            })
+            .ToListAsync(ct);
+        if (localStates.Count != expectedItemIds.Count)
+            return false;
+
+        var canonicalState = localStates.SingleOrDefault(item => item.Id == canonicalItemId);
+        if (canonicalState is null || canonicalState.IsDeleted || canonicalState.IsDirty)
+            return false;
+
+        var localTombstoneIds = localStates
+            .Where(item => item.IsDeleted && !item.IsDirty)
+            .Select(item => item.Id)
+            .OrderBy(id => id)
+            .ToList();
+        return localTombstoneIds.SequenceEqual(expectedTombstoneIds.OrderBy(id => id));
+    }
+
+    private enum ItemDuplicateServerCommitState
+    {
+        NotStarted,
+        Committed,
+        Unknown
+    }
+
+    private sealed record ItemDuplicateServerMergeOutcome(
+        OfficeMutationResult Result,
+        ItemDuplicateServerCommitState CommitState,
+        IReadOnlyList<Guid>? TombstonedItemIds = null);
+
+    private async Task<ItemDuplicateServerMergeOutcome> ExecuteServerAuthoritativeItemDuplicateMergeWithIsolationAsync(
+        DataIntegrityIssueDetail issue,
+        Guid canonicalItemId,
+        string expectedSnapshotToken,
+        SessionState session,
+        CancellationToken ct)
+    {
+        if (_db.ChangeTracker.HasChanges())
+        {
+            return new ItemDuplicateServerMergeOutcome(
+                OfficeMutationResult.Denied(
+                    "아직 저장되지 않은 로컬 변경이 있어 품목 병합을 중단했습니다. 열려 있는 편집 화면을 저장하거나 취소한 뒤 다시 시도하세요."),
+                ItemDuplicateServerCommitState.NotStarted);
+        }
+
+        return await ExecuteUsingIsolatedScopeAsync(
+            child => child.ExecuteServerAuthoritativeItemDuplicateMergeCoreAsync(
+                issue,
+                canonicalItemId,
+                expectedSnapshotToken,
+                session,
+                ct),
+            () => ExecuteServerAuthoritativeItemDuplicateMergeCoreAsync(
+                issue,
+                canonicalItemId,
+                expectedSnapshotToken,
+                session,
+                ct));
+    }
+
+    private async Task<ItemDuplicateServerMergeOutcome> ExecuteServerAuthoritativeItemDuplicateMergeCoreAsync(
+        DataIntegrityIssueDetail issue,
+        Guid canonicalItemId,
+        string expectedSnapshotToken,
+        SessionState session,
+        CancellationToken ct)
+    {
+        ItemDuplicateServerMergeOutcome Block(OfficeMutationResult result)
+            => new(result, ItemDuplicateServerCommitState.NotStarted);
+
+        if (!string.Equals(issue.Code, DataIntegrityIssueCodes.ItemDuplicateCandidate, StringComparison.OrdinalIgnoreCase))
+            return Block(OfficeMutationResult.Denied("품목 중복 경고만 이 병합 API를 사용할 수 있습니다."));
+        if (!session.IsLoggedIn)
+            return Block(OfficeMutationResult.Denied("로그인된 온라인 세션에서만 품목 중복 병합을 실행할 수 있습니다."));
+        if (session.IsOfflineMode)
+            return Block(OfficeMutationResult.Denied("오프라인 상태에서는 품목 중복 병합을 실행할 수 없습니다. 먼저 서버 동기화를 완료하세요."));
+        if (_erpApiClient is null &&
+            (TestOnlyPreviewItemDuplicateMergeAsync is null || TestOnlyExecuteItemDuplicateMergeAsync is null))
+        {
+            return Block(OfficeMutationResult.Denied("서버 품목 병합 서비스를 사용할 수 없습니다. 앱을 다시 시작한 뒤 시도하세요."));
+        }
+        if (_syncService is null && TestOnlyRefreshCurrentBusinessScopeAsync is null)
+            return Block(OfficeMutationResult.Denied("서버 병합 후 캐시 새로고침 서비스를 사용할 수 없습니다. 앱을 다시 시작한 뒤 시도하세요."));
+        if (_db.Database.CurrentTransaction is not null || _db.ChangeTracker.HasChanges())
+        {
+            return Block(OfficeMutationResult.Denied(
+                "아직 저장되지 않은 로컬 변경이 있어 품목 병합을 중단했습니다. 열려 있는 편집 화면을 저장하거나 취소한 뒤 다시 시도하세요."));
+        }
+
+        var expectedIds = issue.RelatedEntityIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToList();
+        if (expectedIds.Count <= 1)
+            return Block(OfficeMutationResult.Missing("병합할 품목 후보가 2건 이상 필요합니다."));
+        if (canonicalItemId == Guid.Empty || !expectedIds.Contains(canonicalItemId))
+            return Block(OfficeMutationResult.Denied("선택한 대표 품목이 비교 대상 후보에 포함되어 있지 않습니다."));
+        if (string.IsNullOrWhiteSpace(expectedSnapshotToken))
+            return Block(OfficeMutationResult.Denied("품목 비교 스냅샷이 없어 병합을 중단했습니다. 다시 조회하세요."));
+
+        var preparation = await PrepareItemDuplicateReviewCoreAsync(issue, session, ct);
+        if (!preparation.CanMerge)
+        {
+            var reason = string.IsNullOrWhiteSpace(preparation.BlockingReasonText)
+                ? "로컬 안전 조건 또는 권한을 충족하지 않았습니다."
+                : preparation.BlockingReasonText;
+            return Block(OfficeMutationResult.Denied($"품목 병합을 실행할 수 없습니다: {reason}"));
+        }
+
+        var latestLocalToken = preparation.Comparison.SnapshotToken?.Trim().ToLowerInvariant() ?? string.Empty;
+        var requestedLocalToken = expectedSnapshotToken.Trim().ToLowerInvariant();
+        if (!CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(latestLocalToken),
+                Encoding.UTF8.GetBytes(requestedLocalToken)))
+        {
+            return Block(OfficeMutationResult.Conflict(
+                "품목 또는 참조 상태가 변경되어 로컬 비교 스냅샷이 만료되었습니다. 다시 조회하세요."));
+        }
+
+        var currentScopeDirtyCount = await CountCurrentScopeDirtyForItemMergeAsync(session, ct);
+        if (!currentScopeDirtyCount.HasValue)
+            return Block(OfficeMutationResult.Denied("로컬 미동기화 변경 여부를 확인할 수 없어 품목 병합을 중단했습니다."));
+
+        if (currentScopeDirtyCount.Value > 0)
+        {
+            return Block(OfficeMutationResult.Denied(
+                $"현재 업체 DB에 미동기화 변경 {currentScopeDirtyCount.Value:N0}건이 남아 있어 품목 병합을 중단했습니다. 먼저 동기화를 완료하세요."));
+        }
+
+        ItemDuplicateMergePreviewDto? preview;
+        try
+        {
+            var previewRequest = new ItemDuplicateMergePreviewRequestDto
+            {
+                CandidateItemIds = expectedIds,
+                CanonicalItemId = canonicalItemId
+            };
+            preview = TestOnlyPreviewItemDuplicateMergeAsync is not null
+                ? await TestOnlyPreviewItemDuplicateMergeAsync(previewRequest, ct)
+                : await _erpApiClient!.PreviewItemDuplicateMergeAsync(previewRequest, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (HttpRequestException ex)
+        {
+            return Block(CreateServerItemDuplicateMergeFailure(ex, "사전검증"));
+        }
+
+        if (preview is null)
+            return Block(OfficeMutationResult.Denied("서버 품목 병합 사전검증 응답이 비어 있어 병합을 중단했습니다."));
+
+        var previewCandidates = preview.Candidates ?? [];
+        var previewIds = previewCandidates
+            .Select(candidate => candidate.ItemId)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToList();
+        if (!previewIds.SequenceEqual(expectedIds) || previewCandidates.Count != expectedIds.Count)
+        {
+            return Block(OfficeMutationResult.Conflict(
+                "서버의 중복 후보 구성이 이 PC의 비교 목록과 달라 병합을 중단했습니다. 동기화 후 다시 조회하세요."));
+        }
+        if (preview.CanonicalItemId != canonicalItemId)
+            return Block(OfficeMutationResult.Conflict("서버가 확인한 대표 품목이 선택값과 달라 병합을 중단했습니다."));
+        if (!preview.CanMerge)
+        {
+            var serverReasons = (preview.BlockingReasons ?? [])
+                .Where(reason => !string.IsNullOrWhiteSpace(reason))
+                .Select(reason => reason.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            var reasonText = serverReasons.Count == 0
+                ? "서버 안전 조건을 충족하지 않았습니다."
+                : string.Join(" / ", serverReasons);
+            return Block(OfficeMutationResult.Denied($"서버가 품목 병합을 차단했습니다: {reasonText}"));
+        }
+        if (string.IsNullOrWhiteSpace(preview.ServerSnapshotToken))
+            return Block(OfficeMutationResult.Denied("서버 병합 스냅샷이 비어 있어 병합을 중단했습니다."));
+
+        var dirtyCountAfterPreview = await CountCurrentScopeDirtyForItemMergeAsync(session, ct);
+        if (!dirtyCountAfterPreview.HasValue)
+            return Block(OfficeMutationResult.Denied("서버 사전검증 후 로컬 미동기화 변경 여부를 다시 확인할 수 없어 품목 병합을 중단했습니다."));
+        if (dirtyCountAfterPreview.Value > 0)
+        {
+            return Block(OfficeMutationResult.Denied(
+                $"서버 사전검증 중 미동기화 변경 {dirtyCountAfterPreview.Value:N0}건이 생겨 품목 병합을 중단했습니다. 먼저 동기화를 완료하세요."));
+        }
+
+        var activeLocalEditorReason = BuildActiveLocalItemEditorBlockingReason(expectedIds);
+        if (activeLocalEditorReason is not null)
+            return Block(OfficeMutationResult.Denied(activeLocalEditorReason));
+        if (_db.ChangeTracker.HasChanges())
+        {
+            return Block(OfficeMutationResult.Denied(
+                "서버 사전검증 중 저장되지 않은 로컬 변경이 생겨 품목 병합을 중단했습니다."));
+        }
+
+        ItemDuplicateMergeResultDto? result;
+        var executeRequest = new ItemDuplicateMergeRequestDto
+        {
+            CandidateItemIds = expectedIds,
+            CanonicalItemId = canonicalItemId,
+            ExpectedServerSnapshotToken = preview.ServerSnapshotToken,
+            MutationId = $"item-duplicate-merge:{Guid.NewGuid():N}"
+        };
+        try
+        {
+            result = TestOnlyExecuteItemDuplicateMergeAsync is not null
+                ? await TestOnlyExecuteItemDuplicateMergeAsync(executeRequest, ct)
+                : await _erpApiClient!.ExecuteItemDuplicateMergeAsync(executeRequest, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return new ItemDuplicateServerMergeOutcome(
+                OfficeMutationResult.Denied(
+                    "서버 품목 병합 실행 중 요청이 취소되어 완료 여부를 확인할 수 없습니다."),
+                ItemDuplicateServerCommitState.Unknown);
+        }
+        catch (HttpRequestException ex) when (IsDefinitiveRejectedItemDuplicateMergeStatus(ex.StatusCode))
+        {
+            return Block(CreateServerItemDuplicateMergeFailure(ex, "실행"));
+        }
+        catch (HttpRequestException ex)
+        {
+            AppLogger.Warn(
+                "INTEGRITY",
+                $"서버 품목 중복 병합 응답 확인 실패. mutationId={executeRequest.MutationId}, status={(int?)ex.StatusCode}");
+            return new ItemDuplicateServerMergeOutcome(
+                OfficeMutationResult.Denied(
+                    "서버 품목 병합 요청을 보냈지만 응답을 확인하지 못해 완료 여부를 확정할 수 없습니다."),
+                ItemDuplicateServerCommitState.Unknown);
+        }
+
+        if (result is null)
+        {
+            return new ItemDuplicateServerMergeOutcome(
+                OfficeMutationResult.Denied(
+                    "서버 품목 병합 결과가 비어 있어 완료 여부를 확인할 수 없습니다."),
+                ItemDuplicateServerCommitState.Unknown);
+        }
+
+        var expectedTombstonedIds = expectedIds.Where(id => id != canonicalItemId).OrderBy(id => id).ToList();
+        var tombstonedItemIds = result.TombstonedItemIds ?? [];
+        var actualTombstonedIds = tombstonedItemIds.Distinct().OrderBy(id => id).ToList();
+        if (result.CanonicalItemId != canonicalItemId ||
+            tombstonedItemIds.Count != actualTombstonedIds.Count ||
+            !actualTombstonedIds.SequenceEqual(expectedTombstonedIds) ||
+            !CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(result.ServerSnapshotToken?.Trim().ToLowerInvariant() ?? string.Empty),
+                Encoding.UTF8.GetBytes(preview.ServerSnapshotToken.Trim().ToLowerInvariant())))
+        {
+            return new ItemDuplicateServerMergeOutcome(
+                OfficeMutationResult.Denied(
+                    "서버 병합의 2xx 응답 구조가 요청과 달라 실제 완료 여부를 확정할 수 없습니다."),
+                ItemDuplicateServerCommitState.Unknown);
+        }
+
+        var message = result.IsReplay
+            ? $"서버에서 이전에 완료된 동일 요청을 확인했습니다. 중복 {tombstonedItemIds.Count:N0}건의 병합 결과를 재생했으며," +
+              " 재생 receipt에는 이동 건수가 보존되지 않으므로 서버 기준 새로고침 상태를 확인했습니다."
+            : $"서버에서 대표 품목을 확정하고 중복 {tombstonedItemIds.Count:N0}건을 원자적으로 병합했습니다." +
+              $" 전표 {result.MovedInvoiceLineCount:N0}건, 렌탈 자산 {result.MovedRentalAssetCount:N0}건," +
+              $" 렌탈 청구 {result.UpdatedRentalBillingProfileCount:N0}건, 재고이동 {result.MovedInventoryTransferLineCount:N0}건을 함께 정리했습니다.";
+        return new ItemDuplicateServerMergeOutcome(
+            OfficeMutationResult.Ok(canonicalItemId, message),
+            ItemDuplicateServerCommitState.Committed,
+            actualTombstonedIds);
+    }
+
+    private async Task<int?> CountCurrentScopeDirtyForItemMergeAsync(
+        SessionState session,
+        CancellationToken ct)
+    {
+        if (TestOnlyCountDirtyAsync is not null)
+            return await TestOnlyCountDirtyAsync(session, ct);
+        if (_localStateService is not null)
+            return await _localStateService.CountDirtyAsync(session, ct);
+        return null;
+    }
+
+    private static bool IsDefinitiveRejectedItemDuplicateMergeStatus(System.Net.HttpStatusCode? statusCode)
+        => statusCode is
+            System.Net.HttpStatusCode.BadRequest or
+            System.Net.HttpStatusCode.Forbidden or
+            System.Net.HttpStatusCode.NotFound or
+            System.Net.HttpStatusCode.Conflict or
+            System.Net.HttpStatusCode.UpgradeRequired;
+
+    private static OfficeMutationResult CreateServerItemDuplicateMergeFailure(
+        HttpRequestException exception,
+        string phase)
+    {
+        return exception.StatusCode switch
+        {
+            System.Net.HttpStatusCode.Conflict => OfficeMutationResult.Conflict(
+                $"서버 품목 병합 {phase} 중 데이터가 변경되었습니다. 동기화 후 비교 화면을 다시 여세요."),
+            System.Net.HttpStatusCode.Forbidden => OfficeMutationResult.Denied(
+                $"서버 품목 병합 {phase} 권한 또는 데이터 범위가 부족합니다."),
+            System.Net.HttpStatusCode.BadRequest => OfficeMutationResult.Denied(
+                $"서버가 품목 병합 {phase} 요청을 안전 조건 불충족으로 거절했습니다. 비교 화면을 다시 확인하세요."),
+            System.Net.HttpStatusCode.NotFound => OfficeMutationResult.Missing(
+                $"서버 품목 병합 {phase} 대상을 찾을 수 없습니다. 동기화 후 다시 조회하세요."),
+            System.Net.HttpStatusCode.UpgradeRequired => OfficeMutationResult.Denied(
+                "필수 PC 업데이트가 필요해 서버 품목 병합을 중단했습니다."),
+            _ => OfficeMutationResult.Denied(
+                $"서버 품목 병합 {phase}에 실패했습니다. 네트워크와 동기화 상태를 확인한 뒤 다시 시도하세요.")
+        };
+    }
+
+    public Task<DataIntegrityItemDuplicateReviewPreparation> PrepareItemDuplicateReviewAsync(
+        DataIntegrityIssueDetail issue,
+        SessionState session,
+        CancellationToken ct = default)
+        => ExecuteCoordinatedDbContextOperationAsync(
+            () => ExecuteUsingIsolatedScopeAsync(
+                child => child.PrepareItemDuplicateReviewCoreAsync(issue, session, ct),
+                () => PrepareItemDuplicateReviewCoreAsync(issue, session, ct)),
+            ct);
+
+    private async Task<DataIntegrityItemDuplicateReviewPreparation> PrepareItemDuplicateReviewCoreAsync(
+        DataIntegrityIssueDetail issue,
+        SessionState session,
+        CancellationToken ct)
+    {
+        var fallbackComparison = issue.ItemDuplicateComparison ?? new DataIntegrityItemDuplicateComparison();
+        DataIntegrityItemDuplicateReviewPreparation Block(string reason, DataIntegrityItemDuplicateComparison? comparison = null)
+            => new()
+            {
+                Comparison = comparison ?? fallbackComparison,
+                PermissionBlockingReasons = [reason]
+            };
+
+        if (!string.Equals(issue.Code, DataIntegrityIssueCodes.ItemDuplicateCandidate, StringComparison.OrdinalIgnoreCase))
+            return Block("품목 중복 경고만 후보 비교를 준비할 수 있습니다.");
+
+        var expectedIds = issue.RelatedEntityIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToList();
+        if (expectedIds.Count <= 1)
+            return Block("비교할 활성 품목 후보가 2건 이상 필요합니다. 운영점검을 새로고침하세요.");
+
+        var expectedItems = await _db.Items.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => expectedIds.Contains(item.Id) && !item.IsDeleted)
+            .ToListAsync(ct);
+        if (expectedItems.Count != expectedIds.Count || !BelongsToSingleExactItemDuplicateGroup(expectedItems))
+            return Block("품목 후보가 삭제되었거나 이름·규격·범위가 변경되었습니다. 운영점검을 새로고침하세요.");
+
+        var seed = expectedItems[0];
+        var seedKey = BuildItemExactDuplicateKey(seed);
+        var seedName = NormalizeExactDuplicateText(seed.NameOriginal);
+        var seedSpecification = NormalizeExactDuplicateText(seed.SpecificationOriginal);
+        var currentGroup = (await _db.Items.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(item => !item.IsDeleted &&
+                               item.NameOriginal.Trim() == seedName &&
+                               item.SpecificationOriginal.Trim() == seedSpecification)
+                .ToListAsync(ct))
+            .Where(item => string.Equals(BuildItemExactDuplicateKey(item), seedKey, StringComparison.Ordinal))
+            .OrderBy(item => item.Id)
+            .ToList();
+        var currentIds = currentGroup.Select(item => item.Id).OrderBy(id => id).ToList();
+        var usageById = await LoadItemDuplicateUsagesAsync(currentIds, ct);
+        var outboxCountById = await LoadItemUnresolvedOutboxCountsAsync(currentIds, ct);
+        var comparison = BuildItemDuplicateComparison(currentGroup, usageById, outboxCountById);
+        if (!currentIds.SequenceEqual(expectedIds))
+            return Block("중복 후보 구성이 변경되었습니다. 최신 후보를 확인하도록 운영점검을 새로고침하세요.", comparison);
+
+        var activeLocalEditorReason = BuildActiveLocalItemEditorBlockingReason(currentIds);
+        if (activeLocalEditorReason is not null)
+            return Block(activeLocalEditorReason, comparison);
+
+        var permissionReasons = new List<string>();
+        var requiresOnlineServerMerge = true;
+#if DEBUG
+        requiresOnlineServerMerge = !TestOnlyUseLegacyLocalItemDuplicateMerge;
+#endif
+        if (requiresOnlineServerMerge && (!session.IsLoggedIn || session.IsOfflineMode))
+        {
+            permissionReasons.Add(
+                "품목 중복 병합은 온라인 서버에서 원자적으로 처리됩니다. 먼저 온라인 로그인과 동기화를 완료하세요.");
+        }
+        else if (!CanEditItemsForIntegrity(session))
+        {
+            permissionReasons.Add("품목 편집 권한이 없어 병합할 수 없습니다. 후보는 읽기 전용으로 비교할 수 있습니다.");
+        }
+        else
+        {
+            var deniedItem = currentGroup.FirstOrDefault(item => !CanWriteItemScopeForIntegrity(session, item));
+            if (deniedItem is not null)
+            {
+                permissionReasons.Add(
+                    $"'{NormalizeDisplay(deniedItem.NameOriginal, deniedItem.Id.ToString("N"))}' 품목의 업체·사업장 범위에 쓰기 권한이 없어 병합할 수 없습니다.");
+            }
+            else
+            {
+                // The canonical item is not selected yet. Checking the full group is intentionally conservative:
+                // it prevents the UI from offering a merge that could later need an unauthorized reference move.
+                var sideEffectPermissionResult = await ValidateItemDuplicateMergeSideEffectPermissionsAsync(currentIds, session, ct);
+                if (sideEffectPermissionResult is not null)
+                    permissionReasons.Add(sideEffectPermissionResult.Message);
+            }
+        }
+
+        return new DataIntegrityItemDuplicateReviewPreparation
+        {
+            Comparison = comparison,
+            PermissionBlockingReasons = permissionReasons
+        };
+    }
+
+    private async Task<OfficeMutationResult> MergeDuplicateItemIssueLocallyForTestsAsync(
+        DataIntegrityIssueDetail issue,
+        Guid canonicalItemId,
+        string expectedSnapshotToken,
+        SessionState session,
+        CancellationToken ct)
+    {
+        if (!string.Equals(issue.Code, DataIntegrityIssueCodes.ItemDuplicateCandidate, StringComparison.OrdinalIgnoreCase))
+            return OfficeMutationResult.Denied("품목 중복 경고만 이 병합 API를 사용할 수 있습니다.");
+        if (!CanEditItemsForIntegrity(session))
+            return OfficeMutationResult.Denied("권한이 없어 품목 중복 후보를 병합할 수 없습니다.");
+
+        var expectedIds = issue.RelatedEntityIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .OrderBy(id => id)
+            .ToList();
+        if (expectedIds.Count <= 1)
+            return OfficeMutationResult.Missing("병합할 품목 후보가 부족합니다.");
+        if (canonicalItemId == Guid.Empty || !expectedIds.Contains(canonicalItemId))
+            return OfficeMutationResult.Denied("선택한 대표 품목이 비교 대상 후보에 포함되어 있지 않습니다.");
+        if (string.IsNullOrWhiteSpace(expectedSnapshotToken))
+            return OfficeMutationResult.Denied("품목 비교 스냅샷이 없어 병합을 중단했습니다. 다시 조회하세요.");
+
+        var expectedItems = await _db.Items.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => expectedIds.Contains(item.Id) && !item.IsDeleted)
+            .ToListAsync(ct);
+        if (expectedItems.Count == 0)
+            return OfficeMutationResult.Missing("활성 품목 후보를 찾을 수 없습니다. 다시 조회하세요.");
+        if (!BelongsToSingleExactItemDuplicateGroup(expectedItems))
+            return OfficeMutationResult.Denied("품명/규격/scope가 하나의 중복 그룹이 아니어서 병합할 수 없습니다.");
+
+        var seed = expectedItems[0];
+        var seedKey = BuildItemExactDuplicateKey(seed);
+        var seedName = NormalizeExactDuplicateText(seed.NameOriginal);
+        var seedSpecification = NormalizeExactDuplicateText(seed.SpecificationOriginal);
+        var currentGroup = (await _db.Items.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(item => !item.IsDeleted &&
+                               item.NameOriginal.Trim() == seedName &&
+                               item.SpecificationOriginal.Trim() == seedSpecification)
+                .ToListAsync(ct))
+            .Where(item => string.Equals(BuildItemExactDuplicateKey(item), seedKey, StringComparison.Ordinal))
+            .OrderBy(item => item.Id)
+            .ToList();
+        var currentIds = currentGroup.Select(item => item.Id).OrderBy(id => id).ToList();
+        if (!currentIds.SequenceEqual(expectedIds))
+            return OfficeMutationResult.Denied("중복 후보 구성이 변경되어 병합을 중단했습니다. 다시 조회하세요.");
+        if (!currentIds.Contains(canonicalItemId))
+            return OfficeMutationResult.Denied("선택한 대표 품목이 최신 후보 그룹에 포함되어 있지 않습니다.");
+
+        var activeLocalEditorReason = BuildActiveLocalItemEditorBlockingReason(currentIds);
+        if (activeLocalEditorReason is not null)
+            return OfficeMutationResult.Denied(activeLocalEditorReason);
+
+        var usageById = await LoadItemDuplicateUsagesAsync(currentIds, ct);
+        var outboxCountById = await LoadItemUnresolvedOutboxCountsAsync(currentIds, ct);
+        var comparison = BuildItemDuplicateComparison(currentGroup, usageById, outboxCountById);
+        if (!CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(comparison.SnapshotToken),
+                Encoding.UTF8.GetBytes(expectedSnapshotToken.Trim().ToLowerInvariant())))
+        {
+            return OfficeMutationResult.Denied("품목 또는 참조 상태가 변경되어 스냅샷이 만료되었습니다. 다시 조회하세요.");
+        }
+
+        if (!comparison.CanMerge)
+            return OfficeMutationResult.Denied($"안전 조건을 충족하지 않아 병합할 수 없습니다: {comparison.BlockingReasonText}");
+
+        return await MergeDuplicateItemsAsync(currentIds, canonicalItemId, session, ct);
     }
 
     private async Task<OfficeMutationResult> MergeDuplicateCustomersAsync(
@@ -1226,8 +2369,11 @@ public sealed class DataIntegrityIssueService
 
         foreach (var customer in activeCustomers)
         {
-            var customerScope = ResolveCustomerScope(customer);
-            if (!CanWriteCustomerScopeForIntegrity(session, customerScope.OfficeCode, customerScope.TenantCode))
+            var customerScopeEvidence = ResolveStoredScopeEvidence(
+                customer.TenantCode,
+                customer.ResponsibleOfficeCode,
+                customer.OfficeCode);
+            if (!CanWriteStoredScopeEvidenceForIntegrity(session, customerScopeEvidence))
                 return OfficeMutationResult.Denied($"권한이 없어 {NormalizeDisplay(customer.NameOriginal, customer.Id.ToString("N"))} 거래처를 병합할 수 없습니다.");
         }
 
@@ -1347,8 +2493,10 @@ public sealed class DataIntegrityIssueService
                 MovedRentalHistories = histories.Count
             });
 
+        if (TestOnlyBeforeDuplicateMergeSaveAsync is not null)
+            await TestOnlyBeforeDuplicateMergeSaveAsync(ct);
+
         await _db.SaveChangesAsync(ct);
-        _syncRequestDispatcher?.RequestFlushSync();
         return OfficeMutationResult.Ok(
             canonical.Id,
             $"거래처 중복 후보 {activeCustomers.Count:N0}건 중 {duplicates.Count:N0}건을 '{NormalizeDisplay(canonical.NameOriginal, "대표 거래처")}'로 병합했습니다.");
@@ -1362,6 +2510,38 @@ public sealed class DataIntegrityIssueService
         if (duplicateIds.Count == 0)
             return null;
 
+        var referencedCustomerMasterIds = await _db.Customers.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(customer =>
+                duplicateIds.Contains(customer.Id) &&
+                customer.CustomerMasterId.HasValue &&
+                customer.CustomerMasterId.Value != Guid.Empty)
+            .Select(customer => customer.CustomerMasterId!.Value)
+            .Distinct()
+            .ToListAsync(ct);
+        if (referencedCustomerMasterIds.Count > 0)
+        {
+            var customerMasters = await _db.CustomerMasters.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(master => referencedCustomerMasterIds.Contains(master.Id))
+                .ToListAsync(ct);
+            if (customerMasters.Count != referencedCustomerMasterIds.Count ||
+                customerMasters.Any(master => master.IsDeleted))
+            {
+                return OfficeMutationResult.Denied("삭제되었거나 찾을 수 없는 거래처 마스터가 연결된 거래처는 병합할 수 없습니다.");
+            }
+
+            foreach (var master in customerMasters)
+            {
+                var scopeEvidence = ResolveStoredScopeEvidence(
+                    master.TenantCode,
+                    responsibleOfficeCode: null,
+                    ownerOfficeCode: master.OfficeCode);
+                if (!CanWriteStoredScopeEvidenceForIntegrity(session, scopeEvidence))
+                    return OfficeMutationResult.Denied("권한 범위 밖 거래처 마스터가 연결된 거래처는 병합할 수 없습니다.");
+            }
+        }
+
         var invoices = await _db.Invoices.IgnoreQueryFilters()
             .AsNoTracking()
             .Where(invoice => duplicateIds.Contains(invoice.CustomerId))
@@ -1373,8 +2553,11 @@ public sealed class DataIntegrityIssueService
 
             foreach (var invoice in invoices)
             {
-                var scope = ResolveInvoiceScope(invoice);
-                if (!CanWriteCustomerScopeForIntegrity(session, scope.OfficeCode, scope.TenantCode))
+                var scopeEvidence = ResolveStoredScopeEvidence(
+                    invoice.TenantCode,
+                    invoice.ResponsibleOfficeCode,
+                    invoice.OfficeCode);
+                if (!CanWriteStoredScopeEvidenceForIntegrity(session, scopeEvidence))
                     return OfficeMutationResult.Denied("권한 범위 밖 전표가 연결된 거래처는 병합할 수 없습니다.");
             }
         }
@@ -1390,8 +2573,11 @@ public sealed class DataIntegrityIssueService
 
             foreach (var transaction in transactions)
             {
-                var scope = ResolveTransactionScope(transaction);
-                if (!CanWriteCustomerScopeForIntegrity(session, scope.OfficeCode, scope.TenantCode))
+                var scopeEvidence = ResolveStoredScopeEvidence(
+                    transaction.TenantCode,
+                    transaction.ResponsibleOfficeCode,
+                    transaction.OfficeCode);
+                if (!CanWriteStoredScopeEvidenceForIntegrity(session, scopeEvidence))
                     return OfficeMutationResult.Denied("권한 범위 밖 수금/지급 거래내역이 연결된 거래처는 병합할 수 없습니다.");
             }
         }
@@ -1407,8 +2593,12 @@ public sealed class DataIntegrityIssueService
 
             foreach (var profile in profiles)
             {
-                var scope = ResolveProfileScope(profile);
-                if (!CanWriteCustomerScopeForIntegrity(session, scope.ResponsibleOfficeCode, scope.TenantCode))
+                var scopeEvidence = ResolveStoredScopeEvidence(
+                    profile.TenantCode,
+                    profile.ResponsibleOfficeCode,
+                    profile.OfficeCode,
+                    profile.ManagementCompanyCode);
+                if (!CanWriteStoredScopeEvidenceForIntegrity(session, scopeEvidence))
                     return OfficeMutationResult.Denied("권한 범위 밖 렌탈 청구 프로필이 연결된 거래처는 병합할 수 없습니다.");
             }
         }
@@ -1424,8 +2614,12 @@ public sealed class DataIntegrityIssueService
 
             foreach (var asset in assets)
             {
-                var scope = ResolveAssetScope(asset);
-                if (!CanWriteCustomerScopeForIntegrity(session, scope.ResponsibleOfficeCode, scope.TenantCode))
+                var scopeEvidence = ResolveStoredScopeEvidence(
+                    asset.TenantCode,
+                    asset.ResponsibleOfficeCode,
+                    asset.OfficeCode,
+                    asset.ManagementCompanyCode);
+                if (!CanWriteStoredScopeEvidenceForIntegrity(session, scopeEvidence))
                     return OfficeMutationResult.Denied("권한 범위 밖 렌탈 자산이 연결된 거래처는 병합할 수 없습니다.");
             }
         }
@@ -1441,8 +2635,11 @@ public sealed class DataIntegrityIssueService
 
             foreach (var history in histories)
             {
-                var scope = ResolveAssignmentHistoryScope(history, null, null);
-                if (!CanWriteCustomerScopeForIntegrity(session, scope.OfficeCode, scope.TenantCode))
+                var scopeEvidence = ResolveStoredScopeEvidence(
+                    history.TenantCode,
+                    history.ResponsibleOfficeCode,
+                    ownerOfficeCode: null);
+                if (!CanWriteStoredScopeEvidenceForIntegrity(session, scopeEvidence))
                     return OfficeMutationResult.Denied("권한 범위 밖 렌탈 설치 이력이 연결된 거래처는 병합할 수 없습니다.");
             }
         }
@@ -1452,6 +2649,7 @@ public sealed class DataIntegrityIssueService
 
     private async Task<OfficeMutationResult> MergeDuplicateItemsAsync(
         IReadOnlyCollection<Guid> relatedEntityIds,
+        Guid canonicalItemId,
         SessionState session,
         CancellationToken ct)
     {
@@ -1464,6 +2662,10 @@ public sealed class DataIntegrityIssueService
             .ToList();
         if (ids.Count <= 1)
             return OfficeMutationResult.Missing("병합할 품목 후보가 부족합니다.");
+
+        var activeLocalEditorReason = BuildActiveLocalItemEditorBlockingReason(ids);
+        if (activeLocalEditorReason is not null)
+            return OfficeMutationResult.Denied(activeLocalEditorReason);
 
         var items = await _db.Items.IgnoreQueryFilters()
             .Where(item => ids.Contains(item.Id))
@@ -1483,14 +2685,9 @@ public sealed class DataIntegrityIssueService
                 return OfficeMutationResult.Denied($"권한이 없어 {NormalizeDisplay(item.NameOriginal, item.Id.ToString("N"))} 품목을 병합할 수 없습니다.");
         }
 
-        var usageById = await LoadItemDuplicateUsagesAsync(activeItems.Select(item => item.Id).ToList(), ct);
-        var canonical = activeItems
-            .OrderByDescending(item => usageById.TryGetValue(item.Id, out var usage) ? usage.TotalCount : 0)
-            .ThenByDescending(item => Math.Abs(item.CurrentStock))
-            .ThenByDescending(CountFilledItemValues)
-            .ThenBy(item => item.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
-            .ThenBy(item => item.Id)
-            .First();
+        var canonical = activeItems.FirstOrDefault(item => item.Id == canonicalItemId);
+        if (canonical is null)
+            return OfficeMutationResult.Denied("선택한 대표 품목이 최신 후보 그룹에 포함되어 있지 않습니다.");
         var duplicateIds = activeItems
             .Where(item => item.Id != canonical.Id)
             .Select(item => item.Id)
@@ -1511,6 +2708,8 @@ public sealed class DataIntegrityIssueService
             MarkDirty(duplicate, now);
         }
 
+        canonical.NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(canonical.NameOriginal);
+        canonical.SpecificationMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(canonical.SpecificationOriginal);
         MarkDirty(canonical, now);
 
         var duplicateNames = duplicates.Select(duplicate => duplicate.NameOriginal).ToList();
@@ -1664,11 +2863,31 @@ public sealed class DataIntegrityIssueService
                 CanonicalStock = canonical.CurrentStock
             });
 
+        if (TestOnlyBeforeDuplicateMergeSaveAsync is not null)
+            await TestOnlyBeforeDuplicateMergeSaveAsync(ct);
+
+        activeLocalEditorReason = BuildActiveLocalItemEditorBlockingReason(ids);
+        if (activeLocalEditorReason is not null)
+            return OfficeMutationResult.Denied(activeLocalEditorReason);
+
         await _db.SaveChangesAsync(ct);
-        _syncRequestDispatcher?.RequestFlushSync();
         return OfficeMutationResult.Ok(
             canonical.Id,
             $"품목 중복 후보 {activeItems.Count:N0}건 중 {duplicates.Count:N0}건을 '{NormalizeDisplay(canonical.NameOriginal, "대표 품목")}'로 병합했습니다.");
+    }
+
+    private static string? BuildActiveLocalItemEditorBlockingReason(IReadOnlyCollection<Guid> itemIds)
+    {
+        var activeSubjects = EntityEditSessionMonitor.FindActiveLocalSubjects("Item", itemIds);
+        if (activeSubjects.Count == 0)
+            return null;
+
+        var displays = activeSubjects
+            .Select(subject => string.IsNullOrWhiteSpace(subject.DisplayName) ? subject.EntityId : subject.DisplayName)
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .Take(3)
+            .ToList();
+        return $"현재 이 PC에서 편집 중인 품목({string.Join(", ", displays)})이 포함되어 병합을 중단했습니다. 품목 편집을 마친 후 다시 비교하세요.";
     }
 
     private async Task<OfficeMutationResult?> ValidateItemDuplicateMergeSideEffectPermissionsAsync(
@@ -1687,6 +2906,12 @@ public sealed class DataIntegrityIssueService
             .AsNoTracking()
             .Where(serial => serial.ItemId.HasValue && duplicateIds.Contains(serial.ItemId.Value))
             .ToListAsync(ct);
+        if (invoiceLines.Any(line => line.InvoiceId == Guid.Empty) ||
+            invoiceLineSerials.Any(serial => serial.InvoiceId == Guid.Empty))
+        {
+            return OfficeMutationResult.Denied("참조 전표 ID가 비어 있는 전표 라인이 연결된 품목은 병합할 수 없습니다.");
+        }
+
         var invoiceIds = invoiceLines
             .Select(line => line.InvoiceId)
             .Concat(invoiceLineSerials.Select(serial => serial.InvoiceId))
@@ -1707,8 +2932,11 @@ public sealed class DataIntegrityIssueService
 
             foreach (var invoice in invoices)
             {
-                var scope = ResolveInvoiceScope(invoice);
-                if (!CanWriteCustomerScopeForIntegrity(session, scope.OfficeCode, scope.TenantCode))
+                var scopeEvidence = ResolveStoredScopeEvidence(
+                    invoice.TenantCode,
+                    invoice.ResponsibleOfficeCode,
+                    invoice.OfficeCode);
+                if (!CanWriteStoredScopeEvidenceForIntegrity(session, scopeEvidence))
                     return OfficeMutationResult.Denied("권한 범위 밖 전표 라인이 연결된 품목은 병합할 수 없습니다.");
             }
         }
@@ -1724,8 +2952,12 @@ public sealed class DataIntegrityIssueService
 
             foreach (var asset in rentalAssets)
             {
-                var scope = ResolveAssetScope(asset);
-                if (!CanWriteCustomerScopeForIntegrity(session, scope.ResponsibleOfficeCode, scope.TenantCode))
+                var scopeEvidence = ResolveStoredScopeEvidence(
+                    asset.TenantCode,
+                    asset.ResponsibleOfficeCode,
+                    asset.OfficeCode,
+                    asset.ManagementCompanyCode);
+                if (!CanWriteStoredScopeEvidenceForIntegrity(session, scopeEvidence))
                     return OfficeMutationResult.Denied("권한 범위 밖 렌탈 자산이 연결된 품목은 병합할 수 없습니다.");
             }
 
@@ -1742,8 +2974,11 @@ public sealed class DataIntegrityIssueService
                     .ToListAsync(ct);
                 foreach (var history in histories)
                 {
-                    var scope = ResolveAssignmentHistoryScope(history, null, null);
-                    if (!CanWriteCustomerScopeForIntegrity(session, scope.OfficeCode, scope.TenantCode))
+                    var scopeEvidence = ResolveStoredScopeEvidence(
+                        history.TenantCode,
+                        history.ResponsibleOfficeCode,
+                        ownerOfficeCode: null);
+                    if (!CanWriteStoredScopeEvidenceForIntegrity(session, scopeEvidence))
                         return OfficeMutationResult.Denied("권한 범위 밖 렌탈 설치 이력이 연결된 품목은 병합할 수 없습니다.");
                 }
             }
@@ -1757,8 +2992,15 @@ public sealed class DataIntegrityIssueService
 
             foreach (var profile in rentalBillingProfiles)
             {
-                var scope = ResolveProfileScope(profile);
-                if (!CanWriteCustomerScopeForIntegrity(session, scope.ResponsibleOfficeCode, scope.TenantCode))
+                if (!CanSafelyRemapRentalBillingTemplateItemReferences(profile.BillingTemplateJson, duplicateIds))
+                    return OfficeMutationResult.Denied("해석할 수 없거나 모호한 렌탈 청구 템플릿에 병합 대상 품목이 참조되어 있어 병합할 수 없습니다.");
+
+                var scopeEvidence = ResolveStoredScopeEvidence(
+                    profile.TenantCode,
+                    profile.ResponsibleOfficeCode,
+                    profile.OfficeCode,
+                    profile.ManagementCompanyCode);
+                if (!CanWriteStoredScopeEvidenceForIntegrity(session, scopeEvidence))
                     return OfficeMutationResult.Denied("권한 범위 밖의 렌탈 청구 템플릿이 연결된 품목은 병합할 수 없습니다.");
             }
         }
@@ -1767,6 +3009,9 @@ public sealed class DataIntegrityIssueService
             .AsNoTracking()
             .Where(line => line.ItemId.HasValue && duplicateIds.Contains(line.ItemId.Value))
             .ToListAsync(ct);
+        if (inventoryTransferLines.Any(line => line.TransferId == Guid.Empty))
+            return OfficeMutationResult.Denied("참조 재고이동 문서 ID가 비어 있는 라인이 연결된 품목은 병합할 수 없습니다.");
+
         var transferIds = inventoryTransferLines
             .Select(line => line.TransferId)
             .Where(id => id != Guid.Empty)
@@ -1774,6 +3019,9 @@ public sealed class DataIntegrityIssueService
             .ToList();
         if (transferIds.Count > 0)
         {
+            if (!HasIntegrityPermission(session, AppPermissionNames.DeliveryEdit))
+                return OfficeMutationResult.Denied("품목 병합으로 연결 재고이동 문서를 함께 변경하려면 재고이동 편집 권한이 필요합니다.");
+
             var transfers = await _db.InventoryTransfers.IgnoreQueryFilters()
                 .AsNoTracking()
                 .Where(transfer => transferIds.Contains(transfer.Id))
@@ -1784,7 +3032,7 @@ public sealed class DataIntegrityIssueService
             foreach (var transfer in transfers)
             {
                 if (!CanWriteInventoryTransferScopeForIntegrity(session, transfer))
-                    return OfficeMutationResult.Denied("권한 범위 밖 재고이동 문서가 연결된 품목은 병합할 수 없습니다.");
+                    return OfficeMutationResult.Denied("출발·도착 사업장 중 하나라도 쓰기 권한 범위 밖인 재고이동 문서가 연결된 품목은 병합할 수 없습니다.");
             }
         }
 
@@ -1844,62 +3092,21 @@ public sealed class DataIntegrityIssueService
         if (duplicateIds.Count == 0)
             return 0;
 
-        var duplicateNames = duplicates.Select(duplicate => duplicate.NameOriginal).ToList();
-        var duplicateSpecs = duplicates.Select(duplicate => duplicate.SpecificationOriginal).ToList();
         var profiles = await LoadRentalBillingProfilesContainingItemIdsAsync(duplicateIds, ct);
         var changedCount = 0;
 
         foreach (var profile in profiles)
         {
-            List<RentalBillingTemplateItemModel>? templateItems;
-            try
-            {
-                templateItems = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(
-                    profile.BillingTemplateJson ?? "[]",
-                    JsonOptions);
-            }
-            catch
-            {
-                continue;
-            }
-
-            if (templateItems is null || templateItems.Count == 0)
+            var remappedTemplateJson = RemapRentalBillingTemplateCatalogItemReference(
+                profile.BillingTemplateJson,
+                canonical.Id,
+                duplicateIds,
+                canonical.NameOriginal,
+                canonical.SpecificationOriginal);
+            if (string.Equals(profile.BillingTemplateJson, remappedTemplateJson, StringComparison.Ordinal))
                 continue;
 
-            var changed = false;
-            foreach (var item in templateItems)
-            {
-                if (item is null)
-                    continue;
-
-                var catalogItemId = item.CatalogItemId.GetValueOrDefault();
-                var wasDuplicateItemReference = catalogItemId != Guid.Empty && duplicateIds.Contains(catalogItemId);
-                if (wasDuplicateItemReference)
-                {
-                    item.CatalogItemId = canonical.Id;
-                    changed = true;
-                }
-
-                if (wasDuplicateItemReference || MatchesDuplicateDisplayName(item.DisplayItemName, duplicateNames))
-                {
-                    item.DisplayItemName = canonical.NameOriginal;
-                    changed = true;
-                }
-
-                if (wasDuplicateItemReference || MatchesDuplicateDisplayName(item.Specification, duplicateSpecs))
-                {
-                    item.Specification = canonical.SpecificationOriginal;
-                    changed = true;
-                }
-
-                // 품목 병합은 품목 마스터 참조만 바꾸며, 설치 자산 연결(IncludedAssetIds)은 삭제/정리하지 않는다.
-                item.IncludedAssetIds ??= [];
-            }
-
-            if (!changed)
-                continue;
-
-            profile.BillingTemplateJson = JsonSerializer.Serialize(templateItems, JsonOptions);
+            profile.BillingTemplateJson = remappedTemplateJson!;
             MarkDirty(profile, now);
             changedCount++;
         }
@@ -1919,12 +3126,109 @@ public sealed class DataIntegrityIssueService
 
         var profiles = await _db.RentalBillingProfiles
             .IgnoreQueryFilters()
-            .Where(profile => !profile.IsDeleted && !string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
+            .Where(profile => !string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
             .ToListAsync(ct);
 
         return profiles
-            .Where(profile => BillingTemplateContainsCatalogItemId(profile.BillingTemplateJson, itemIdSet))
+            .Where(profile =>
+                BillingTemplateContainsCatalogItemId(profile.BillingTemplateJson, itemIdSet) ||
+                BillingTemplateContainsItemIdToken(profile.BillingTemplateJson, itemIdSet))
             .ToList();
+    }
+
+    private static bool CanSafelyRemapRentalBillingTemplateItemReferences(
+        string? templateJson,
+        IReadOnlyCollection<Guid> itemIds)
+    {
+        var itemIdSet = itemIds
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+        if (itemIdSet.Count == 0 || !BillingTemplateContainsItemIdToken(templateJson, itemIdSet))
+            return true;
+
+        Guid probeCanonicalItemId;
+        do
+        {
+            probeCanonicalItemId = Guid.NewGuid();
+        }
+        while (itemIdSet.Contains(probeCanonicalItemId));
+
+        var remappedTemplateJson = RemapRentalBillingTemplateCatalogItemReference(
+            templateJson,
+            probeCanonicalItemId,
+            itemIdSet,
+            canonicalDisplayItemName: string.Empty,
+            canonicalSpecification: string.Empty);
+        return !string.Equals(templateJson, remappedTemplateJson, StringComparison.Ordinal) &&
+               !BillingTemplateContainsItemIdToken(remappedTemplateJson, itemIdSet);
+    }
+
+    private static string? RemapRentalBillingTemplateCatalogItemReference(
+        string? billingTemplateJson,
+        Guid canonicalItemId,
+        IReadOnlySet<Guid> duplicateItemIds,
+        string canonicalDisplayItemName,
+        string canonicalSpecification)
+    {
+        if (string.IsNullOrWhiteSpace(billingTemplateJson) ||
+            canonicalItemId == Guid.Empty ||
+            duplicateItemIds.Count == 0)
+        {
+            return billingTemplateJson;
+        }
+
+        try
+        {
+            if (JsonNode.Parse(billingTemplateJson) is not JsonArray templateItems)
+                return billingTemplateJson;
+
+            var changed = false;
+            foreach (var item in templateItems.OfType<JsonObject>())
+            {
+                var catalogItemProperty = item.FirstOrDefault(property =>
+                    string.Equals(
+                        property.Key,
+                        nameof(RentalBillingTemplateItemModel.CatalogItemId),
+                        StringComparison.OrdinalIgnoreCase));
+                if (catalogItemProperty.Key is null ||
+                    catalogItemProperty.Value is not JsonValue catalogItemValue ||
+                    !catalogItemValue.TryGetValue<string>(out var rawCatalogItemId) ||
+                    !Guid.TryParse(rawCatalogItemId, out var catalogItemId) ||
+                    !duplicateItemIds.Contains(catalogItemId))
+                {
+                    continue;
+                }
+
+                item[catalogItemProperty.Key] = canonicalItemId.ToString("D");
+                SetExistingJsonPropertyValue(
+                    item,
+                    nameof(RentalBillingTemplateItemModel.DisplayItemName),
+                    canonicalDisplayItemName);
+                SetExistingJsonPropertyValue(
+                    item,
+                    nameof(RentalBillingTemplateItemModel.Specification),
+                    canonicalSpecification);
+                changed = true;
+            }
+
+            return changed ? templateItems.ToJsonString() : billingTemplateJson;
+        }
+        catch (JsonException)
+        {
+            return billingTemplateJson;
+        }
+        catch (InvalidOperationException)
+        {
+            return billingTemplateJson;
+        }
+    }
+
+    private static void SetExistingJsonPropertyValue(JsonObject item, string propertyName, string value)
+    {
+        var property = item.FirstOrDefault(candidate =>
+            string.Equals(candidate.Key, propertyName, StringComparison.OrdinalIgnoreCase));
+        if (property.Key is not null)
+            item[property.Key] = value;
     }
 
     private static bool BillingTemplateContainsCatalogItemId(string? templateJson, IReadOnlySet<Guid> itemIds)
@@ -1941,6 +3245,14 @@ public sealed class DataIntegrityIssueService
         {
             return false;
         }
+    }
+
+    private static bool BillingTemplateContainsItemIdToken(string? templateJson, IReadOnlySet<Guid> itemIds)
+    {
+        if (itemIds.Count == 0 || string.IsNullOrWhiteSpace(templateJson))
+            return false;
+
+        return JsonGuidTokenSafety.ContainsExactGuidToken(templateJson, itemIds);
     }
 
     private static void LogIntegrityScanStep(string operation, Stopwatch stopwatch, string? detail = null)
@@ -2038,12 +3350,39 @@ public sealed class DataIntegrityIssueService
         => query.Select(item => new LocalItem
         {
             Id = item.Id,
+            Revision = item.Revision,
+            UpdatedAtUtc = item.UpdatedAtUtc,
+            IsDirty = item.IsDirty,
             TenantCode = item.TenantCode,
             OfficeCode = item.OfficeCode,
             NameOriginal = item.NameOriginal,
             SpecificationOriginal = item.SpecificationOriginal,
+            CategoryName = item.CategoryName,
+            ItemKind = item.ItemKind,
             TrackingType = item.TrackingType,
-            CurrentStock = item.CurrentStock
+            Unit = item.Unit,
+            BoxQuantity = item.BoxQuantity,
+            StorageLocation = item.StorageLocation,
+            CurrentStock = item.CurrentStock,
+            SafetyStock = item.SafetyStock,
+            PurchasePrice = item.PurchasePrice,
+            SalePrice = item.SalePrice,
+            RetailPrice = item.RetailPrice,
+            PriceGradeA = item.PriceGradeA,
+            PriceGradeB = item.PriceGradeB,
+            PriceGradeC = item.PriceGradeC,
+            LastPurchaseDate = item.LastPurchaseDate,
+            LastSaleDate = item.LastSaleDate,
+            CatalogExtensionSyncPending = item.CatalogExtensionSyncPending,
+            SimpleMemo = item.SimpleMemo,
+            IsRental = item.IsRental,
+            IsSale = item.IsSale,
+            SerialNumber = item.SerialNumber,
+            MaterialNumber = item.MaterialNumber,
+            InstallLocation = item.InstallLocation,
+            RentalStartDate = item.RentalStartDate,
+            RentalEndDate = item.RentalEndDate,
+            Notes = item.Notes
         });
 
     private static IQueryable<LocalWarehouse> SelectIntegrityWarehouseProjection(
@@ -2086,6 +3425,66 @@ public sealed class DataIntegrityIssueService
 
             foreach (var customer in batchRows)
                 rows.TryAdd(customer.Id, customer);
+        }
+
+        return rows;
+    }
+
+    private async Task<HashSet<Guid>> LoadActiveRentalAssetIdsByIdsAsync(
+        IReadOnlyCollection<Guid> assetIds,
+        CancellationToken ct)
+    {
+        var ids = assetIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return [];
+
+        var rows = new HashSet<Guid>();
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds.ToList();
+            var batchRows = await _db.RentalAssets
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(asset => scopedBatchIds.Contains(asset.Id) && !asset.IsDeleted)
+                .Select(asset => asset.Id)
+                .ToListAsync(ct);
+            rows.UnionWith(batchRows);
+        }
+
+        return rows;
+    }
+
+    private async Task<HashSet<Guid>> LoadActiveRentalProfileIdsReferencedByAssetsAsync(
+        IReadOnlyCollection<Guid> profileIds,
+        CancellationToken ct)
+    {
+        var ids = profileIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (ids.Count == 0)
+            return [];
+
+        var rows = new HashSet<Guid>();
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedBatchIds = batchIds.ToList();
+            var batchRows = await _db.RentalAssets
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(asset =>
+                    !asset.IsDeleted &&
+                    asset.BillingProfileId.HasValue &&
+                    scopedBatchIds.Contains(asset.BillingProfileId.Value))
+                .Select(asset => asset.BillingProfileId!.Value)
+                .Distinct()
+                .ToListAsync(ct);
+            rows.UnionWith(batchRows);
         }
 
         return rows;
@@ -2382,14 +3781,22 @@ public sealed class DataIntegrityIssueService
                 item.TenantCode
             })
             .ToListAsync(ct);
-        var itemOfficeById = itemRows
-            .Where(item => OfficeCodeCatalog.TryNormalizeOfficeCode(item.OfficeCode, out _))
-            .ToDictionary(
-                item => item.Id,
-                item => OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(item.OfficeCode),
-                EqualityComparer<Guid>.Default);
-        foreach (var line in lines.Where(line => line.ItemId.HasValue && itemOfficeById.ContainsKey(line.ItemId.Value)))
-            AddScopeEvidence(line.Id, "ItemOffice", itemOfficeById[line.ItemId!.Value]);
+        var itemScopeEvidenceById = itemRows.ToDictionary(
+            item => item.Id,
+            item => ResolveStoredScopeEvidence(
+                item.TenantCode,
+                responsibleOfficeCode: null,
+                ownerOfficeCode: item.OfficeCode));
+        var itemScopeEvidenceByLineId = new Dictionary<Guid, IntegrityStoredScopeEvidence>();
+        foreach (var line in lines.Where(line => line.ItemId.HasValue && itemScopeEvidenceById.ContainsKey(line.ItemId.Value)))
+        {
+            var itemScopeEvidence = itemScopeEvidenceById[line.ItemId!.Value];
+            itemScopeEvidenceByLineId[line.Id] = itemScopeEvidence;
+            if (itemScopeEvidence.HasOfficeEvidence && !itemScopeEvidence.IsTenantOnly)
+            {
+                AddScopeEvidence(line.Id, "ItemOffice", itemScopeEvidence.OfficeCode);
+            }
+        }
 
         var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, DomainConstants.OfficeUsenet);
         var issues = new List<DataIntegrityIssueDetail>(lines.Count);
@@ -2403,19 +3810,50 @@ public sealed class DataIntegrityIssueService
                     .Select(evidence => evidence.OfficeCode)
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToArray();
-                if (!evidenceOfficeCodes.Any(evidenceOfficeCode => IsInSessionScope(null, evidenceOfficeCode, session)))
+                var combinedScopeEvidence = evidenceOfficeCodes
+                    .Select(evidenceOfficeCode => ResolveStoredScopeEvidence(
+                        TenantScopeCatalog.GetTenantCodeForOffice(evidenceOfficeCode),
+                        responsibleOfficeCode: evidenceOfficeCode,
+                        ownerOfficeCode: null))
+                    .ToList();
+                if (itemScopeEvidenceByLineId.TryGetValue(line.Id, out var linkedItemScopeEvidence))
+                    combinedScopeEvidence.Add(linkedItemScopeEvidence);
+
+                if (!CanReadCombinedStoredScopeEvidenceForIntegrity(session, combinedScopeEvidence))
                     continue;
 
-                issueOfficeCode = evidenceOfficeCodes.FirstOrDefault(evidenceOfficeCode =>
-                        IsInSessionScope(null, evidenceOfficeCode, session)) ??
-                    evidenceOfficeCodes[0];
+                issueOfficeCode = evidenceOfficeCodes.Length == 1
+                    ? evidenceOfficeCodes[0]
+                    : OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, evidenceOfficeCodes[0]);
                 reviewInfo += " / ScopeEvidence " + string.Join(", ", scopeEvidence
                     .Select(evidence => $"{evidence.Source}:{evidence.OfficeCode}")
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
+                if (itemScopeEvidenceByLineId.TryGetValue(line.Id, out linkedItemScopeEvidence))
+                {
+                    reviewInfo += linkedItemScopeEvidence.HasEvidence
+                        ? $" / ItemScopeTenant {linkedItemScopeEvidence.TenantCode} / ItemScopeOffice {NormalizeDisplay(linkedItemScopeEvidence.OfficeCode, "-")}"
+                        : " / ItemScopeEvidence invalid";
+                }
+            }
+            else if (itemScopeEvidenceByLineId.TryGetValue(line.Id, out var itemScopeEvidence))
+            {
+                if (!CanReadStoredScopeEvidenceForIntegrity(session, itemScopeEvidence))
+                    continue;
+
+                issueOfficeCode = ResolveIssueOfficeCodeForStoredScope(
+                    itemScopeEvidence,
+                    session,
+                    officeCode);
+                reviewInfo += itemScopeEvidence.HasEvidence
+                    ? $" / ScopeEvidence ItemTenant:{itemScopeEvidence.TenantCode}"
+                    : " / ScopeEvidence ItemScopeInvalid";
             }
             else
             {
+                if (!session.HasGlobalDataScope)
+                    continue;
+
                 reviewInfo += " / ScopeEvidence 없음";
             }
 
@@ -2461,7 +3899,8 @@ public sealed class DataIntegrityIssueService
                     payment.IsDeleted,
                     TransactionId = transaction == null ? null : (Guid?)transaction.Id,
                     TransactionTenantCode = transaction == null ? null : transaction.TenantCode,
-                    TransactionOfficeCode = transaction == null ? null : transaction.ResponsibleOfficeCode,
+                    TransactionResponsibleOfficeCode = transaction == null ? null : transaction.ResponsibleOfficeCode,
+                    TransactionOwnerOfficeCode = transaction == null ? null : transaction.OfficeCode,
                     TransactionCustomerId = transaction == null ? null : (Guid?)transaction.CustomerId,
                     TransactionDate = transaction == null ? null : (DateOnly?)transaction.TransactionDate,
                     TransactionKind = transaction == null ? null : transaction.TransactionKind
@@ -2486,17 +3925,45 @@ public sealed class DataIntegrityIssueService
         foreach (var payment in payments)
         {
             customersById.TryGetValue(payment.TransactionCustomerId ?? Guid.Empty, out var customer);
-            var scopedTenantCode = customer?.TenantCode ?? payment.TransactionTenantCode;
-            var scopedOfficeCode = customer is null
-                ? payment.TransactionOfficeCode
-                : ResolveCustomerOfficeCode(customer);
-            if (payment.TransactionId.HasValue && !IsInSessionScope(scopedTenantCode, scopedOfficeCode, session))
+            var scopeEvidenceSources = new List<IntegrityStoredScopeEvidence>(capacity: 2);
+            if (customer is not null)
+            {
+                scopeEvidenceSources.Add(ResolveStoredScopeEvidence(
+                    customer.TenantCode,
+                    customer.ResponsibleOfficeCode,
+                    customer.OfficeCode));
+            }
+
+            if (payment.TransactionId.HasValue)
+            {
+                scopeEvidenceSources.Add(ResolveStoredScopeEvidence(
+                    payment.TransactionTenantCode,
+                    payment.TransactionResponsibleOfficeCode,
+                    payment.TransactionOwnerOfficeCode));
+            }
+
+            if (!CanReadCombinedStoredScopeEvidenceForIntegrity(session, scopeEvidenceSources))
                 continue;
 
+            var validScopeEvidence = scopeEvidenceSources
+                .Where(evidence => evidence.HasEvidence)
+                .ToArray();
+            var scopedTenants = validScopeEvidence
+                .Select(evidence => evidence.TenantCode)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var scopedOffices = validScopeEvidence
+                .Where(evidence => evidence.HasOfficeEvidence)
+                .Select(evidence => evidence.OfficeCode)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var scopedTenantCode = scopedTenants.Length == 1 ? scopedTenants[0] : string.Empty;
+            var scopedOfficeCode = scopedOffices.Length == 1 ? scopedOffices[0] : string.Empty;
+
             var deletionState = payment.IsDeleted ? "삭제" : "활성";
-            var issueOfficeCode = payment.TransactionId.HasValue
-                ? OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(scopedOfficeCode, officeCode)
-                : officeCode;
+            var issueOfficeCode = scopedOffices.Length == 1
+                ? scopedOffices[0]
+                : OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, officeCode);
             var relatedIds = new[]
                 {
                     payment.TransactionId ?? Guid.Empty,
@@ -3015,9 +4482,11 @@ public sealed class DataIntegrityIssueService
         var issues = new List<DataIntegrityIssueDetail>();
         foreach (var profile in profiles)
         {
-            foreach (var run in ParseRentalBillingRuns(profile.BillingRunsJson))
+            var runs = ParseRentalBillingRuns(profile.BillingRunsJson);
+            foreach (var run in runs)
             {
-                if (run.RunId == Guid.Empty)
+                if (run.RunId == Guid.Empty ||
+                    RentalBillingRunIdentityPolicy.IsSuppressedByTombstone(runs, run))
                     continue;
 
                 var runId = NormalizeRunId(run.RunId);
@@ -3065,24 +4534,25 @@ public sealed class DataIntegrityIssueService
         var issues = new List<DataIntegrityIssueDetail>();
         foreach (var profile in profiles)
         {
-            foreach (var run in ParseRentalBillingRuns(profile.BillingRunsJson))
+            var runs = ParseRentalBillingRuns(profile.BillingRunsJson);
+            foreach (var run in runs)
             {
-                if (run.RunId != Guid.Empty)
+                if (run.RunId != Guid.Empty ||
+                    RentalBillingRunIdentityPolicy.IsSuppressedByTombstone(runs, run))
                     continue;
 
                 var profileDisplay = BuildProfileDisplay(profile);
-                AddGeneralIssue(
+                AddIssue(
                     issues,
                     DataIntegrityIssueCodes.RentalBillingRunMissingRunId,
+                    profile,
+                    asset: null,
                     entityType: "렌탈 청구 run",
                     entityId: profile.Id,
-                    customerName: profile.CustomerName,
-                    officeCode: ResolveProfileOfficeCode(profile),
                     currentValue: $"RunKey {NormalizeDisplay(run.RunKey, "없음")} / 청구일 {run.ScheduledDate:yyyy-MM-dd} / 청구액 {run.BilledAmount:N0} / 정산 {run.SettledAmount:N0}",
                     expectedValue: "청구 run은 고유 RunId를 가져야 전표/수금/동기화 정산 비교 대상이 됩니다.",
                     message: $"{profileDisplay}의 청구 run에 RunId가 없어 자동 정산 비교 대상에서 제외됩니다.",
                     directActionKind: DataIntegrityDirectActionKind.OpenRentalBillingProfile,
-                    relatedEntityIds: Array.Empty<Guid>(),
                     reviewInfo: string.Join(" / ", new[]
                     {
                         $"ProfileId {profile.Id:D}",
@@ -3096,6 +4566,104 @@ public sealed class DataIntegrityIssueService
                         string.IsNullOrWhiteSpace(run.SettlementStatus) ? "SettlementStatus -" : $"SettlementStatus {run.SettlementStatus}"
                     }));
             }
+        }
+
+        return issues;
+    }
+
+    private static List<DataIntegrityIssueDetail> LoadRentalBillingRunKeyConflictingRunIdIssues(
+        IReadOnlyCollection<LocalRentalBillingProfile> profiles)
+    {
+        var issues = new List<DataIntegrityIssueDetail>();
+        foreach (var profile in profiles)
+        {
+            var diagnosticRuns = ParseRentalBillingRunsForIdentityDiagnosis(profile.BillingRunsJson);
+            foreach (var group in diagnosticRuns
+                         .Where(run =>
+                             run.RunId != Guid.Empty &&
+                             !string.IsNullOrWhiteSpace(SyncIdentityGenerator.NormalizeKey(run.RunKey)))
+                         .GroupBy(
+                             run => SyncIdentityGenerator.NormalizeKey(run.RunKey),
+                             StringComparer.Ordinal)
+                         .OrderBy(group => group.Key, StringComparer.Ordinal))
+            {
+                var runIds = group
+                    .Select(run => run.RunId)
+                    .Distinct()
+                    .OrderBy(id => id)
+                    .ToArray();
+                if (runIds.Length <= 1)
+                    continue;
+
+                var normalizedRunKey = group.Key;
+                var runIdDisplay = string.Join(" / ", runIds.Select(id => id.ToString("D")));
+                AddIssue(
+                    issues,
+                    DataIntegrityIssueCodes.RentalBillingRunKeyConflictingRunIds,
+                    profile,
+                    asset: null,
+                    entityType: "렌탈 청구 run",
+                    entityId: profile.Id,
+                    currentValue: $"ProfileId {profile.Id:D} / normalizedRunKey {normalizedRunKey} / RunIds {runIdDisplay}",
+                    expectedValue: "normalized RunKey 하나당 non-empty RunId 하나",
+                    message: $"프로필 {profile.Id:D}의 RunKey {normalizedRunKey}에 서로 다른 RunId {runIdDisplay}가 연결되어 재무 작업이 차단됩니다. 자동 병합이나 ID 교체는 수행하지 않습니다.",
+                    directActionKind: DataIntegrityDirectActionKind.OpenRentalBillingProfile);
+            }
+
+            foreach (var group in diagnosticRuns
+                         .Where(run => run.RunId != Guid.Empty)
+                         .GroupBy(run => run.RunId)
+                         .OrderBy(group => group.Key))
+            {
+                var runKeys = group
+                    .Select(run => SyncIdentityGenerator.NormalizeKey(run.RunKey))
+                    .Where(runKey => !string.IsNullOrWhiteSpace(runKey))
+                    .Distinct(StringComparer.Ordinal)
+                    .OrderBy(runKey => runKey, StringComparer.Ordinal)
+                    .ToArray();
+                if (runKeys.Length <= 1)
+                    continue;
+
+                var runId = group.Key;
+                var runKeyDisplay = string.Join(" / ", runKeys);
+                AddIssue(
+                    issues,
+                    DataIntegrityIssueCodes.RentalBillingRunKeyConflictingRunIds,
+                    profile,
+                    asset: null,
+                    entityType: "렌탈 청구 run",
+                    entityId: profile.Id,
+                    currentValue: $"ProfileId {profile.Id:D} / RunId {runId:D} / normalizedRunKeys {runKeyDisplay}",
+                    expectedValue: "normalized RunKey 하나당 non-empty RunId 하나",
+                    message: $"프로필 {profile.Id:D}의 RunId {runId:D}에 서로 다른 normalized RunKey {runKeyDisplay}가 연결되어 재무 작업이 차단됩니다. 자동 병합이나 ID 교체는 수행하지 않습니다.",
+                    directActionKind: DataIntegrityDirectActionKind.OpenRentalBillingProfile);
+            }
+        }
+
+        return issues;
+    }
+
+    private static List<DataIntegrityIssueDetail> LoadMalformedRentalBillingRunsJsonIssues(
+        IReadOnlyCollection<LocalRentalBillingProfile> profiles)
+    {
+        var issues = new List<DataIntegrityIssueDetail>();
+        foreach (var profile in profiles)
+        {
+            if (TryParseRentalBillingRuns(profile.BillingRunsJson, out _) ||
+                TryParseRentalBillingRunsForIdentityDiagnosis(profile.BillingRunsJson, out _))
+                continue;
+
+            AddIssue(
+                issues,
+                DataIntegrityIssueCodes.RentalBillingRunsJsonMalformed,
+                profile,
+                asset: null,
+                entityType: "렌탈 청구 run JSON",
+                entityId: profile.Id,
+                currentValue: $"ProfileId {profile.Id:D} / BillingRunsJson 파싱 실패",
+                expectedValue: "빈 값 또는 RentalBillingRunModel JSON 배열",
+                message: $"프로필 {profile.Id:D}의 BillingRunsJson이 손상되어 재무 작업이 차단됩니다. 원문을 자동 변경하지 않습니다.",
+                directActionKind: DataIntegrityDirectActionKind.OpenRentalBillingProfile);
         }
 
         return issues;
@@ -3173,8 +4741,11 @@ public sealed class DataIntegrityIssueService
         var issues = new List<DataIntegrityIssueDetail>();
         foreach (var profile in profiles)
         {
-            var activeRuns = ParseRentalBillingRuns(profile.BillingRunsJson)
-                .Where(run => run.RunId != Guid.Empty)
+            var runs = ParseRentalBillingRuns(profile.BillingRunsJson);
+            var activeRuns = runs
+                .Where(run =>
+                    run.RunId != Guid.Empty &&
+                    !RentalBillingRunIdentityPolicy.IsSuppressedByTombstone(runs, run))
                 .OrderByDescending(run => run.ScheduledDate)
                 .ThenByDescending(run => run.PeriodEndDate)
                 .ToList();
@@ -3261,6 +4832,9 @@ public sealed class DataIntegrityIssueService
 
             foreach (var contract in contracts)
             {
+                if (!session.HasGlobalDataScope)
+                    continue;
+
                 AddGeneralIssue(
                     issues,
                     DataIntegrityIssueCodes.CustomerContractMissingCustomerReference,
@@ -3285,6 +4859,9 @@ public sealed class DataIntegrityIssueService
 
             foreach (var attachment in transactionAttachments)
             {
+                if (!session.HasGlobalDataScope)
+                    continue;
+
                 AddGeneralIssue(
                     issues,
                     DataIntegrityIssueCodes.TransactionAttachmentMissingTransactionReference,
@@ -3332,24 +4909,24 @@ public sealed class DataIntegrityIssueService
             foreach (var line in transferLines)
             {
                 transferLineItemsById.TryGetValue(line.ItemId ?? Guid.Empty, out var itemScope);
-                var scopeOfficeCode = itemScope is not null &&
-                                      OfficeCodeCatalog.TryNormalizeOfficeCode(itemScope.OfficeCode, out var itemOfficeCode)
-                    ? itemOfficeCode
-                    : string.Empty;
-                if (!string.IsNullOrWhiteSpace(scopeOfficeCode) &&
-                    !IsInSessionScope(itemScope?.TenantCode, scopeOfficeCode, session))
-                {
+                var scopeEvidence = itemScope is null
+                    ? default
+                    : ResolveStoredScopeEvidence(
+                        itemScope.TenantCode,
+                        responsibleOfficeCode: null,
+                        ownerOfficeCode: itemScope.OfficeCode);
+                if (!CanReadStoredScopeEvidenceForIntegrity(session, scopeEvidence))
                     continue;
-                }
 
-                var issueOfficeCode = string.IsNullOrWhiteSpace(scopeOfficeCode)
-                    ? fallbackOfficeCode
-                    : scopeOfficeCode;
+                var issueOfficeCode = ResolveIssueOfficeCodeForStoredScope(
+                    scopeEvidence,
+                    session,
+                    fallbackOfficeCode);
                 var reviewInfo = string.Join(" / ", new[]
                 {
                     line.ItemId.HasValue ? $"ItemId {line.ItemId.Value:D}" : "ItemId 없음",
-                    string.IsNullOrWhiteSpace(itemScope?.TenantCode) ? "ScopeTenant -" : $"ScopeTenant {itemScope!.TenantCode}",
-                    string.IsNullOrWhiteSpace(scopeOfficeCode) ? "ScopeOffice -" : $"ScopeOffice {scopeOfficeCode}"
+                    scopeEvidence.HasEvidence ? $"ScopeTenant {scopeEvidence.TenantCode}" : "ScopeTenant -",
+                    scopeEvidence.HasOfficeEvidence ? $"ScopeOffice {scopeEvidence.OfficeCode}" : "ScopeOffice -"
                 });
                 AddGeneralIssue(
                     issues,
@@ -3378,16 +4955,19 @@ public sealed class DataIntegrityIssueService
 
         foreach (var log in rentalLogs)
         {
-            var scopeOfficeCode = ResolveRentalBillingLogScopeOfficeCode(log);
-            var scopeTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            var scopeEvidence = ResolveStoredScopeEvidence(
                 log.TenantCode,
-                scopeOfficeCode,
-                log.TenantCode,
+                log.ResponsibleOfficeCode,
                 log.OfficeCode);
-            if (!IsInSessionScope(scopeTenantCode, scopeOfficeCode, session))
-            {
+            if (!CanReadStoredScopeEvidenceForIntegrity(session, scopeEvidence))
                 continue;
-            }
+
+            var scopeTenantCode = scopeEvidence.HasEvidence ? scopeEvidence.TenantCode : string.Empty;
+            var scopeOfficeCode = scopeEvidence.HasOfficeEvidence ? scopeEvidence.OfficeCode : string.Empty;
+            var issueOfficeCode = ResolveIssueOfficeCodeForStoredScope(
+                scopeEvidence,
+                session,
+                fallbackOfficeCode);
 
             var reviewInfo = string.Join(" / ", new[]
             {
@@ -3404,7 +4984,7 @@ public sealed class DataIntegrityIssueService
                 DataIntegrityIssueCodes.RentalBillingLogMissingProfileReference,
                 entityType: "렌탈 청구로그",
                 entityId: log.Id,
-                officeCode: scopeOfficeCode,
+                officeCode: issueOfficeCode,
                 currentValue: $"BillingProfileId {log.BillingProfileId:D} / 청구월 {NormalizeDisplay(log.BillingYearMonth, "미지정")} / 삭제상태 {(log.IsDeleted ? "삭제" : "활성")}",
                 expectedValue: "참조 청구 프로필 행 존재",
                 message: $"{NormalizeDisplay(log.BillingYearMonth, "렌탈 청구월")} 청구로그 {log.Id:N}의 청구 프로필 참조가 현재 로컬 DB에 없습니다.",
@@ -3927,6 +5507,17 @@ public sealed class DataIntegrityIssueService
                     usage.SerialLedgerCount = row.Count;
             }
 
+            foreach (var row in await _db.ItemPriceGrades.IgnoreQueryFilters()
+                         .AsNoTracking()
+                         .Where(grade => scopedBatchIds.Contains(grade.ItemId))
+                         .GroupBy(grade => grade.ItemId)
+                         .Select(group => new ReferenceCountRow { EntityId = group.Key, Count = group.Count() })
+                         .ToListAsync(ct))
+            {
+                if (usages.TryGetValue(row.EntityId, out var usage))
+                    usage.ItemPriceGradeCount = row.Count;
+            }
+
             var stockRows = await _db.ItemWarehouseStocks
                 .AsNoTracking()
                 .Where(stock => scopedBatchIds.Contains(stock.ItemId))
@@ -3954,7 +5545,509 @@ public sealed class DataIntegrityIssueService
                 usage.RentalBillingTemplateCount = count;
         }
 
+        await LoadItemDuplicateReferenceIdentityTokensAsync(usages, ids, ct);
+
         return usages;
+    }
+
+    private async Task LoadItemDuplicateReferenceIdentityTokensAsync(
+        IReadOnlyDictionary<Guid, ItemDuplicateUsage> usages,
+        IReadOnlyCollection<Guid> itemIds,
+        CancellationToken ct)
+    {
+        void Add(Guid itemId, object token)
+        {
+            if (usages.TryGetValue(itemId, out var usage))
+                usage.ReferenceIdentityTokens.Add(JsonSerializer.Serialize(token, JsonOptions));
+        }
+
+        foreach (var batchIds in itemIds.Where(id => id != Guid.Empty).Distinct().Chunk(LocalQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedIds = batchIds.ToList();
+
+            foreach (var row in await _db.InvoiceLines.IgnoreQueryFilters()
+                         .AsNoTracking()
+                         .Where(line => !line.IsDeleted && line.ItemId.HasValue && scopedIds.Contains(line.ItemId.Value))
+                         .Select(line => new { ItemId = line.ItemId!.Value, line.Id, line.InvoiceId })
+                         .ToListAsync(ct))
+            {
+                Add(row.ItemId, new { Type = "InvoiceLine", row.Id, row.InvoiceId });
+            }
+
+            foreach (var row in await _db.InvoiceLineSerials
+                         .AsNoTracking()
+                         .Where(serial => serial.ItemId.HasValue && scopedIds.Contains(serial.ItemId.Value))
+                         .Select(serial => new { ItemId = serial.ItemId!.Value, serial.Id, serial.InvoiceId, serial.InvoiceLineId })
+                         .ToListAsync(ct))
+            {
+                Add(row.ItemId, new { Type = "InvoiceLineSerial", row.Id, row.InvoiceId, row.InvoiceLineId });
+            }
+
+            foreach (var row in await _db.RentalAssets.IgnoreQueryFilters()
+                         .AsNoTracking()
+                         .Where(asset => !asset.IsDeleted && asset.ItemId.HasValue && scopedIds.Contains(asset.ItemId.Value))
+                         .Select(asset => new
+                         {
+                             ItemId = asset.ItemId!.Value,
+                             asset.Id,
+                             asset.Revision,
+                             asset.UpdatedAtUtc,
+                             asset.IsDirty,
+                             asset.TenantCode,
+                             asset.OfficeCode,
+                             asset.ResponsibleOfficeCode
+                         })
+                         .ToListAsync(ct))
+            {
+                Add(row.ItemId, new
+                {
+                    Type = "RentalAsset",
+                    row.Id,
+                    row.Revision,
+                    UpdatedAtUtcTicks = row.UpdatedAtUtc.ToUniversalTime().Ticks,
+                    row.IsDirty,
+                    row.TenantCode,
+                    row.OfficeCode,
+                    row.ResponsibleOfficeCode
+                });
+            }
+
+            foreach (var row in await _db.InventoryTransferLines.IgnoreQueryFilters()
+                         .AsNoTracking()
+                         .Where(line => !line.IsDeleted && line.ItemId.HasValue && scopedIds.Contains(line.ItemId.Value))
+                         .Select(line => new { ItemId = line.ItemId!.Value, line.Id, line.TransferId })
+                         .ToListAsync(ct))
+            {
+                Add(row.ItemId, new { Type = "InventoryTransferLine", row.Id, row.TransferId });
+            }
+
+            foreach (var row in await _db.InventoryMovements
+                         .AsNoTracking()
+                         .Where(movement => movement.IsActive && movement.ItemId.HasValue && scopedIds.Contains(movement.ItemId.Value))
+                         .Select(movement => new
+                         {
+                             ItemId = movement.ItemId!.Value,
+                             movement.Id,
+                             movement.InvoiceId,
+                             movement.InvoiceLineId,
+                             movement.WarehouseCode,
+                             movement.IsActive
+                         })
+                         .ToListAsync(ct))
+            {
+                Add(row.ItemId, new
+                {
+                    Type = "InventoryMovement",
+                    row.Id,
+                    row.InvoiceId,
+                    row.InvoiceLineId,
+                    row.WarehouseCode,
+                    row.IsActive
+                });
+            }
+
+            foreach (var row in await _db.StockLayers
+                         .AsNoTracking()
+                         .Where(layer => layer.ItemId.HasValue && scopedIds.Contains(layer.ItemId.Value))
+                         .Select(layer => new
+                         {
+                             ItemId = layer.ItemId!.Value,
+                             layer.Id,
+                             layer.SourceInvoiceId,
+                             layer.SourceInvoiceLineId,
+                             layer.WarehouseCode
+                         })
+                         .ToListAsync(ct))
+            {
+                Add(row.ItemId, new
+                {
+                    Type = "StockLayer",
+                    row.Id,
+                    row.SourceInvoiceId,
+                    row.SourceInvoiceLineId,
+                    row.WarehouseCode
+                });
+            }
+
+            foreach (var row in await _db.SerialLedgers
+                         .AsNoTracking()
+                         .Where(ledger => ledger.ItemId.HasValue && scopedIds.Contains(ledger.ItemId.Value))
+                         .Select(ledger => new { ItemId = ledger.ItemId!.Value, ledger.Id, ledger.WarehouseCode, ledger.UpdatedAtUtc })
+                         .ToListAsync(ct))
+            {
+                Add(row.ItemId, new
+                {
+                    Type = "SerialLedger",
+                    row.Id,
+                    row.WarehouseCode,
+                    UpdatedAtUtcTicks = row.UpdatedAtUtc.ToUniversalTime().Ticks
+                });
+            }
+
+            foreach (var row in await _db.ItemPriceGrades.IgnoreQueryFilters()
+                         .AsNoTracking()
+                         .Where(grade => scopedIds.Contains(grade.ItemId))
+                         .Select(grade => new
+                         {
+                             grade.ItemId,
+                             grade.Id,
+                             grade.Revision,
+                             grade.UpdatedAtUtc,
+                             grade.IsDirty,
+                             grade.PriceGradeOptionId,
+                             grade.IsActive,
+                             grade.IsDeleted
+                         })
+                         .ToListAsync(ct))
+            {
+                Add(row.ItemId, new
+                {
+                    Type = "ItemPriceGrade",
+                    row.Id,
+                    row.Revision,
+                    UpdatedAtUtcTicks = row.UpdatedAtUtc.ToUniversalTime().Ticks,
+                    row.IsDirty,
+                    row.PriceGradeOptionId,
+                    row.IsActive,
+                    row.IsDeleted
+                });
+            }
+
+            foreach (var row in await _db.ItemWarehouseStocks
+                         .AsNoTracking()
+                         .Where(stock => scopedIds.Contains(stock.ItemId))
+                         .Select(stock => new
+                         {
+                             stock.ItemId,
+                             stock.WarehouseCode,
+                             stock.Quantity,
+                             stock.Revision,
+                             stock.UpdatedAtUtc
+                         })
+                         .ToListAsync(ct))
+            {
+                Add(row.ItemId, new
+                {
+                    Type = "ItemWarehouseStock",
+                    row.WarehouseCode,
+                    row.Quantity,
+                    row.Revision,
+                    UpdatedAtUtcTicks = row.UpdatedAtUtc.ToUniversalTime().Ticks
+                });
+            }
+        }
+
+        var itemIdSet = itemIds.Where(id => id != Guid.Empty).ToHashSet();
+        var profiles = await _db.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(profile => !string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
+            .Select(profile => new
+            {
+                profile.Id,
+                profile.Revision,
+                profile.UpdatedAtUtc,
+                profile.IsDirty,
+                profile.IsDeleted,
+                profile.BillingTemplateJson
+            })
+            .ToListAsync(ct);
+        foreach (var profile in profiles)
+        {
+            List<RentalBillingTemplateItemModel>? templateItems;
+            try
+            {
+                templateItems = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(
+                    profile.BillingTemplateJson ?? "[]",
+                    JsonOptions);
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (templateItems is null)
+                continue;
+
+            for (var index = 0; index < templateItems.Count; index++)
+            {
+                var itemId = templateItems[index]?.CatalogItemId.GetValueOrDefault() ?? Guid.Empty;
+                if (itemId == Guid.Empty || !itemIdSet.Contains(itemId))
+                    continue;
+
+                Add(itemId, new
+                {
+                    Type = "RentalBillingTemplate",
+                    ProfileId = profile.Id,
+                    TemplateIndex = index,
+                    profile.Revision,
+                    UpdatedAtUtcTicks = profile.UpdatedAtUtc.ToUniversalTime().Ticks,
+                    profile.IsDirty,
+                    profile.IsDeleted
+                });
+            }
+        }
+    }
+
+    private async Task<Dictionary<Guid, int>> LoadItemUnresolvedOutboxCountsAsync(
+        IReadOnlyCollection<Guid> itemIds,
+        CancellationToken ct)
+    {
+        var ids = itemIds.Where(id => id != Guid.Empty).Distinct().ToList();
+        if (ids.Count == 0)
+            return [];
+
+        var counts = new Dictionary<Guid, int>();
+        foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
+        {
+            var scopedIds = batchIds.ToList();
+            var rows = await _db.SyncOutboxEntries
+                .AsNoTracking()
+                .Where(entry => scopedIds.Contains(entry.EntityId) && entry.Status != "Acknowledged")
+                .Select(entry => new { entry.EntityId, entry.EntityName })
+                .ToListAsync(ct);
+            foreach (var group in rows
+                         .Where(entry => IsItemOutboxEntityName(entry.EntityName))
+                         .GroupBy(entry => entry.EntityId))
+            {
+                counts[group.Key] = counts.GetValueOrDefault(group.Key) + group.Count();
+            }
+        }
+
+        return counts;
+    }
+
+    private static bool IsItemOutboxEntityName(string? entityName)
+        => string.Equals(entityName, nameof(LocalItem), StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(entityName, "Item", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(entityName, nameof(ItemDto), StringComparison.OrdinalIgnoreCase);
+
+    private static DataIntegrityItemDuplicateComparison BuildItemDuplicateComparison(
+        IReadOnlyCollection<LocalItem> items,
+        IReadOnlyDictionary<Guid, ItemDuplicateUsage> usageById,
+        IReadOnlyDictionary<Guid, int> outboxCountById)
+    {
+        var activeItems = items
+            .Where(item => !item.IsDeleted && item.Id != Guid.Empty)
+            .GroupBy(item => item.Id)
+            .Select(group => group.First())
+            .OrderBy(item => item.Id)
+            .ToList();
+        var recommended = activeItems
+            .OrderByDescending(item => usageById.TryGetValue(item.Id, out var usage) ? usage.TotalCount : 0)
+            .ThenByDescending(item => Math.Abs(item.CurrentStock))
+            .ThenByDescending(CountFilledItemValues)
+            .ThenBy(item => item.NameOriginal, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(item => item.Id)
+            .FirstOrDefault();
+
+        var candidates = activeItems.Select(item =>
+        {
+            var usage = usageById.TryGetValue(item.Id, out var foundUsage) ? foundUsage : ItemDuplicateUsage.Empty;
+            var isRecommended = item.Id == recommended?.Id;
+            return new DataIntegrityItemDuplicateCandidate
+            {
+                ItemId = item.Id,
+                TenantCode = ResolveItemScope(item).TenantCode,
+                OfficeCode = ResolveItemScope(item).OfficeCode,
+                Revision = item.Revision,
+                UpdatedAtUtc = item.UpdatedAtUtc,
+                IsDirty = item.IsDirty,
+                UnresolvedOutboxCount = outboxCountById.GetValueOrDefault(item.Id),
+                NameOriginal = item.NameOriginal ?? string.Empty,
+                SpecificationOriginal = item.SpecificationOriginal ?? string.Empty,
+                CategoryName = item.CategoryName ?? string.Empty,
+                ItemKind = item.ItemKind ?? string.Empty,
+                TrackingType = item.TrackingType ?? string.Empty,
+                Unit = item.Unit ?? string.Empty,
+                BoxQuantity = item.BoxQuantity,
+                StorageLocation = item.StorageLocation ?? string.Empty,
+                CurrentStock = item.CurrentStock,
+                WarehouseStock = usage.ItemWarehouseStockQuantity,
+                SafetyStock = item.SafetyStock,
+                PurchasePrice = item.PurchasePrice,
+                SalePrice = item.SalePrice,
+                RetailPrice = item.RetailPrice,
+                PriceGradeA = item.PriceGradeA,
+                PriceGradeB = item.PriceGradeB,
+                PriceGradeC = item.PriceGradeC,
+                LastPurchaseDate = item.LastPurchaseDate,
+                LastSaleDate = item.LastSaleDate,
+                CatalogExtensionSyncPending = item.CatalogExtensionSyncPending,
+                SimpleMemo = item.SimpleMemo ?? string.Empty,
+                IsRental = item.IsRental,
+                IsSale = item.IsSale,
+                SerialNumber = item.SerialNumber ?? string.Empty,
+                MaterialNumber = item.MaterialNumber ?? string.Empty,
+                InstallLocation = item.InstallLocation ?? string.Empty,
+                RentalStartDate = item.RentalStartDate,
+                RentalEndDate = item.RentalEndDate,
+                Notes = item.Notes ?? string.Empty,
+                InvoiceLineCount = usage.InvoiceLineCount,
+                InvoiceLineSerialCount = usage.InvoiceLineSerialCount,
+                RentalAssetCount = usage.RentalAssetCount,
+                RentalBillingTemplateCount = usage.RentalBillingTemplateCount,
+                InventoryTransferLineCount = usage.InventoryTransferLineCount,
+                InventoryMovementCount = usage.InventoryMovementCount,
+                StockLayerCount = usage.StockLayerCount,
+                SerialLedgerCount = usage.SerialLedgerCount,
+                ItemWarehouseStockRowCount = usage.ItemWarehouseStockRowCount,
+                ItemPriceGradeCount = usage.ItemPriceGradeCount,
+                TotalReferenceCount = usage.TotalCount,
+                ReferenceIdentityFingerprint = usage.ReferenceIdentityFingerprint,
+                IsRecommended = isRecommended,
+                RecommendationText = isRecommended
+                    ? "참조 수와 입력된 기준정보를 기준으로 한 권장 대표"
+                    : "사용자가 대표로 선택 가능"
+            };
+        }).ToList();
+
+        var conflictFields = new List<string>();
+        var blockingReasons = new List<string>();
+        void Block(string field, string reason)
+        {
+            if (!conflictFields.Contains(field, StringComparer.Ordinal))
+                conflictFields.Add(field);
+            if (!blockingReasons.Contains(reason, StringComparer.Ordinal))
+                blockingReasons.Add(reason);
+        }
+
+        void BlockDifferentText(string field, string displayName, Func<DataIntegrityItemDuplicateCandidate, string> selector)
+        {
+            var values = candidates.Select(selector)
+                .Select(value => (value ?? string.Empty).Trim())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (values.Count > 1)
+                Block(field, $"{displayName} 값이 서로 다름");
+        }
+
+        void BlockDifferentNumber(string field, string displayName, Func<DataIntegrityItemDuplicateCandidate, decimal> selector)
+        {
+            if (candidates.Select(selector).Where(value => value != 0m).Distinct().Skip(1).Any())
+                Block(field, $"{displayName} 값이 서로 다름");
+        }
+
+        void BlockDifferentDate(string field, string displayName, Func<DataIntegrityItemDuplicateCandidate, DateOnly?> selector)
+        {
+            if (candidates.Select(selector).Where(value => value.HasValue).Distinct().Skip(1).Any())
+                Block(field, $"{displayName} 값이 서로 다름");
+        }
+
+        if (candidates.Count <= 1)
+            Block("Candidates", "활성 중복 후보가 2건 미만임");
+        if (!BelongsToSingleExactItemDuplicateGroup(activeItems))
+            Block("NameSpecificationScope", "품명/규격/scope가 하나의 중복 그룹이 아님");
+
+        BlockDifferentText(nameof(DataIntegrityItemDuplicateCandidate.CategoryName), "분류", candidate => candidate.CategoryName);
+        BlockDifferentText(nameof(DataIntegrityItemDuplicateCandidate.ItemKind), "품목 종류", candidate => candidate.ItemKind);
+        BlockDifferentText(nameof(DataIntegrityItemDuplicateCandidate.TrackingType), "추적 방식", candidate => candidate.TrackingType);
+        BlockDifferentText(nameof(DataIntegrityItemDuplicateCandidate.Unit), "단위", candidate => candidate.Unit);
+        BlockDifferentText(nameof(DataIntegrityItemDuplicateCandidate.StorageLocation), "보관 위치", candidate => candidate.StorageLocation);
+        BlockDifferentText(nameof(DataIntegrityItemDuplicateCandidate.SerialNumber), "시리얼 번호", candidate => candidate.SerialNumber);
+        BlockDifferentText(nameof(DataIntegrityItemDuplicateCandidate.MaterialNumber), "자재 번호", candidate => candidate.MaterialNumber);
+        BlockDifferentText(nameof(DataIntegrityItemDuplicateCandidate.InstallLocation), "설치 위치", candidate => candidate.InstallLocation);
+        BlockDifferentText(nameof(DataIntegrityItemDuplicateCandidate.SimpleMemo), "간단 메모", candidate => candidate.SimpleMemo);
+        BlockDifferentText(nameof(DataIntegrityItemDuplicateCandidate.Notes), "메모", candidate => candidate.Notes);
+        BlockDifferentNumber(nameof(DataIntegrityItemDuplicateCandidate.BoxQuantity), "박스 수량", candidate => candidate.BoxQuantity);
+        BlockDifferentNumber(nameof(DataIntegrityItemDuplicateCandidate.SafetyStock), "안전 재고", candidate => candidate.SafetyStock);
+        BlockDifferentNumber(nameof(DataIntegrityItemDuplicateCandidate.PurchasePrice), "매입가", candidate => candidate.PurchasePrice);
+        BlockDifferentNumber(nameof(DataIntegrityItemDuplicateCandidate.SalePrice), "매출가", candidate => candidate.SalePrice);
+        BlockDifferentNumber(nameof(DataIntegrityItemDuplicateCandidate.RetailPrice), "소매가", candidate => candidate.RetailPrice);
+        BlockDifferentNumber(nameof(DataIntegrityItemDuplicateCandidate.PriceGradeA), "A등급가", candidate => candidate.PriceGradeA);
+        BlockDifferentNumber(nameof(DataIntegrityItemDuplicateCandidate.PriceGradeB), "B등급가", candidate => candidate.PriceGradeB);
+        BlockDifferentNumber(nameof(DataIntegrityItemDuplicateCandidate.PriceGradeC), "C등급가", candidate => candidate.PriceGradeC);
+        BlockDifferentDate(nameof(DataIntegrityItemDuplicateCandidate.LastPurchaseDate), "최근 매입일", candidate => candidate.LastPurchaseDate);
+        BlockDifferentDate(nameof(DataIntegrityItemDuplicateCandidate.LastSaleDate), "최근 매출일", candidate => candidate.LastSaleDate);
+        BlockDifferentDate(nameof(DataIntegrityItemDuplicateCandidate.RentalStartDate), "대여 시작일", candidate => candidate.RentalStartDate);
+        BlockDifferentDate(nameof(DataIntegrityItemDuplicateCandidate.RentalEndDate), "대여 종료일", candidate => candidate.RentalEndDate);
+
+        if (candidates.Select(candidate => candidate.IsRental).Distinct().Skip(1).Any())
+            Block(nameof(DataIntegrityItemDuplicateCandidate.IsRental), "대여 여부가 서로 다름");
+        if (candidates.Select(candidate => candidate.IsSale).Distinct().Skip(1).Any())
+            Block(nameof(DataIntegrityItemDuplicateCandidate.IsSale), "판매 여부가 서로 다름");
+        if (candidates.Any(candidate => candidate.CurrentStock != 0m))
+            Block(nameof(DataIntegrityItemDuplicateCandidate.CurrentStock), "현재 재고가 0이 아닌 후보가 있음");
+        if (candidates.Any(candidate => candidate.WarehouseStock != 0m))
+            Block(nameof(DataIntegrityItemDuplicateCandidate.WarehouseStock), "창고별 재고가 0이 아닌 후보가 있음");
+        if (candidates.Any(candidate => candidate.IsDirty))
+            Block(nameof(DataIntegrityItemDuplicateCandidate.IsDirty), "동기화되지 않은 dirty 후보가 있음");
+        if (candidates.Any(candidate => candidate.UnresolvedOutboxCount > 0))
+            Block(nameof(DataIntegrityItemDuplicateCandidate.UnresolvedOutboxCount), "미해결 품목 outbox가 있음");
+        if (candidates.Any(candidate => candidate.CatalogExtensionSyncPending))
+            Block(nameof(DataIntegrityItemDuplicateCandidate.CatalogExtensionSyncPending), "품목 확장정보 동기화가 대기 중임");
+        if (candidates.Any(candidate => candidate.ItemPriceGradeCount > 0))
+            Block(nameof(DataIntegrityItemDuplicateCandidate.ItemPriceGradeCount), "사용자 등급가가 연결된 후보가 있어 원본 품목에서 수동 정리가 필요함");
+
+        var snapshotToken = BuildItemDuplicateSnapshotToken(candidates);
+        return new DataIntegrityItemDuplicateComparison
+        {
+            Candidates = candidates,
+            SnapshotToken = snapshotToken,
+            CanMerge = blockingReasons.Count == 0,
+            BlockingConflictFields = conflictFields,
+            BlockingReasons = blockingReasons,
+            RecommendedCanonicalId = recommended?.Id,
+            SummaryText = $"후보 {candidates.Count:N0}건 / 참조 {candidates.Sum(candidate => candidate.TotalReferenceCount):N0}건 / 현재재고 {candidates.Sum(candidate => candidate.CurrentStock):N2} / 창고재고 {candidates.Sum(candidate => candidate.WarehouseStock):N2}"
+        };
+    }
+
+    private static string BuildItemDuplicateSnapshotToken(IReadOnlyCollection<DataIntegrityItemDuplicateCandidate> candidates)
+    {
+        var snapshot = candidates.OrderBy(candidate => candidate.ItemId).Select(candidate => new
+        {
+            candidate.ItemId,
+            candidate.TenantCode,
+            candidate.OfficeCode,
+            candidate.Revision,
+            UpdatedAtUtcTicks = candidate.UpdatedAtUtc.ToUniversalTime().Ticks,
+            candidate.IsDirty,
+            candidate.UnresolvedOutboxCount,
+            candidate.NameOriginal,
+            candidate.SpecificationOriginal,
+            candidate.CategoryName,
+            candidate.ItemKind,
+            candidate.TrackingType,
+            candidate.Unit,
+            candidate.BoxQuantity,
+            candidate.StorageLocation,
+            candidate.CurrentStock,
+            candidate.WarehouseStock,
+            candidate.SafetyStock,
+            candidate.PurchasePrice,
+            candidate.SalePrice,
+            candidate.RetailPrice,
+            candidate.PriceGradeA,
+            candidate.PriceGradeB,
+            candidate.PriceGradeC,
+            candidate.LastPurchaseDate,
+            candidate.LastSaleDate,
+            candidate.CatalogExtensionSyncPending,
+            candidate.SimpleMemo,
+            candidate.IsRental,
+            candidate.IsSale,
+            candidate.SerialNumber,
+            candidate.MaterialNumber,
+            candidate.InstallLocation,
+            candidate.RentalStartDate,
+            candidate.RentalEndDate,
+            candidate.Notes,
+            candidate.InvoiceLineCount,
+            candidate.InvoiceLineSerialCount,
+            candidate.RentalAssetCount,
+            candidate.RentalBillingTemplateCount,
+            candidate.InventoryTransferLineCount,
+            candidate.InventoryMovementCount,
+            candidate.StockLayerCount,
+            candidate.SerialLedgerCount,
+            candidate.ItemWarehouseStockRowCount,
+            candidate.ItemPriceGradeCount,
+            candidate.TotalReferenceCount,
+            candidate.ReferenceIdentityFingerprint
+        });
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(snapshot, JsonOptions)));
+        return Convert.ToHexString(bytes).ToLowerInvariant();
     }
 
     private async Task<Dictionary<Guid, int>> LoadRentalBillingTemplateItemReferenceCountsAsync(
@@ -3970,7 +6063,7 @@ public sealed class DataIntegrityIssueService
         var profiles = await _db.RentalBillingProfiles
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(profile => !profile.IsDeleted && !string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
+            .Where(profile => !string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
             .Select(profile => profile.BillingTemplateJson)
             .ToListAsync(ct);
 
@@ -4012,11 +6105,13 @@ public sealed class DataIntegrityIssueService
         IReadOnlyCollection<LocalCustomer> customers,
         IReadOnlyCollection<LocalItem> items,
         IReadOnlyCollection<LocalWarehouse> warehouses,
+        IReadOnlyCollection<LocalWarehouse> activeTenantWarehouses,
         IReadOnlyCollection<IntegrityInvoiceSnapshot> invoices,
         IReadOnlyDictionary<Guid, decimal> invoiceLineTotalsByInvoiceId,
         IReadOnlyDictionary<Guid, decimal> invoicePaymentTotalsByInvoiceId,
         IReadOnlyDictionary<Guid, CustomerDuplicateUsage> customerDuplicateUsages,
         IReadOnlyDictionary<Guid, ItemDuplicateUsage> itemDuplicateUsages,
+        IReadOnlyDictionary<Guid, int> itemDuplicateOutboxCounts,
         IReadOnlyCollection<LocalItemWarehouseStock> itemWarehouseStocks,
         IReadOnlyCollection<LocalInventoryMovement> inventoryMovements,
         SessionState session)
@@ -4066,6 +6161,7 @@ public sealed class DataIntegrityIssueService
             var rows = group.Select(entry => entry.Item).OrderBy(item => item.NameOriginal).ThenBy(item => item.SpecificationOriginal).ToList();
             var itemScope = ResolveItemScope(rows[0]);
             var relatedIds = rows.Select(row => row.Id).Distinct().ToList();
+            var comparison = BuildItemDuplicateComparison(rows, itemDuplicateUsages, itemDuplicateOutboxCounts);
             AddGeneralIssue(issues, DataIntegrityIssueCodes.ItemDuplicateCandidate,
                 entityType: "품목",
                 entityId: rows[0].Id,
@@ -4076,7 +6172,8 @@ public sealed class DataIntegrityIssueService
                 message: $"품목명 '{rows[0].NameOriginal}' / 규격 '{rows[0].SpecificationOriginal}' 완전 동일 중복 후보 {rows.Count:N0}건이 있습니다.",
                 directActionKind: DataIntegrityDirectActionKind.OpenInventoryItem,
                 relatedEntityIds: relatedIds,
-                reviewInfo: BuildItemDuplicateReviewInfo(rows, itemDuplicateUsages));
+                reviewInfo: BuildItemDuplicateReviewInfo(rows, itemDuplicateUsages),
+                itemDuplicateComparison: comparison);
         }
 
         foreach (var group in warehouses
@@ -4184,13 +6281,17 @@ public sealed class DataIntegrityIssueService
                 reviewInfo: BuildItemScopeReviewInfo(item, itemScope));
         }
 
-        var activeWarehouseCodes = warehouses
-            .Select(warehouse => OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(warehouse.Code, warehouse.OfficeCode))
+        var activeWarehouseCodes = activeTenantWarehouses
+            .Select(warehouse => NormalizeWarehouseReferenceCodeForIntegrity(
+                warehouse.Code,
+                warehouse.OfficeCode))
             .Where(code => !string.IsNullOrWhiteSpace(code))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var stock in itemWarehouseStocks.Where(stock => scopedItemIds.Contains(stock.ItemId)))
         {
-            var warehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(stock.WarehouseCode, session.OfficeCode);
+            var warehouseCode = NormalizeWarehouseReferenceCodeForIntegrity(
+                stock.WarehouseCode,
+                session.OfficeCode);
             if (activeWarehouseCodes.Contains(warehouseCode))
                 continue;
 
@@ -4212,7 +6313,9 @@ public sealed class DataIntegrityIssueService
 
         foreach (var movement in inventoryMovements.Where(movement => movement.ItemId.HasValue && scopedItemIds.Contains(movement.ItemId.Value)))
         {
-            var warehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(movement.WarehouseCode, session.OfficeCode);
+            var warehouseCode = NormalizeWarehouseReferenceCodeForIntegrity(
+                movement.WarehouseCode,
+                session.OfficeCode);
             if (activeWarehouseCodes.Contains(warehouseCode))
                 continue;
 
@@ -4401,7 +6504,8 @@ public sealed class DataIntegrityIssueService
         string currentValue = "",
         string expectedValue = "",
         string message = "",
-        DataIntegrityDirectActionKind directActionKind = DataIntegrityDirectActionKind.None)
+        DataIntegrityDirectActionKind directActionKind = DataIntegrityDirectActionKind.None,
+        string reviewInfo = "")
     {
         var definition = GetDefinition(code);
         issues.Add(new DataIntegrityIssueDetail
@@ -4422,7 +6526,8 @@ public sealed class DataIntegrityIssueService
             ExpectedValue = expectedValue,
             Message = message,
             SuggestedAction = definition.SuggestedAction,
-            DirectActionKind = directActionKind
+            DirectActionKind = directActionKind,
+            ReviewInfo = reviewInfo
         });
     }
 
@@ -4441,7 +6546,9 @@ public sealed class DataIntegrityIssueService
             ? DataIntegrityDirectActionKind.OpenRentalAsset
             : profile is not null
                 ? DataIntegrityDirectActionKind.OpenRentalBillingProfile
-                : DataIntegrityDirectActionKind.None;
+                : string.Equals(code, DataIntegrityIssueCodes.RentalAssignmentMissingReference, StringComparison.Ordinal)
+                    ? DataIntegrityDirectActionKind.OpenSyncDiagnostics
+                    : DataIntegrityDirectActionKind.None;
         var historyScope = ResolveAssignmentHistoryScope(history, asset, profile);
 
         issues.Add(new DataIntegrityIssueDetail
@@ -4489,7 +6596,8 @@ public sealed class DataIntegrityIssueService
         string message = "",
         DataIntegrityDirectActionKind directActionKind = DataIntegrityDirectActionKind.None,
         IReadOnlyCollection<Guid>? relatedEntityIds = null,
-        string reviewInfo = "")
+        string reviewInfo = "",
+        DataIntegrityItemDuplicateComparison? itemDuplicateComparison = null)
     {
         var definition = GetDefinition(code);
         issues.Add(new DataIntegrityIssueDetail
@@ -4510,7 +6618,8 @@ public sealed class DataIntegrityIssueService
             SuggestedAction = definition.SuggestedAction,
             DirectActionKind = directActionKind,
             RelatedEntityIds = relatedEntityIds?.Where(id => id != Guid.Empty).Distinct().ToArray() ?? Array.Empty<Guid>(),
-            ReviewInfo = reviewInfo
+            ReviewInfo = reviewInfo,
+            ItemDuplicateComparison = itemDuplicateComparison
         });
     }
 
@@ -4572,18 +6681,6 @@ public sealed class DataIntegrityIssueService
         var currentKey = RentalCatalogValueNormalizer.NormalizeLooseKey(currentValue);
         if (string.IsNullOrWhiteSpace(currentKey))
             return true;
-
-        return duplicateValues
-            .Select(RentalCatalogValueNormalizer.NormalizeLooseKey)
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Any(value => string.Equals(value, currentKey, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static bool MatchesDuplicateDisplayName(string? currentValue, IEnumerable<string> duplicateValues)
-    {
-        var currentKey = RentalCatalogValueNormalizer.NormalizeLooseKey(currentValue);
-        if (string.IsNullOrWhiteSpace(currentKey))
-            return false;
 
         return duplicateValues
             .Select(RentalCatalogValueNormalizer.NormalizeLooseKey)
@@ -4688,7 +6785,7 @@ public sealed class DataIntegrityIssueService
         => session is not null && (session.HasAdministrativePrivileges || session.HasPermission(permissionName));
 
     private static bool CanWriteInventoryTransferScopeForIntegrity(SessionState? session, LocalInventoryTransfer transfer)
-        => CanWriteWarehouseScopeForIntegrity(session, transfer.FromWarehouseCode) ||
+        => CanWriteWarehouseScopeForIntegrity(session, transfer.FromWarehouseCode) &&
            CanWriteWarehouseScopeForIntegrity(session, transfer.ToWarehouseCode);
 
     private static bool CanWriteWarehouseScopeForIntegrity(SessionState? session, string? warehouseCode)
@@ -4696,9 +6793,307 @@ public sealed class DataIntegrityIssueService
         if (session is null || !session.IsLoggedIn)
             return false;
 
-        var officeCode = ResolveOfficeCodeFromWarehouseCode(warehouseCode, session.OfficeCode);
-        var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, officeCode, session.TenantCode, session.OfficeCode);
-        return CanWriteCustomerScopeForIntegrity(session, officeCode, tenantCode);
+        if (session.HasGlobalDataScope)
+            return true;
+
+        if (!OfficeCodeCatalog.TryNormalizeWarehouseCode(warehouseCode, out var normalizedWarehouseCode))
+            return false;
+
+        var officeCode = normalizedWarehouseCode switch
+        {
+            OfficeCodeCatalog.ItworldMainWarehouse => OfficeCodeCatalog.Itworld,
+            OfficeCodeCatalog.YeonsuMainWarehouse => OfficeCodeCatalog.Yeonsu,
+            _ => OfficeCodeCatalog.Usenet
+        };
+
+        var scopeEvidence = ResolveStoredScopeEvidence(
+            TenantScopeCatalog.GetTenantCodeForOffice(officeCode),
+            responsibleOfficeCode: officeCode,
+            ownerOfficeCode: null);
+        return CanWriteStoredScopeEvidenceForIntegrity(session, scopeEvidence);
+    }
+
+    private readonly record struct IntegrityStoredScopeEvidence(
+        string TenantCode,
+        string OfficeCode,
+        bool IsTenantOnly)
+    {
+        public bool HasEvidence => !string.IsNullOrWhiteSpace(TenantCode);
+        public bool HasOfficeEvidence => !string.IsNullOrWhiteSpace(OfficeCode);
+    }
+
+    private static IntegrityStoredScopeEvidence ResolveStoredScopeEvidence(
+        string? tenantCode,
+        string? responsibleOfficeCode,
+        string? ownerOfficeCode,
+        string? additionalOfficeCode = null)
+    {
+        var hasTenant = TenantScopeCatalog.TryNormalizeTenantCode(tenantCode, out var normalizedTenant);
+        if (!string.IsNullOrWhiteSpace(tenantCode) && !hasTenant)
+            return default;
+
+        static bool TryCollectOfficeEvidence(
+            string? rawOfficeCode,
+            bool allowShared,
+            bool ignoreUnsupportedCode,
+            ICollection<string> offices,
+            out string normalizedOffice,
+            out bool isShared)
+        {
+            if (string.IsNullOrWhiteSpace(rawOfficeCode))
+            {
+                normalizedOffice = string.Empty;
+                isShared = false;
+                return true;
+            }
+
+            if (OfficeCodeCatalog.TryNormalizeOfficeCode(rawOfficeCode, out normalizedOffice))
+            {
+                offices.Add(normalizedOffice);
+                isShared = false;
+                return true;
+            }
+
+            if (allowShared && OfficeCodeCatalog.IsSharedOfficeCode(rawOfficeCode))
+            {
+                normalizedOffice = string.Empty;
+                isShared = true;
+                return true;
+            }
+
+            normalizedOffice = string.Empty;
+            isShared = false;
+            return ignoreUnsupportedCode;
+        }
+
+        var officeEvidence = new List<string>(capacity: 3);
+        if (!TryCollectOfficeEvidence(
+                responsibleOfficeCode,
+                allowShared: true,
+                ignoreUnsupportedCode: false,
+                officeEvidence,
+                out var responsibleOffice,
+                out var responsibleIsShared) ||
+            !TryCollectOfficeEvidence(
+                ownerOfficeCode,
+                allowShared: true,
+                ignoreUnsupportedCode: false,
+                officeEvidence,
+                out var ownerOffice,
+                out var ownerIsShared) ||
+            !TryCollectOfficeEvidence(
+                additionalOfficeCode,
+                allowShared: true,
+                ignoreUnsupportedCode: true,
+                officeEvidence,
+                out var additionalOffice,
+                out var additionalIsShared))
+        {
+            return default;
+        }
+
+        var evidenceTenants = officeEvidence
+            .Select(TenantScopeCatalog.GetTenantCodeForOffice)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (evidenceTenants.Length > 1 ||
+            (evidenceTenants.Length == 1 &&
+             hasTenant &&
+             !string.Equals(evidenceTenants[0], normalizedTenant, StringComparison.OrdinalIgnoreCase)))
+        {
+            return default;
+        }
+
+        var sharedScopeChosen = false;
+        string chosenOffice;
+        if (!string.IsNullOrWhiteSpace(responsibleOffice))
+        {
+            chosenOffice = responsibleOffice;
+        }
+        else if (responsibleIsShared)
+        {
+            chosenOffice = string.Empty;
+            sharedScopeChosen = true;
+        }
+        else if (!string.IsNullOrWhiteSpace(ownerOffice))
+        {
+            chosenOffice = ownerOffice;
+        }
+        else if (ownerIsShared)
+        {
+            chosenOffice = string.Empty;
+            sharedScopeChosen = true;
+        }
+        else if (!string.IsNullOrWhiteSpace(additionalOffice))
+        {
+            chosenOffice = additionalOffice;
+        }
+        else
+        {
+            chosenOffice = string.Empty;
+            sharedScopeChosen = additionalIsShared;
+        }
+
+        if (!string.IsNullOrWhiteSpace(chosenOffice))
+        {
+            return new IntegrityStoredScopeEvidence(
+                evidenceTenants[0],
+                chosenOffice,
+                IsTenantOnly: false);
+        }
+
+        var evidenceTenant = evidenceTenants.FirstOrDefault() ?? (hasTenant ? normalizedTenant : string.Empty);
+        if (sharedScopeChosen)
+        {
+            return string.IsNullOrWhiteSpace(evidenceTenant)
+                ? default
+                : new IntegrityStoredScopeEvidence(
+                    evidenceTenant,
+                    OfficeCode: string.Empty,
+                    IsTenantOnly: false);
+        }
+
+        if (!hasTenant)
+            return default;
+
+        var tenantOffices = TenantScopeCatalog.GetOfficeCodesForTenant(normalizedTenant);
+        return new IntegrityStoredScopeEvidence(
+            normalizedTenant,
+            tenantOffices.Count == 1 ? tenantOffices[0] : string.Empty,
+            IsTenantOnly: true);
+    }
+
+    private static bool CanReadStoredScopeEvidenceForIntegrity(
+        SessionState session,
+        IntegrityStoredScopeEvidence evidence)
+    {
+        if (session.HasGlobalDataScope)
+            return true;
+
+        if (!evidence.HasEvidence)
+            return false;
+
+        if (evidence.HasOfficeEvidence)
+            return IsInSessionScope(evidence.TenantCode, evidence.OfficeCode, session);
+
+        var sessionTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            session.TenantCode,
+            session.OfficeCode);
+        return string.Equals(evidence.TenantCode, sessionTenant, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool CanReadAllExplicitOfficeEvidenceForIntegrity(
+        SessionState session,
+        IReadOnlyCollection<string> officeCodes)
+    {
+        var normalizedOffices = officeCodes
+            .Select(officeCode => OfficeCodeCatalog.TryNormalizeOfficeCode(officeCode, out var normalizedOffice)
+                ? normalizedOffice
+                : string.Empty)
+            .Where(officeCode => !string.IsNullOrWhiteSpace(officeCode))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (normalizedOffices.Length == 0)
+            return session.HasGlobalDataScope;
+
+        if (session.HasGlobalDataScope)
+            return true;
+
+        if (normalizedOffices.Length == 1)
+            return IsInSessionScope(null, normalizedOffices[0], session);
+
+        var evidenceTenants = normalizedOffices
+            .Select(TenantScopeCatalog.GetTenantCodeForOffice)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (evidenceTenants.Length != 1 ||
+            !string.Equals(session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var sessionTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            session.TenantCode,
+            session.OfficeCode);
+        if (!string.Equals(evidenceTenants[0], sessionTenant, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var writableOffices = TenantScopeCatalog.ResolveScopedOfficeCodes(
+            session.OfficeCode,
+            sessionTenant,
+            session.ScopeType,
+            session.HasGlobalDataScope);
+        return normalizedOffices.All(writableOffices.Contains);
+    }
+
+    private static bool CanReadCombinedStoredScopeEvidenceForIntegrity(
+        SessionState session,
+        IReadOnlyCollection<IntegrityStoredScopeEvidence> evidenceSources)
+    {
+        if (session.HasGlobalDataScope)
+            return true;
+
+        if (evidenceSources.Count == 0 || evidenceSources.Any(evidence => !evidence.HasEvidence))
+            return false;
+
+        var explicitOffices = evidenceSources
+            .Where(evidence => evidence.HasOfficeEvidence)
+            .Select(evidence => evidence.OfficeCode)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (explicitOffices.Length > 0 &&
+            !CanReadAllExplicitOfficeEvidenceForIntegrity(session, explicitOffices))
+        {
+            return false;
+        }
+
+        return evidenceSources
+            .Where(evidence => !evidence.HasOfficeEvidence)
+            .All(evidence => CanReadStoredScopeEvidenceForIntegrity(session, evidence));
+    }
+
+    private static bool CanWriteStoredScopeEvidenceForIntegrity(
+        SessionState? session,
+        IntegrityStoredScopeEvidence evidence)
+    {
+        if (session is null || !session.IsLoggedIn)
+            return false;
+
+        if (session.HasGlobalDataScope)
+            return true;
+
+        if (!evidence.HasEvidence)
+            return false;
+
+        var sessionTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            session.TenantCode,
+            session.OfficeCode);
+        if (!string.Equals(evidence.TenantCode, sessionTenant, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (evidence.HasOfficeEvidence)
+            return CanWriteOfficeScopeForIntegrity(session, evidence.OfficeCode);
+
+        return string.Equals(session.ScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ResolveIssueOfficeCodeForStoredScope(
+        IntegrityStoredScopeEvidence evidence,
+        SessionState session,
+        string fallbackOfficeCode)
+    {
+        if (evidence.HasOfficeEvidence)
+            return evidence.OfficeCode;
+
+        if (evidence.HasEvidence &&
+            OfficeCodeCatalog.TryNormalizeOfficeCode(session.OfficeCode, out var sessionOfficeCode) &&
+            TenantScopeCatalog.TenantContainsOffice(evidence.TenantCode, sessionOfficeCode))
+        {
+            return sessionOfficeCode;
+        }
+
+        return fallbackOfficeCode;
     }
 
     private static bool CanWriteCustomerScopeForIntegrity(SessionState? session, string? officeCode, string? tenantCode = null)
@@ -4719,21 +7114,12 @@ public sealed class DataIntegrityIssueService
     }
 
     private static bool CanWriteItemScopeForIntegrity(SessionState? session, LocalItem item)
-    {
-        if (session is null || !session.IsLoggedIn)
-            return false;
-
-        if (session.HasGlobalDataScope)
-            return true;
-
-        var targetTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(item.TenantCode, item.OfficeCode, session.TenantCode, session.OfficeCode);
-        var sessionTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
-        if (!string.Equals(targetTenant, sessionTenant, StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        var targetOffice = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(item.OfficeCode, OfficeCodeCatalog.Shared);
-        return CanWriteOfficeScopeForIntegrity(session, targetOffice);
-    }
+        => CanWriteStoredScopeEvidenceForIntegrity(
+            session,
+            ResolveStoredScopeEvidence(
+                item.TenantCode,
+                responsibleOfficeCode: null,
+                ownerOfficeCode: item.OfficeCode));
 
     private static bool CanWriteOfficeScopeForIntegrity(SessionState session, string? officeCode)
     {
@@ -4807,6 +7193,27 @@ public sealed class DataIntegrityIssueService
         };
     }
 
+    private static string NormalizeWarehouseReferenceCodeForIntegrity(
+        string? warehouseCode,
+        string? fallbackOfficeCode)
+    {
+        if (OfficeCodeCatalog.TryNormalizeWarehouseCode(
+                warehouseCode,
+                out var canonicalWarehouseCode))
+        {
+            return canonicalWarehouseCode;
+        }
+
+        var rawWarehouseCode = (warehouseCode ?? string.Empty)
+            .Trim()
+            .ToUpperInvariant();
+        return string.IsNullOrWhiteSpace(rawWarehouseCode)
+            ? OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(
+                null,
+                fallbackOfficeCode)
+            : rawWarehouseCode;
+    }
+
     private static string ResolveWarehouseOfficeCode(LocalWarehouse warehouse)
     {
         if (OfficeCodeCatalog.TryNormalizeOfficeCode(warehouse.OfficeCode, out var officeCode))
@@ -4816,6 +7223,38 @@ public sealed class DataIntegrityIssueService
             return officeCode;
 
         return DomainConstants.OfficeUsenet;
+    }
+
+    private static bool IsConsistentWarehouseReferenceInTenant(
+        LocalWarehouse warehouse,
+        string tenantCode)
+    {
+        var hasStoredOffice = OfficeCodeCatalog.TryNormalizeOfficeCode(
+            warehouse.OfficeCode,
+            out var storedOfficeCode);
+        var hasCodeOffice = TryResolveOfficeCodeFromWarehouseEvidence(
+            warehouse.Code,
+            out var codeOfficeCode);
+
+        if (hasStoredOffice &&
+            hasCodeOffice &&
+            !string.Equals(
+                storedOfficeCode,
+                codeOfficeCode,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var resolvedOfficeCode = hasCodeOffice
+            ? codeOfficeCode
+            : hasStoredOffice
+                ? storedOfficeCode
+                : string.Empty;
+        return !string.IsNullOrWhiteSpace(resolvedOfficeCode) &&
+               TenantScopeCatalog.TenantContainsOffice(
+                   tenantCode,
+                   resolvedOfficeCode);
     }
 
     private static string BuildWarehouseScopeReviewInfo(LocalWarehouse warehouse, string scopeOfficeCode)
@@ -4938,6 +7377,15 @@ public sealed class DataIntegrityIssueService
         if (string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
             return new ParsedTemplateItems(true, []);
 
+        if (!RentalBillingTemplateAssetCoverageRules.TryGetExplicitIncludedAssetIds(
+                profile.BillingTemplateJson,
+                out _,
+                out var hasDuplicateReferences) ||
+            hasDuplicateReferences)
+        {
+            return new ParsedTemplateItems(false, []);
+        }
+
         try
         {
             var parsed = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(profile.BillingTemplateJson, JsonOptions) ?? [];
@@ -4966,18 +7414,50 @@ public sealed class DataIntegrityIssueService
     }
 
     private static List<RentalBillingRunModel> ParseRentalBillingRuns(string? json)
+        => TryParseRentalBillingRuns(json, out var runs) ? runs : [];
+
+    private static bool TryParseRentalBillingRuns(
+        string? json,
+        out List<RentalBillingRunModel> runs)
     {
+        runs = [];
         if (string.IsNullOrWhiteSpace(json))
-            return [];
+            return true;
+
+        if (!RentalBillingRunTombstonePolicy.Validate(json).IsValid)
+            return false;
 
         try
         {
-            return JsonSerializer.Deserialize<List<RentalBillingRunModel>>(json, JsonOptions) ?? [];
+            var parsed = JsonSerializer.Deserialize<List<RentalBillingRunModel>>(json, JsonOptions);
+            if (parsed is null)
+                return true;
+            if (parsed.Any(run => run is null))
+                return false;
+
+            runs = parsed;
+            return true;
         }
         catch
         {
-            return [];
+            return false;
         }
+    }
+
+    private static List<RentalBillingRunModel> ParseRentalBillingRunsForIdentityDiagnosis(string? json)
+        => TryParseRentalBillingRunsForIdentityDiagnosis(json, out var runs) ? runs : [];
+
+    private static bool TryParseRentalBillingRunsForIdentityDiagnosis(
+        string? json,
+        out List<RentalBillingRunModel> runs)
+    {
+        if (TryParseRentalBillingRuns(json, out runs))
+            return true;
+
+        return RentalBillingRunDiagnosticParser.TryParseIdentityConflictPayload(
+            json,
+            JsonOptions,
+            out runs);
     }
 
     private static Guid NormalizeRunId(Guid? runId)
@@ -5063,6 +7543,9 @@ public sealed class DataIntegrityIssueService
         IQueryable<LocalCustomer> query,
         SessionState session)
     {
+        if (session.HasGlobalDataScope)
+            return query;
+
         var officeCodes = BuildOperationalAlertOfficeCodeQueryAliases(session);
         var sharedOfficeCodes = BuildSharedOfficeCodeQueryAliases();
 
@@ -5081,6 +7564,9 @@ public sealed class DataIntegrityIssueService
         IQueryable<LocalItem> query,
         SessionState session)
     {
+        if (session.HasGlobalDataScope)
+            return query;
+
         var officeCodes = BuildOperationalAlertOfficeCodeQueryAliases(session);
         var sharedOfficeCodes = BuildSharedOfficeCodeQueryAliases();
 
@@ -5089,20 +7575,6 @@ public sealed class DataIntegrityIssueService
             item.OfficeCode == null ||
             item.OfficeCode == string.Empty ||
             sharedOfficeCodes.Contains(item.OfficeCode));
-    }
-
-    private static IQueryable<LocalWarehouse> ApplyOperationalAlertWarehouseScopePrefilter(
-        IQueryable<LocalWarehouse> query,
-        SessionState session)
-    {
-        var officeCodes = BuildOperationalAlertOfficeCodeQueryAliases(session);
-        var sharedOfficeCodes = BuildSharedOfficeCodeQueryAliases();
-
-        return query.Where(warehouse =>
-            officeCodes.Contains(warehouse.OfficeCode) ||
-            warehouse.OfficeCode == null ||
-            warehouse.OfficeCode == string.Empty ||
-            sharedOfficeCodes.Contains(warehouse.OfficeCode));
     }
 
     private static List<string> BuildOperationalAlertOfficeCodeQueryAliases(SessionState session)
@@ -5146,57 +7618,81 @@ public sealed class DataIntegrityIssueService
 
     private static bool IsInSessionScope(string? tenantCode, string? officeCode, SessionState session)
     {
+        if (session.HasGlobalDataScope)
+            return true;
+
         var normalizedOffice = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, session.OfficeCode);
         var normalizedTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantCode, normalizedOffice);
         var sessionTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
         if (!string.Equals(normalizedTenant, sessionTenant, StringComparison.OrdinalIgnoreCase))
             return false;
 
-        var offices = ResolveOperationalAlertOfficeCodes(session, sessionTenant);
+        var offices = TenantScopeCatalog.ResolveScopedOfficeCodes(
+            session.OfficeCode,
+            sessionTenant,
+            session.ScopeType,
+            session.HasGlobalDataScope);
         return offices.Contains(normalizedOffice);
     }
 
     private static bool IsIssueInSessionScope(DataIntegrityIssueDetail issue, SessionState session)
-        => IsInSessionScope(null, issue.OfficeCode, session);
+        => session.HasGlobalDataScope || IsInSessionScope(null, issue.OfficeCode, session);
 
     private static HashSet<string> ResolveOperationalAlertOfficeCodes(SessionState session, string? normalizedTenantCode = null)
     {
         var sessionOffice = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, DomainConstants.OfficeUsenet);
-        var sessionTenant = TenantScopeCatalog.NormalizeTenantCodeOrDefault(normalizedTenantCode, session.TenantCode);
-
-        if (string.Equals(sessionTenant, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(sessionOffice, OfficeCodeCatalog.Itworld, StringComparison.OrdinalIgnoreCase))
-        {
-            return new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            {
-                OfficeCodeCatalog.Itworld
-            };
-        }
-
-        if (string.Equals(sessionOffice, OfficeCodeCatalog.Yeonsu, StringComparison.OrdinalIgnoreCase))
-        {
-            return new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            {
-                OfficeCodeCatalog.Yeonsu
-            };
-        }
-
-        return new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            OfficeCodeCatalog.Usenet
-        };
+        var sessionTenant = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            normalizedTenantCode ?? session.TenantCode,
+            sessionOffice);
+        return TenantScopeCatalog.ResolveScopedOfficeCodes(
+            sessionOffice,
+            sessionTenant,
+            session.ScopeType,
+            session.HasGlobalDataScope);
     }
 
-    private static bool IsBillableOperatingAsset(LocalRentalAsset asset)
+    private static RentalAssetBillingEligibility ClassifyOperatingAssetBillingEligibility(
+        LocalRentalAsset asset,
+        bool hasValidLinkedProfile)
     {
         var status = (asset.AssetStatus ?? string.Empty).Trim();
         if (RentalAssetStatusRules.IsNonOperating(status))
-            return false;
+            return RentalAssetBillingEligibility.NotApplicable;
 
         var eligibility = (asset.BillingEligibilityStatus ?? string.Empty).Trim();
-        return string.IsNullOrWhiteSpace(eligibility)
-               || string.Equals(eligibility, "청구대상", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(eligibility, "청구 대상", StringComparison.OrdinalIgnoreCase);
+        if (string.Equals(eligibility, "청구제외", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(eligibility, "청구 제외", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(eligibility, "Excluded", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(eligibility, "NotBillable", StringComparison.OrdinalIgnoreCase))
+        {
+            return RentalAssetBillingEligibility.NotApplicable;
+        }
+
+        if (string.Equals(eligibility, "청구대상", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(eligibility, "청구 대상", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(eligibility, "Billable", StringComparison.OrdinalIgnoreCase) ||
+            (string.IsNullOrWhiteSpace(eligibility) && hasValidLinkedProfile))
+        {
+            return RentalAssetBillingEligibility.Billable;
+        }
+
+        return RentalAssetBillingEligibility.NeedsReview;
+    }
+
+    private static string BuildAssetBillingReviewInfo(
+        LocalRentalAsset asset,
+        IReadOnlyCollection<AssetTemplateReference> templateReferences)
+    {
+        var eligibility = NormalizeDisplay(asset.BillingEligibilityStatus, "공백");
+        var profileId = asset.BillingProfileId.HasValue && asset.BillingProfileId.Value != Guid.Empty
+            ? asset.BillingProfileId.Value.ToString("D")
+            : "없음";
+        var templateReview = templateReferences.Count == 0
+            ? "템플릿 참조 없음"
+            : $"템플릿 참조 {templateReferences.Count:N0}건: " + string.Join(" | ", templateReferences.Select(reference =>
+                $"{NormalizeDisplay(reference.ProfileDisplayName, "프로필")} / {NormalizeDisplay(reference.ItemName, "품목")} / 월금액 {FormatMoney(reference.MonthlyAmount)} / 포함 자산 {reference.IncludedAssetCount:N0}개 / {(reference.IncludedAssetCount == 1 ? "개별금액 확인 가능" : "자동 배분 불가")}"));
+
+        return $"청구상태 {eligibility} / BillingProfileId {profileId} / {templateReview}";
     }
 
     private static decimal ResolveTemplateMonthlyAmount(RentalBillingTemplateItemModel item)
@@ -5291,8 +7787,10 @@ public sealed class DataIntegrityIssueService
     {
         var canonicalScope = ResolveProfileScope(profile);
         return RequiresExactTenantCode(profile.TenantCode, canonicalScope.TenantCode) ||
-               RequiresExactOfficeCode(profile.OfficeCode, canonicalScope.OwnerOfficeCode) ||
-               RequiresExactOfficeCode(profile.ManagementCompanyCode, canonicalScope.OwnerOfficeCode) ||
+               RequiresExactOfficeScopeCode(profile.OfficeCode, canonicalScope.OwnerOfficeCode) ||
+               IsManagementCompanyScopeInconsistent(
+                   profile.ManagementCompanyCode,
+                   canonicalScope) ||
                RequiresExactOfficeCode(profile.ResponsibleOfficeCode, canonicalScope.ResponsibleOfficeCode);
     }
 
@@ -5300,9 +7798,38 @@ public sealed class DataIntegrityIssueService
     {
         var canonicalScope = ResolveAssetScope(asset);
         return RequiresExactTenantCode(asset.TenantCode, canonicalScope.TenantCode) ||
-               RequiresExactOfficeCode(asset.OfficeCode, canonicalScope.OwnerOfficeCode) ||
-               RequiresExactOfficeCode(asset.ManagementCompanyCode, canonicalScope.OwnerOfficeCode) ||
+               RequiresExactOfficeScopeCode(asset.OfficeCode, canonicalScope.OwnerOfficeCode) ||
+               IsManagementCompanyScopeInconsistent(
+                   asset.ManagementCompanyCode,
+                   canonicalScope) ||
                RequiresExactOfficeCode(asset.ResponsibleOfficeCode, canonicalScope.ResponsibleOfficeCode);
+    }
+
+    private static bool IsManagementCompanyScopeInconsistent(
+        string? managementCompanyCode,
+        RentalOperationalScope canonicalScope)
+    {
+        if (!string.Equals(
+                canonicalScope.OwnerOfficeCode,
+                OfficeCodeCatalog.Shared,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return RequiresExactOfficeCode(
+                managementCompanyCode,
+                canonicalScope.OwnerOfficeCode);
+        }
+
+        var responsibleOwnerOfficeCode =
+            OfficeCodeCatalog.ResolveOwningOfficeCode(
+                null,
+                canonicalScope.ResponsibleOfficeCode,
+                canonicalScope.ResponsibleOfficeCode);
+        return RequiresExactOfficeScopeCode(
+                   managementCompanyCode,
+                   OfficeCodeCatalog.Shared) &&
+               RequiresExactOfficeCode(
+                   managementCompanyCode,
+                   responsibleOwnerOfficeCode);
     }
 
     private static string BuildProfileScopeDisplay(LocalRentalBillingProfile profile)
@@ -5312,7 +7839,7 @@ public sealed class DataIntegrityIssueService
     }
 
     private static string BuildStoredProfileScopeDisplay(LocalRentalBillingProfile profile)
-        => $"{NormalizeTenantForDisplay(profile.TenantCode, profile.OfficeCode, profile.ResponsibleOfficeCode)} / {NormalizeOfficeForDisplay(profile.OfficeCode, profile.ManagementCompanyCode)} / {NormalizeOfficeForDisplay(profile.ResponsibleOfficeCode, profile.ManagementCompanyCode)} / 프로필 {profile.Id:D}";
+        => $"{NormalizeTenantForDisplay(profile.TenantCode, profile.OfficeCode, profile.ResponsibleOfficeCode)} / {NormalizeOfficeScopeForDisplay(profile.OfficeCode, profile.ManagementCompanyCode)} / {NormalizeOfficeForDisplay(profile.ResponsibleOfficeCode, profile.ManagementCompanyCode)} / 프로필 {profile.Id:D}";
 
     private static string BuildAssetScopeDisplay(LocalRentalAsset asset)
     {
@@ -5324,7 +7851,7 @@ public sealed class DataIntegrityIssueService
     private static string BuildStoredAssetScopeDisplay(LocalRentalAsset asset)
     {
         var billingProfileText = asset.BillingProfileId.HasValue ? asset.BillingProfileId.Value.ToString("D") : "미연결";
-        return $"{NormalizeTenantForDisplay(asset.TenantCode, asset.OfficeCode, asset.ResponsibleOfficeCode)} / {NormalizeOfficeForDisplay(asset.OfficeCode, asset.ManagementCompanyCode)} / {NormalizeOfficeForDisplay(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode)} / 프로필 {billingProfileText}";
+        return $"{NormalizeTenantForDisplay(asset.TenantCode, asset.OfficeCode, asset.ResponsibleOfficeCode)} / {NormalizeOfficeScopeForDisplay(asset.OfficeCode, asset.ManagementCompanyCode)} / {NormalizeOfficeForDisplay(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode)} / 프로필 {billingProfileText}";
     }
 
     private static string NormalizeOfficeForDisplay(string? officeCode, string? fallbackOfficeCode)
@@ -5411,9 +7938,21 @@ public sealed class DataIntegrityIssueService
     private static string FormatMoney(decimal value)
         => $"{value:N0}원";
 
+    private enum RentalAssetBillingEligibility
+    {
+        NotApplicable,
+        Billable,
+        NeedsReview
+    }
+
     private sealed record ParsedTemplateItems(bool Success, List<RentalBillingTemplateItemModel> Items);
 
-    private sealed record AssetTemplateReference(Guid ProfileId, string ProfileDisplayName, string ItemName);
+    private sealed record AssetTemplateReference(
+        Guid ProfileId,
+        string ProfileDisplayName,
+        string ItemName,
+        decimal MonthlyAmount,
+        int IncludedAssetCount);
 
     private sealed class CustomerDuplicateUsage
     {
@@ -5446,7 +7985,17 @@ public sealed class DataIntegrityIssueService
         public int StockLayerCount { get; set; }
         public int SerialLedgerCount { get; set; }
         public int ItemWarehouseStockRowCount { get; set; }
+        public int ItemPriceGradeCount { get; set; }
         public decimal ItemWarehouseStockQuantity { get; set; }
+        public HashSet<string> ReferenceIdentityTokens { get; } = new(StringComparer.Ordinal);
+        public string ReferenceIdentityFingerprint
+        {
+            get
+            {
+                var payload = string.Join("\n", ReferenceIdentityTokens.OrderBy(token => token, StringComparer.Ordinal));
+                return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload))).ToLowerInvariant();
+            }
+        }
         public int TotalCount => InvoiceLineCount +
                                  InvoiceLineSerialCount +
                                  RentalAssetCount +
@@ -5455,7 +8004,8 @@ public sealed class DataIntegrityIssueService
                                  InventoryMovementCount +
                                  StockLayerCount +
                                  SerialLedgerCount +
-                                 ItemWarehouseStockRowCount;
+                                 ItemWarehouseStockRowCount +
+                                 ItemPriceGradeCount;
     }
 
     private sealed class ReferenceCountRow

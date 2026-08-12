@@ -168,6 +168,58 @@ public sealed class AuthControllerTests : IDisposable
     }
 
     [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task LoginAndRefresh_ReturnUnauthorized_WhenTenantOrOfficeIsInactive(
+        bool deactivateTenant,
+        bool deactivateOffice)
+    {
+        var user = new UserAccount
+        {
+            Username = "inactive-scope-login-user",
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword("correct-password"),
+            Role = "User",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            IsActive = true
+        };
+
+        await using var dbContext = CreateDbContext();
+        dbContext.Users.Add(user);
+        dbContext.TenantDefinitions.Add(new TenantDefinition
+        {
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            DisplayName = "USENET",
+            StorageMode = TenantScopeCatalog.StorageSharedDatabase,
+            IsActive = !deactivateTenant,
+            IsDeleted = deactivateTenant
+        });
+        dbContext.TenantOfficeDefinitions.Add(new TenantOfficeDefinition
+        {
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            DisplayName = "USENET",
+            IsActive = !deactivateOffice,
+            IsDeleted = deactivateOffice
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, user.Id);
+        var loginResponse = await controller.Login(
+            new LoginRequest
+            {
+                Username = user.Username,
+                Password = "correct-password"
+            },
+            CancellationToken.None);
+        var refreshResponse = await controller.Refresh(CancellationToken.None);
+
+        Assert.IsType<UnauthorizedResult>(loginResponse.Result);
+        Assert.IsType<UnauthorizedResult>(refreshResponse.Result);
+    }
+
+    [Theory]
     [InlineData(null, "password")]
     [InlineData("", "password")]
     [InlineData("   ", "password")]

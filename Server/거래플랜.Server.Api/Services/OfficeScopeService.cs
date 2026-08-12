@@ -470,7 +470,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<RentalBillingProfile> ApplyRentalBillingProfileScope(IQueryable<RentalBillingProfile> query)
     {
-        if (HasGlobalDataScope || HasAdministrativeRentalScope)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -490,7 +490,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<RentalAsset> ApplyRentalAssetScope(IQueryable<RentalAsset> query)
     {
-        if (HasGlobalDataScope || HasAdministrativeRentalScope)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -510,7 +510,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<RentalAssetAssignmentHistory> ApplyRentalAssignmentHistoryScope(IQueryable<RentalAssetAssignmentHistory> query)
     {
-        if (HasGlobalDataScope || HasAdministrativeRentalScope)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -530,7 +530,7 @@ public sealed class OfficeScopeService
 
     public IQueryable<RentalBillingLog> ApplyRentalBillingLogScope(IQueryable<RentalBillingLog> query)
     {
-        if (HasGlobalDataScope || HasAdministrativeRentalScope)
+        if (HasGlobalDataScope)
             return query;
 
         var tenantCode = CurrentTenantCode;
@@ -1042,7 +1042,27 @@ public sealed class OfficeScopeService
 
         _activePolicies = _dbContext.DataSharingPolicies.IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(policy => !policy.IsDeleted && policy.IsActive)
+            .Where(policy =>
+                !policy.IsDeleted &&
+                policy.IsActive &&
+                _dbContext.TenantDefinitions.IgnoreQueryFilters().Any(tenant =>
+                    !tenant.IsDeleted &&
+                    tenant.IsActive &&
+                    tenant.TenantCode == policy.SourceTenantCode) &&
+                _dbContext.TenantDefinitions.IgnoreQueryFilters().Any(tenant =>
+                    !tenant.IsDeleted &&
+                    tenant.IsActive &&
+                    tenant.TenantCode == policy.TargetTenantCode) &&
+                _dbContext.TenantOfficeDefinitions.IgnoreQueryFilters().Any(office =>
+                    !office.IsDeleted &&
+                    office.IsActive &&
+                    office.TenantCode == policy.SourceTenantCode &&
+                    office.OfficeCode == policy.SourceOfficeCode) &&
+                _dbContext.TenantOfficeDefinitions.IgnoreQueryFilters().Any(office =>
+                    !office.IsDeleted &&
+                    office.IsActive &&
+                    office.TenantCode == policy.TargetTenantCode &&
+                    office.OfficeCode == policy.TargetOfficeCode))
             .ToList();
 
         return _activePolicies;

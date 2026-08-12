@@ -3,10 +3,12 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:거래플랜.Desktop.App.Converters"
         Title="품목/재고 관리"
+        AutomationProperties.AutomationId="InventoryWindow"
+        AutomationProperties.Name="품목/재고 관리"
         Height="900"
         Width="1220"
-        MinHeight="860"
-        MinWidth="1120"
+        MinHeight="400"
+        MinWidth="640"
         WindowStartupLocation="CenterOwner"
         Background="#151F2E"
         KeyDown="Window_KeyDown">
@@ -137,11 +139,11 @@
     <DockPanel>
         <Border DockPanel.Dock="Top" Background="#1A2B4A" Padding="12,8">
             <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <StackPanel Grid.Row="0" Orientation="Horizontal">
                     <TextBlock Text="품목/재고 관리"
                                FontSize="14"
                                FontWeight="Bold"
@@ -150,7 +152,10 @@
                                Foreground="#90CAF9"
                                Margin="8,0,0,0"/>
                 </StackPanel>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <WrapPanel Grid.Row="1"
+                           Margin="0,8,0,0"
+                           HorizontalAlignment="Right"
+                           VerticalAlignment="Center">
                     <Button Style="{StaticResource TradePlanEditButtonStyle}" Margin="0,0,8,0"
                             Content="신규 품목"
                             Command="{Binding NewItemCommand}"/>
@@ -174,22 +179,27 @@
                             Command="{Binding SaveItemCommand}"/>
                     <Button Style="{StaticResource TradePlanDangerButtonStyle}" Margin="0,0,8,0"
                             Content="선택 품목 삭제"
-                            Command="{Binding DeleteItemCommand}"/>
+                            AutomationProperties.AutomationId="DeleteItemButton"
+                            AutomationProperties.Name="선택 품목 삭제"
+                            IsEnabled="{Binding CanDeleteSelectedItem}"
+                            Click="DeleteItemButton_Click"/>
                     <Button Style="{StaticResource TradePlanDangerButtonStyle}" Margin="0,0,8,0"
                             Content="선택 재고 초기화"
-                            Visibility="{Binding IsAdmin, Converter={StaticResource BoolToVisibility}}"
+                            Visibility="{Binding CanResetInventory, Converter={StaticResource BoolToVisibility}}"
                             ToolTip="선택한 품목들의 재고를 0으로 초기화합니다. 목록에서 Ctrl 또는 Shift로 여러 품목을 선택할 수 있으며, 기존 전표/재고이동 이력은 유지됩니다."
                             Click="ResetInventoryButton_Click"/>
                     <Button Style="{StaticResource TradePlanEditButtonStyle}" Margin="0,0,8,0"
                             Content="재고이동"
-                            Visibility="{Binding IsAdmin, Converter={StaticResource BoolToVisibility}}"
+                            AutomationProperties.AutomationId="InventoryTransferButton"
+                            AutomationProperties.Name="재고이동"
+                            Visibility="{Binding CanManageInventoryTransfers, Converter={StaticResource BoolToVisibility}}"
                             Click="InventoryTransferButton_Click"/>
                     <Rectangle Width="1" Height="20" Fill="#3E5875" Margin="4,0,10,0" VerticalAlignment="Center"/>
                     <Button Style="{StaticResource TradePlanSecondaryButtonStyle}"
                             Content="닫기 (F12)"
                             Margin="0"
                             Click="CloseButton_Click"/>
-                </StackPanel>
+                </WrapPanel>
             </Grid>
         </Border>
 
@@ -199,11 +209,11 @@
                 BorderBrush="#2E4060"
                 BorderThickness="0,0,0,1">
             <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <Grid Grid.Column="0" Margin="0,0,4,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid Grid.Row="0" Margin="0,0,4,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="120"/>
@@ -231,10 +241,11 @@
                                    TextWrapping="Wrap"/>
                     </StackPanel>
                 </Grid>
-                <StackPanel Grid.Column="1"
-                            Orientation="Horizontal"
-                            VerticalAlignment="Center"
-                            Visibility="{Binding CanSwitchOfficeTabs, Converter={StaticResource BoolToVisibility}}">
+                <WrapPanel Grid.Row="1"
+                           Margin="0,6,0,0"
+                           HorizontalAlignment="Right"
+                           VerticalAlignment="Center"
+                           Visibility="{Binding CanSwitchOfficeTabs, Converter={StaticResource BoolToVisibility}}">
                     <Button Style="{StaticResource OfficeTabButtonStyle}"
                             Content="{Binding UsenetTabText}"
                             Background="#1565C0"
@@ -251,7 +262,7 @@
                             BorderBrush="#00897B"
                             Margin="0"
                             Command="{Binding ShowYeonsuOfficeCommand}"/>
-                </StackPanel>
+                </WrapPanel>
             </Grid>
         </Border>
 
@@ -289,11 +300,14 @@
                           Background="#0D1B2A"
                           Cursor="SizeWE"/>
 
-            <Grid Grid.Column="2" Margin="0">
+            <Grid x:Name="InventoryDetailWorkspaceGrid"
+                  Grid.Column="2"
+                  Margin="0">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="156"/>
+                    <RowDefinition Height="3*" MinHeight="56"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*" MinHeight="64" MaxHeight="156"/>
                 </Grid.RowDefinitions>
 
                 <Border Grid.Row="0"
@@ -324,8 +338,14 @@
                     </DockPanel>
                 </Border>
 
-                <ScrollViewer Grid.Row="1" Margin="8,8,8,0" VerticalScrollBarVisibility="Auto">
-                    <StackPanel Grid.IsSharedSizeScope="True">
+                <ScrollViewer x:Name="InventoryDetailScrollViewer"
+                              Grid.Row="1"
+                              Margin="8,8,8,0"
+                              HorizontalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Auto">
+                    <StackPanel x:Name="InventoryDetailContent"
+                                MinWidth="650"
+                                Grid.IsSharedSizeScope="True">
                         <Border Background="#16263D"
                                 Padding="12"
                                 CornerRadius="6"
@@ -535,9 +555,11 @@
                                                 <RowDefinition Height="*"/>
                                             </Grid.RowDefinitions>
                                             <TextBlock Grid.Row="0"
-                                                       Text="최근 이력 / 커스텀 등급단가"
+                                                       Text="최근 이력 (확정 전표 기준) / 커스텀 등급단가"
                                                        Style="{StaticResource MetricCaptionStyle}"/>
-                                            <Grid Grid.Row="1" Margin="0,10,0,8">
+                                            <Grid Grid.Row="1"
+                                                  Margin="0,10,0,8"
+                                                  ToolTip="최신 버전의 확정 구매·판매 전표에 포함된 품목 일자를 표시합니다. 전표 이력이 없으면 가져온 기존 품목 일자를 표시합니다.">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="Auto" SharedSizeGroup="InventoryPriceLabel"/>
                                                     <ColumnDefinition Width="*"/>
@@ -547,13 +569,13 @@
                                                 <Label Grid.Column="0" Content="마지막구매"/>
                                                 <Border Grid.Column="1"
                                                         Style="{StaticResource ValueDisplayBorderStyle}">
-                                                    <TextBlock Text="{Binding EditLastPurchaseDate}"
+                                                    <TextBlock Text="{Binding DisplayLastPurchaseDate}"
                                                                Foreground="#90CAF9"/>
                                                 </Border>
                                                 <Label Grid.Column="2" Content="마지막판매" Margin="8,0,0,0"/>
                                                 <Border Grid.Column="3"
                                                         Style="{StaticResource ValueDisplayBorderStyle}">
-                                                    <TextBlock Text="{Binding EditLastSaleDate}"
+                                                    <TextBlock Text="{Binding DisplayLastSaleDate}"
                                                                Foreground="#90CAF9"/>
                                                 </Border>
                                             </Grid>
@@ -674,32 +696,52 @@
                     </StackPanel>
                 </ScrollViewer>
 
-                <Border Grid.Row="2"
-                        Margin="10,10,10,10"
+                <GridSplitter x:Name="InventoryTransferHistorySplitter"
+                              Grid.Row="2"
+                              Height="6"
+                              HorizontalAlignment="Stretch"
+                              VerticalAlignment="Center"
+                              ResizeDirection="Rows"
+                              ResizeBehavior="PreviousAndNext"
+                              ShowsPreview="True"
+                              Focusable="True"
+                              Background="#2E4060"
+                              Cursor="SizeNS"
+                              AutomationProperties.Name="품목 상세와 재고 이동 이력 높이 조절"
+                              ToolTip="위아래로 끌어 품목 상세와 재고 이동 이력 영역의 높이를 조절합니다."/>
+
+                <Border x:Name="InventoryTransferHistoryPanel"
+                        Grid.Row="3"
+                        Margin="8,2,8,4"
                         Background="#16263D"
-                        Padding="12"
+                        Padding="4"
                         CornerRadius="6"
                         BorderBrush="#2E4060"
-                        BorderThickness="1">
+                        BorderThickness="1"
+                        ToolTip="선택한 품목의 지점 이동 내역입니다. 위 경계를 끌어 이력 영역을 확대할 수 있습니다.">
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
 
-                        <DockPanel Grid.Row="0" Margin="0,0,0,8">
+                        <DockPanel Grid.Row="0" Margin="0,0,0,2">
                             <TextBlock Text="재고 이동 / 입출고 내역 (재고 품목만)"
                                        FontSize="14"
                                        FontWeight="Bold"
                                        Foreground="#4FC3F7"/>
                             <TextBlock DockPanel.Dock="Right"
-                                       Text="선택한 품목의 지점 이동 내역을 확인합니다."
+                                       Text="↕ 경계를 끌어 확대"
+                                       FontSize="11"
                                        Foreground="#9FB3C8"/>
                         </DockPanel>
 
-                        <DataGrid Grid.Row="1"
+                        <DataGrid x:Name="InventoryTransferHistoryDataGrid"
+                                  Grid.Row="1"
                                   ItemsSource="{Binding SelectedItemMovements}"
                                   IsReadOnly="True"
+                                  ColumnHeaderHeight="22"
+                                  RowHeight="22"
                                   BorderThickness="0">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="일자" Binding="{Binding OccurredDate}" Width="95"/>

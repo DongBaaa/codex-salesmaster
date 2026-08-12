@@ -157,7 +157,14 @@ public sealed class TradePlanDesignSystemTests
                 if (tag.Contains("Background=", StringComparison.Ordinal) &&
                     !tag.Contains("TradePlan", StringComparison.Ordinal))
                 {
-                    remaining.Add($"{Path.GetFileName(xamlPath)}:{GetLineNumber(xaml, match.Index)}");
+                    var identityMatch = Regex.Match(
+                        tag,
+                        "(?:Content|ToolTip|x:Name)=\"(?<identity>[^\"]+)\"",
+                        RegexOptions.CultureInvariant);
+                    var identity = identityMatch.Success
+                        ? identityMatch.Groups["identity"].Value
+                        : "(이름 없음)";
+                    remaining.Add($"{Path.GetFileName(xamlPath)}:{identity}");
                 }
             }
         }
@@ -165,12 +172,12 @@ public sealed class TradePlanDesignSystemTests
         Assert.Equal(
             new[]
             {
-                "InventoryWindow.xaml:238",
-                "InventoryWindow.xaml:243",
-                "InventoryWindow.xaml:248",
-                "PaymentWindow.xaml:239",
-                "RentalBillingWindow.xaml:322",
-                "SalesWindow.xaml:304"
+                "InventoryWindow.xaml:{Binding UsenetTabText}",
+                "InventoryWindow.xaml:{Binding ItworldTabText}",
+                "InventoryWindow.xaml:{Binding YeonsuTabText}",
+                "PaymentWindow.xaml:{Binding CustomerName}",
+                "RentalBillingWindow.xaml:미처리 거래처만 보기",
+                "SalesWindow.xaml:{Binding CustomerName}"
             },
             remaining);
     }

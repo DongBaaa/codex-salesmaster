@@ -9,6 +9,7 @@ public sealed class RecycleBinViewModel : ObservableObject
 {
     private readonly GeoraePlanApiClient _api;
     private readonly SessionStore _sessionStore;
+    private readonly MobileOwnerOperationGate _ownerOperations;
 
     private string _searchText = string.Empty;
     private string _selectedKind = string.Empty;
@@ -19,6 +20,8 @@ public sealed class RecycleBinViewModel : ObservableObject
     {
         _api = api;
         _sessionStore = sessionStore;
+        _ownerOperations =
+            new MobileOwnerOperationGate(sessionStore);
         RefreshCommand = new AsyncCommand(RefreshAsync);
 
         KindOptions.Add(new RecycleBinFilterOption(string.Empty, "전체"));
@@ -72,88 +75,212 @@ public sealed class RecycleBinViewModel : ObservableObject
 
     public async Task RefreshAsync()
     {
-        if (IsBusy)
+        var operation = _ownerOperations.TryBegin(
+            ClearStaleOwnerView,
+            deferRefreshWhenBusy: true);
+        IsBusy = _ownerOperations.IsBusy;
+        if (operation is null)
             return;
 
         if (!CanManageRecycleBinData)
         {
             ReplaceEntries([]);
             StatusMessage = "휴지통 조회/복원 권한이 없습니다. 관리자에게 Data.BackupRestore 권한을 요청하세요.";
+            _ownerOperations.Complete(
+                operation,
+                ClearStaleOwnerView);
+            IsBusy = _ownerOperations.IsBusy;
             return;
         }
 
+        var owner = operation.Owner;
+        var runDeferredRefresh = false;
         try
         {
-            IsBusy = true;
-            await RefreshCoreAsync();
+            await RefreshCoreAsync(owner);
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            if (_ownerOperations.CanCommit(operation))
+                ClearStaleOwnerView();
+        }
+        catch (MobileClientUpgradeRequiredException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            StatusMessage = $"휴지통 조회 실패: {ex.Message}";
+            if (_ownerOperations.CanCommit(operation))
+                StatusMessage = $"휴지통 조회 실패: {ex.Message}";
         }
         finally
         {
-            IsBusy = false;
+            runDeferredRefresh = _ownerOperations.Complete(
+                operation,
+                ClearStaleOwnerView);
+            IsBusy = _ownerOperations.IsBusy;
+            if (runDeferredRefresh)
+                await RefreshAsync();
         }
     }
 
     public async Task RestoreAsync(RecycleBinEntryDto entry)
     {
-        if (entry is null || IsBusy)
+        if (entry is null)
+            return;
+
+        var operation = _ownerOperations.TryBegin(
+            ClearStaleOwnerView,
+            deferRefreshWhenBusy: false);
+        IsBusy = _ownerOperations.IsBusy;
+        if (operation is null)
             return;
 
         if (!CanManageRecycleBinData)
         {
             StatusMessage = "휴지통 복원 권한이 없습니다. 관리자에게 Data.BackupRestore 권한을 요청하세요.";
+            _ownerOperations.Complete(
+                operation,
+                ClearStaleOwnerView);
+            IsBusy = _ownerOperations.IsBusy;
             return;
         }
 
+        var currentEntry = Entries.FirstOrDefault(
+            candidate =>
+                candidate.EntityId == entry.EntityId &&
+                candidate.Revision == entry.Revision &&
+                string.Equals(
+                    candidate.Kind,
+                    entry.Kind,
+                    StringComparison.OrdinalIgnoreCase));
+        if (currentEntry is null)
+        {
+            _ownerOperations.Complete(
+                operation,
+                ClearStaleOwnerView);
+            IsBusy = _ownerOperations.IsBusy;
+            return;
+        }
+
+        var owner = operation.Owner;
+        var target = new RecycleBinMutationTargetDto
+        {
+            EntityId = currentEntry.EntityId,
+            Kind = currentEntry.Kind,
+            ExpectedRevision = currentEntry.Revision
+        };
         try
         {
-            IsBusy = true;
+            _sessionStore.ThrowIfOwnerChanged(owner);
             var result = await _api.RestoreRecycleBinAsync(
-                [new RecycleBinMutationTargetDto { EntityId = entry.EntityId, Kind = entry.Kind, ExpectedRevision = entry.Revision }]);
+                [target],
+                owner);
 
-            await RefreshCoreAsync();
+            await RefreshCoreAsync(owner);
+            _sessionStore.ThrowIfOwnerChanged(owner);
             StatusMessage = BuildMutationMessage("복원", result);
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            if (_ownerOperations.CanCommit(operation))
+                ClearStaleOwnerView();
+        }
+        catch (MobileClientUpgradeRequiredException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            StatusMessage = $"휴지통 복원 실패: {ex.Message}";
+            if (_ownerOperations.CanCommit(operation))
+                StatusMessage = $"휴지통 복원 실패: {ex.Message}";
         }
         finally
         {
-            IsBusy = false;
+            _ownerOperations.Complete(
+                operation,
+                ClearStaleOwnerView);
+            IsBusy = _ownerOperations.IsBusy;
         }
     }
 
     public async Task PurgeAsync(RecycleBinEntryDto entry)
     {
-        if (entry is null || IsBusy)
+        if (entry is null)
+            return;
+
+        var operation = _ownerOperations.TryBegin(
+            ClearStaleOwnerView,
+            deferRefreshWhenBusy: false);
+        IsBusy = _ownerOperations.IsBusy;
+        if (operation is null)
             return;
 
         if (!CanManageRecycleBinData)
         {
             StatusMessage = "휴지통 영구삭제 권한이 없습니다. 관리자에게 Data.BackupRestore 권한을 요청하세요.";
+            _ownerOperations.Complete(
+                operation,
+                ClearStaleOwnerView);
+            IsBusy = _ownerOperations.IsBusy;
             return;
         }
 
+        var currentEntry = Entries.FirstOrDefault(
+            candidate =>
+                candidate.EntityId == entry.EntityId &&
+                candidate.Revision == entry.Revision &&
+                string.Equals(
+                    candidate.Kind,
+                    entry.Kind,
+                    StringComparison.OrdinalIgnoreCase));
+        if (currentEntry is null)
+        {
+            _ownerOperations.Complete(
+                operation,
+                ClearStaleOwnerView);
+            IsBusy = _ownerOperations.IsBusy;
+            return;
+        }
+
+        var owner = operation.Owner;
+        var target = new RecycleBinMutationTargetDto
+        {
+            EntityId = currentEntry.EntityId,
+            Kind = currentEntry.Kind,
+            ExpectedRevision = currentEntry.Revision
+        };
         try
         {
-            IsBusy = true;
+            _sessionStore.ThrowIfOwnerChanged(owner);
             var result = await _api.PurgeRecycleBinAsync(
-                [new RecycleBinMutationTargetDto { EntityId = entry.EntityId, Kind = entry.Kind, ExpectedRevision = entry.Revision }]);
+                [target],
+                owner);
 
-            await RefreshCoreAsync();
+            await RefreshCoreAsync(owner);
+            _sessionStore.ThrowIfOwnerChanged(owner);
             StatusMessage = BuildMutationMessage("영구삭제", result);
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            if (_ownerOperations.CanCommit(operation))
+                ClearStaleOwnerView();
+        }
+        catch (MobileClientUpgradeRequiredException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            StatusMessage = $"휴지통 영구삭제 실패: {ex.Message}";
+            if (_ownerOperations.CanCommit(operation))
+                StatusMessage = $"휴지통 영구삭제 실패: {ex.Message}";
         }
         finally
         {
-            IsBusy = false;
+            _ownerOperations.Complete(
+                operation,
+                ClearStaleOwnerView);
+            IsBusy = _ownerOperations.IsBusy;
         }
     }
 
@@ -164,8 +291,10 @@ public sealed class RecycleBinViewModel : ObservableObject
             Entries.Add(entry);
     }
 
-    private async Task RefreshCoreAsync()
+    private async Task RefreshCoreAsync(
+        MobileSessionOwner owner)
     {
+        _sessionStore.ThrowIfOwnerChanged(owner);
         if (!CanManageRecycleBinData)
         {
             ReplaceEntries([]);
@@ -174,11 +303,33 @@ public sealed class RecycleBinViewModel : ObservableObject
         }
 
         StatusMessage = "휴지통을 조회하고 있습니다.";
-        var result = await _api.GetRecycleBinAsync(SelectedKind, SearchText);
+        var selectedKind = SelectedKind;
+        var searchText = SearchText;
+        var result = await _api.GetRecycleBinAsync(
+            selectedKind,
+            searchText,
+            owner);
+        _sessionStore.ThrowIfOwnerChanged(owner);
+        if (!CanManageRecycleBinData)
+        {
+            ReplaceEntries([]);
+            StatusMessage =
+                "휴지통 권한이 변경되어 표시 중인 결과를 비웠습니다.";
+            return;
+        }
         ReplaceEntries(result);
         StatusMessage = result.Count == 0
             ? "휴지통이 비어 있습니다."
             : $"휴지통 {result.Count:N0}건";
+    }
+
+    private void ClearStaleOwnerView()
+    {
+        ReplaceEntries([]);
+        SearchText = string.Empty;
+        SelectedKind = string.Empty;
+        StatusMessage =
+            "로그인 범위가 변경되어 휴지통 결과를 비우고 작업을 중단했습니다.";
     }
 
     private static string BuildMutationMessage(string action, RecycleBinMutationResultDto? result)

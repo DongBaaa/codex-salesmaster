@@ -3,6 +3,7 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <DefineConstants>$(DefineConstants);GEORAEPLAN_SERVER</DefineConstants>
     <AssemblyTitle>거래플랜 API</AssemblyTitle>
     <Product>거래플랜 API</Product>
   </PropertyGroup>
@@ -17,10 +18,13 @@
     </PackageReference>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.15" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.4" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\Shared\거래플랜.Shared.Contracts\거래플랜.Shared.Contracts.csproj" />
+    <Compile Include="..\..\tools\SyncDiag\IsolatedTestServerSqliteFinalizer.cs"
+             Link="TestTools\IsolatedTestServerSqliteFinalizer.cs" />
   </ItemGroup>
 </Project>

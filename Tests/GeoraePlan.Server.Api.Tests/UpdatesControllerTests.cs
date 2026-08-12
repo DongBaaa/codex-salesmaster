@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text.Json;
 using 거래플랜.Server.Api.Controllers;
 using 거래플랜.Server.Api.Services;
@@ -51,6 +53,526 @@ public sealed class UpdatesControllerTests : IDisposable
         Assert.NotNull(payload.Desktop);
         Assert.Equal(version, payload.Desktop!.MinimumSupportedVersion);
         Assert.Equal($"https://updates.example.com/updates/download/desktop/{Uri.EscapeDataString(fileName)}", payload.Desktop.PackageUrl);
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_UsesPointerSelectedImmutableGeneration()
+    {
+        const string generationId = "0123456789abcdef0123456789abcdef";
+        var generationManifest = new AppUpdateManifestDto
+        {
+            Channel = "stable",
+            GenerationId = generationId,
+            Desktop = new AppUpdatePackageDto
+            {
+                Platform = "desktop",
+                Version = "2.0.0",
+                FileName = "generation.zip",
+                Sha256 = new string('A', 64),
+                FileSize = 123
+            }
+        };
+        await WriteManifestAsync(
+            "stable",
+            new AppUpdateManifestDto
+            {
+                Channel = "stable",
+                Desktop = new AppUpdatePackageDto
+                {
+                    Platform = "desktop",
+                    Version = "1.0.0",
+                    FileName = "legacy.zip",
+                    Sha256 = new string('B', 64),
+                    FileSize = 456
+                }
+            });
+        await WritePointerGenerationAsync(
+            "stable",
+            generationId,
+            generationManifest);
+
+        var response = await CreateController().GetManifestAsync(
+            "stable",
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<AppUpdateManifestDto>(ok.Value);
+        Assert.Equal(generationId, payload.GenerationId);
+        Assert.Equal("2.0.0", payload.Desktop?.Version);
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_ReturnsPreviousGenerationAfterPointerAwareRollback()
+    {
+        const string previousGenerationId =
+            "0123456789abcdef0123456789abcdef";
+        const string currentGenerationId =
+            "fedcba9876543210fedcba9876543210";
+        var projectRoot = Path.Combine(_storageRoot, "rollback-project");
+        var deliveryRoot = Path.Combine(projectRoot, "\uBC30\uD3EC");
+        var deliveryGenerationRoot = Path.Combine(
+            deliveryRoot,
+            ".georaeplan-release-generations",
+            "stable");
+        var stagedDeliveryGenerationRoot = Path.Combine(
+            _storageRoot,
+            "manifest",
+            "delivery-generations",
+            "stable");
+        var runtimeGenerationRoot = Path.Combine(
+            _storageRoot,
+            "manifest",
+            "generations",
+            "stable");
+        Directory.CreateDirectory(deliveryGenerationRoot);
+        Directory.CreateDirectory(stagedDeliveryGenerationRoot);
+        Directory.CreateDirectory(runtimeGenerationRoot);
+        var desktopRoot = Path.Combine(_storageRoot, "downloads", "desktop");
+        var previousPackagePath =
+            Path.Combine(desktopRoot, "desktop-previous.zip");
+        var currentPackagePath =
+            Path.Combine(desktopRoot, "desktop-current.zip");
+        await File.WriteAllTextAsync(previousPackagePath, "previous");
+        await File.WriteAllTextAsync(currentPackagePath, "current");
+
+        static AppUpdateManifestDto CreateManifest(
+            string generationId,
+            string version,
+            string packagePath)
+        {
+            var packageBytes = File.ReadAllBytes(packagePath);
+            return new AppUpdateManifestDto
+            {
+                Channel = "stable",
+                GenerationId = generationId,
+                Desktop = new AppUpdatePackageDto
+                {
+                    Platform = "desktop",
+                    Version = version,
+                    FileName = Path.GetFileName(packagePath),
+                    Sha256 = Convert.ToHexString(SHA256.HashData(packageBytes)),
+                    FileSize = packageBytes.LongLength
+                }
+            };
+        }
+
+        var previousManifest = CreateManifest(
+            previousGenerationId,
+            "1.0.0",
+            previousPackagePath);
+        var currentManifest = CreateManifest(
+            currentGenerationId,
+            "2.0.0",
+            currentPackagePath);
+        var jsonOptions =
+            new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var previousBytes =
+            JsonSerializer.SerializeToUtf8Bytes(previousManifest, jsonOptions);
+        var currentBytes =
+            JsonSerializer.SerializeToUtf8Bytes(currentManifest, jsonOptions);
+        var previousRuntimePath = Path.Combine(
+            runtimeGenerationRoot,
+            previousGenerationId + ".json");
+        var currentRuntimePath = Path.Combine(
+            runtimeGenerationRoot,
+            currentGenerationId + ".json");
+        var previousDeliveryPath = Path.Combine(
+            deliveryGenerationRoot,
+            previousGenerationId + ".json");
+        var previousStagedDeliveryPath = Path.Combine(
+            stagedDeliveryGenerationRoot,
+            previousGenerationId + ".json");
+        var currentDeliveryPath = Path.Combine(
+            deliveryGenerationRoot,
+            currentGenerationId + ".json");
+        await File.WriteAllBytesAsync(previousRuntimePath, previousBytes);
+        await File.WriteAllBytesAsync(currentRuntimePath, currentBytes);
+        await File.WriteAllBytesAsync(
+            previousStagedDeliveryPath,
+            previousBytes);
+        await File.WriteAllBytesAsync(currentDeliveryPath, currentBytes);
+        await File.WriteAllBytesAsync(
+            Path.Combine(_storageRoot, "manifest", "stable.json"),
+            currentBytes);
+        await File.WriteAllBytesAsync(
+            Path.Combine(_storageRoot, "manifest", "stable.previous.json"),
+            previousBytes);
+        await File.WriteAllBytesAsync(
+            Path.Combine(deliveryRoot, "stable.json"),
+            currentBytes);
+        var currentHash =
+            Convert.ToHexString(SHA256.HashData(currentBytes));
+        var pointer = new Dictionary<string, string>
+        {
+            ["owner"] = "georaeplan-release-manifest-pointer",
+            ["schemaVersion"] = "1",
+            ["channel"] = "stable",
+            ["generationId"] = currentGenerationId,
+            ["manifestRelativePath"] =
+                $"generations/stable/{currentGenerationId}.json",
+            ["manifestSha256"] = currentHash,
+            ["manifestFileSize"] = currentBytes.LongLength.ToString(
+                System.Globalization.CultureInfo.InvariantCulture),
+            ["deliveryManifestPath"] = currentDeliveryPath,
+            ["deliveryManifestSha256"] = currentHash,
+            ["deliveryManifestFileSize"] = currentBytes.LongLength.ToString(
+                System.Globalization.CultureInfo.InvariantCulture)
+        };
+        await File.WriteAllBytesAsync(
+            Path.Combine(
+                _storageRoot,
+                "manifest",
+                "stable.current.json"),
+            JsonSerializer.SerializeToUtf8Bytes(pointer));
+
+        var rollbackScript = Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "release",
+            "Restore-GeoraePlanPreviousUpdateManifest.ps1");
+        var rollback = await RunPowerShellAsync(
+            rollbackScript,
+            ("-ProjectRoot", projectRoot),
+            ("-OutputRoot", _storageRoot),
+            ("-Apply", null));
+
+        Assert.True(
+            rollback.ExitCode == 0,
+            rollback.StdOut + Environment.NewLine + rollback.StdErr);
+        Assert.Contains(
+            $"rollback_manifest=SWAPPED generation={previousGenerationId}",
+            rollback.StdOut,
+            StringComparison.Ordinal);
+        var response = await CreateController().GetManifestAsync(
+            "stable",
+            CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<AppUpdateManifestDto>(ok.Value);
+        Assert.Equal(previousGenerationId, payload.GenerationId);
+        Assert.Equal("1.0.0", payload.Desktop?.Version);
+        Assert.Equal(
+            Convert.ToHexString(SHA256.HashData(previousBytes)),
+            Convert.ToHexString(SHA256.HashData(
+                await File.ReadAllBytesAsync(previousDeliveryPath))));
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_FailsClosed_WhenPointerGenerationIsMissing()
+    {
+        const string generationId = "123456789abcdef0123456789abcdef0";
+        await WriteManifestAsync(
+            "stable",
+            new AppUpdateManifestDto
+            {
+                Channel = "stable",
+                Desktop = new AppUpdatePackageDto
+                {
+                    Platform = "desktop",
+                    Version = "1.0.0",
+                    FileName = "legacy.zip",
+                    Sha256 = new string('A', 64),
+                    FileSize = 1
+                }
+            });
+        await WriteManifestPointerAsync(
+            "stable",
+            generationId,
+            new string('B', 64),
+            123);
+
+        var response = await CreateController().GetManifestAsync(
+            "stable",
+            CancellationToken.None);
+
+        var unavailable = Assert.IsType<ObjectResult>(response.Result);
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, unavailable.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_FailsClosed_WhenPointerHashDoesNotMatch()
+    {
+        const string generationId = "23456789abcdef0123456789abcdef01";
+        await WritePointerGenerationAsync(
+            "stable",
+            generationId,
+            new AppUpdateManifestDto
+            {
+                Channel = "stable",
+                GenerationId = generationId
+            },
+            pointerSha256: new string('F', 64));
+
+        var response = await CreateController().GetManifestAsync(
+            "stable",
+            CancellationToken.None);
+
+        var unavailable = Assert.IsType<ObjectResult>(response.Result);
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, unavailable.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_FailsClosed_WhenGeneratedCompatibilityManifestHasNoPointer()
+    {
+        const string generationId = "3456789abcdef0123456789abcdef012";
+        await WriteManifestAsync(
+            "stable",
+            new AppUpdateManifestDto
+            {
+                Channel = "stable",
+                GenerationId = generationId
+            });
+
+        var response = await CreateController().GetManifestAsync(
+            "stable",
+            CancellationToken.None);
+
+        var unavailable = Assert.IsType<ObjectResult>(response.Result);
+        Assert.Equal(
+            StatusCodes.Status503ServiceUnavailable,
+            unavailable.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_FailsClosed_WhenLegacyGenerationIdIsWhitespace()
+    {
+        await WriteManifestAsync(
+            "stable",
+            new AppUpdateManifestDto
+            {
+                Channel = "stable",
+                GenerationId = " "
+            });
+
+        var response = await CreateController().GetManifestAsync(
+            "stable",
+            CancellationToken.None);
+
+        var unavailable = Assert.IsType<ObjectResult>(response.Result);
+        Assert.Equal(
+            StatusCodes.Status503ServiceUnavailable,
+            unavailable.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_FailsClosed_WhenLegacyManifestChannelDoesNotMatch()
+    {
+        await WriteManifestAsync(
+            "stable",
+            new AppUpdateManifestDto
+            {
+                Channel = "beta"
+            });
+
+        var response = await CreateController().GetManifestAsync(
+            "stable",
+            CancellationToken.None);
+
+        var unavailable = Assert.IsType<ObjectResult>(response.Result);
+        Assert.Equal(
+            StatusCodes.Status503ServiceUnavailable,
+            unavailable.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("beta", false)]
+    [InlineData("beta", true)]
+    [InlineData("test", false)]
+    [InlineData("test", true)]
+    public async Task GetManifestAsync_AllowsLegacyMissingOrEmptyChannel(
+        string channel,
+        bool includeEmptyChannel)
+    {
+        var manifestPath = Path.Combine(
+            _storageRoot,
+            "manifest",
+            channel + ".json");
+        var json = includeEmptyChannel
+            ? """{"channel":"","desktop":null,"android":null}"""
+            : """{"desktop":null,"android":null}""";
+        await File.WriteAllTextAsync(manifestPath, json);
+
+        var response = await CreateController().GetManifestAsync(
+            channel,
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<AppUpdateManifestDto>(ok.Value);
+        Assert.Equal(channel, payload.Channel);
+        Assert.Empty(payload.GenerationId);
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_FailsClosed_WhenPointerEvidencePairDiffers()
+    {
+        const string generationId = "456789abcdef0123456789abcdef0123";
+        await WritePointerGenerationAsync(
+            "stable",
+            generationId,
+            new AppUpdateManifestDto
+            {
+                Channel = "stable",
+                GenerationId = generationId
+            },
+            deliverySha256: new string('E', 64));
+
+        var response = await CreateController().GetManifestAsync(
+            "stable",
+            CancellationToken.None);
+
+        var unavailable = Assert.IsType<ObjectResult>(response.Result);
+        Assert.Equal(
+            StatusCodes.Status503ServiceUnavailable,
+            unavailable.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_FailsClosed_WhenSelectedGenerationChannelDiffers()
+    {
+        const string generationId = "56789abcdef0123456789abcdef01234";
+        await WritePointerGenerationAsync(
+            "stable",
+            generationId,
+            new AppUpdateManifestDto
+            {
+                Channel = "beta",
+                GenerationId = generationId
+            });
+
+        var response = await CreateController().GetManifestAsync(
+            "stable",
+            CancellationToken.None);
+
+        var unavailable = Assert.IsType<ObjectResult>(response.Result);
+        Assert.Equal(
+            StatusCodes.Status503ServiceUnavailable,
+            unavailable.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GetManifestAsync_FailsClosed_WhenSelectedGenerationChannelIsMissingOrEmpty(
+        bool includeEmptyChannel)
+    {
+        const string generationId =
+            "6789abcdef0123456789abcdef012345";
+        var generationDirectory = Path.Combine(
+            _storageRoot,
+            "manifest",
+            "generations",
+            "stable");
+        Directory.CreateDirectory(generationDirectory);
+        var json = includeEmptyChannel
+            ? $$"""{"channel":"","generationId":"{{generationId}}"}"""
+            : $$"""{"generationId":"{{generationId}}"}""";
+        var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+        await File.WriteAllBytesAsync(
+            Path.Combine(
+                generationDirectory,
+                generationId + ".json"),
+            bytes);
+        await WriteManifestPointerAsync(
+            "stable",
+            generationId,
+            Convert.ToHexString(SHA256.HashData(bytes)),
+            bytes.LongLength);
+
+        var response = await CreateController().GetManifestAsync(
+            "stable",
+            CancellationToken.None);
+
+        var unavailable = Assert.IsType<ObjectResult>(response.Result);
+        Assert.Equal(
+            StatusCodes.Status503ServiceUnavailable,
+            unavailable.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetManifestAsync_ConcurrentPointerReplacement_ReturnsWholeGenerationsOrTransientUnavailable()
+    {
+        const string firstGeneration = "3456789abcdef0123456789abcdef012";
+        const string secondGeneration = "456789abcdef0123456789abcdef0123";
+        var firstPointer = await WritePointerGenerationAsync(
+            "stable",
+            firstGeneration,
+            new AppUpdateManifestDto
+            {
+                Channel = "stable",
+                GenerationId = firstGeneration,
+                Desktop = new AppUpdatePackageDto { Version = "3.0.0" }
+            });
+        var secondPointer = await WritePointerGenerationAsync(
+            "stable",
+            secondGeneration,
+            new AppUpdateManifestDto
+            {
+                Channel = "stable",
+                GenerationId = secondGeneration,
+                Desktop = new AppUpdatePackageDto { Version = "4.0.0" }
+            });
+        var pointerPath = Path.Combine(
+            _storageRoot,
+            "manifest",
+            "stable.current.json");
+        await File.WriteAllBytesAsync(pointerPath, firstPointer);
+
+        var readerTasks = Enumerable.Range(0, 4)
+            .Select(async _ =>
+            {
+                var observed = new List<string>();
+                for (var index = 0; index < 75; index++)
+                {
+                    var response = await CreateController().GetManifestAsync(
+                        "stable",
+                        CancellationToken.None);
+                    if (response.Result is not OkObjectResult ok)
+                    {
+                        Assert.True(
+                            response.Result is NotFoundObjectResult ||
+                            response.Result is ObjectResult
+                            {
+                                StatusCode: StatusCodes.Status503ServiceUnavailable
+                            },
+                            $"Unexpected result type: {response.Result?.GetType().FullName ?? "<null>"}");
+                        continue;
+                    }
+
+                    var manifest = Assert.IsType<AppUpdateManifestDto>(ok.Value);
+                    Assert.Contains(
+                        manifest.GenerationId,
+                        new[] { firstGeneration, secondGeneration });
+                    observed.Add(manifest.GenerationId);
+                }
+                return observed;
+            })
+            .ToArray();
+        var writerTask = Task.Run(async () =>
+        {
+            for (var index = 0; index < 150; index++)
+            {
+                var pendingPath = pointerPath + "." + Guid.NewGuid().ToString("N");
+                var backupPath = pointerPath + "." + Guid.NewGuid().ToString("N") + ".bak";
+                await File.WriteAllBytesAsync(
+                    pendingPath,
+                    index % 2 == 0 ? secondPointer : firstPointer);
+                try
+                {
+                    File.Replace(
+                        pendingPath,
+                        pointerPath,
+                        backupPath,
+                        ignoreMetadataErrors: true);
+                }
+                finally
+                {
+                    File.Delete(pendingPath);
+                    File.Delete(backupPath);
+                }
+            }
+        });
+
+        await Task.WhenAll(readerTasks.Cast<Task>().Append(writerTask));
+        Assert.NotEmpty(readerTasks.SelectMany(task => task.Result));
     }
 
     [Fact]
@@ -347,6 +869,233 @@ public sealed class UpdatesControllerTests : IDisposable
         Assert.IsType<NotFoundResult>(result);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DownloadEndpoints_ReturnServiceUnavailable_WhenPackageOpenRaces(
+        bool headRequest)
+    {
+        const string fileName = "locked-package.zip";
+        var packagePath = Path.Combine(
+            _storageRoot,
+            "downloads",
+            "desktop",
+            fileName);
+        File.WriteAllBytes(packagePath, [1, 2, 3, 4]);
+        using var exclusiveLease = new FileStream(
+            packagePath,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.None);
+        var controller = CreateController();
+
+        var result = headRequest
+            ? controller.HeadPackage("desktop", fileName)
+            : controller.DownloadPackage("desktop", fileName);
+
+        var unavailable = Assert.IsType<StatusCodeResult>(result);
+        Assert.Equal(
+            StatusCodes.Status503ServiceUnavailable,
+            unavailable.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DownloadEndpoints_ReturnNotFound_WhenPackageDisappears(
+        bool headRequest)
+    {
+        const string fileName = "missing-package.zip";
+        var controller = CreateController();
+
+        var result = headRequest
+            ? controller.HeadPackage("desktop", fileName)
+            : controller.DownloadPackage("desktop", fileName);
+
+        Assert.IsType<NotFoundResult>(result);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DownloadEndpoints_RejectAncestorReparsePoint(
+        bool headRequest)
+    {
+        const string fileName = "external-package.zip";
+        var platformRoot = Path.Combine(
+            _storageRoot,
+            "downloads",
+            "desktop");
+        var outsideRoot = Path.Combine(
+            Path.GetTempPath(),
+            "georaeplan-updates-outside-tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideRoot);
+        File.WriteAllBytes(
+            Path.Combine(outsideRoot, fileName),
+            [9, 9, 9, 9, 9]);
+        Directory.Delete(platformRoot);
+        CreateDirectoryLink(platformRoot, outsideRoot);
+        try
+        {
+            var controller = CreateController();
+
+            var result = headRequest
+                ? controller.HeadPackage("desktop", fileName)
+                : controller.DownloadPackage("desktop", fileName);
+
+            var unavailable = Assert.IsType<StatusCodeResult>(result);
+            Assert.Equal(
+                StatusCodes.Status503ServiceUnavailable,
+                unavailable.StatusCode);
+        }
+        finally
+        {
+            RemoveDirectoryEntry(platformRoot);
+            Directory.CreateDirectory(platformRoot);
+            Directory.Delete(outsideRoot, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DownloadEndpoints_RejectLeafReparsePoint(
+        bool headRequest)
+    {
+        const string fileName = "linked-package.zip";
+        var linkPath = Path.Combine(
+            _storageRoot,
+            "downloads",
+            "desktop",
+            fileName);
+        var outsideRoot = Path.Combine(
+            Path.GetTempPath(),
+            "georaeplan-updates-leaf-link-tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideRoot);
+        CreateDirectoryLink(linkPath, outsideRoot);
+        try
+        {
+            var controller = CreateController();
+
+            var result = headRequest
+                ? controller.HeadPackage("desktop", fileName)
+                : controller.DownloadPackage("desktop", fileName);
+
+            var unavailable = Assert.IsType<StatusCodeResult>(result);
+            Assert.Equal(
+                StatusCodes.Status503ServiceUnavailable,
+                unavailable.StatusCode);
+        }
+        finally
+        {
+            RemoveDirectoryEntry(linkPath);
+            Directory.Delete(outsideRoot, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DownloadEndpoints_NeverServeExternalBytesDuringReparseRace(
+        bool headRequest)
+    {
+        const string fileName = "racing-package.zip";
+        byte[] safeBytes = [1, 2, 3];
+        byte[] externalBytes = Enumerable.Repeat((byte)9, 17).ToArray();
+        var platformRoot = Path.Combine(
+            _storageRoot,
+            "downloads",
+            "desktop");
+        var safePackagePath = Path.Combine(platformRoot, fileName);
+        var outsideRoot = Path.Combine(
+            Path.GetTempPath(),
+            "georaeplan-updates-reparse-race-tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideRoot);
+        File.WriteAllBytes(
+            Path.Combine(outsideRoot, fileName),
+            externalBytes);
+        File.WriteAllBytes(safePackagePath, safeBytes);
+
+        try
+        {
+            var writer = Task.Run(async () =>
+            {
+                for (var index = 0; index < 12; index++)
+                {
+                    RetryPathMutation(() =>
+                    {
+                        RemoveDirectoryEntry(platformRoot);
+                        CreateDirectoryLink(platformRoot, outsideRoot);
+                    });
+                    await Task.Yield();
+                    RetryPathMutation(() =>
+                    {
+                        RemoveDirectoryEntry(platformRoot);
+                        Directory.CreateDirectory(platformRoot);
+                        File.WriteAllBytes(safePackagePath, safeBytes);
+                    });
+                }
+            });
+            var readers = Enumerable.Range(0, 2)
+                .Select(async _ =>
+                {
+                    for (var index = 0; index < 80; index++)
+                    {
+                        var controller = CreateController();
+                        var result = headRequest
+                            ? controller.HeadPackage("desktop", fileName)
+                            : controller.DownloadPackage(
+                                "desktop",
+                                fileName);
+                        if (result is FileStreamResult fileResult)
+                        {
+                            await using var stream = fileResult.FileStream;
+                            using var buffer = new MemoryStream();
+                            await stream.CopyToAsync(buffer);
+                            Assert.Equal(safeBytes, buffer.ToArray());
+                        }
+                        else if (result is EmptyResult)
+                        {
+                            Assert.True(headRequest);
+                            Assert.Equal(
+                                safeBytes.LongLength,
+                                controller.Response.ContentLength);
+                        }
+                        else if (result is NotFoundResult)
+                        {
+                        }
+                        else if (result is StatusCodeResult status)
+                        {
+                            Assert.Equal(
+                                StatusCodes.Status503ServiceUnavailable,
+                                status.StatusCode);
+                        }
+                        else
+                        {
+                            Assert.Fail(
+                                $"Unexpected action result type: {result.GetType().FullName}");
+                        }
+                        await Task.Yield();
+                    }
+                })
+                .ToArray();
+
+            await Task.WhenAll(readers.Cast<Task>().Append(writer));
+        }
+        finally
+        {
+            RetryPathMutation(() =>
+            {
+                RemoveDirectoryEntry(platformRoot);
+                Directory.CreateDirectory(platformRoot);
+            });
+            Directory.Delete(outsideRoot, recursive: true);
+        }
+    }
+
     public void Dispose()
     {
         try
@@ -383,12 +1132,168 @@ public sealed class UpdatesControllerTests : IDisposable
         await File.WriteAllTextAsync(manifestPath, json);
     }
 
+    private async Task<byte[]> WritePointerGenerationAsync(
+        string channel,
+        string generationId,
+        AppUpdateManifestDto manifest,
+        string? pointerSha256 = null,
+        string? deliverySha256 = null,
+        long? deliveryFileSize = null)
+    {
+        var generationDirectory = Path.Combine(
+            _storageRoot,
+            "manifest",
+            "generations",
+            channel);
+        Directory.CreateDirectory(generationDirectory);
+        var manifestBytes = JsonSerializer.SerializeToUtf8Bytes(
+            manifest,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        await File.WriteAllBytesAsync(
+            Path.Combine(generationDirectory, generationId + ".json"),
+            manifestBytes);
+        var sha256 = Convert.ToHexString(SHA256.HashData(manifestBytes));
+        await WriteManifestPointerAsync(
+            channel,
+            generationId,
+            pointerSha256 ?? sha256,
+            manifestBytes.LongLength,
+            deliverySha256,
+            deliveryFileSize);
+        return await File.ReadAllBytesAsync(
+            Path.Combine(_storageRoot, "manifest", channel + ".current.json"));
+    }
+
+    private async Task WriteManifestPointerAsync(
+        string channel,
+        string generationId,
+        string sha256,
+        long fileSize,
+        string? deliverySha256 = null,
+        long? deliveryFileSize = null)
+    {
+        var deliveryPath = Path.Combine(
+            _storageRoot,
+            ".georaeplan-release-generations",
+            channel,
+            generationId + ".json");
+        var pointer = new Dictionary<string, string>
+        {
+            ["owner"] = "georaeplan-release-manifest-pointer",
+            ["schemaVersion"] = "1",
+            ["channel"] = channel,
+            ["generationId"] = generationId,
+            ["manifestRelativePath"] =
+                $"generations/{channel}/{generationId}.json",
+            ["manifestSha256"] = sha256,
+            ["manifestFileSize"] = fileSize.ToString(
+                System.Globalization.CultureInfo.InvariantCulture),
+            ["deliveryManifestPath"] = deliveryPath,
+            ["deliveryManifestSha256"] = deliverySha256 ?? sha256,
+            ["deliveryManifestFileSize"] = (
+                deliveryFileSize ?? fileSize).ToString(
+                System.Globalization.CultureInfo.InvariantCulture)
+        };
+        await File.WriteAllBytesAsync(
+            Path.Combine(_storageRoot, "manifest", channel + ".current.json"),
+            JsonSerializer.SerializeToUtf8Bytes(pointer));
+    }
+
     private static string ReadUpdatesControllerSource()
     {
         var root = FindRepositoryRoot();
         var serverRoot = Path.Combine(root, "Server");
         var apiDirectory = Directory.EnumerateDirectories(serverRoot, "*.Server.Api").Single();
         return File.ReadAllText(Path.Combine(apiDirectory, "Controllers", "UpdatesController.cs"));
+    }
+
+    private static void CreateDirectoryLink(
+        string linkPath,
+        string targetPath)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Directory.CreateSymbolicLink(linkPath, targetPath);
+            return;
+        }
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "cmd.exe",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        foreach (var argument in new[]
+        {
+            "/d",
+            "/c",
+            "mklink",
+            "/J",
+            linkPath,
+            targetPath
+        })
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+        using var process = Process.Start(startInfo)!;
+        var stdout = process.StandardOutput.ReadToEnd();
+        var stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                "Directory junction creation failed." +
+                Environment.NewLine +
+                stdout +
+                Environment.NewLine +
+                stderr);
+        }
+    }
+
+    private static void RemoveDirectoryEntry(string path)
+    {
+        if (!Directory.Exists(path) && !System.IO.File.Exists(path))
+            return;
+        var attributes = System.IO.File.GetAttributes(path);
+        if ((attributes & FileAttributes.ReparsePoint) != 0)
+        {
+            Directory.Delete(path);
+            return;
+        }
+        if ((attributes & FileAttributes.Directory) == 0)
+        {
+            System.IO.File.Delete(path);
+            return;
+        }
+        foreach (var file in Directory.EnumerateFiles(path))
+            System.IO.File.Delete(file);
+        foreach (var directory in Directory.EnumerateDirectories(path))
+            Directory.Delete(directory, recursive: true);
+        Directory.Delete(path);
+    }
+
+    private static void RetryPathMutation(Action action)
+    {
+        Exception? lastError = null;
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            try
+            {
+                action();
+                return;
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException)
+            {
+                lastError = exception;
+                Thread.Sleep(5);
+            }
+        }
+        throw new IOException(
+            "Timed out mutating the download race fixture.",
+            lastError);
     }
 
     private static string FindRepositoryRoot()
@@ -407,6 +1312,46 @@ public sealed class UpdatesControllerTests : IDisposable
 
         throw new DirectoryNotFoundException("Repository root was not found.");
     }
+
+    private static async Task<ProcessResult> RunPowerShellAsync(
+        string scriptPath,
+        params (string Name, string? Value)[] arguments)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "powershell",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add("-NoProfile");
+        startInfo.ArgumentList.Add("-ExecutionPolicy");
+        startInfo.ArgumentList.Add("Bypass");
+        startInfo.ArgumentList.Add("-File");
+        startInfo.ArgumentList.Add(scriptPath);
+        foreach (var (name, value) in arguments)
+        {
+            startInfo.ArgumentList.Add(name);
+            if (value is not null)
+                startInfo.ArgumentList.Add(value);
+        }
+
+        var result =
+            await RedirectedProcessRunner.RunAsync(
+                startInfo,
+                TimeSpan.FromSeconds(120),
+                $"PowerShell script '{scriptPath}'");
+        return new ProcessResult(
+            result.ExitCode,
+            result.StdOut,
+            result.StdErr);
+    }
+
+    private sealed record ProcessResult(
+        int ExitCode,
+        string StdOut,
+        string StdErr);
 
     private static void AssertInOrder(string source, params string[] fragments)
     {

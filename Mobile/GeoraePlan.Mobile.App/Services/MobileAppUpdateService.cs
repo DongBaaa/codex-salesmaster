@@ -12,11 +12,27 @@ namespace GeoraePlan.Mobile.App.Services;
 public sealed class MobileAppUpdateService
 {
     private readonly GeoraePlanApiClient _api;
-    private readonly HttpClient _http = new();
+    private readonly MobileClientIdentityProvider _clientIdentity;
+    private readonly MobilePackageDownloadClient _packageDownloadClient;
 
-    public MobileAppUpdateService(GeoraePlanApiClient api)
+    public MobileAppUpdateService(
+        GeoraePlanApiClient api,
+        MobileClientIdentityProvider clientIdentity)
+        : this(api, clientIdentity, new HttpClient())
     {
-        _api = api;
+    }
+
+    internal MobileAppUpdateService(
+        GeoraePlanApiClient api,
+        MobileClientIdentityProvider clientIdentity,
+        HttpClient http)
+    {
+        _api = api ?? throw new ArgumentNullException(nameof(api));
+        _clientIdentity = clientIdentity ??
+            throw new ArgumentNullException(nameof(clientIdentity));
+        _packageDownloadClient = new MobilePackageDownloadClient(
+            http ?? throw new ArgumentNullException(nameof(http)),
+            _clientIdentity);
     }
 
     public string GetCurrentVersion()
@@ -24,59 +40,52 @@ public sealed class MobileAppUpdateService
 
     public async Task<MobileAppUpdateCheckResult> CheckForUpdatesAsync(string channel = "stable", CancellationToken ct = default)
     {
-        var currentVersion = GetCurrentVersion();
+        var current = _clientIdentity.GetRuntimeIdentity();
 
         try
         {
             var manifest = await _api.GetUpdateManifestAsync(channel, ct);
-            var package = manifest?.Android;
-            if (package is null || string.IsNullOrWhiteSpace(package.Version))
-            {
-                return new MobileAppUpdateCheckResult
-                {
-                    CurrentVersion = currentVersion,
-                    LatestVersion = currentVersion,
-                    Message = "배포된 안드로이드 업데이트 정보를 찾지 못했습니다."
-                };
-            }
-
-            var latestVersion = NormalizeVersionText(package.Version);
-            var isUpdateAvailable = CompareVersions(latestVersion, currentVersion) > 0;
-            var minimumSupportedVersion = ResolveMinimumSupportedVersion(package, latestVersion);
-            var isBelowMinimumSupportedVersion =
-                !string.IsNullOrWhiteSpace(minimumSupportedVersion) &&
-                CompareVersions(currentVersion, minimumSupportedVersion) < 0;
-
-            return new MobileAppUpdateCheckResult
-            {
-                CurrentVersion = currentVersion,
-                LatestVersion = latestVersion,
-                MinimumSupportedVersion = minimumSupportedVersion,
-                IsUpdateAvailable = isUpdateAvailable,
-                IsBelowMinimumSupportedVersion = isBelowMinimumSupportedVersion,
-                Package = package,
-                Message = BuildUpdateMessage(
-                    currentVersion,
-                    latestVersion,
-                    minimumSupportedVersion,
-                    isUpdateAvailable,
-                    isBelowMinimumSupportedVersion,
-                    package.Mandatory)
-            };
+            return MobileUpdateGatePolicy
+                .EvaluateManualSettingsManifest(
+                manifest,
+                current,
+                channel);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
-            return new MobileAppUpdateCheckResult
-            {
-                CurrentVersion = currentVersion,
-                LatestVersion = currentVersion,
-                Message = "업데이트 매니페스트가 아직 배포되지 않았습니다."
-            };
+            return MobileUpdateGatePolicy.EvaluateManifest(null, current);
+        }
+    }
+
+    internal async Task<MobileAppUpdateCheckResult>
+        CheckCompatibilityRecoveryAsync(
+            CancellationToken ct = default)
+    {
+        var current = _clientIdentity.GetRuntimeIdentity();
+        try
+        {
+            var manifest = await _api
+                .GetUpdateManifestAsync("stable", ct);
+            return MobileUpdateGatePolicy
+                .EvaluateStableAndroidManifest(
+                    manifest,
+                    current);
+        }
+        catch (HttpRequestException ex)
+            when (ex.StatusCode ==
+                  System.Net.HttpStatusCode.NotFound)
+        {
+            return MobileUpdateGatePolicy
+                .EvaluateStableAndroidManifest(
+                    null,
+                    current);
         }
     }
 
     public async Task<string> DownloadAndLaunchInstallerAsync(AppUpdatePackageDto package, CancellationToken ct = default)
     {
+        MobileUpdateGatePolicy
+            .EnsureExactAndroidInstallerPackage(package);
         if (DeviceInfo.Platform != DevicePlatform.Android)
             throw new InvalidOperationException("안드로이드 기기에서만 APK 설치를 진행할 수 있습니다.");
         if (string.IsNullOrWhiteSpace(package.PackageUrl))
@@ -130,7 +139,11 @@ public sealed class MobileAppUpdateService
 
         try
         {
-            using var response = await _http.GetAsync(packageUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+            using var response = await _packageDownloadClient.SendAsync(
+                new Uri(packageUrl, UriKind.Absolute),
+                expectedSha256,
+                HttpCompletionOption.ResponseHeadersRead,
+                ct);
             response.EnsureSuccessStatusCode();
 
             await using var source = await response.Content.ReadAsStreamAsync(ct);
@@ -242,44 +255,6 @@ public sealed class MobileAppUpdateService
         return Convert.ToHexString(hash);
     }
 
-    private static int CompareVersions(string left, string right)
-    {
-        if (!Version.TryParse(NormalizeVersionText(left), out var leftVersion))
-            leftVersion = new Version(0, 0, 0);
-        if (!Version.TryParse(NormalizeVersionText(right), out var rightVersion))
-            rightVersion = new Version(0, 0, 0);
-        return leftVersion.CompareTo(rightVersion);
-    }
-
-    private static string ResolveMinimumSupportedVersion(AppUpdatePackageDto package, string latestVersion)
-    {
-        if (!string.IsNullOrWhiteSpace(package.MinimumSupportedVersion))
-            return NormalizeVersionText(package.MinimumSupportedVersion);
-
-        return package.Mandatory ? latestVersion : string.Empty;
-    }
-
-    private static string BuildUpdateMessage(
-        string currentVersion,
-        string latestVersion,
-        string minimumSupportedVersion,
-        bool isUpdateAvailable,
-        bool isBelowMinimumSupportedVersion,
-        bool isMandatory)
-    {
-        if (isBelowMinimumSupportedVersion)
-        {
-            return $"현재 안드로이드 버전({currentVersion})은 서버 최소 지원 버전({minimumSupportedVersion})보다 낮아 업데이트가 필요합니다. 최신 버전 {latestVersion}을 설치하세요.";
-        }
-
-        if (isUpdateAvailable && isMandatory)
-            return $"필수 안드로이드 업데이트 {latestVersion}이 준비되어 있습니다.";
-
-        return isUpdateAvailable
-            ? $"새 안드로이드 버전 {latestVersion}이 준비되어 있습니다."
-            : $"현재 버전({currentVersion})이 최신입니다.";
-    }
-
     private static string NormalizeVersionText(string raw)
     {
         var normalized = (raw ?? string.Empty).Trim();
@@ -292,16 +267,4 @@ public sealed class MobileAppUpdateService
 
         return string.IsNullOrWhiteSpace(normalized) ? "0.0.0" : normalized;
     }
-}
-
-public sealed class MobileAppUpdateCheckResult
-{
-    public string CurrentVersion { get; set; } = string.Empty;
-    public string LatestVersion { get; set; } = string.Empty;
-    public string MinimumSupportedVersion { get; set; } = string.Empty;
-    public bool IsUpdateAvailable { get; set; }
-    public bool IsBelowMinimumSupportedVersion { get; set; }
-    public bool RequiresImmediateUpdate => IsBelowMinimumSupportedVersion || (IsUpdateAvailable && Package?.Mandatory == true);
-    public string Message { get; set; } = string.Empty;
-    public AppUpdatePackageDto? Package { get; set; }
 }

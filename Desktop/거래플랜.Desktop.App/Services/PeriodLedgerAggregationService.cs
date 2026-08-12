@@ -568,12 +568,19 @@ public sealed class PeriodLedgerAggregationService
         IReadOnlyList<PeriodLedgerMonthlySalesChartPoint> monthlySalesChartPoints)
     {
         var allEvents = new List<PeriodPaymentEvent>();
-        var dedup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var mirroredTransactionIds = new HashSet<Guid>();
         var searchText = NormalizeSearchText(query.SearchText);
-        var transactionById = transactions
+        var activeTransactions = transactions
             .Where(transaction => !transaction.IsDeleted)
+            .ToList();
+        var transactionById = activeTransactions
             .GroupBy(transaction => transaction.Id)
             .ToDictionary(group => group.Key, group => group.First());
+        var directMirrorIds = invoices
+            .SelectMany(invoice => invoice.Payments)
+            .Where(payment => !payment.IsDeleted && payment.Amount > 0m)
+            .Select(payment => payment.Id)
+            .ToHashSet();
 
         foreach (var invoice in invoices)
         {
@@ -583,28 +590,56 @@ public sealed class PeriodLedgerAggregationService
                 : "(미지정 거래처)";
 
             var summary = BuildInvoiceSummary(invoice, invoice.Lines.Count(l => !l.IsDeleted));
+            var activePayments = invoice.Payments
+                .Where(payment => !payment.IsDeleted && payment.Amount > 0m)
+                .ToList();
 
-            foreach (var payment in invoice.Payments.Where(p => !p.IsDeleted && p.Amount > 0))
+            foreach (var payment in activePayments)
             {
-                var key = BuildDedupKey(invoice.CustomerId, payment.PaymentDate, payment.Amount, "R", ParseMethod(payment.Note));
-                if (!dedup.Add(key))
-                    continue;
-
                 transactionById.TryGetValue(payment.Id, out var linkedTransaction);
+                if (linkedTransaction is not null &&
+                    !IsStrongLegacyPaymentMirror(invoice, payment, linkedTransaction))
+                {
+                    linkedTransaction = null;
+                }
+
+                if (linkedTransaction is null)
+                {
+                    var legacyCandidates = activeTransactions
+                        .Where(transaction =>
+                            !directMirrorIds.Contains(transaction.Id) &&
+                            IsStrongLegacyPaymentMirror(invoice, payment, transaction))
+                        .ToList();
+                    if (legacyCandidates.Count == 1)
+                    {
+                        var candidate = legacyCandidates[0];
+                        var candidatePaymentCount = activePayments.Count(otherPayment =>
+                            (!transactionById.TryGetValue(otherPayment.Id, out var otherDirectTransaction) ||
+                             !IsStrongLegacyPaymentMirror(invoice, otherPayment, otherDirectTransaction)) &&
+                            IsStrongLegacyPaymentMirror(invoice, otherPayment, candidate));
+                        if (candidatePaymentCount == 1)
+                            linkedTransaction = candidate;
+                    }
+                }
+
+                if (linkedTransaction is not null)
+                    mirroredTransactionIds.Add(linkedTransaction.Id);
+
+                var isPurchaseInvoice = invoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement;
                 allEvents.Add(new PeriodPaymentEvent
                 {
                     CustomerId = invoice.CustomerId,
                     CustomerName = customerName,
                     Date = payment.PaymentDate,
-                    Division = "수금(판매전표)",
+                    Division = isPurchaseInvoice ? "지급(매입전표)" : "수금(판매전표)",
                     Summary = summary,
                     TradeAmount = 0m,
-                    ReceiptAmount = payment.Amount,
-                    PaymentAmount = 0m,
+                    ReceiptAmount = isPurchaseInvoice ? 0m : payment.Amount,
+                    PaymentAmount = isPurchaseInvoice ? payment.Amount : 0m,
                     Note = linkedTransaction is not null && !string.IsNullOrWhiteSpace(linkedTransaction.Memo)
                         ? linkedTransaction.Memo.Trim()
                         : payment.Note?.Trim() ?? string.Empty,
-                    DedupKey = key,
+                    DedupKey = $"payment:{payment.Id:N}",
                     Priority = 1,
                     InvoiceId = invoice.Id,
                     PaymentId = payment.Id,
@@ -621,10 +656,6 @@ public sealed class PeriodLedgerAggregationService
                 if (amount <= 0)
                     continue;
 
-                var key = BuildDedupKey(invoice.CustomerId, invoice.InvoiceDate, amount, "R", ParseMethod(invoice.Memo));
-                if (!dedup.Add(key))
-                    continue;
-
                 allEvents.Add(new PeriodPaymentEvent
                 {
                     CustomerId = invoice.CustomerId,
@@ -636,7 +667,7 @@ public sealed class PeriodLedgerAggregationService
                     ReceiptAmount = amount,
                     PaymentAmount = 0m,
                     Note = invoice.Memo?.Trim() ?? string.Empty,
-                    DedupKey = key,
+                    DedupKey = $"invoice:{invoice.Id:N}:receipt",
                     Priority = 2,
                     InvoiceId = invoice.Id,
                     PaymentId = null,
@@ -648,6 +679,9 @@ public sealed class PeriodLedgerAggregationService
 
         foreach (var tx in transactions)
         {
+            if (mirroredTransactionIds.Contains(tx.Id))
+                continue;
+
             var customerName = customerNameMap.TryGetValue(tx.CustomerId, out var resolvedCustomerName) &&
                                !string.IsNullOrWhiteSpace(resolvedCustomerName)
                 ? resolvedCustomerName.Trim()
@@ -655,56 +689,46 @@ public sealed class PeriodLedgerAggregationService
 
             if (tx.ReceiptTotal > 0)
             {
-                var method = ResolveTransactionMethod(tx, receipt: true);
-                var key = BuildDedupKey(tx.CustomerId, tx.TransactionDate, tx.ReceiptTotal, "R", method);
-                if (dedup.Add(key))
+                allEvents.Add(new PeriodPaymentEvent
                 {
-                    allEvents.Add(new PeriodPaymentEvent
-                    {
-                        CustomerId = tx.CustomerId,
-                        CustomerName = customerName,
-                        Date = tx.TransactionDate,
-                        Division = "수금",
-                        Summary = BuildTransactionSummary(tx),
-                        TradeAmount = 0m,
-                        ReceiptAmount = tx.ReceiptTotal,
-                        PaymentAmount = 0m,
-                        Note = tx.Memo?.Trim() ?? string.Empty,
-                        DedupKey = key,
-                        Priority = 3,
-                        InvoiceId = tx.LinkedInvoiceId,
-                        PaymentId = null,
-                        TransactionId = tx.Id,
-                        MemoSource = PeriodLedgerMemoSource.Transaction
-                    });
-                }
+                    CustomerId = tx.CustomerId,
+                    CustomerName = customerName,
+                    Date = tx.TransactionDate,
+                    Division = "수금",
+                    Summary = BuildTransactionSummary(tx),
+                    TradeAmount = 0m,
+                    ReceiptAmount = tx.ReceiptTotal,
+                    PaymentAmount = 0m,
+                    Note = tx.Memo?.Trim() ?? string.Empty,
+                    DedupKey = $"transaction:{tx.Id:N}:receipt",
+                    Priority = 3,
+                    InvoiceId = tx.LinkedInvoiceId,
+                    PaymentId = null,
+                    TransactionId = tx.Id,
+                    MemoSource = PeriodLedgerMemoSource.Transaction
+                });
             }
 
             if (tx.PaymentTotal > 0)
             {
-                var method = ResolveTransactionMethod(tx, receipt: false);
-                var key = BuildDedupKey(tx.CustomerId, tx.TransactionDate, tx.PaymentTotal, "P", method);
-                if (dedup.Add(key))
+                allEvents.Add(new PeriodPaymentEvent
                 {
-                    allEvents.Add(new PeriodPaymentEvent
-                    {
-                        CustomerId = tx.CustomerId,
-                        CustomerName = customerName,
-                        Date = tx.TransactionDate,
-                        Division = "지급",
-                        Summary = BuildTransactionSummary(tx),
-                        TradeAmount = 0m,
-                        ReceiptAmount = 0m,
-                        PaymentAmount = tx.PaymentTotal,
-                        Note = tx.Memo?.Trim() ?? string.Empty,
-                        DedupKey = key,
-                        Priority = 3,
-                        InvoiceId = tx.LinkedInvoiceId,
-                        PaymentId = null,
-                        TransactionId = tx.Id,
-                        MemoSource = PeriodLedgerMemoSource.Transaction
-                    });
-                }
+                    CustomerId = tx.CustomerId,
+                    CustomerName = customerName,
+                    Date = tx.TransactionDate,
+                    Division = "지급",
+                    Summary = BuildTransactionSummary(tx),
+                    TradeAmount = 0m,
+                    ReceiptAmount = 0m,
+                    PaymentAmount = tx.PaymentTotal,
+                    Note = tx.Memo?.Trim() ?? string.Empty,
+                    DedupKey = $"transaction:{tx.Id:N}:payment",
+                    Priority = 3,
+                    InvoiceId = tx.LinkedInvoiceId,
+                    PaymentId = null,
+                    TransactionId = tx.Id,
+                    MemoSource = PeriodLedgerMemoSource.Transaction
+                });
             }
         }
 
@@ -785,6 +809,30 @@ public sealed class PeriodLedgerAggregationService
             Totals = totals,
             ProfitWarningMessage = null
         };
+    }
+
+    private static bool IsStrongLegacyPaymentMirror(
+        LocalInvoice invoice,
+        LocalPayment payment,
+        LocalTransaction transaction)
+    {
+        if (transaction.LinkedInvoiceId != invoice.Id ||
+            transaction.CustomerId != invoice.CustomerId ||
+            transaction.TransactionDate != payment.PaymentDate ||
+            transaction.SettlementAmount != payment.Amount)
+        {
+            return false;
+        }
+
+        var invoiceTenant = TenantScopeCatalog.NormalizeTenantCodeOrDefault(invoice.TenantCode);
+        var transactionTenant = TenantScopeCatalog.NormalizeTenantCodeOrDefault(transaction.TenantCode);
+        if (!string.Equals(invoiceTenant, transactionTenant, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var isPayment = invoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement;
+        return isPayment
+            ? transaction.PaymentTotal == payment.Amount && transaction.ReceiptTotal == 0m
+            : transaction.ReceiptTotal == payment.Amount && transaction.PaymentTotal == 0m;
     }
 
     private static bool PaymentEventMatchesSearch(PeriodPaymentEvent paymentEvent, string searchText)
@@ -901,47 +949,6 @@ public sealed class PeriodLedgerAggregationService
             return "YEONSU 창고";
 
         return string.IsNullOrWhiteSpace(normalized) ? "-" : normalized;
-    }
-
-    private static string BuildDedupKey(
-        Guid customerId,
-        DateOnly date,
-        decimal amount,
-        string direction,
-        string method)
-    {
-        return $"{customerId:N}|{date:yyyyMMdd}|{amount:0.##}|{direction}|{method}";
-    }
-
-    private static string ParseMethod(string? note)
-    {
-        if (string.IsNullOrWhiteSpace(note))
-            return string.Empty;
-
-        var n = note.Trim();
-        if (n.Contains("카드", StringComparison.OrdinalIgnoreCase)) return "카드";
-        if (n.Contains("통장", StringComparison.OrdinalIgnoreCase) || n.Contains("계좌", StringComparison.OrdinalIgnoreCase)) return "통장";
-        if (n.Contains("현금", StringComparison.OrdinalIgnoreCase)) return "현금";
-        return n.Length > 24 ? n[..24] : n;
-    }
-
-    private static string ResolveTransactionMethod(LocalTransaction tx, bool receipt)
-    {
-        var tags = new List<string>();
-        if (receipt)
-        {
-            if (tx.CashReceipt > 0) tags.Add("현금");
-            if (tx.CardReceipt > 0) tags.Add("카드");
-            if (tx.BankReceipt > 0) tags.Add("통장");
-        }
-        else
-        {
-            if (tx.CashPayment > 0) tags.Add("현금");
-            if (tx.CardPayment > 0) tags.Add("카드");
-            if (tx.BankPayment > 0) tags.Add("통장");
-        }
-
-        return string.Join("+", tags);
     }
 
     private static string BuildTransactionSummary(LocalTransaction tx)

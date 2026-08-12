@@ -532,6 +532,126 @@ if ([string]::IsNullOrWhiteSpace($KeyPass)) {
     throw 'KeyPass is required.'
 }
 
+function Assert-AndroidSigningSecretRootSafe {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $current = Get-Item -LiteralPath $Path -Force
+    while ($null -ne $current) {
+        if ($current.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Android signing secret root contains a reparse point: $($current.FullName)"
+        }
+        $current = $current.Parent
+    }
+}
+
+function New-AndroidSigningSecretFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $secretRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+    Assert-AndroidSigningSecretRootSafe -Path $secretRoot
+    $secretPath = Join-Path `
+        $secretRoot `
+        ("georaeplan-android-signing-{0}-{1}.secret" -f
+            $Label,
+            [Guid]::NewGuid().ToString('N'))
+
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $security = New-Object Security.AccessControl.FileSecurity
+    $security.SetOwner($identity.User)
+    $security.SetAccessRuleProtection($true, $false)
+    foreach ($sid in @(
+        $identity.User,
+        (New-Object Security.Principal.SecurityIdentifier('S-1-5-18')),
+        (New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544'))
+    )) {
+        $rule = New-Object Security.AccessControl.FileSystemAccessRule(
+            $sid,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            [Security.AccessControl.AccessControlType]::Allow)
+        [void]$security.AddAccessRule($rule)
+    }
+
+    $stream = $null
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Value)
+    try {
+        $stream = [IO.FileStream]::new(
+            $secretPath,
+            [IO.FileMode]::CreateNew,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            [IO.FileShare]::Read,
+            4096,
+            [IO.FileOptions]::WriteThrough,
+            $security)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+        return [pscustomobject]@{
+            Path = $secretPath
+            Stream = $stream
+        }
+    }
+    catch {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+        if (Test-Path -LiteralPath $secretPath -PathType Leaf) {
+            [IO.File]::Delete($secretPath)
+        }
+        throw
+    }
+    finally {
+        [Array]::Clear($bytes, 0, $bytes.Length)
+    }
+}
+
+function New-AndroidSigningSecretPair {
+    param(
+        [Parameter(Mandatory = $true)][string]$StoreValue,
+        [Parameter(Mandatory = $true)][string]$KeyValue
+    )
+
+    $store = $null
+    $key = $null
+    try {
+        $store = New-AndroidSigningSecretFile -Value $StoreValue -Label 'store'
+        $key = New-AndroidSigningSecretFile -Value $KeyValue -Label 'key'
+        return [pscustomobject]@{ Store = $store; Key = $key }
+    }
+    catch {
+        foreach ($entry in @($key, $store)) {
+            if ($null -ne $entry) {
+                $entry.Stream.Dispose()
+                if (Test-Path -LiteralPath $entry.Path -PathType Leaf) {
+                    [IO.File]::Delete($entry.Path)
+                }
+            }
+        }
+        throw
+    }
+}
+
+function Remove-AndroidSigningSecretPair {
+    param([AllowNull()][object]$Pair)
+
+    if ($null -eq $Pair) {
+        return
+    }
+    foreach ($entry in @($Pair.Key, $Pair.Store)) {
+        if ($null -eq $entry) {
+            continue
+        }
+        $entry.Stream.Dispose()
+        if (Test-Path -LiteralPath $entry.Path -PathType Leaf) {
+            [IO.File]::Delete($entry.Path)
+        }
+        if (Test-Path -LiteralPath $entry.Path) {
+            throw "Android signing secret cleanup failed: $($entry.Path)"
+        }
+    }
+}
+
 $isReleaseBuild = $Configuration.Equals('Release', [System.StringComparison]::OrdinalIgnoreCase)
 $isDebugKeystorePath = [System.IO.Path]::GetFileName($KeystorePath).Equals('debug.keystore', [System.StringComparison]::OrdinalIgnoreCase)
 $isDebugKeyAlias = $KeyAlias.Equals('androiddebugkey', [System.StringComparison]::OrdinalIgnoreCase)
@@ -572,8 +692,8 @@ $arguments = @(
     '-p:AndroidKeyStore=true'
     "-p:AndroidSigningKeyStore=$KeystorePath"
     "-p:AndroidSigningKeyAlias=$KeyAlias"
-    "-p:AndroidSigningStorePass=$StorePass"
-    "-p:AndroidSigningKeyPass=$KeyPass"
+    '-p:AndroidSigningStorePass=__GEORAEPLAN_STORE_SECRET_FILE__'
+    '-p:AndroidSigningKeyPass=__GEORAEPLAN_KEY_SECRET_FILE__'
     "-p:AndroidSdkDirectory=$resolvedAndroidSdkDirectory"
     "-p:JavaSdkDirectory=$resolvedJavaSdkDirectory"
     '-p:ArchiveOnBuild=true'
@@ -706,7 +826,26 @@ function Get-AndroidPublishArgumentsWithoutAot {
 
 $publishWorkingDirectory = [string]$stagingContext.WorkingDirectory
 $publishTemporaryDirectory = [string]$stagingContext.TemporaryDirectory
+$signingSecretPair = $null
 try {
+    $signingSecretPair = New-AndroidSigningSecretPair `
+        -StoreValue $StorePass `
+        -KeyValue $KeyPass
+    $StorePass = $null
+    $KeyPass = $null
+    if ($null -ne $signingConfig) {
+        $signingConfig.storePass = $null
+        $signingConfig.keyPass = $null
+    }
+    $arguments = [string[]]@($arguments | ForEach-Object {
+        if ($_ -ceq '-p:AndroidSigningStorePass=__GEORAEPLAN_STORE_SECRET_FILE__') {
+            return "-p:AndroidSigningStorePass=file:$($signingSecretPair.Store.Path)"
+        }
+        if ($_ -ceq '-p:AndroidSigningKeyPass=__GEORAEPLAN_KEY_SECRET_FILE__') {
+            return "-p:AndroidSigningKeyPass=file:$($signingSecretPair.Key.Path)"
+        }
+        return $_
+    })
     $publishResult = Invoke-DotnetPublishAndRelay `
         -DotNetPath $resolvedDotNetPath `
         -Arguments $arguments `
@@ -731,7 +870,12 @@ try {
     }
 }
 finally {
-    Remove-AndroidAotStagingContext -Context $stagingContext
+    try {
+        Remove-AndroidAotStagingContext -Context $stagingContext
+    }
+    finally {
+        Remove-AndroidSigningSecretPair -Pair $signingSecretPair
+    }
 }
 
 if ($publishResult.ExitCode -ne 0) {

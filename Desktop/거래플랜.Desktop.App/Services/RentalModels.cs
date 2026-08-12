@@ -1,9 +1,13 @@
 ﻿using 거래플랜.Desktop.App.Data;
 using 거래플랜.Shared.Contracts;
 
+using System.Collections.Concurrent;
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.EntityFrameworkCore;
 
 namespace 거래플랜.Desktop.App.Services;
 
@@ -295,8 +299,11 @@ public sealed class RentalBillingTemplateItemModel
 
 public sealed class RentalBillingRunModel
 {
-    public Guid RunId { get; set; } = Guid.NewGuid();
+    public Guid RunId { get; set; }
     public string RunKey { get; set; } = string.Empty;
+    public bool IsTombstoned { get; set; }
+    public DateTime? TombstonedAtUtc { get; set; }
+    public string TombstonedByUsername { get; set; } = string.Empty;
     public DateOnly ScheduledDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
     public DateOnly PeriodStartDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
     public DateOnly PeriodEndDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
@@ -309,6 +316,241 @@ public sealed class RentalBillingRunModel
     public DateOnly? SettledDate { get; set; }
     public string Note { get; set; } = string.Empty;
     public List<RentalBillingTemplateItemModel> Items { get; set; } = new();
+}
+
+internal static class RentalBillingRunIdentityPolicy
+{
+    public static string NormalizeRunKey(string? runKey)
+        => SyncIdentityGenerator.NormalizeKey(runKey);
+
+    public static bool SharesIdentity(RentalBillingRunModel left, RentalBillingRunModel right)
+    {
+        if (left.RunId != Guid.Empty && left.RunId == right.RunId)
+            return true;
+
+        var leftKey = NormalizeRunKey(left.RunKey);
+        var rightKey = NormalizeRunKey(right.RunKey);
+        return !string.IsNullOrWhiteSpace(leftKey) &&
+               string.Equals(leftKey, rightKey, StringComparison.Ordinal);
+    }
+
+    public static List<RentalBillingRunModel> GetIdentityGroup(
+        IEnumerable<RentalBillingRunModel> runs,
+        RentalBillingRunModel seed)
+    {
+        var allRuns = runs.ToList();
+        var group = new List<RentalBillingRunModel> { seed };
+        for (var index = 0; index < group.Count; index++)
+        {
+            var current = group[index];
+            foreach (var candidate in allRuns)
+            {
+                if (!group.Contains(candidate) && SharesIdentity(current, candidate))
+                    group.Add(candidate);
+            }
+        }
+
+        return group;
+    }
+
+    public static bool IsSuppressedByTombstone(
+        IEnumerable<RentalBillingRunModel> runs,
+        RentalBillingRunModel run)
+        => GetIdentityGroup(runs, run).Any(candidate => candidate.IsTombstoned);
+
+    public static bool TryGetIdentityConflict(
+        IEnumerable<RentalBillingRunModel> runs,
+        out Guid conflictingRunId,
+        out IReadOnlyList<string>? conflictingRunKeys)
+    {
+        var allRuns = runs.ToList();
+        foreach (var group in allRuns
+                     .Where(run =>
+                         run.RunId != Guid.Empty &&
+                         !string.IsNullOrWhiteSpace(NormalizeRunKey(run.RunKey)))
+                     .GroupBy(run => NormalizeRunKey(run.RunKey), StringComparer.Ordinal)
+                     .OrderBy(group => group.Key, StringComparer.Ordinal))
+        {
+            var runIds = group
+                .Select(run => run.RunId)
+                .Distinct()
+                .OrderBy(runId => runId)
+                .ToArray();
+            if (runIds.Length <= 1)
+                continue;
+
+            conflictingRunId = runIds[0];
+            conflictingRunKeys = new[]
+            {
+                group.Key,
+                $"RunIds {string.Join(" / ", runIds.Select(runId => runId.ToString("D")))}"
+            };
+            return true;
+        }
+
+        foreach (var group in allRuns
+                     .Where(run => run.RunId != Guid.Empty)
+                     .GroupBy(run => run.RunId)
+                     .OrderBy(group => group.Key))
+        {
+            var keys = group
+                .Select(run => NormalizeRunKey(run.RunKey))
+                .Where(key => !string.IsNullOrWhiteSpace(key))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(key => key, StringComparer.Ordinal)
+                .ToArray();
+            if (keys.Length <= 1)
+                continue;
+
+            conflictingRunId = group.Key;
+            conflictingRunKeys = keys;
+            return true;
+        }
+
+        conflictingRunId = Guid.Empty;
+        conflictingRunKeys = null;
+        return false;
+    }
+}
+
+internal static class RentalBillingRunDiagnosticParser
+{
+    private const string IdentityGraphErrorFragment =
+        "identity graph contains duplicate RunId or RunKey values";
+
+    public static bool TryParseIdentityConflictPayload(
+        string? json,
+        JsonSerializerOptions serializerOptions,
+        out List<RentalBillingRunModel> runs)
+    {
+        runs = [];
+        if (string.IsNullOrWhiteSpace(json))
+            return false;
+
+        var validation = RentalBillingRunTombstonePolicy.Validate(json);
+        if (validation.Status != RentalBillingRunLookupStatus.InvalidJson ||
+            !validation.Error.Contains(IdentityGraphErrorFragment, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+                return false;
+
+            foreach (var element in document.RootElement.EnumerateArray())
+            {
+                var isolatedValidation = RentalBillingRunTombstonePolicy.Validate(
+                    $"[{element.GetRawText()}]");
+                if (!isolatedValidation.IsValid)
+                    return false;
+            }
+
+            var parsed = JsonSerializer.Deserialize<List<RentalBillingRunModel>>(
+                json,
+                serializerOptions);
+            if (parsed is null || parsed.Any(run => run is null))
+                return false;
+            if (!RentalBillingRunIdentityPolicy.TryGetIdentityConflict(parsed, out _, out _))
+                return false;
+
+            runs = parsed;
+            return true;
+        }
+        catch (Exception exception) when (exception is JsonException or NotSupportedException)
+        {
+            return false;
+        }
+    }
+}
+
+internal static class RentalBillingProfileMutationGate
+{
+    private sealed class GateEntry
+    {
+        public SemaphoreSlim Semaphore { get; } = new(1, 1);
+        public object SyncRoot { get; } = new();
+        public int ReferenceCount { get; set; }
+        public bool Removed { get; set; }
+    }
+
+    private sealed class Lease(string key, GateEntry entry) : IDisposable
+    {
+        private int _released;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _released, 1) != 0)
+                return;
+
+            entry.Semaphore.Release();
+            lock (entry.SyncRoot)
+            {
+                entry.ReferenceCount--;
+                if (entry.ReferenceCount == 0 &&
+                    ((ICollection<KeyValuePair<string, GateEntry>>)Gates)
+                    .Remove(new KeyValuePair<string, GateEntry>(key, entry)))
+                {
+                    entry.Removed = true;
+                }
+            }
+        }
+    }
+
+    private static readonly ConcurrentDictionary<string, GateEntry> Gates =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    public static async Task<IDisposable> EnterAsync(
+        LocalDbContext db,
+        Guid billingProfileId,
+        CancellationToken ct)
+    {
+        var key = BuildKey(db, billingProfileId);
+        GateEntry entry;
+        while (true)
+        {
+            entry = Gates.GetOrAdd(key, static _ => new GateEntry());
+            lock (entry.SyncRoot)
+            {
+                if (entry.Removed)
+                    continue;
+
+                entry.ReferenceCount++;
+                break;
+            }
+        }
+
+        try
+        {
+            await entry.Semaphore.WaitAsync(ct);
+            return new Lease(key, entry);
+        }
+        catch
+        {
+            lock (entry.SyncRoot)
+            {
+                entry.ReferenceCount--;
+                if (entry.ReferenceCount == 0 &&
+                    ((ICollection<KeyValuePair<string, GateEntry>>)Gates)
+                    .Remove(new KeyValuePair<string, GateEntry>(key, entry)))
+                {
+                    entry.Removed = true;
+                }
+            }
+            throw;
+        }
+    }
+
+    private static string BuildKey(LocalDbContext db, Guid billingProfileId)
+    {
+        var provider = db.Database.ProviderName ?? string.Empty;
+        var dataSource = db.Database.GetDbConnection().DataSource ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(dataSource) && dataSource != ":memory:")
+            dataSource = Path.GetFullPath(dataSource);
+        return $"{provider}|{dataSource}|{billingProfileId:D}";
+    }
 }
 
 public sealed class RentalBillingEditorDraftModel
@@ -395,6 +637,7 @@ public sealed class RentalAssetLinkCandidate
     public string ManagementCompanyName { get; init; } = string.Empty;
     public string AssetScopeDisplay { get; init; } = string.Empty;
     public bool IsOutsideCurrentOffice { get; init; }
+    public bool IsReferenceOnly { get; init; }
     public Guid? BillingProfileId { get; init; }
     public string CurrentBillingProfileDisplay { get; init; } = string.Empty;
 }

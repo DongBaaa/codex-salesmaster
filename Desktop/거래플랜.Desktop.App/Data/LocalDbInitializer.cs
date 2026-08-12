@@ -1,9 +1,12 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Storage;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
 using System.Data;
 using 거래플랜.Desktop.App.Infrastructure;
 using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace 거래플랜.Desktop.App.Data;
@@ -13,7 +16,7 @@ public static partial class LocalDbInitializer
     private const string FallbackUtcText = "1970-01-01T00:00:00Z";
     private const string YeonsuOfficeIdSettingKey = "SystemOffice.YeonsuOfficeId";
     private const string SchemaMaintenanceVersionSettingKey = "LocalDb.SchemaMaintenanceVersion";
-    private const string SchemaMaintenanceVersion = "2026-07-15.1";
+    private const string SchemaMaintenanceVersion = "2026-08-01.2";
     private const string LegacyLinkedGeneralSettlementCleanupKey = "Migration.CleanupLegacyLinkedGeneralSettlements.v1";
     private const string NormalizeSelectionOptionSystemDefaultsStepKey = "Migration.NormalizeSelectionOptionSystemDefaults.v1";
     private const string CustomerCategoryMaintenanceStepKey = "Migration.CustomerCategoryMaintenance.v1";
@@ -49,6 +52,8 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
     private const string NormalizeRentalAssetActiveUniqueIndexesStepKey = "Migration.NormalizeRentalAssetActiveUniqueIndexes.v2";
     private const string BackfillItemScopeFieldsStepKey = "Migration.BackfillItemScopeFields.v1";
     private const string BackfillItemOperationalFieldsStepKey = "Migration.BackfillItemOperationalFields.v1";
+    private const string BackfillItemCatalogExtensionPendingStepKey =
+        "Migration.BackfillItemCatalogExtensionPending.v1";
     private const string BackfillOperationalOwnerOfficeFieldsStepKey = "Migration.BackfillOperationalOwnerOfficeFields.v1";
     private const string BackfillInvoiceLineTrackingTypesStepKey = "Migration.BackfillInvoiceLineTrackingTypes.v1";
     private const string NormalizeRentalOfficeDataStepKey = "Migration.NormalizeRentalOfficeData.v1";
@@ -59,6 +64,63 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         "^[A-Za-z0-9_]+$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private static readonly AsyncLocal<Dictionary<string, HashSet<string>>?> ActiveSchemaColumnCache = new();
+    private static readonly AsyncLocal<SchemaMigrationFailureCollector?> ActiveSchemaMigrationFailures = new();
+    private static readonly (string Name, string Sql)[] DeferredRequiredSchemaIndexes =
+    [
+        (
+            "IX_RentalAssets_AssetKey",
+            "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_AssetKey\" ON \"RentalAssets\" (\"TenantCode\", \"AssetKey\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"AssetKey\"), '') <> '';"),
+        (
+            "IX_RentalAssets_ManagementId",
+            "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementId\" ON \"RentalAssets\" (\"TenantCode\", \"ManagementId\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementId\"), '') <> '';"),
+        (
+            "IX_RentalAssets_ManagementNumber",
+            "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementNumber\" ON \"RentalAssets\" (\"TenantCode\", \"ManagementNumber\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementNumber\"), '') <> '';"),
+        (
+            "IX_Transactions_ResponsibleOfficeCode",
+            "CREATE INDEX IF NOT EXISTS \"IX_Transactions_ResponsibleOfficeCode\" ON \"Transactions\" (\"ResponsibleOfficeCode\");"),
+        (
+            "IX_TransactionAttachments_TransactionStatus",
+            "CREATE INDEX IF NOT EXISTS \"IX_TransactionAttachments_TransactionStatus\" ON \"TransactionAttachments\" (\"TransactionId\", \"VerificationStatus\");"),
+        (
+            "IX_InventoryTransfers_TransferStatus",
+            "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransfers_TransferStatus\" ON \"InventoryTransfers\" (\"TransferStatus\");"),
+        (
+            "IX_InventoryTransferLines_TransferItem",
+            "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransferLines_TransferItem\" ON \"InventoryTransferLines\" (\"TransferId\", \"ItemId\");"),
+        (
+            "IX_RentalAssetAssignmentHistories_Revision",
+            "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_Revision\" ON \"RentalAssetAssignmentHistories\" (\"Revision\");")
+    ];
+    private static readonly RequiredSchemaIndexDefinition[] RequiredSchemaIndexes =
+    [
+        new(
+            "IX_SyncOutboxEntries_MutationId",
+            "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_SyncOutboxEntries_MutationId\" ON \"SyncOutboxEntries\" (\"MutationId\");"),
+        new(
+            "IX_SyncOutboxEntries_Status_PreparedAtUtc",
+            "CREATE INDEX IF NOT EXISTS \"IX_SyncOutboxEntries_Status_PreparedAtUtc\" ON \"SyncOutboxEntries\" (\"Status\", \"PreparedAtUtc\");"),
+        new(
+            "IX_SyncOutboxEntries_Scope_Status_PreparedAtUtc",
+            "CREATE INDEX IF NOT EXISTS \"IX_SyncOutboxEntries_Scope_Status_PreparedAtUtc\" ON \"SyncOutboxEntries\" (\"TenantCode\", \"OfficeCode\", \"ResponsibleOfficeCode\", \"Status\", \"PreparedAtUtc\");"),
+        new(
+            "IX_SyncOutboxEntries_SupersedeScope_Status_PreparedAtUtc",
+            "CREATE INDEX IF NOT EXISTS \"IX_SyncOutboxEntries_SupersedeScope_Status_PreparedAtUtc\" ON \"SyncOutboxEntries\" (\"EntityName\", \"EntityId\", \"TenantCode\", \"OfficeCode\", \"ResponsibleOfficeCode\", \"BusinessDatabaseName\", \"DeviceId\", \"SessionId\", \"UserId\", \"Status\", \"PreparedAtUtc\");"),
+        new(
+            "IX_DeferredRecycleBinPurgeRecords_Scope_Entity",
+            "CREATE INDEX IF NOT EXISTS \"IX_DeferredRecycleBinPurgeRecords_Scope_Entity\" ON \"DeferredRecycleBinPurgeRecords\" (\"BusinessDatabaseName\", \"TenantCode\", \"OfficeCode\", \"ResponsibleOfficeCode\", \"Kind\", \"EntityId\");"),
+        new(
+            "IX_DeferredRecycleBinPurgeRecords_AppliedAtUtc_NextAttemptAtUtc",
+            "CREATE INDEX IF NOT EXISTS \"IX_DeferredRecycleBinPurgeRecords_AppliedAtUtc_NextAttemptAtUtc\" ON \"DeferredRecycleBinPurgeRecords\" (\"AppliedAtUtc\", \"NextAttemptAtUtc\");"),
+        new(
+            "IX_InventoryTransferTombstoneConflicts_Status_UpdatedAtUtc",
+            "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransferTombstoneConflicts_Status_UpdatedAtUtc\" ON \"InventoryTransferTombstoneConflicts\" (\"Status\", \"UpdatedAtUtc\");"),
+        new(
+            "IX_InventoryTransferTombstoneConflicts_BusinessScope_Status",
+            "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransferTombstoneConflicts_BusinessScope_Status\" ON \"InventoryTransferTombstoneConflicts\" (\"BusinessDatabaseName\", \"TenantCode\", \"SourceOfficeCode\", \"TargetOfficeCode\", \"Status\");"),
+        .. DeferredRequiredSchemaIndexes.Select(definition =>
+            new RequiredSchemaIndexDefinition(definition.Name, definition.Sql))
+    ];
     private static readonly CanonicalOfficeDefinition[] CanonicalOffices =
     [
         new(OfficeCodeCatalog.Usenet, OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet), true, OfficeCodeCatalog.UsenetMainWarehouse, "유즈넷 창고"),
@@ -92,32 +154,42 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         await db.Database.EnsureCreatedAsync();
         LogInitializationStep("EnsureCreated", stepStartedAtUtc);
 
-        var requiresSchemaMaintenance = !await HasSettingValueAsync(
+        var hasCurrentSchemaMaintenanceVersion = await HasSettingValueAsync(
             db,
             SchemaMaintenanceVersionSettingKey,
             SchemaMaintenanceVersion);
+        var missingRequiredSchema = await GetMissingRequiredSchemaElementsAsync(db);
+        var requiresSchemaMaintenance = !hasCurrentSchemaMaintenanceVersion || missingRequiredSchema.Count > 0;
+
+        if (hasCurrentSchemaMaintenanceVersion && missingRequiredSchema.Count > 0)
+        {
+            AppLogger.Warn(
+                "LOCALDB",
+                $"현재 스키마 정비 마커와 실제 DB 구조가 일치하지 않아 마커를 무효화합니다: {DescribeSchemaFailures(missingRequiredSchema)}");
+            await db.Database.ExecuteSqlRawAsync(
+                "DELETE FROM \"Settings\" WHERE \"Key\" = {0};",
+                SchemaMaintenanceVersionSettingKey);
+            db.ChangeTracker.Clear();
+        }
+
         if (requiresSchemaMaintenance)
         {
             stepStartedAtUtc = DateTime.UtcNow;
-            await MigrateColumnsAsync(db);
+            await ApplySchemaMaintenanceAsync(db);
             LogInitializationStep("스키마 보강", stepStartedAtUtc);
         }
-
-        stepStartedAtUtc = DateTime.UtcNow;
-        await EnsureSyncOutboxTableAsync(db);
-        LogInitializationStep("동기화 outbox 확인", stepStartedAtUtc);
+        else
+        {
+            stepStartedAtUtc = DateTime.UtcNow;
+            await VerifyCurrentSchemaAsync(db);
+            LogInitializationStep("동기화 outbox 확인", stepStartedAtUtc);
+        }
 
         stepStartedAtUtc = DateTime.UtcNow;
 
         // 시작 정비 단계는 동일한 Settings 행을 반복 확인하므로 한 번만 읽어 추적 캐시에 둔다.
         // 이후 HasSettingValueAsync/UpsertSettingAsync는 Local 컬렉션을 우선 사용한다.
         await db.Settings.IgnoreQueryFilters().LoadAsync();
-        if (requiresSchemaMaintenance)
-        {
-            await UpsertSettingAsync(db, SchemaMaintenanceVersionSettingKey, SchemaMaintenanceVersion);
-            await db.SaveChangesAsync();
-        }
-
         if (!db.CustomerCategories.Any())
         {
             db.CustomerCategories.AddRange(
@@ -253,7 +325,63 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         await db.SaveChangesAsync();
         await EnsureUniqueDefaultCompanyProfileIndexAsync(db);
         await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"UX_ItemCategoryOptions_Name_Active\" ON \"ItemCategoryOptions\" (\"Name\") WHERE COALESCE(TRIM(\"Name\"), '') <> '' AND COALESCE(\"IsDeleted\", 0) = 0;");
+        await BackfillItemCatalogExtensionPendingAsync(db);
         LogInitializationStep("기본값 및 정합성 유지", stepStartedAtUtc);
+    }
+
+    private static async Task BackfillItemCatalogExtensionPendingAsync(LocalDbContext db)
+    {
+        var isCompleted = await db.Settings
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .AnyAsync(setting =>
+                setting.Key == BackfillItemCatalogExtensionPendingStepKey &&
+                setting.Value == "1");
+        if (isCompleted)
+        {
+            return;
+        }
+
+        await using var transaction = await db.BeginRuntimeMutationTransactionAsync();
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                UPDATE "Items"
+                SET "CatalogExtensionSyncPending" =
+                    CASE
+                        WHEN COALESCE("IsDeleted", 0) = 0
+                         AND (
+                             COALESCE(CAST("BoxQuantity" AS REAL), 0) <> 0
+                             OR COALESCE(TRIM("StorageLocation"), '') <> ''
+                             OR COALESCE(TRIM(CAST("LastPurchaseDate" AS TEXT)), '') <> ''
+                             OR COALESCE(TRIM(CAST("LastSaleDate" AS TEXT)), '') <> ''
+                         )
+                        THEN 1
+                        ELSE 0
+                    END;
+                """);
+            db.ChangeTracker.Clear();
+            await UpsertSettingAsync(
+                db,
+                BackfillItemCatalogExtensionPendingStepKey,
+                "1");
+            await db.SaveChangesAsync();
+            await transaction.CommitAsync();
+        }
+        catch
+        {
+            try
+            {
+                await transaction.RollbackAsync();
+            }
+            finally
+            {
+                db.ChangeTracker.Clear();
+            }
+
+            throw;
+        }
     }
 
     private static void LogInitializationStep(string stepName, DateTime startedAtUtc)
@@ -267,11 +395,15 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
     private static void LogSchemaStepFailure(string stepName, Exception ex)
     {
         AppLogger.Warn("LOCALDB", $"로컬 DB 보강 단계 '{stepName}' 실패: {ex.Message}");
+        ActiveSchemaMigrationFailures.Value?.Add(stepName, ex);
     }
 
     private static void LogSchemaSqlFailure(string operationName, string sql, Exception ex)
     {
         AppLogger.Warn("LOCALDB", $"로컬 DB SQL 보강 '{operationName}' 실패: {ex.Message} sql={AbbreviateSqlForLog(sql)}");
+        ActiveSchemaMigrationFailures.Value?.Add(
+            $"{operationName}:{AbbreviateSqlForLog(sql)}",
+            ex);
     }
 
     private static string AbbreviateSqlForLog(string sql)
@@ -280,6 +412,249 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         return normalized.Length <= 220
             ? normalized
             : normalized[..220] + "...";
+    }
+
+    private static async Task ApplySchemaMaintenanceAsync(LocalDbContext db)
+    {
+        await using var transaction = await db.BeginRuntimeMutationTransactionAsync();
+        var previousFailureCollector = ActiveSchemaMigrationFailures.Value;
+        var failureCollector = new SchemaMigrationFailureCollector();
+        ActiveSchemaMigrationFailures.Value = failureCollector;
+
+        try
+        {
+            await MigrateColumnsAsync(db);
+            await EnsureDeferredRequiredSchemaIndexesAsync(db);
+            await EnsureSyncOutboxTableAsync(db);
+            await EnsureDeferredRecycleBinPurgeRecordsTableAsync(db);
+            await EnsureInventoryTransferTombstoneConflictsTableAsync(db);
+            await EnsureRequiredSchemaIndexDefinitionsAsync(db);
+            await ValidateRequiredSchemaPostconditionsAsync(db);
+            failureCollector.ThrowIfAny();
+
+            await UpsertSettingAsync(db, SchemaMaintenanceVersionSettingKey, SchemaMaintenanceVersion);
+            await db.SaveChangesAsync();
+            await transaction.CommitAsync();
+        }
+        catch
+        {
+            try
+            {
+                await transaction.RollbackAsync();
+            }
+            finally
+            {
+                db.ChangeTracker.Clear();
+            }
+
+            throw;
+        }
+        finally
+        {
+            ActiveSchemaMigrationFailures.Value = previousFailureCollector;
+        }
+    }
+
+    private static async Task EnsureDeferredRequiredSchemaIndexesAsync(LocalDbContext db)
+    {
+        foreach (var (_, sql) in DeferredRequiredSchemaIndexes)
+            await TryCreateIndexAsync(db, sql);
+    }
+
+    private static async Task EnsureRequiredSchemaIndexDefinitionsAsync(LocalDbContext db)
+    {
+        var existingDefinitions = await GetSchemaIndexDefinitionsAsync(db);
+        foreach (var definition in RequiredSchemaIndexes)
+        {
+            if (existingDefinitions.TryGetValue(definition.Name, out var existingSql) &&
+                IndexDefinitionsMatch(existingSql, definition.Sql))
+            {
+                continue;
+            }
+
+            if (existingDefinitions.ContainsKey(definition.Name))
+            {
+                await TryCreateIndexAsync(
+                    db,
+                    $"DROP INDEX IF EXISTS {QuoteSqlIdentifier(definition.Name)};");
+            }
+
+            await TryCreateIndexAsync(db, definition.Sql);
+        }
+    }
+
+    private static async Task VerifyCurrentSchemaAsync(LocalDbContext db)
+    {
+        var previousFailureCollector = ActiveSchemaMigrationFailures.Value;
+        var failureCollector = new SchemaMigrationFailureCollector();
+        ActiveSchemaMigrationFailures.Value = failureCollector;
+
+        try
+        {
+            await EnsureSyncOutboxTableAsync(db);
+            await EnsureDeferredRecycleBinPurgeRecordsTableAsync(db);
+            await EnsureInventoryTransferTombstoneConflictsTableAsync(db);
+            await EnsureRequiredSchemaIndexDefinitionsAsync(db);
+            await ValidateRequiredSchemaPostconditionsAsync(db);
+            failureCollector.ThrowIfAny();
+        }
+        finally
+        {
+            ActiveSchemaMigrationFailures.Value = previousFailureCollector;
+        }
+    }
+
+    private static async Task ValidateRequiredSchemaPostconditionsAsync(LocalDbContext db)
+    {
+        ActiveSchemaColumnCache.Value?.Clear();
+        var missingRequiredSchema = await GetMissingRequiredSchemaElementsAsync(db);
+        if (missingRequiredSchema.Count == 0)
+            return;
+
+        LogSchemaStepFailure(
+            "필수 스키마 사후조건",
+            new InvalidOperationException(DescribeSchemaFailures(missingRequiredSchema)));
+    }
+
+    private static async Task<IReadOnlyList<string>> GetMissingRequiredSchemaElementsAsync(LocalDbContext db)
+    {
+        var requiredColumnsByTable = new SortedDictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entityType in db.Model.GetEntityTypes())
+        {
+            var tableName = entityType.GetTableName();
+            if (string.IsNullOrWhiteSpace(tableName))
+                continue;
+
+            var storeObject = StoreObjectIdentifier.Table(tableName, entityType.GetSchema());
+            if (!requiredColumnsByTable.TryGetValue(tableName, out var requiredColumns))
+            {
+                requiredColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                requiredColumnsByTable[tableName] = requiredColumns;
+            }
+
+            foreach (var property in entityType.GetProperties())
+            {
+                var columnName = property.GetColumnName(storeObject);
+                if (!string.IsNullOrWhiteSpace(columnName))
+                    requiredColumns.Add(columnName);
+            }
+        }
+
+        var missing = new List<string>();
+        foreach (var (tableName, requiredColumns) in requiredColumnsByTable)
+        {
+            foreach (var columnName in requiredColumns.OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
+            {
+                if (!await HasColumnAsync(db, tableName, columnName))
+                    missing.Add($"{tableName}.{columnName}");
+            }
+        }
+
+        var existingIndexes = await GetSchemaIndexDefinitionsAsync(db);
+        foreach (var definition in RequiredSchemaIndexes)
+        {
+            if (!existingIndexes.TryGetValue(definition.Name, out var existingSql))
+            {
+                missing.Add($"index:{definition.Name}");
+                continue;
+            }
+
+            if (!IndexDefinitionsMatch(existingSql, definition.Sql))
+                missing.Add($"index:{definition.Name}:definition");
+        }
+
+        return missing;
+    }
+
+    private static async Task<Dictionary<string, string>> GetSchemaIndexDefinitionsAsync(LocalDbContext db)
+    {
+        var connection = db.Database.GetDbConnection();
+        var shouldClose = connection.State != ConnectionState.Open;
+        if (shouldClose)
+            await connection.OpenAsync();
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = db.Database.CurrentTransaction?.GetDbTransaction();
+            command.CommandText =
+                "SELECT \"name\", COALESCE(\"sql\", '') AS \"sql\" FROM \"sqlite_master\" WHERE \"type\" = 'index';";
+            await using var reader = await command.ExecuteReaderAsync();
+            var indexes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            while (await reader.ReadAsync())
+            {
+                var indexName = reader["name"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(indexName))
+                    indexes[indexName] = reader["sql"]?.ToString() ?? string.Empty;
+            }
+
+            return indexes;
+        }
+        finally
+        {
+            if (shouldClose)
+                await connection.CloseAsync();
+        }
+    }
+
+    private static bool IndexDefinitionsMatch(string actualSql, string expectedSql)
+        => string.Equals(
+            NormalizeIndexDefinitionSql(actualSql),
+            NormalizeIndexDefinitionSql(expectedSql),
+            StringComparison.Ordinal);
+
+    private static string NormalizeIndexDefinitionSql(string sql)
+    {
+        var withoutIfNotExists = Regex.Replace(
+            sql ?? string.Empty,
+            @"\A(\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+)IF\s+NOT\s+EXISTS\s+",
+            "$1",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        var normalized = new StringBuilder(withoutIfNotExists.Length);
+        var quote = '\0';
+        for (var index = 0; index < withoutIfNotExists.Length; index++)
+        {
+            var character = withoutIfNotExists[index];
+            if (quote != '\0')
+            {
+                normalized.Append(character);
+                if (character != quote)
+                    continue;
+
+                if (index + 1 < withoutIfNotExists.Length &&
+                    withoutIfNotExists[index + 1] == quote)
+                {
+                    normalized.Append(withoutIfNotExists[++index]);
+                    continue;
+                }
+
+                quote = '\0';
+                continue;
+            }
+
+            if (character is '\'' or '"')
+            {
+                quote = character;
+                normalized.Append(character);
+                continue;
+            }
+
+            if (char.IsWhiteSpace(character) || character == ';')
+                continue;
+
+            normalized.Append(char.ToUpperInvariant(character));
+        }
+
+        return normalized.ToString();
+    }
+
+    private static string DescribeSchemaFailures(IReadOnlyList<string> failures)
+    {
+        const int maxDisplayedFailures = 12;
+        var displayed = string.Join(", ", failures.Take(maxDisplayedFailures));
+        return failures.Count <= maxDisplayedFailures
+            ? displayed
+            : $"{displayed} 외 {failures.Count - maxDisplayedFailures}건";
     }
 
     private static async Task NormalizeSelectionOptionSystemDefaultsAsync(LocalDbContext db)
@@ -389,6 +764,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             ("PriceGradeC", "REAL NOT NULL DEFAULT 0"),
             ("LastPurchaseDate", "TEXT"),
             ("LastSaleDate", "TEXT"),
+            ("CatalogExtensionSyncPending", "INTEGER NOT NULL DEFAULT 1"),
             ("SimpleMemo", "TEXT NOT NULL DEFAULT ''"),
         };
         foreach (var (col, def) in itemCols)
@@ -978,23 +1354,103 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                 current = canonical;
             }
 
-            current.ProfileName = ResolveDefaultCompanyProfileName(current.ProfileName, definition.OfficeCode, definition.ProfileName);
-            current.TradeName = ResolveDefaultCompanyProfileTradeName(current.TradeName, definition.OfficeCode, definition.TradeName);
-            current.OfficeCode = NormalizeRentalOfficeCode(current.OfficeCode, definition.OfficeCode);
-            current.IsDefaultForOffice = true;
-            current.IsActive = true;
-            current.IsDeleted = false;
-            if (string.IsNullOrWhiteSpace(current.Representative))
-                current.Representative = definition.Representative;
-            if (string.IsNullOrWhiteSpace(current.BusinessNumber))
-                current.BusinessNumber = definition.BusinessNumber;
-            if (string.IsNullOrWhiteSpace(current.Address))
-                current.Address = definition.Address;
-            if (string.IsNullOrWhiteSpace(current.ContactNumber))
-                current.ContactNumber = definition.ContactNumber;
-            current.FaxNumber = current.FaxNumber?.Trim() ?? string.Empty;
-            current.IsDirty = false;
-            current.UpdatedAtUtc = now;
+            var currentChanged = false;
+            var desiredProfileName = ResolveDefaultCompanyProfileName(
+                current.ProfileName,
+                definition.OfficeCode,
+                definition.ProfileName);
+            if (!string.Equals(current.ProfileName, desiredProfileName, StringComparison.Ordinal))
+            {
+                current.ProfileName = desiredProfileName;
+                currentChanged = true;
+            }
+
+            var desiredTradeName = ResolveDefaultCompanyProfileTradeName(
+                current.TradeName,
+                definition.OfficeCode,
+                definition.TradeName);
+            if (!string.Equals(current.TradeName, desiredTradeName, StringComparison.Ordinal))
+            {
+                current.TradeName = desiredTradeName;
+                currentChanged = true;
+            }
+
+            var desiredOfficeCode = NormalizeRentalOfficeCode(current.OfficeCode, definition.OfficeCode);
+            if (!string.Equals(current.OfficeCode, desiredOfficeCode, StringComparison.Ordinal))
+            {
+                current.OfficeCode = desiredOfficeCode;
+                currentChanged = true;
+            }
+
+            if (!current.IsDefaultForOffice)
+            {
+                current.IsDefaultForOffice = true;
+                currentChanged = true;
+            }
+
+            if (!current.IsActive)
+            {
+                current.IsActive = true;
+                currentChanged = true;
+            }
+
+            if (current.IsDeleted)
+            {
+                current.IsDeleted = false;
+                currentChanged = true;
+            }
+
+            var desiredRepresentative = string.IsNullOrWhiteSpace(current.Representative)
+                ? definition.Representative
+                : current.Representative;
+            if (!string.Equals(current.Representative, desiredRepresentative, StringComparison.Ordinal))
+            {
+                current.Representative = desiredRepresentative;
+                currentChanged = true;
+            }
+
+            var desiredBusinessNumber = string.IsNullOrWhiteSpace(current.BusinessNumber)
+                ? definition.BusinessNumber
+                : current.BusinessNumber;
+            if (!string.Equals(current.BusinessNumber, desiredBusinessNumber, StringComparison.Ordinal))
+            {
+                current.BusinessNumber = desiredBusinessNumber;
+                currentChanged = true;
+            }
+
+            var desiredAddress = string.IsNullOrWhiteSpace(current.Address)
+                ? definition.Address
+                : current.Address;
+            if (!string.Equals(current.Address, desiredAddress, StringComparison.Ordinal))
+            {
+                current.Address = desiredAddress;
+                currentChanged = true;
+            }
+
+            var desiredContactNumber = string.IsNullOrWhiteSpace(current.ContactNumber)
+                ? definition.ContactNumber
+                : current.ContactNumber;
+            if (!string.Equals(current.ContactNumber, desiredContactNumber, StringComparison.Ordinal))
+            {
+                current.ContactNumber = desiredContactNumber;
+                currentChanged = true;
+            }
+
+            var desiredFaxNumber = current.FaxNumber?.Trim() ?? string.Empty;
+            if (!string.Equals(current.FaxNumber, desiredFaxNumber, StringComparison.Ordinal))
+            {
+                current.FaxNumber = desiredFaxNumber;
+                currentChanged = true;
+            }
+
+            if (current.IsDirty)
+            {
+                current.IsDirty = false;
+                currentChanged = true;
+            }
+
+            if (currentChanged)
+                current.UpdatedAtUtc = now;
         }
 
         foreach (var group in profiles
@@ -1466,14 +1922,52 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                 continue;
             }
 
-            warehouse.OfficeId = office.Id;
-            warehouse.OfficeCode = canonicalOfficeCode;
-            warehouse.Code = canonicalWarehouseCode;
-            warehouse.Name = ResolveWarehouseDisplayName(canonicalWarehouseCode);
-            warehouse.IsActive = true;
-            warehouse.IsDeleted = false;
-            warehouse.IsDirty = false;
-            warehouse.UpdatedAtUtc = now;
+            var warehouseChanged = false;
+            if (warehouse.OfficeId != office.Id)
+            {
+                warehouse.OfficeId = office.Id;
+                warehouseChanged = true;
+            }
+
+            if (!string.Equals(warehouse.OfficeCode, canonicalOfficeCode, StringComparison.Ordinal))
+            {
+                warehouse.OfficeCode = canonicalOfficeCode;
+                warehouseChanged = true;
+            }
+
+            if (!string.Equals(warehouse.Code, canonicalWarehouseCode, StringComparison.Ordinal))
+            {
+                warehouse.Code = canonicalWarehouseCode;
+                warehouseChanged = true;
+            }
+
+            var canonicalWarehouseName = ResolveWarehouseDisplayName(canonicalWarehouseCode);
+            if (!string.Equals(warehouse.Name, canonicalWarehouseName, StringComparison.Ordinal))
+            {
+                warehouse.Name = canonicalWarehouseName;
+                warehouseChanged = true;
+            }
+
+            if (!warehouse.IsActive)
+            {
+                warehouse.IsActive = true;
+                warehouseChanged = true;
+            }
+
+            if (warehouse.IsDeleted)
+            {
+                warehouse.IsDeleted = false;
+                warehouseChanged = true;
+            }
+
+            if (warehouse.IsDirty)
+            {
+                warehouse.IsDirty = false;
+                warehouseChanged = true;
+            }
+
+            if (warehouseChanged)
+                warehouse.UpdatedAtUtc = now;
         }
 
         foreach (var definition in CanonicalOffices)
@@ -1509,13 +2003,45 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             return;
         }
 
-        existing.OfficeId = office.Id;
-        existing.OfficeCode = office.Code;
-        existing.Name = warehouseName;
-        existing.IsActive = true;
-        existing.IsDeleted = false;
-        existing.IsDirty = false;
-        existing.UpdatedAtUtc = DateTime.UtcNow;
+        var changed = false;
+        if (existing.OfficeId != office.Id)
+        {
+            existing.OfficeId = office.Id;
+            changed = true;
+        }
+
+        if (!string.Equals(existing.OfficeCode, office.Code, StringComparison.Ordinal))
+        {
+            existing.OfficeCode = office.Code;
+            changed = true;
+        }
+
+        if (!string.Equals(existing.Name, warehouseName, StringComparison.Ordinal))
+        {
+            existing.Name = warehouseName;
+            changed = true;
+        }
+
+        if (!existing.IsActive)
+        {
+            existing.IsActive = true;
+            changed = true;
+        }
+
+        if (existing.IsDeleted)
+        {
+            existing.IsDeleted = false;
+            changed = true;
+        }
+
+        if (existing.IsDirty)
+        {
+            existing.IsDirty = false;
+            changed = true;
+        }
+
+        if (changed)
+            existing.UpdatedAtUtc = DateTime.UtcNow;
     }
 
     private static async Task RepointWarehouseReferencesAsync(LocalDbContext db, string oldCode, string newCode)
@@ -1663,12 +2189,13 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         => OfficeCodeCatalog.NormalizeWarehouseCodeLoose(warehouseCode, officeCode, ResolveCanonicalOfficeCode(officeCode, warehouseName));
 
     private static string ResolveWarehouseDisplayName(string warehouseCode)
-        => warehouseCode switch
-        {
-            OfficeCodeCatalog.ItworldMainWarehouse => "ITWORLD 창고",
-            OfficeCodeCatalog.YeonsuMainWarehouse => "YEONSU 창고",
-            _ => "유즈넷 창고"
-        };
+        => CanonicalOffices.FirstOrDefault(definition =>
+               string.Equals(
+                   definition.WarehouseCode,
+                   warehouseCode,
+                   StringComparison.OrdinalIgnoreCase))
+           ?.WarehouseName
+           ?? "유즈넷 창고";
 
     private static async Task SeedRentalDefaultsAsync(LocalDbContext db)
     {
@@ -1701,13 +2228,47 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                 continue;
             }
 
-            current.Code = ResolveCanonicalOfficeCode(current.Code, current.Name);
-            current.Name = definition.Name;
-            current.IsSystemDefault = current.IsSystemDefault || definition.IsSystemDefault;
-            current.IsActive = true;
-            current.IsDeleted = false;
-            current.IsDirty = false;
-            current.UpdatedAtUtc = now;
+            var changed = false;
+            var canonicalCode = ResolveCanonicalOfficeCode(current.Code, current.Name);
+            if (!string.Equals(current.Code, canonicalCode, StringComparison.Ordinal))
+            {
+                current.Code = canonicalCode;
+                changed = true;
+            }
+
+            if (!string.Equals(current.Name, definition.Name, StringComparison.Ordinal))
+            {
+                current.Name = definition.Name;
+                changed = true;
+            }
+
+            var isSystemDefault = current.IsSystemDefault || definition.IsSystemDefault;
+            if (current.IsSystemDefault != isSystemDefault)
+            {
+                current.IsSystemDefault = isSystemDefault;
+                changed = true;
+            }
+
+            if (!current.IsActive)
+            {
+                current.IsActive = true;
+                changed = true;
+            }
+
+            if (current.IsDeleted)
+            {
+                current.IsDeleted = false;
+                changed = true;
+            }
+
+            if (current.IsDirty)
+            {
+                current.IsDirty = false;
+                changed = true;
+            }
+
+            if (changed)
+                current.UpdatedAtUtc = now;
         }
 
         await NormalizeRentalManagementCompaniesAsync(db);
@@ -1737,13 +2298,45 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                              string.Equals(company.Code, definition.Code, StringComparison.OrdinalIgnoreCase))
                          ?? matches.First();
 
-            keeper.Code = definition.Code;
-            keeper.Name = definition.Code;
-            keeper.IsSystemDefault = true;
-            keeper.IsActive = true;
-            keeper.IsDeleted = false;
-            keeper.IsDirty = false;
-            keeper.UpdatedAtUtc = now;
+            var changed = false;
+            if (!string.Equals(keeper.Code, definition.Code, StringComparison.Ordinal))
+            {
+                keeper.Code = definition.Code;
+                changed = true;
+            }
+
+            if (!string.Equals(keeper.Name, definition.Code, StringComparison.Ordinal))
+            {
+                keeper.Name = definition.Code;
+                changed = true;
+            }
+
+            if (!keeper.IsSystemDefault)
+            {
+                keeper.IsSystemDefault = true;
+                changed = true;
+            }
+
+            if (!keeper.IsActive)
+            {
+                keeper.IsActive = true;
+                changed = true;
+            }
+
+            if (keeper.IsDeleted)
+            {
+                keeper.IsDeleted = false;
+                changed = true;
+            }
+
+            if (keeper.IsDirty)
+            {
+                keeper.IsDirty = false;
+                changed = true;
+            }
+
+            if (changed)
+                keeper.UpdatedAtUtc = now;
 
             foreach (var duplicate in matches.Where(company => company.Id != keeper.Id))
                 db.RentalManagementCompanies.Remove(duplicate);
@@ -2339,6 +2932,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         try
         {
             await using var command = connection.CreateCommand();
+            command.Transaction = db.Database.CurrentTransaction?.GetDbTransaction();
             command.CommandText = "PRAGMA table_info(" + QuoteSqlIdentifier(tableName) + ");";
             await using var reader = await command.ExecuteReaderAsync();
             var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -2469,14 +3063,15 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
     {
         var dropTargets = new List<string>();
 
-        await using var connection = db.Database.GetDbConnection();
+        var connection = db.Database.GetDbConnection();
         var shouldClose = connection.State != System.Data.ConnectionState.Open;
-        if (shouldClose)
-            await connection.OpenAsync();
-
         try
         {
+            if (shouldClose)
+                await connection.OpenAsync();
+
             await using var listCommand = connection.CreateCommand();
+            listCommand.Transaction = db.Database.CurrentTransaction?.GetDbTransaction();
             listCommand.CommandText = "PRAGMA index_list(\"CompanyProfiles\")";
             await using var listReader = await listCommand.ExecuteReaderAsync();
             while (await listReader.ReadAsync())
@@ -2494,6 +3089,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                 }
 
                 await using var infoCommand = connection.CreateCommand();
+                infoCommand.Transaction = db.Database.CurrentTransaction?.GetDbTransaction();
                 infoCommand.CommandText = $"PRAGMA index_info(\"{indexName.Replace("\"", "\"\"")}\")";
                 var columns = new List<string>();
                 await using var infoReader = await infoCommand.ExecuteReaderAsync();
@@ -2506,7 +3102,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         }
         finally
         {
-            if (shouldClose)
+            if (shouldClose && connection.State != System.Data.ConnectionState.Closed)
                 await connection.CloseAsync();
         }
 
@@ -3004,12 +3600,16 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                                           );
                                           """;
             await db.Database.ExecuteSqlRawAsync(createTableSql);
+            InvalidateSchemaColumnCache("Transactions");
             await db.Database.ExecuteSqlRawAsync(
                 "CREATE INDEX IF NOT EXISTS \"IX_Transactions_CustomerId\" ON \"Transactions\" (\"CustomerId\");");
             await db.Database.ExecuteSqlRawAsync(
                 "CREATE INDEX IF NOT EXISTS \"IX_Transactions_TransactionDate\" ON \"Transactions\" (\"TransactionDate\");");
-            await db.Database.ExecuteSqlRawAsync(
-                "CREATE INDEX IF NOT EXISTS \"IX_Transactions_ResponsibleOfficeCode\" ON \"Transactions\" (\"ResponsibleOfficeCode\");");
+            if (await HasColumnAsync(db, "Transactions", "ResponsibleOfficeCode"))
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    "CREATE INDEX IF NOT EXISTS \"IX_Transactions_ResponsibleOfficeCode\" ON \"Transactions\" (\"ResponsibleOfficeCode\");");
+            }
         }
         catch (Exception ex)
         {
@@ -3048,8 +3648,17 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                                           );
                                           """;
             await db.Database.ExecuteSqlRawAsync(createTableSql);
-            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_TransactionAttachments_TransactionId\" ON \"TransactionAttachments\" (\"TransactionId\");");
-            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_TransactionAttachments_TransactionStatus\" ON \"TransactionAttachments\" (\"TransactionId\", \"VerificationStatus\");");
+            InvalidateSchemaColumnCache("TransactionAttachments");
+            if (await HasColumnAsync(db, "TransactionAttachments", "TransactionId"))
+            {
+                await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_TransactionAttachments_TransactionId\" ON \"TransactionAttachments\" (\"TransactionId\");");
+            }
+
+            if (await HasColumnAsync(db, "TransactionAttachments", "TransactionId") &&
+                await HasColumnAsync(db, "TransactionAttachments", "VerificationStatus"))
+            {
+                await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_TransactionAttachments_TransactionStatus\" ON \"TransactionAttachments\" (\"TransactionId\", \"VerificationStatus\");");
+            }
         }
         catch (Exception ex)
         {
@@ -3491,10 +4100,14 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                                );
                                """;
             await db.Database.ExecuteSqlRawAsync(transferSql);
+            InvalidateSchemaColumnCache("InventoryTransfers");
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransfers_TransferDate\" ON \"InventoryTransfers\" (\"TransferDate\");");
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransfers_TransferNumber\" ON \"InventoryTransfers\" (\"TransferNumber\");");
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransfers_Warehouses\" ON \"InventoryTransfers\" (\"FromWarehouseCode\", \"ToWarehouseCode\");");
-            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransfers_TransferStatus\" ON \"InventoryTransfers\" (\"TransferStatus\");");
+            if (await HasColumnAsync(db, "InventoryTransfers", "TransferStatus"))
+            {
+                await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransfers_TransferStatus\" ON \"InventoryTransfers\" (\"TransferStatus\");");
+            }
 
             const string lineSql = """
                                CREATE TABLE IF NOT EXISTS "InventoryTransferLines" (
@@ -3513,7 +4126,12 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                                 );
                                """;
             await db.Database.ExecuteSqlRawAsync(lineSql);
-            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransferLines_TransferItem\" ON \"InventoryTransferLines\" (\"TransferId\", \"ItemId\");");
+            InvalidateSchemaColumnCache("InventoryTransferLines");
+            if (await HasColumnAsync(db, "InventoryTransferLines", "TransferId") &&
+                await HasColumnAsync(db, "InventoryTransferLines", "ItemId"))
+            {
+                await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_InventoryTransferLines_TransferItem\" ON \"InventoryTransferLines\" (\"TransferId\", \"ItemId\");");
+            }
         }
         catch (Exception ex)
         {
@@ -3659,9 +4277,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                                );
                                """;
             await db.Database.ExecuteSqlRawAsync(sql);
-            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_AssetKey\" ON \"RentalAssets\" (\"TenantCode\", \"AssetKey\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"AssetKey\"), '') <> '';");
-            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementId\" ON \"RentalAssets\" (\"TenantCode\", \"ManagementId\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementId\"), '') <> '';");
-            await TryCreateIndexAsync(db, "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RentalAssets_ManagementNumber\" ON \"RentalAssets\" (\"TenantCode\", \"ManagementNumber\") WHERE COALESCE(\"IsDeleted\", 0) = 0 AND COALESCE(TRIM(\"ManagementNumber\"), '') <> '';");
+            InvalidateSchemaColumnCache("RentalAssets");
         }
         catch (Exception ex)
         {
@@ -3720,11 +4336,15 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                                );
                                """;
             await db.Database.ExecuteSqlRawAsync(sql);
+            InvalidateSchemaColumnCache("RentalAssetAssignmentHistories");
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_AssetId_IsCurrent\" ON \"RentalAssetAssignmentHistories\" (\"AssetId\", \"IsCurrent\");");
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_AssetTimeline\" ON \"RentalAssetAssignmentHistories\" (\"AssetId\", \"IsCurrent\", \"LinkedAtUtc\");");
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_BillingProfileId\" ON \"RentalAssetAssignmentHistories\" (\"BillingProfileId\");");
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_LinkedAtUtc\" ON \"RentalAssetAssignmentHistories\" (\"LinkedAtUtc\");");
-            await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_Revision\" ON \"RentalAssetAssignmentHistories\" (\"Revision\");");
+            if (await HasColumnAsync(db, "RentalAssetAssignmentHistories", "Revision"))
+            {
+                await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_RentalAssetAssignmentHistories_Revision\" ON \"RentalAssetAssignmentHistories\" (\"Revision\");");
+            }
         }
         catch (Exception ex)
         {
@@ -3764,6 +4384,32 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             LogSchemaStepFailure(nameof(TryCreateRentalBillingLogsTableAsync), ex);
         }
     }
+
+    private sealed class SchemaMigrationFailureCollector
+    {
+        private readonly List<string> _failures = [];
+
+        public void Add(string stepName, Exception exception)
+        {
+            var failure = $"{stepName}: {exception.Message}";
+            if (!_failures.Contains(failure, StringComparer.Ordinal))
+                _failures.Add(failure);
+        }
+
+        public void ThrowIfAny()
+        {
+            if (_failures.Count == 0)
+                return;
+
+            throw new InvalidOperationException(
+                $"로컬 DB 스키마 정비가 {_failures.Count}개 단계에서 실패하여 버전 마커를 기록하지 않았습니다. " +
+                DescribeSchemaFailures(_failures));
+        }
+    }
+
+    private sealed record RequiredSchemaIndexDefinition(
+        string Name,
+        string Sql);
 
     private sealed record CanonicalOfficeDefinition(
         string Code,

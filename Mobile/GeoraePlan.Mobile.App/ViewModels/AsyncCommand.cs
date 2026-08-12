@@ -35,6 +35,12 @@ public sealed class AsyncCommand : ICommand
         }
         catch (Exception ex)
         {
+            if (ex is MobileClientUpgradeRequiredException upgradeRequired)
+            {
+                MobileClientUpgradeRequiredSignal.Publish(upgradeRequired);
+                return;
+            }
+
             MobileAppLogger.Error("COMMAND", "모바일 명령 실행 실패", ex);
             await MobileErrorHandler.ShowAlertAsync("오류", $"명령 처리 중 오류가 발생했습니다.{Environment.NewLine}{ex.Message}");
         }

@@ -48,9 +48,18 @@ public sealed partial class MainViewModel
         _backgroundDesktopUpdateCts?.Dispose();
         _backgroundDesktopUpdateCts = new CancellationTokenSource();
         var token = _backgroundDesktopUpdateCts.Token;
+        var task = _ownerScopeBackgroundWork.TryStart(
+            () => CheckAndPrepareDesktopUpdateAsync(token));
+        if (task is null)
+        {
+            _backgroundDesktopUpdateCts.Cancel();
+            _backgroundDesktopUpdateCts.Dispose();
+            _backgroundDesktopUpdateCts = null;
+            return;
+        }
 
         UiTaskHelper.Forget(
-            CheckAndPrepareDesktopUpdateAsync(token),
+            task,
             "UPDATE",
             "백그라운드 PC 업데이트 확인",
             ex =>
@@ -197,7 +206,6 @@ public sealed partial class MainViewModel
             });
 
             await BackgroundDesktopUpdateService.StartUpdateAsync(package, _preparedDesktopUpdatePackagePath);
-            Application.Current?.Dispatcher.BeginInvoke(new Action(App.RequestShutdownForUpdate), DispatcherPriority.Send);
         }
         catch (OperationCanceledException)
         {

@@ -1,9 +1,13 @@
 using System.IO;
 using System.Globalization;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.DependencyInjection;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Shared.Contracts;
@@ -26,10 +30,22 @@ public sealed record SyncScopeExecutionResult(
 
 public sealed class SyncService : IDisposable
 {
+    internal const string OfficeSessionHttpClientName =
+        "GeoraePlan.OfficeSession";
+
     private const int MaxRetryCount = 3;
+    private const int PullQueryContainsBatchSize = 500;
     private const string DisableServerSyncEnvironmentKey = "GEORAEPLAN_DISABLE_SERVER_SYNC";
     private const string DeviceIdSettingKey = "Sync.DeviceId";
     private const string LastConflictSummarySettingKey = "Sync.LastConflictSummary";
+    private const string ItemCatalogExtensionVersionSettingKey =
+        "Sync.ItemCatalogExtensionVersion";
+    private const string
+        InventoryTransferStockAtomicityRollbackNoticeCode =
+            "inventory-transfer-stock-atomicity-rollback";
+    private const string
+        InventoryTransferStockAtomicityRollbackOutboxErrorPrefix =
+            "[inventory-transfer-stock-atomicity-rollback]";
     private static readonly TimeSpan AdministrativeBusinessCacheRefreshInterval = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan AdministrativeBusinessCachePullTimeout = TimeSpan.FromSeconds(25);
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(2);
@@ -47,6 +63,23 @@ public sealed class SyncService : IDisposable
         "PreparedAtUtc",
         "SentAtUtc",
         "AcknowledgedAtUtc"
+    };
+    private static readonly HashSet<string> PreparedMutationPayloadIgnoredPropertyNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "UpdatedAtUtc",
+        "Revision",
+        "ExpectedRevision",
+        "MutationId",
+        "MutationCreatedAtUtc"
+    };
+    private static readonly HashSet<string> PreparedInvoiceMutationPayloadIgnoredPropertyNames = new(
+        PreparedMutationPayloadIgnoredPropertyNames,
+        StringComparer.OrdinalIgnoreCase)
+    {
+        // Push 준비 과정에서 로컬 고객명을 조회해 DTO에 보강하는 파생 표시값이다.
+        "CustomerName",
+        // 수금은 request.Payments에서 별도 mutation으로 동기화하며 Invoice upsert payload가 아니다.
+        "Payments"
     };
     private static readonly HashSet<string> RentalBillingTemplateOnlyConflictIgnoredPropertyNames = new(
         EquivalentConflictIgnoredPropertyNames,
@@ -88,23 +121,108 @@ public sealed class SyncService : IDisposable
     private readonly SessionState _session;
     private readonly SyncRequestDispatcher _dispatcher;
     private readonly SyncDiagnosticsService _diagnostics;
+    private readonly IServiceScopeFactory? _scopeFactory;
+    private readonly IHttpClientFactory? _httpClientFactory;
+    private readonly IDesktopCompatibilityRuntime? _compatibilityRuntime;
+    private readonly IDesktopUpgradeRequiredObserver? _upgradeObserver;
     private readonly SemaphoreSlim _administrativeBusinessCacheRefreshLock = new(1, 1);
     private readonly object _immediateSyncGate = new();
+    private readonly HashSet<Task> _observedBackgroundTasks = [];
     private Timer? _timer;
     private CancellationTokenSource? _immediateSyncCts;
     private CancellationTokenSource? _transientFailureRetryCts;
+    private CancellationTokenSource _compatibilityBlockCts = new();
+    private CancellationTokenSource _runtimeStopCts = new();
     private Task<bool>? _currentSyncTask;
+    private Task? _stopAndDrainTask;
     private bool _resyncRequested;
     private bool _flushRequested;
+    private bool _stopping;
+    private bool _disposeRequested;
     private bool _disposed;
     private bool _dispatcherSubscribed;
     private static int _globalSyncOperationActiveCount;
     private DateTime _lastSyncStartedUtc = DateTime.MinValue;
     private DateTime _lastSyncCompletedUtc = DateTime.MinValue;
-    private DateTime _lastAdministrativeBusinessCacheRefreshUtc = DateTime.MinValue;
+    private readonly Dictionary<string, DateTime> _lastAdministrativeBusinessCacheRefreshUtcByDatabase =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<SyncEntityKey, TrackedMutationPreservation>
+        _trackedMutationsPreservedDuringSync = [];
+    private readonly List<TrackedEntityPreservation>
+        _trackedNonMutationChangesPreservedDuringSync = [];
+    private SyncService? _isolatedOperationOwner;
     private Guid _lastAdministrativeBusinessCacheSessionId = Guid.Empty;
+    private ItemWarehouseStockReplayPullGuard?
+        _itemWarehouseStockReplayPullGuard;
+    private bool
+        _itemWarehouseStockReplayGuardValidatedBeforeMirrorReset;
+    private bool
+        _itemWarehouseStockReplayGuardValidatedForPullTransaction;
+
+    private sealed record SyncOperationOwnerBoundary(
+        long ScopeEpoch,
+        Guid SessionId,
+        Guid UserId,
+        string AuthenticatedTenantCode,
+        string TenantCode,
+        string OfficeCode,
+        string BusinessOfficeCode,
+        string ScopeType,
+        string BusinessDatabaseName);
+
+    private sealed record ItemWarehouseStockRevisionConflictResolution(
+        IReadOnlyList<ConflictLogDto> ResolvedConflicts,
+        IReadOnlyList<ConflictLogDto> RetryRequiredConflicts);
+
+    private sealed record ItemWarehouseStockReplayPullGuard(
+        IReadOnlySet<Guid> AffectedItemIds,
+        IReadOnlyDictionary<string, ItemWarehouseStockDto>
+            ExpectedStocksByKey);
+
+    private enum ItemWarehouseStockRevisionConflictOutcome
+    {
+        Unresolved,
+        ResolvedFromServer,
+        RetryRequired
+    }
+
+    private sealed class SyncPullBlockedException(
+        string message,
+        Exception? innerException = null)
+        : Exception(message, innerException);
 
     public event Action<string>? SyncStatusChanged;
+
+    internal Func<CancellationToken, Task>? BeforePreparedOutboxSaveAsyncForTesting { get; set; }
+    internal Func<CancellationToken, Task>? BeforeSharedMirrorResetAsyncForTesting { get; set; }
+    internal Func<CancellationToken, Task>? AfterAttachmentCommitAsyncForTesting { get; set; }
+    internal Func<CancellationToken, Task>?
+        AfterPostCommitOwnerCheckAsyncForTesting { get; set; }
+    internal Action? CurrentOwnerRefreshScheduledForTesting { get; set; }
+    internal Func<CancellationToken, Task>? AfterPulledPurgeRecordsAsyncForTesting { get; set; }
+    internal Func<CancellationToken, Task>?
+        BeforeAcceptedRevisionCleanAsyncForTesting { get; set; }
+    internal Func<CancellationToken, Task>?
+        AfterInventoryTransferPurgePushAppliedAsyncForTesting { get; set; }
+    internal Action<int>?
+        AcceptedRevisionCleanAffectedRowsForTesting { get; set; }
+    internal Func<CancellationToken, Task>?
+        BeforeItemWarehouseStockTombstoneConditionalDeleteAsyncForTesting
+        { get; set; }
+    internal Func<CancellationToken, Task>?
+        AfterPartialWarehouseStockAcceptedSideEffectsAsyncForTesting
+        { get; set; }
+    internal Func<CancellationToken, Task>?
+        BeforePulledItemCatalogMismatchRequeueAsyncForTesting { get; set; }
+    internal Action?
+        EligibleOutboxReconciliationCandidateLoadStartedForTesting { get; set; }
+    internal Func<CancellationToken, Task>?
+        AfterInitialOutboxReconciliationCandidateSnapshotLoadedAsyncForTesting
+        { get; set; }
+    internal Func<CancellationToken, Task>?
+        BeforeStrictPullCommitGuardAsyncForTesting { get; set; }
+    internal Func<Guid, CancellationToken, Task>?
+        BeforeOutboxSupersedeUpdateAsyncForTesting { get; set; }
 
     public bool HasRecentSuccessfulSync(TimeSpan window)
         => !_disposed
@@ -138,7 +256,11 @@ public sealed class SyncService : IDisposable
         ErpApiClient api,
         SessionState session,
         SyncRequestDispatcher dispatcher,
-        SyncDiagnosticsService diagnostics)
+        SyncDiagnosticsService diagnostics,
+        IServiceScopeFactory? scopeFactory = null,
+        IHttpClientFactory? httpClientFactory = null,
+        IDesktopCompatibilityRuntime? compatibilityRuntime = null,
+        IDesktopUpgradeRequiredObserver? upgradeObserver = null)
     {
         _db = db;
         _local = local;
@@ -147,19 +269,59 @@ public sealed class SyncService : IDisposable
         _session = session;
         _dispatcher = dispatcher;
         _diagnostics = diagnostics;
+        _scopeFactory = scopeFactory;
+        _httpClientFactory = httpClientFactory;
+        _compatibilityRuntime = compatibilityRuntime;
+        _upgradeObserver = upgradeObserver;
+        if (_compatibilityRuntime is not null)
+        {
+            _compatibilityRuntime
+                    .MutationAvailabilityChanged +=
+                HandleMutationAvailabilityChanged;
+            if (!_compatibilityRuntime.CanMutate)
+                CancelForCompatibilityBlock();
+        }
+    }
+
+    internal HttpClient CreateOfficeSessionHttpClient()
+    {
+        var httpClient = _httpClientFactory is null
+            ? new HttpClient(
+                new DesktopUpgradeRequiredHandler(
+                    _upgradeObserver)
+                {
+                    InnerHandler = new HttpClientHandler()
+                },
+                disposeHandler: true)
+            : _httpClientFactory.CreateClient(
+                OfficeSessionHttpClientName);
+        httpClient.BaseAddress = _api.GetBaseUri();
+        httpClient.Timeout = TimeSpan.FromSeconds(100);
+        return httpClient;
     }
 
     public void Start(TimeSpan interval, bool runImmediately = false)
     {
-        if (_disposed || IsServerSyncDisabled())
-            return;
+        lock (_immediateSyncGate)
+        {
+            if (_disposed ||
+                _stopping ||
+                !CanRunServerMutation() ||
+                IsServerSyncDisabled())
+                return;
 
-        SubscribeToDispatcher();
-        _timer?.Dispose();
-        var normalizedInterval = interval <= TimeSpan.Zero ? TimeSpan.FromMinutes(5) : interval;
-        var due = runImmediately ? TimeSpan.Zero : normalizedInterval;
-        _timer = new Timer(_ => ObserveBackgroundTask(TrySyncAsync(), "타이머 자동 동기화"), null,
-            due, normalizedInterval);
+            SubscribeToDispatcher();
+            if (_timer is not null)
+            {
+                ObserveBackgroundTask(
+                    _timer.DisposeAsync().AsTask(),
+                    "동기화 타이머 교체 종료");
+            }
+            var normalizedInterval = interval <= TimeSpan.Zero ? TimeSpan.FromMinutes(5) : interval;
+            var due = runImmediately ? TimeSpan.Zero : normalizedInterval;
+            _timer = new Timer(_ => ObserveBackgroundTask(TrySyncAsync(), "타이머 자동 동기화"), null,
+                due, normalizedInterval);
+        }
     }
 
     public void Start(int intervalMinutes = 5, bool runImmediately = false)
@@ -177,15 +339,98 @@ public sealed class SyncService : IDisposable
     }
 
     public Task<bool> TrySyncAsync(CancellationToken ct = default)
-        => _disposed
+        => _disposed || _stopping
             ? Task.FromResult(false)
+            : !CanRunServerMutation()
+                ? Task.FromResult(false)
             : IsServerSyncDisabled()
                 ? Task.FromResult(true)
                 : StartSyncAsync(waitForRunningSync: false, ct);
 
+    public async Task<bool> TryAuthoritativePullOnlyAsync(
+        CancellationToken ct = default)
+    {
+        if (_disposed ||
+            _stopping ||
+            !_session.IsLoggedIn ||
+            _session.IsOfflineMode ||
+            !CanRunServerMutation() ||
+            IsServerSyncDisabled())
+        {
+            return false;
+        }
+
+        if (HasPendingTrackedUserChanges())
+            return false;
+
+        using var compatibilityCts =
+            CreateCompatibilityLinkedTokenSource(ct);
+        if (compatibilityCts is null)
+            return false;
+        var operationToken = compatibilityCts.Token;
+
+        return await ExecuteWithGlobalSyncOperationLockAsync(
+            () => ExecuteUsingIsolatedRuntimeScopeAsync(
+                child => child.TryAuthoritativePullOnlyCoreAsync(operationToken),
+                () => TryAuthoritativePullOnlyCoreAsync(operationToken)),
+            operationToken);
+    }
+
+    private async Task<bool> TryAuthoritativePullOnlyCoreAsync(
+        CancellationToken ct)
+    {
+        if (_trackedMutationsPreservedDuringSync.Count > 0 ||
+            _trackedNonMutationChangesPreservedDuringSync.Count > 0)
+        {
+            RestoreTrackedMutationsPreservedDuringSync();
+        }
+
+        try
+        {
+            PreservePendingTrackedChangesForSync();
+            LastPullChangeCount = 0;
+            SetStatus("서버 확정 결과를 다시 불러오는 중...");
+            var fullyApplied = false;
+            await ExecuteWithRetryAsync(
+                async token =>
+                {
+                    fullyApplied =
+                        await PullNewAuthoritativeOnlyAsync(token);
+                },
+                "서버 확정 결과 다운로드",
+                ct);
+            if (!fullyApplied)
+                return false;
+            SetStatus("서버 확정 결과를 다시 불러왔습니다.");
+            return true;
+        }
+        catch (DesktopClientUpgradeRequiredException)
+        {
+            SetStatus("필수 PC 업데이트가 확인되어 서버 확정 결과 확인을 중단했습니다.");
+            return false;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("SYNC", "서버 확정 결과 pull-only 복구 실패", ex);
+            SetStatus("서버 확정 결과를 다시 불러오지 못했습니다. 같은 작업을 반복하지 마세요.");
+            return false;
+        }
+        finally
+        {
+            RestoreTrackedMutationsPreservedDuringSync();
+        }
+    }
+
     public async Task<bool> FlushPendingChangesAsync(CancellationToken ct = default)
     {
-        if (_disposed || !_session.IsLoggedIn)
+        if (_disposed ||
+            _stopping ||
+            !_session.IsLoggedIn ||
+            !CanRunServerMutation())
             return false;
         if (IsServerSyncDisabled())
             return true;
@@ -209,9 +454,58 @@ public sealed class SyncService : IDisposable
         return !await _local.HasPendingSyncChangesAsync(_session, ct);
     }
 
-    public async Task<SyncScopeExecutionResult> TrySyncScopeAsync(string scopeKey, CancellationToken ct = default)
+    public async Task<SyncScopeExecutionResult> TrySyncScopeAsync(
+        string scopeKey,
+        CancellationToken ct = default)
     {
-        if (_disposed)
+        if (_disposed ||
+            _stopping ||
+            !_session.IsLoggedIn ||
+            _session.IsOfflineMode ||
+            !CanRunServerMutation() ||
+            IsServerSyncDisabled())
+            return await TrySyncScopeCoreAsync(scopeKey, ct);
+
+        using var compatibilityCts =
+            CreateCompatibilityLinkedTokenSource(ct);
+        if (compatibilityCts is null)
+            return await TrySyncScopeCoreAsync(scopeKey, ct);
+        var operationToken = compatibilityCts.Token;
+        return await ExecuteWithGlobalSyncOperationLockAsync(
+            () => ExecuteUsingIsolatedRuntimeScopeAsync(
+                child => child.TrySyncScopeCoreAsync(
+                    scopeKey,
+                    operationToken),
+                () => TrySyncScopeWithTrackedChangesPreservedAsync(
+                    scopeKey,
+                    operationToken)),
+            operationToken);
+    }
+
+    private async Task<SyncScopeExecutionResult> TrySyncScopeWithTrackedChangesPreservedAsync(
+        string scopeKey,
+        CancellationToken ct)
+    {
+        try
+        {
+            if (_trackedMutationsPreservedDuringSync.Count > 0 ||
+                _trackedNonMutationChangesPreservedDuringSync.Count > 0)
+            {
+                RestoreTrackedMutationsPreservedDuringSync();
+            }
+
+            PreservePendingTrackedChangesForSync();
+            return await TrySyncScopeCoreAsync(scopeKey, ct);
+        }
+        finally
+        {
+            RestoreTrackedMutationsPreservedDuringSync();
+        }
+    }
+
+    private async Task<SyncScopeExecutionResult> TrySyncScopeCoreAsync(string scopeKey, CancellationToken ct)
+    {
+        if (_disposed || _stopping)
             return new SyncScopeExecutionResult(scopeKey, scopeKey, 0, 0, false, false, false, false, "동기화 서비스를 사용할 수 없습니다.");
 
         if (!_session.IsLoggedIn)
@@ -220,6 +514,9 @@ public sealed class SyncService : IDisposable
         if (_session.IsOfflineMode)
             return new SyncScopeExecutionResult(scopeKey, scopeKey, 0, 0, false, false, false, false, "오프라인 모드에서는 선택 범위 동기화를 실행할 수 없습니다.");
 
+        if (!CanRunServerMutation())
+            return new SyncScopeExecutionResult(scopeKey, scopeKey, 0, 0, false, false, false, false, "필수 PC 업데이트로 선택 범위 동기화가 차단되었습니다.");
+
         if (IsServerSyncDisabled())
             return new SyncScopeExecutionResult(scopeKey, scopeKey, 0, 0, false, true, false, false, "서버 동기화가 비활성화되어 있어 선택 범위 동기화를 건너뜁니다.");
 
@@ -227,6 +524,7 @@ public sealed class SyncService : IDisposable
         if (blockingReason is null)
             return new SyncScopeExecutionResult(scopeKey, scopeKey, 0, 0, false, true, false, false, "선택한 범위에는 남은 변경이 없습니다.");
 
+        PreservePendingTrackedChangesForSync();
         var usedCurrentSession = blockingReason.IsCurrentScope;
         var usedStoredCredential = false;
 
@@ -255,11 +553,13 @@ public sealed class SyncService : IDisposable
                 var credential = await _local.GetStoredSyncCredentialAsync(blockingReason.RequiredOfficeCode, ct);
                 if (credential is null)
                 {
+                    PreservePendingTrackedChangesForSync();
                     await TryRecordPendingScopeDiagnosticAsync(scopeKey, blockingReason.PendingCount, "missing_sync_credential");
                     return new SyncScopeExecutionResult(scopeKey, blockingReason.ScopeDisplayName, blockingReason.PendingCount, blockingReason.PendingCount, false, false, false, false, blockingReason.Message);
                 }
 
-                var login = await _api.LoginAsync(credential.Username, credential.Password, ct);
+                var login = await AwaitWithTrackedChangesPreservedAsync(
+                    () => _api.LoginAsync(credential.Username, credential.Password, ct));
                 if (login is null || string.IsNullOrWhiteSpace(login.Token))
                 {
                     await InvalidateStoredOfficeCredentialAsync(credential, ct);
@@ -270,11 +570,8 @@ public sealed class SyncService : IDisposable
 
                 var officeSession = new SessionState();
                 officeSession.SetSession(login.Token, login.User, login.ExpiresAtUtc);
-                using var officeHttpClient = new HttpClient
-                {
-                    BaseAddress = _api.GetBaseUri(),
-                    Timeout = TimeSpan.FromSeconds(100)
-                };
+                using var officeHttpClient =
+                    CreateOfficeSessionHttpClient();
                 var officeApi = new ErpApiClient(officeHttpClient, officeSession);
                 usedStoredCredential = true;
                 SetStatus($"{blockingReason.ScopeDisplayName} 범위를 저장된 계정으로 동기화하는 중...");
@@ -283,6 +580,7 @@ public sealed class SyncService : IDisposable
             }
 
             var remainingReason = await _local.GetPendingSyncBlockingReasonAsync(_session, scopeKey, ct);
+            PreservePendingTrackedChangesForSync();
             var pendingCountAfter = remainingReason?.PendingCount ?? 0;
             if (pendingCountAfter > 0)
             {
@@ -310,8 +608,16 @@ public sealed class SyncService : IDisposable
                 usedStoredCredential,
                 $"{blockingReason.ScopeDisplayName} 범위 동기화를 완료했습니다.");
         }
+        catch (DesktopClientUpgradeRequiredException)
+        {
+            PreservePendingTrackedChangesForSync();
+            SetStatus(
+                "필수 PC 업데이트가 확인되어 동기화를 중단했습니다. 저장된 변경 내용은 그대로 보존됩니다.");
+            throw;
+        }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
+            PreservePendingTrackedChangesForSync();
             var detail = ex.InnerException?.Message ?? ex.Message;
             await TryRecordDiagnosticAsync(
                 phase: "scope-sync",
@@ -331,15 +637,47 @@ public sealed class SyncService : IDisposable
         }
     }
 
-    public Task<bool> RefreshSharedMirrorFromServerAsync(CancellationToken ct = default)
-        => ExecuteWithGlobalSyncOperationLockAsync(() => RefreshSharedMirrorFromServerCoreAsync(ct), ct);
+    public async Task<bool> RefreshSharedMirrorFromServerAsync(
+        CancellationToken ct = default)
+    {
+        if (_disposed || !CanRunServerMutation())
+            return false;
+
+        using var compatibilityCts =
+            CreateCompatibilityLinkedTokenSource(ct);
+        if (compatibilityCts is null)
+            return false;
+        var operationToken = compatibilityCts.Token;
+        return await ExecuteWithGlobalSyncOperationLockAsync(
+            () => ExecuteUsingIsolatedRuntimeScopeAsync(
+                child => child.RefreshSharedMirrorFromServerCoreAsync(
+                    operationToken),
+                () => RefreshSharedMirrorFromServerCoreAsync(
+                    operationToken)),
+            operationToken);
+    }
 
     private async Task<bool> RefreshSharedMirrorFromServerCoreAsync(CancellationToken ct)
     {
-        if (_disposed || !_session.IsLoggedIn || _session.IsOfflineMode)
+        if (_disposed ||
+            _stopping ||
+            !_session.IsLoggedIn ||
+            _session.IsOfflineMode ||
+            !CanRunServerMutation())
             return false;
         if (IsServerSyncDisabled())
             return true;
+        if (_trackedMutationsPreservedDuringSync.Count > 0 ||
+            _trackedNonMutationChangesPreservedDuringSync.Count > 0)
+        {
+            RestoreTrackedMutationsPreservedDuringSync();
+        }
+
+        if (HasPendingTrackedUserChanges())
+        {
+            SetStatus("저장되지 않은 편집이 있어 서버 캐시 새로고침을 중단했습니다. 먼저 저장하거나 취소한 뒤 다시 시도하세요.");
+            return false;
+        }
 
         if (await _local.CountDirtyAsync(_session, ct) > 0)
         {
@@ -353,6 +691,17 @@ public sealed class SyncService : IDisposable
         try
         {
             return await TryRefreshSharedMirrorCoreAsync(ct);
+        }
+        catch (DesktopClientUpgradeRequiredException)
+        {
+            SetStatus(
+                "필수 PC 업데이트가 확인되어 서버 캐시 새로고침을 중단했습니다.");
+            return false;
+        }
+        catch (OperationCanceledException)
+            when (ct.IsCancellationRequested)
+        {
+            return false;
         }
         catch (Exception ex)
         {
@@ -369,17 +718,92 @@ public sealed class SyncService : IDisposable
             SetStatus("중앙 서버 캐시 재구성에 실패했지만 앱은 계속 사용할 수 있습니다. 동기화를 다시 시도하세요.");
             return false;
         }
+        finally
+        {
+            RestoreTrackedMutationsPreservedDuringSync();
+        }
     }
 
-    public Task<bool> RefreshCurrentBusinessScopeFromServerAsync(CancellationToken ct = default)
-        => ExecuteWithGlobalSyncOperationLockAsync(() => RefreshCurrentBusinessScopeFromServerCoreAsync(ct), ct);
-
-    private async Task<bool> RefreshCurrentBusinessScopeFromServerCoreAsync(CancellationToken ct)
+    public async Task<bool> RefreshCurrentBusinessScopeFromServerAsync(
+        CancellationToken ct = default)
     {
-        if (_disposed || !_session.IsLoggedIn || _session.IsOfflineMode)
+        if (_disposed || !CanRunServerMutation())
+            return false;
+
+        using var compatibilityCts =
+            CreateCompatibilityLinkedTokenSource(ct);
+        if (compatibilityCts is null)
+            return false;
+        var operationToken = compatibilityCts.Token;
+        return await ExecuteWithGlobalSyncOperationLockAsync(
+            () => RefreshCurrentBusinessScopeFromServerInsideGlobalOperationCoreAsync(
+                operationToken),
+            operationToken);
+    }
+
+    internal async Task<bool> RefreshCurrentBusinessScopeFromServerInsideGlobalOperationAsync(
+        CancellationToken ct = default)
+    {
+        if (_disposed || !CanRunServerMutation())
+            return false;
+
+        using var compatibilityCts = CreateCompatibilityLinkedTokenSource(ct);
+        if (compatibilityCts is null)
+            return false;
+        return await RefreshCurrentBusinessScopeFromServerInsideGlobalOperationCoreAsync(
+            compatibilityCts.Token);
+    }
+
+    private Task<bool> RefreshCurrentBusinessScopeFromServerInsideGlobalOperationCoreAsync(
+        CancellationToken operationToken)
+        => ExecuteUsingIsolatedRuntimeScopeAsync(
+            child => child.RefreshCurrentBusinessScopeFromServerCoreAsync(operationToken),
+            () => RefreshCurrentBusinessScopeFromServerCoreAsync(operationToken));
+
+    public async Task<bool> ReplaceCurrentBusinessScopeCacheFromServerAsync(
+        CancellationToken ct = default)
+    {
+        if (_disposed || !CanRunServerMutation())
+            return false;
+
+        using var compatibilityCts =
+            CreateCompatibilityLinkedTokenSource(ct);
+        if (compatibilityCts is null)
+            return false;
+        var operationToken = compatibilityCts.Token;
+        return await ExecuteWithGlobalSyncOperationLockAsync(
+            () => ExecuteUsingIsolatedRuntimeScopeAsync(
+                child => child.RefreshCurrentBusinessScopeFromServerCoreAsync(
+                    operationToken,
+                    replaceLocalBusinessCache: true),
+                () => RefreshCurrentBusinessScopeFromServerCoreAsync(
+                    operationToken,
+                    replaceLocalBusinessCache: true)),
+            operationToken);
+    }
+
+    private async Task<bool> RefreshCurrentBusinessScopeFromServerCoreAsync(
+        CancellationToken ct,
+        bool replaceLocalBusinessCache = false)
+    {
+        if (_disposed ||
+            !_session.IsLoggedIn ||
+            _session.IsOfflineMode ||
+            !CanRunServerMutation())
             return false;
         if (IsServerSyncDisabled())
-            return true;
+            return !replaceLocalBusinessCache;
+        if (_trackedMutationsPreservedDuringSync.Count > 0 ||
+            _trackedNonMutationChangesPreservedDuringSync.Count > 0)
+        {
+            RestoreTrackedMutationsPreservedDuringSync();
+        }
+
+        if (HasPendingTrackedUserChanges())
+        {
+            SetStatus("저장되지 않은 편집이 있어 현재 업체 캐시 새로고침을 중단했습니다. 먼저 저장하거나 취소한 뒤 다시 시도하세요.");
+            return false;
+        }
 
         var currentScopeDirtyCount = await _local.CountDirtyAsync(_session, ct);
         if (currentScopeDirtyCount > 0)
@@ -392,7 +816,23 @@ public sealed class SyncService : IDisposable
 
         try
         {
-            return await TryRefreshCurrentBusinessScopeCoreAsync(ct);
+            return replaceLocalBusinessCache
+                ? await TryRefreshCurrentBusinessScopeCoreInternalAsync(
+                    ct,
+                    preserveTrackedChanges: false,
+                    replaceLocalBusinessCache: true)
+                : await TryRefreshCurrentBusinessScopeCoreAsync(ct);
+        }
+        catch (DesktopClientUpgradeRequiredException)
+        {
+            SetStatus(
+                "필수 PC 업데이트가 확인되어 업체 DB 캐시 새로고침을 중단했습니다.");
+            return false;
+        }
+        catch (OperationCanceledException)
+            when (ct.IsCancellationRequested)
+        {
+            return false;
         }
         catch (Exception ex)
         {
@@ -409,15 +849,52 @@ public sealed class SyncService : IDisposable
             SetStatus("현재 업체 DB 캐시 재구성에 실패했지만 앱은 계속 사용할 수 있습니다. 동기화를 다시 시도하세요.");
             return false;
         }
+        finally
+        {
+            RestoreTrackedMutationsPreservedDuringSync();
+        }
     }
 
-    public async Task<bool> EnsureAdministrativeBusinessCachesAsync(CancellationToken ct = default)
+    public async Task<bool> EnsureAdministrativeBusinessCachesAsync(
+        CancellationToken ct = default)
     {
-        if (_disposed || !_session.IsLoggedIn || _session.IsOfflineMode || !_session.HasAdministrativePrivileges)
+        if (_disposed ||
+            _isolatedOperationOwner is not null ||
+            !CanRunServerMutation())
+            return false;
+
+        using var compatibilityCts =
+            CreateCompatibilityLinkedTokenSource(ct);
+        if (compatibilityCts is null)
+            return false;
+        var operationToken = compatibilityCts.Token;
+        return await ExecuteWithGlobalSyncOperationLockAsync(
+            () => ExecuteUsingIsolatedRuntimeScopeAsync(
+                child => child.EnsureAdministrativeBusinessCachesCoreAsync(
+                    operationToken),
+                () => EnsureAdministrativeBusinessCachesCoreAsync(
+                    operationToken)),
+            operationToken);
+    }
+
+    private async Task<bool> EnsureAdministrativeBusinessCachesCoreAsync(CancellationToken ct)
+    {
+        if (_disposed ||
+            !_session.IsLoggedIn ||
+            _session.IsOfflineMode ||
+            !_session.HasAdministrativePrivileges ||
+            !CanRunServerMutation())
             return false;
         if (IsServerSyncDisabled())
             return false;
+        if (HasPendingTrackedUserChanges())
+        {
+            SetStatus("저장되지 않은 편집이 있어 관리자 업체 캐시 병합을 중단했습니다.");
+            return false;
+        }
 
+        var operationOwner =
+            CaptureSyncOperationOwnerBoundary();
         var runningSyncTask = GetCurrentRunningSyncTask();
         if (runningSyncTask is not null)
         {
@@ -425,29 +902,44 @@ public sealed class SyncService : IDisposable
             return false;
         }
 
-        var now = DateTime.UtcNow;
-        if (_lastAdministrativeBusinessCacheSessionId == _session.SessionId &&
-            now - _lastAdministrativeBusinessCacheRefreshUtc < AdministrativeBusinessCacheRefreshInterval)
-        {
-            return false;
-        }
-
         await _administrativeBusinessCacheRefreshLock.WaitAsync(ct);
         try
         {
-            now = DateTime.UtcNow;
-            if (_lastAdministrativeBusinessCacheSessionId == _session.SessionId &&
-                now - _lastAdministrativeBusinessCacheRefreshUtc < AdministrativeBusinessCacheRefreshInterval)
+            if (!IsSyncOperationOwnerCurrent(operationOwner))
             {
+                SetStatus(
+                    "관리자 업체 캐시 시작 전에 로그인·권한·업체 범위가 변경되어 병합을 중단했습니다.");
                 return false;
             }
 
+            if (_lastAdministrativeBusinessCacheSessionId != _session.SessionId)
+            {
+                _lastAdministrativeBusinessCacheRefreshUtcByDatabase.Clear();
+                _lastAdministrativeBusinessCacheSessionId = _session.SessionId;
+            }
+
+            var now = DateTime.UtcNow;
             var mergedBusinessDatabaseCount = 0;
             foreach (var businessDatabaseName in TenantScopeCatalog.AllTenants
                          .Select(TenantScopeCatalog.GetDatabaseName)
                          .Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 ct.ThrowIfCancellationRequested();
+                if (!IsSyncOperationOwnerCurrent(operationOwner))
+                {
+                    SetStatus(
+                        "관리자 업체 캐시 병합 중 로그인·권한·업체 범위가 변경되어 이전 세션 응답을 폐기했습니다.");
+                    return false;
+                }
+
+                if (_lastAdministrativeBusinessCacheRefreshUtcByDatabase.TryGetValue(
+                        businessDatabaseName,
+                        out var lastRefreshUtc) &&
+                    now - lastRefreshUtc < AdministrativeBusinessCacheRefreshInterval)
+                {
+                    continue;
+                }
+
                 var businessCacheStartedAtUtc = DateTime.UtcNow;
 
                 try
@@ -457,13 +949,47 @@ public sealed class SyncService : IDisposable
 
                     var revisionSettingKey = SyncSettingKeys.BuildAdministrativeBusinessCacheRevisionKey(businessDatabaseName);
                     var sinceRevision = await GetAdministrativeBusinessCacheRevisionAsync(revisionSettingKey, ct);
-                    var pull = await _api.PullAsync(
-                        sinceRevision,
-                        businessDatabaseName,
-                        rentalAdministrationOnly: true,
-                        pullTimeoutCts.Token);
+                    if (HasPendingTrackedUserChanges())
+                    {
+                        SetStatus("저장되지 않은 편집이 있어 관리자 업체 캐시 병합을 중단했습니다.");
+                        return false;
+                    }
+
+                    var trackedStateBeforePull = CaptureTrackedStateBeforePush();
+                    var trackedChangesArrivedDuringPull = false;
+                    SyncPullResponse? pull;
+                    try
+                    {
+                        pull = await _api.PullAsync(
+                            sinceRevision,
+                            businessDatabaseName,
+                            rentalAdministrationOnly: true,
+                            pullTimeoutCts.Token);
+                    }
+                    finally
+                    {
+                        trackedChangesArrivedDuringPull =
+                            HasTrackedUserChangesSinceBoundary(trackedStateBeforePull);
+                    }
+
+                    if (trackedChangesArrivedDuringPull)
+                    {
+                        SetStatus("서버 응답 대기 중 저장되지 않은 편집이 발생해 관리자 업체 캐시 병합을 중단했습니다.");
+                        return false;
+                    }
                     if (pull is null)
                         continue;
+                    if (!IsSyncOperationOwnerCurrent(operationOwner))
+                    {
+                        SetStatus(
+                            "관리자 업체 캐시 응답 대기 중 로그인·권한·업체 범위가 변경되어 이전 세션 응답을 폐기했습니다.");
+                        return false;
+                    }
+                    if (await _local.CountDirtyAsync(ct) > 0)
+                    {
+                        SetStatus("서버 응답 대기 중 저장된 미동기화 변경이 발생해 관리자 업체 캐시 병합을 중단했습니다.");
+                        return false;
+                    }
 
                     if (pull.CurrentServerRevision < sinceRevision)
                     {
@@ -471,18 +997,74 @@ public sealed class SyncService : IDisposable
                             "SYNC",
                             $"관리자 업체 캐시 revision이 서버보다 앞서 전체 재조회합니다: db={businessDatabaseName}, local={sinceRevision:N0}, server={pull.CurrentServerRevision:N0}");
                         sinceRevision = 0;
-                        pull = await _api.PullAsync(
-                            sinceRevision,
-                            businessDatabaseName,
-                            rentalAdministrationOnly: true,
-                            pullTimeoutCts.Token);
+                        trackedStateBeforePull = CaptureTrackedStateBeforePush();
+                        trackedChangesArrivedDuringPull = false;
+                        try
+                        {
+                            pull = await _api.PullAsync(
+                                sinceRevision,
+                                businessDatabaseName,
+                                rentalAdministrationOnly: true,
+                                pullTimeoutCts.Token);
+                        }
+                        finally
+                        {
+                            trackedChangesArrivedDuringPull =
+                                HasTrackedUserChangesSinceBoundary(trackedStateBeforePull);
+                        }
+
+                        if (trackedChangesArrivedDuringPull)
+                        {
+                            SetStatus("서버 응답 대기 중 저장되지 않은 편집이 발생해 관리자 업체 캐시 병합을 중단했습니다.");
+                            return false;
+                        }
                         if (pull is null)
                             continue;
+                        if (!IsSyncOperationOwnerCurrent(operationOwner))
+                        {
+                            SetStatus(
+                                "관리자 업체 캐시 재조회 중 로그인·권한·업체 범위가 변경되어 이전 세션 응답을 폐기했습니다.");
+                            return false;
+                        }
+                        if (await _local.CountDirtyAsync(ct) > 0)
+                        {
+                            SetStatus("서버 응답 대기 중 저장된 미동기화 변경이 발생해 관리자 업체 캐시 병합을 중단했습니다.");
+                            return false;
+                        }
+                    }
+
+                    if (HasPendingTrackedUserChanges())
+                    {
+                        SetStatus("저장되지 않은 편집이 있어 관리자 업체 캐시 병합을 중단했습니다.");
+                        return false;
                     }
 
                     using (_local.SuppressSyncDispatch())
                     {
-                        await ApplyPullAsync(pull, sinceRevision, ct, updateSyncRevision: false);
+                        var applied = await TryApplyPullAtomicallyAsync(
+                            pull,
+                            sinceRevision,
+                            ct,
+                            updateSyncRevision: false,
+                            expectedOwner: operationOwner,
+                            applyCompleteItemWarehouseStockSnapshot: false);
+                        if (!applied)
+                        {
+                            SetStatus(
+                                "관리자 업체 캐시 반영 중 로그인·권한·업체 범위가 변경되어 DB와 첨부파일 변경을 롤백했습니다.");
+                            return false;
+                        }
+                    }
+
+                    if (HasPendingTrackedUserChanges())
+                    {
+                        SetStatus("캐시 병합 중 저장되지 않은 편집이 발생해 후속 캐시 작업을 중단했습니다.");
+                        return false;
+                    }
+
+                    if (!IsSyncOperationOwnerCurrent(operationOwner))
+                    {
+                        return true;
                     }
 
                     await TrySetSettingSafeAsync(
@@ -498,11 +1080,30 @@ public sealed class SyncService : IDisposable
                         infoThreshold: TimeSpan.FromMilliseconds(400),
                         warningThreshold: TimeSpan.FromSeconds(2));
 
+                    if (HasPendingTrackedUserChanges())
+                    {
+                        SetStatus("캐시 병합 중 저장되지 않은 편집이 발생해 후속 캐시 작업을 중단했습니다.");
+                        return false;
+                    }
+
                     _db.ChangeTracker.Clear();
+                    _lastAdministrativeBusinessCacheRefreshUtcByDatabase[businessDatabaseName] = DateTime.UtcNow;
                     mergedBusinessDatabaseCount++;
+                }
+                catch (DesktopClientUpgradeRequiredException)
+                {
+                    SetStatus(
+                        "필수 PC 업데이트가 확인되어 관리자 업체 캐시 갱신을 중단했습니다.");
+                    return false;
                 }
                 catch (Exception ex) when (!ct.IsCancellationRequested)
                 {
+                    if (HasPendingTrackedUserChanges())
+                    {
+                        SetStatus("캐시 병합 중 저장되지 않은 편집이 발생해 후속 캐시 작업을 중단했습니다.");
+                        return false;
+                    }
+
                     _db.ChangeTracker.Clear();
                     AppLogger.Warn(
                         "SYNC",
@@ -513,8 +1114,6 @@ public sealed class SyncService : IDisposable
             if (mergedBusinessDatabaseCount == 0)
                 return false;
 
-            _lastAdministrativeBusinessCacheRefreshUtc = DateTime.UtcNow;
-            _lastAdministrativeBusinessCacheSessionId = _session.SessionId;
             return true;
         }
         finally
@@ -535,6 +1134,9 @@ public sealed class SyncService : IDisposable
 
     private Task<bool>? GetCurrentRunningSyncTask()
     {
+        if (_isolatedOperationOwner is not null)
+            return _isolatedOperationOwner.GetCurrentRunningSyncTask();
+
         lock (_immediateSyncGate)
         {
             return _currentSyncTask is not null && !_currentSyncTask.IsCompleted
@@ -545,21 +1147,41 @@ public sealed class SyncService : IDisposable
 
     private Task<bool> StartSyncAsync(bool waitForRunningSync, CancellationToken ct)
     {
-        if (_disposed || !_session.IsLoggedIn)
+        if (_disposed ||
+            _stopping ||
+            !_session.IsLoggedIn ||
+            !CanRunServerMutation())
             return Task.FromResult(false);
         if (IsServerSyncDisabled())
             return Task.FromResult(true);
 
         lock (_immediateSyncGate)
         {
+            if (_disposed || _stopping)
+                return Task.FromResult(false);
+
             if (_currentSyncTask is not null && !_currentSyncTask.IsCompleted)
                 return waitForRunningSync ? _currentSyncTask : Task.FromResult(false);
 
-            var syncTask = RunSyncCoreAsync(ct);
+            var linkedCts =
+                CancellationTokenSource
+                    .CreateLinkedTokenSource(
+                        ct,
+                        _compatibilityBlockCts.Token,
+                        _runtimeStopCts.Token);
+            var syncTask =
+                RunSyncWithLinkedCancellationAsync(linkedCts);
             _currentSyncTask = syncTask;
             ObserveBackgroundTask(FinalizeSyncAsync(syncTask), "동기화 후처리");
             return syncTask;
         }
+    }
+
+    private async Task<bool> RunSyncWithLinkedCancellationAsync(
+        CancellationTokenSource linkedCts)
+    {
+        using (linkedCts)
+            return await RunSyncCoreAsync(linkedCts.Token);
     }
 
     private async Task FinalizeSyncAsync(Task<bool> syncTask)
@@ -581,7 +1203,11 @@ public sealed class SyncService : IDisposable
             if (ReferenceEquals(_currentSyncTask, syncTask))
                 _currentSyncTask = null;
 
-            if (_resyncRequested && _session.IsLoggedIn && !_session.IsOfflineMode)
+            if (!_stopping &&
+                _resyncRequested &&
+                _session.IsLoggedIn &&
+                !_session.IsOfflineMode &&
+                CanRunServerMutation())
             {
                 _resyncRequested = false;
                 _immediateSyncCts?.Cancel();
@@ -603,20 +1229,53 @@ public sealed class SyncService : IDisposable
 
         if (rerunCts is not null)
         {
-            ObserveBackgroundTask(RunDeferredImmediateSyncAsync(rerunCts.Token), "예약된 즉시 동기화");
+            ObserveBackgroundTask(
+                StartBackgroundTaskWithoutExecutionContext(
+                    () => RunDeferredImmediateSyncAsync(rerunCts.Token)),
+                "예약된 즉시 동기화");
             return;
         }
 
         if (rerunImmediately)
         {
-            ObserveBackgroundTask(StartSyncAsync(waitForRunningSync: true, CancellationToken.None), "즉시 재동기화");
+            ObserveBackgroundTask(
+                StartBackgroundTaskWithoutExecutionContext(
+                    () => StartSyncAsync(waitForRunningSync: true, CancellationToken.None)),
+                "즉시 재동기화");
             return;
         }
 
         _dispatcher.CompleteSync(succeeded);
+        if (succeeded)
+            ScheduleAdministrativeBusinessCacheWarmup();
     }
 
-    private static async Task<T> ExecuteWithGlobalSyncOperationLockAsync<T>(Func<Task<T>> operation, CancellationToken ct)
+    private void ScheduleAdministrativeBusinessCacheWarmup()
+    {
+        CancellationToken runtimeStopToken;
+        lock (_immediateSyncGate)
+        {
+            if (_disposed ||
+                _stopping ||
+                _timer is null ||
+                !_session.IsLoggedIn ||
+                _session.IsOfflineMode ||
+                !_session.HasAdministrativePrivileges)
+            {
+                return;
+            }
+
+            runtimeStopToken = _runtimeStopCts.Token;
+        }
+
+        ObserveBackgroundTask(
+            StartBackgroundTaskWithoutExecutionContext(
+                () => EnsureAdministrativeBusinessCachesAsync(
+                    runtimeStopToken)),
+            "관리자 업체 캐시 사전 준비");
+    }
+
+    internal static async Task<T> ExecuteWithGlobalSyncOperationLockAsync<T>(Func<Task<T>> operation, CancellationToken ct)
     {
         var entered = false;
         try
@@ -636,11 +1295,134 @@ public sealed class SyncService : IDisposable
         }
     }
 
+    private async Task<T> ExecuteUsingIsolatedRuntimeScopeAsync<T>(
+        Func<SyncService, Task<T>> isolatedOperation,
+        Func<Task<T>> fallbackOperation)
+    {
+        if (_disposed ||
+            _scopeFactory is null ||
+            _isolatedOperationOwner is not null)
+            return await fallbackOperation();
+
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var child = scope.ServiceProvider.GetRequiredService<SyncService>();
+        if (ReferenceEquals(child, this))
+            return await fallbackOperation();
+
+        child._isolatedOperationOwner = this;
+        child.LastPullChangeCount = LastPullChangeCount;
+        child._lastSyncStartedUtc = _lastSyncStartedUtc;
+        child._lastSyncCompletedUtc = _lastSyncCompletedUtc;
+        child._lastAdministrativeBusinessCacheSessionId =
+            _lastAdministrativeBusinessCacheSessionId;
+        child._lastAdministrativeBusinessCacheRefreshUtcByDatabase.Clear();
+        foreach (var (databaseName, refreshedAtUtc) in
+                 _lastAdministrativeBusinessCacheRefreshUtcByDatabase)
+        {
+            child._lastAdministrativeBusinessCacheRefreshUtcByDatabase[databaseName] =
+                refreshedAtUtc;
+        }
+
+        child.BeforePreparedOutboxSaveAsyncForTesting =
+            BeforePreparedOutboxSaveAsyncForTesting;
+        child.BeforeSharedMirrorResetAsyncForTesting =
+            BeforeSharedMirrorResetAsyncForTesting;
+        child.AfterAttachmentCommitAsyncForTesting =
+            AfterAttachmentCommitAsyncForTesting;
+        child.AfterPostCommitOwnerCheckAsyncForTesting =
+            AfterPostCommitOwnerCheckAsyncForTesting;
+        child.CurrentOwnerRefreshScheduledForTesting =
+            CurrentOwnerRefreshScheduledForTesting;
+        child.AfterPulledPurgeRecordsAsyncForTesting =
+            AfterPulledPurgeRecordsAsyncForTesting;
+        child.BeforeAcceptedRevisionCleanAsyncForTesting =
+            BeforeAcceptedRevisionCleanAsyncForTesting;
+        child.AfterInventoryTransferPurgePushAppliedAsyncForTesting =
+            AfterInventoryTransferPurgePushAppliedAsyncForTesting;
+        child.AcceptedRevisionCleanAffectedRowsForTesting =
+            AcceptedRevisionCleanAffectedRowsForTesting;
+        child.BeforeItemWarehouseStockTombstoneConditionalDeleteAsyncForTesting =
+            BeforeItemWarehouseStockTombstoneConditionalDeleteAsyncForTesting;
+        child.AfterPartialWarehouseStockAcceptedSideEffectsAsyncForTesting =
+            AfterPartialWarehouseStockAcceptedSideEffectsAsyncForTesting;
+        child.BeforePulledItemCatalogMismatchRequeueAsyncForTesting =
+            BeforePulledItemCatalogMismatchRequeueAsyncForTesting;
+        child.EligibleOutboxReconciliationCandidateLoadStartedForTesting =
+            EligibleOutboxReconciliationCandidateLoadStartedForTesting;
+        child.AfterInitialOutboxReconciliationCandidateSnapshotLoadedAsyncForTesting =
+            AfterInitialOutboxReconciliationCandidateSnapshotLoadedAsyncForTesting;
+        child.BeforeStrictPullCommitGuardAsyncForTesting =
+            BeforeStrictPullCommitGuardAsyncForTesting;
+        child.BeforeOutboxSupersedeUpdateAsyncForTesting =
+            BeforeOutboxSupersedeUpdateAsyncForTesting;
+
+        void ForwardStatus(string message) => SetStatus(message);
+        void ForwardRentalState(
+            object? sender,
+            RentalStateChangedEventArgs args)
+        {
+            using var callbackBoundary =
+                LocalDbContext.SuppressRuntimeMutationOwnerForCallback();
+            _rental.PublishSynchronizedStateChanges(
+                args.AssetIds,
+                args.BillingProfileIds);
+        }
+
+        child.SyncStatusChanged += ForwardStatus;
+        child._rental.StateChanged += ForwardRentalState;
+        try
+        {
+            return await isolatedOperation(child);
+        }
+        finally
+        {
+            try
+            {
+                await child.StopAndDrainAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                child.SyncStatusChanged -= ForwardStatus;
+                child._rental.StateChanged -= ForwardRentalState;
+                LastPullChangeCount = child.LastPullChangeCount;
+                _lastSyncStartedUtc = child._lastSyncStartedUtc;
+                _lastSyncCompletedUtc = child._lastSyncCompletedUtc;
+                _lastAdministrativeBusinessCacheSessionId =
+                    child._lastAdministrativeBusinessCacheSessionId;
+                _lastAdministrativeBusinessCacheRefreshUtcByDatabase.Clear();
+                foreach (var (databaseName, refreshedAtUtc) in
+                         child._lastAdministrativeBusinessCacheRefreshUtcByDatabase)
+                {
+                    _lastAdministrativeBusinessCacheRefreshUtcByDatabase[databaseName] =
+                        refreshedAtUtc;
+                }
+
+                child._isolatedOperationOwner = null;
+            }
+        }
+    }
+
+    private async Task<T> AwaitWithTrackedChangesPreservedAsync<T>(Func<Task<T>> operation)
+    {
+        try
+        {
+            return await operation();
+        }
+        finally
+        {
+            PreservePendingTrackedChangesForSync();
+        }
+    }
+
     private async Task<bool> RunSyncCoreAsync(CancellationToken ct)
     {
         try
         {
-            return await ExecuteWithGlobalSyncOperationLockAsync(() => RunSyncCoreLockedAsync(ct), ct);
+            return await ExecuteWithGlobalSyncOperationLockAsync(
+                () => ExecuteUsingIsolatedRuntimeScopeAsync(
+                    child => child.RunSyncCoreLockedAsync(ct),
+                    () => RunSyncCoreLockedAsync(ct)),
+                ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -650,8 +1432,19 @@ public sealed class SyncService : IDisposable
 
     private async Task<bool> RunSyncCoreLockedAsync(CancellationToken ct)
     {
+        _itemWarehouseStockReplayPullGuard = null;
+        _itemWarehouseStockReplayGuardValidatedBeforeMirrorReset =
+            false;
+        _itemWarehouseStockReplayGuardValidatedForPullTransaction =
+            false;
+        if (_trackedMutationsPreservedDuringSync.Count > 0 ||
+            _trackedNonMutationChangesPreservedDuringSync.Count > 0)
+            RestoreTrackedMutationsPreservedDuringSync();
+
         try
         {
+            PreservePendingTrackedChangesForSync();
+
             LastPullChangeCount = 0;
             _lastSyncStartedUtc = DateTime.UtcNow;
             SetStatus("동기화 중...");
@@ -666,6 +1459,7 @@ public sealed class SyncService : IDisposable
             await ExecuteWithRetryAsync(token => PushDirtyAsync(_api, _session, includeSharedDirty: true, token), "업로드", ct);
             await PushDirtyWithStoredOfficeSessionsAsync(ct);
             await ClearStaleDirtyWithStoredOfficeSessionsAsync(ct);
+            await RetryDeferredPurgeRecordsAsync(ct);
             await ExecuteWithRetryAsync(PullNewAsync, "다운로드", ct);
 
             var remainingDirtyCount = await _local.CountDirtyAsync(_session, ct);
@@ -686,6 +1480,15 @@ public sealed class SyncService : IDisposable
             AppLogger.Info("SYNC", "동기화 요청이 더 최신 변경/종료 요청으로 취소되어 조용히 재예약합니다.");
             return false;
         }
+        catch (DesktopClientUpgradeRequiredException ex)
+        {
+            SetStatus(
+                "필수 PC 업데이트가 확인되어 동기화를 즉시 중단했습니다. 미동기화 변경 내용은 보존됩니다.");
+            AppLogger.Warn(
+                "UPDATE",
+                $"PC 호환성 게이트가 동기화를 중단했습니다. path={ex.RequestPath}");
+            return false;
+        }
         catch (Exception ex) when (IsDisposedContextException(ex))
         {
             AppLogger.Warn("SYNC", $"동기화 종료 중 안전 무시: {ex.Message}");
@@ -693,7 +1496,8 @@ public sealed class SyncService : IDisposable
         }
         catch (Exception ex)
         {
-            if (!ct.IsCancellationRequested)
+            if (!ct.IsCancellationRequested &&
+                ex is not SyncPullBlockedException)
                 await TryClearStaleDirtyAfterFailureAsync(ct);
 
             _db.ChangeTracker.Clear();
@@ -737,6 +1541,15 @@ public sealed class SyncService : IDisposable
             AppLogger.Error("SYNC", "동기화 확인 필요", ex);
             return false;
         }
+        finally
+        {
+            _itemWarehouseStockReplayPullGuard = null;
+            _itemWarehouseStockReplayGuardValidatedBeforeMirrorReset =
+                false;
+            _itemWarehouseStockReplayGuardValidatedForPullTransaction =
+                false;
+            RestoreTrackedMutationsPreservedDuringSync();
+        }
     }
 
     private async Task TryClearStaleDirtyAfterFailureAsync(CancellationToken ct)
@@ -744,6 +1557,10 @@ public sealed class SyncService : IDisposable
         try
         {
             await ClearStaleDirtyWithStoredOfficeSessionsAsync(ct);
+        }
+        catch (DesktopClientUpgradeRequiredException)
+        {
+            throw;
         }
         catch (Exception cleanupEx) when (!ct.IsCancellationRequested)
         {
@@ -799,22 +1616,33 @@ public sealed class SyncService : IDisposable
 
     private void ScheduleTransientFailureRetry()
     {
-        if (_disposed || !_session.IsLoggedIn || _session.IsOfflineMode)
+        if (_isolatedOperationOwner is not null)
+        {
+            _isolatedOperationOwner.ScheduleTransientFailureRetry();
+            return;
+        }
+
+        if (_disposed ||
+            !_session.IsLoggedIn ||
+            _session.IsOfflineMode ||
+            !CanRunServerMutation())
             return;
 
-        CancellationTokenSource retryCts;
         lock (_immediateSyncGate)
         {
+            if (_disposed || _stopping)
+                return;
+
             if (_transientFailureRetryCts is not null && !_transientFailureRetryCts.IsCancellationRequested)
                 return;
 
             _transientFailureRetryCts = new CancellationTokenSource();
-            retryCts = _transientFailureRetryCts;
+            var retryCts = _transientFailureRetryCts;
+            ObserveBackgroundTask(
+                StartBackgroundTaskWithoutExecutionContext(
+                    () => RunTransientFailureRetryAsync(retryCts)),
+                "서버 응답 지연 후 동기화 자동 재시도");
         }
-
-        ObserveBackgroundTask(
-            RunTransientFailureRetryAsync(retryCts),
-            "서버 응답 지연 후 동기화 자동 재시도");
     }
 
     private async Task RunTransientFailureRetryAsync(CancellationTokenSource retryCts)
@@ -823,7 +1651,11 @@ public sealed class SyncService : IDisposable
         {
             await Task.Delay(TransientFailureRetryDelay, retryCts.Token);
 
-            if (_disposed || !_session.IsLoggedIn || _session.IsOfflineMode)
+            if (_disposed ||
+                _stopping ||
+                !_session.IsLoggedIn ||
+                _session.IsOfflineMode ||
+                !CanRunServerMutation())
                 return;
 
             await StartSyncAsync(waitForRunningSync: true, CancellationToken.None);
@@ -846,13 +1678,18 @@ public sealed class SyncService : IDisposable
 
     private void HandleSyncRequested(SyncRequestMode mode)
     {
-        if (_disposed || !_session.IsLoggedIn || _session.IsOfflineMode)
+        if (_disposed ||
+            _stopping ||
+            !_session.IsLoggedIn ||
+            _session.IsOfflineMode ||
+            !CanRunServerMutation())
             return;
 
-        CancellationTokenSource? cts = null;
-        var runImmediately = false;
         lock (_immediateSyncGate)
         {
+            if (_disposed || _stopping)
+                return;
+
             if (_currentSyncTask is not null && !_currentSyncTask.IsCompleted)
             {
                 _resyncRequested = true;
@@ -868,31 +1705,39 @@ public sealed class SyncService : IDisposable
             if (mode == SyncRequestMode.Flush)
             {
                 _flushRequested = false;
-                runImmediately = true;
+                ObserveBackgroundTask(
+                    StartBackgroundTaskWithoutExecutionContext(
+                        () => StartSyncAsync(
+                            waitForRunningSync: true,
+                            CancellationToken.None)),
+                    "수동 즉시 동기화");
             }
             else
             {
                 _immediateSyncCts = new CancellationTokenSource();
-                cts = _immediateSyncCts;
+                ObserveBackgroundTask(
+                    StartBackgroundTaskWithoutExecutionContext(
+                        () => RunDeferredImmediateSyncAsync(
+                            _immediateSyncCts.Token)),
+                    "지연 즉시 동기화");
             }
         }
-
-        if (runImmediately)
-            ObserveBackgroundTask(StartSyncAsync(waitForRunningSync: true, CancellationToken.None), "수동 즉시 동기화");
-        else if (cts is not null)
-            ObserveBackgroundTask(RunDeferredImmediateSyncAsync(cts.Token), "지연 즉시 동기화");
     }
 
     private async Task RunDeferredImmediateSyncAsync(CancellationToken ct)
     {
-        if (_disposed)
+        if (_disposed || _stopping)
             return;
 
         try
         {
             await Task.Delay(DebouncedSyncDelay, ct);
 
-            if (_disposed || !_session.IsLoggedIn || _session.IsOfflineMode)
+            if (_disposed ||
+                _stopping ||
+                !_session.IsLoggedIn ||
+                _session.IsOfflineMode ||
+                !CanRunServerMutation())
                 return;
 
             await StartSyncAsync(waitForRunningSync: true, CancellationToken.None);
@@ -914,14 +1759,52 @@ public sealed class SyncService : IDisposable
 
     private void ObserveBackgroundTask(Task task, string operationName)
     {
-        UiTaskHelper.Forget(task, "SYNC", operationName, ex =>
+        var observedTask = ObserveBackgroundTaskCoreAsync(task, operationName);
+        lock (_immediateSyncGate)
+        {
+            _observedBackgroundTasks.Add(observedTask);
+        }
+
+        _ = observedTask.ContinueWith(
+            static (completedTask, state) =>
+            {
+                var owner = (SyncService)state!;
+                lock (owner._immediateSyncGate)
+                {
+                    owner._observedBackgroundTasks.Remove(completedTask);
+                }
+            },
+            this,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private static Task StartBackgroundTaskWithoutExecutionContext(
+        Func<Task> operation)
+    {
+        using (ExecutionContext.SuppressFlow())
+            return Task.Run(operation);
+    }
+
+    private async Task ObserveBackgroundTaskCoreAsync(
+        Task task,
+        string operationName)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Shutdown, compatibility changes, and newer requests may supersede background work.
+        }
+        catch (Exception ex)
         {
             AppLogger.Error("SYNC", $"{operationName} 실패", ex);
-            UiTaskHelper.Forget(
-                ObserveBackgroundTaskFailureAsync(operationName, ex),
-                "SYNC",
-                $"{operationName} 진단 기록");
-        });
+            await ObserveBackgroundTaskFailureAsync(operationName, ex)
+                .ConfigureAwait(false);
+        }
     }
 
     private async Task ObserveBackgroundTaskFailureAsync(string operationName, Exception ex)
@@ -969,7 +1852,12 @@ public sealed class SyncService : IDisposable
         await operation(ct);
     }
 
-    private void SetStatus(string message) => SyncStatusChanged?.Invoke(message);
+    private void SetStatus(string message)
+    {
+        using var callbackBoundary =
+            LocalDbContext.SuppressRuntimeMutationOwnerForCallback();
+        SyncStatusChanged?.Invoke(message);
+    }
 
     private static string BuildUserFacingSyncAttentionStatus(string? detail)
     {
@@ -1026,6 +1914,247 @@ public sealed class SyncService : IDisposable
             })
             .OrderByDescending(summary => summary.Count)
             .ThenBy(summary => summary.OfficeCode, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private async Task<IReadOnlyList<DirtyOfficeSummary>>
+        GetPendingReconciliationOfficeSummariesOutsideCurrentSessionAsync(
+            CancellationToken ct)
+        => await BuildPendingReconciliationOfficeSummariesOutsideCurrentSessionAsync(
+            await LoadEligibleOutboxReconciliationCandidatesAsync(ct),
+            ct);
+
+    private async Task<IReadOnlyList<DirtyOfficeSummary>>
+        BuildPendingReconciliationOfficeSummariesOutsideCurrentSessionAsync(
+            IReadOnlyList<LocalSyncOutboxEntry> outboxOwners,
+            CancellationToken ct)
+    {
+        var currentOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+            _session.OfficeCode,
+            _session.OfficeCode);
+        var summaries = (await GetPendingDirtyOfficeSummariesOutsideCurrentSessionAsync(ct))
+            .ToDictionary(
+                summary => summary.OfficeCode,
+                summary => summary,
+                StringComparer.OrdinalIgnoreCase);
+
+        foreach (var owner in outboxOwners)
+        {
+            if (!TryNormalizeOutboxReconciliationEntityScope(
+                    owner.TenantCode,
+                    owner.OfficeCode,
+                    owner.ResponsibleOfficeCode,
+                    out var ownerScope))
+            {
+                continue;
+            }
+
+            var ownerOfficeCodes = new[]
+                {
+                    ownerScope.OfficeCode,
+                    ownerScope.ResponsibleOfficeCode
+                }
+                .Select(value =>
+                    OfficeCodeCatalog.TryNormalizeOfficeCode(
+                        value,
+                        out var officeCode)
+                        ? officeCode
+                        : string.Empty)
+                .Where(officeCode =>
+                    !string.IsNullOrWhiteSpace(officeCode) &&
+                    TenantScopeCatalog.TenantContainsOffice(
+                        ownerScope.TenantCode,
+                        officeCode) &&
+                    !string.Equals(
+                        officeCode,
+                        currentOfficeCode,
+                        StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            foreach (var officeCode in ownerOfficeCodes)
+            {
+                if (summaries.TryGetValue(officeCode, out var existing))
+                {
+                    summaries[officeCode] = existing with
+                    {
+                        Count = existing.Count + 1
+                    };
+                }
+                else
+                {
+                    summaries[officeCode] = new DirtyOfficeSummary(
+                        officeCode,
+                        ownerScope.TenantCode,
+                        1);
+                }
+            }
+        }
+
+        return summaries.Values
+            .OrderByDescending(summary => summary.Count)
+            .ThenBy(summary => summary.OfficeCode, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private async Task<bool> HasPendingOutboxForSessionAsync(
+        SessionState session,
+        CancellationToken ct)
+        => HasPendingOutboxForSession(
+            session,
+            await LoadEligibleOutboxReconciliationCandidatesAsync(ct));
+
+    private async Task<bool> HasPendingReconciliationForOperationOwnerAsync(
+        SyncOperationOwnerBoundary operationOwner,
+        CancellationToken ct)
+    {
+        if (!IsSyncOperationOwnerCurrent(operationOwner))
+            return false;
+
+        return HasPendingOutboxForSession(
+            _session,
+            await LoadEligibleOutboxReconciliationCandidatesAsync(ct));
+    }
+
+    private static bool HasPendingOutboxForSession(
+        SessionState session,
+        IReadOnlyList<LocalSyncOutboxEntry> pendingOwners)
+    {
+        if (session.User is null || session.User.UserId == Guid.Empty)
+            return false;
+
+        var writableOfficeCodes = TenantScopeCatalog.ResolveScopedOfficeCodes(
+            session.OfficeCode,
+            session.AuthenticatedTenantCode,
+            session.ScopeType,
+            session.HasGlobalDataScope);
+
+        return pendingOwners.Any(owner =>
+            owner.UserId == session.User.UserId &&
+            TryNormalizeOutboxReconciliationEntityScope(
+                owner.TenantCode,
+                owner.OfficeCode,
+                owner.ResponsibleOfficeCode,
+                out var ownerScope) &&
+            (session.HasGlobalDataScope ||
+             string.Equals(
+                 ownerScope.TenantCode,
+                 TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                     session.AuthenticatedTenantCode,
+                     session.OfficeCode),
+                 StringComparison.OrdinalIgnoreCase)) &&
+            new[] { ownerScope.OfficeCode, ownerScope.ResponsibleOfficeCode }
+                .Any(officeCode =>
+                    OfficeCodeCatalog.TryNormalizeOfficeCode(
+                        officeCode,
+                        out var normalizedOfficeCode) &&
+                    TenantScopeCatalog.TenantContainsOffice(
+                        ownerScope.TenantCode,
+                        normalizedOfficeCode) &&
+                    writableOfficeCodes.Contains(normalizedOfficeCode)));
+    }
+
+    private async Task<IReadOnlyList<LocalSyncOutboxEntry>>
+        LoadEligibleOutboxReconciliationCandidatesAsync(CancellationToken ct)
+    {
+        EligibleOutboxReconciliationCandidateLoadStartedForTesting?.Invoke();
+        var currentDeviceId = (await _local.GetSettingAsync(
+                DeviceIdSettingKey,
+                ct) ?? string.Empty)
+            .Trim();
+        if (string.IsNullOrWhiteSpace(currentDeviceId))
+            return [];
+
+        var currentBusinessDatabaseName = TenantScopeCatalog.GetDatabaseName(
+            _session.SelectedBusinessDatabaseName);
+        var rows = await _db.SyncOutboxEntries
+            .AsNoTracking()
+            .Where(entry =>
+                entry.Status != "Acknowledged" &&
+                entry.EntityId != Guid.Empty)
+            .ToListAsync(ct);
+        var ownerCandidates = rows
+            .Where(row =>
+                !string.IsNullOrWhiteSpace(row.EntityName) &&
+                !string.IsNullOrWhiteSpace(row.OfficeCode) &&
+                !string.IsNullOrWhiteSpace(row.ResponsibleOfficeCode) &&
+                !string.IsNullOrWhiteSpace(row.BusinessDatabaseName) &&
+                !string.IsNullOrWhiteSpace(row.DeviceId) &&
+                !string.IsNullOrWhiteSpace(row.MutationId) &&
+                row.SessionId != Guid.Empty &&
+                row.UserId != Guid.Empty &&
+                string.Equals(
+                    row.DeviceId.Trim(),
+                    currentDeviceId,
+                    StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(
+                    TenantScopeCatalog.GetDatabaseName(
+                        row.BusinessDatabaseName),
+                    currentBusinessDatabaseName,
+                    StringComparison.OrdinalIgnoreCase) &&
+                TryNormalizeOutboxReconciliationEntityScope(
+                    row.TenantCode,
+                    row.OfficeCode,
+                    row.ResponsibleOfficeCode,
+                    out _))
+            .ToList();
+        if (ownerCandidates.Count == 0)
+            return [];
+
+        var cleanEntityRevisions = new Dictionary<(string EntityName, Guid EntityId), long>();
+
+        async Task AddCleanEntityKeysAsync<TLocal>()
+            where TLocal : class, ILocalSyncEntity
+        {
+            var entityName = typeof(TLocal).Name;
+            var ids = ownerCandidates
+                .Where(row => string.Equals(
+                    row.EntityName,
+                    entityName,
+                    StringComparison.Ordinal))
+                .Select(row => row.EntityId)
+                .Distinct()
+                .ToList();
+            if (ids.Count == 0)
+                return;
+
+            var cleanEntities = await _db.Set<TLocal>()
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(entity => ids.Contains(entity.Id) && !entity.IsDirty)
+                .Select(entity => new { entity.Id, entity.Revision })
+                .ToListAsync(ct);
+            foreach (var entity in cleanEntities)
+                cleanEntityRevisions[(entityName, entity.Id)] = entity.Revision;
+        }
+
+        await AddCleanEntityKeysAsync<LocalCompanyProfile>();
+        await AddCleanEntityKeysAsync<LocalUnit>();
+        await AddCleanEntityKeysAsync<LocalCustomerCategory>();
+        await AddCleanEntityKeysAsync<LocalPriceGradeOption>();
+        await AddCleanEntityKeysAsync<LocalTradeTypeOption>();
+        await AddCleanEntityKeysAsync<LocalItemCategoryOption>();
+        await AddCleanEntityKeysAsync<LocalCustomerMaster>();
+        await AddCleanEntityKeysAsync<LocalCustomer>();
+        await AddCleanEntityKeysAsync<LocalCustomerContract>();
+        await AddCleanEntityKeysAsync<LocalItem>();
+        await AddCleanEntityKeysAsync<LocalItemPriceGrade>();
+        await AddCleanEntityKeysAsync<LocalTransaction>();
+        await AddCleanEntityKeysAsync<LocalTransactionAttachment>();
+        await AddCleanEntityKeysAsync<LocalInventoryTransfer>();
+        await AddCleanEntityKeysAsync<LocalRentalManagementCompany>();
+        await AddCleanEntityKeysAsync<LocalRentalBillingProfile>();
+        await AddCleanEntityKeysAsync<LocalRentalAsset>();
+        await AddCleanEntityKeysAsync<LocalRentalAssetAssignmentHistory>();
+        await AddCleanEntityKeysAsync<LocalRentalBillingLog>();
+        await AddCleanEntityKeysAsync<LocalInvoice>();
+        await AddCleanEntityKeysAsync<LocalPayment>();
+
+        return ownerCandidates
+            .Where(row =>
+                cleanEntityRevisions.TryGetValue(
+                    (row.EntityName, row.EntityId),
+                    out var localRevision) &&
+                localRevision > row.ExpectedRevision)
             .ToList();
     }
 
@@ -1093,7 +2222,8 @@ public sealed class SyncService : IDisposable
 
             try
             {
-                var login = await _api.LoginAsync(credential.Username, credential.Password, ct);
+                var login = await AwaitWithTrackedChangesPreservedAsync(
+                    () => _api.LoginAsync(credential.Username, credential.Password, ct));
                 if (login is null || string.IsNullOrWhiteSpace(login.Token))
                 {
                     await InvalidateStoredOfficeCredentialAsync(credential, ct);
@@ -1107,17 +2237,18 @@ public sealed class SyncService : IDisposable
                 if (officeDirtyCount == 0)
                     continue;
 
-                using var officeHttpClient = new HttpClient
-                {
-                    BaseAddress = _api.GetBaseUri(),
-                    Timeout = TimeSpan.FromSeconds(100)
-                };
+                using var officeHttpClient =
+                    CreateOfficeSessionHttpClient();
                 var officeApi = new ErpApiClient(officeHttpClient, officeSession);
                 SetStatus($"{normalizedOfficeCode} 지점 변경분을 추가 동기화하는 중...");
                 await ExecuteWithRetryAsync(
                     token => PushDirtyAsync(officeApi, officeSession, includeSharedDirty: false, token),
                     $"{normalizedOfficeCode} 지점 업로드",
                     ct);
+            }
+            catch (DesktopClientUpgradeRequiredException)
+            {
+                throw;
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
@@ -1135,14 +2266,60 @@ public sealed class SyncService : IDisposable
 
     private async Task ClearStaleDirtyWithStoredOfficeSessionsAsync(CancellationToken ct)
     {
-        if (await _local.CountDirtyAsync(ct) == 0)
+        IReadOnlyList<LocalSyncOutboxEntry>? candidateSnapshot = null;
+
+        async Task<IReadOnlyList<LocalSyncOutboxEntry>> GetCandidatesAsync()
+        {
+            candidateSnapshot ??=
+                await LoadEligibleOutboxReconciliationCandidatesAsync(ct);
+            return candidateSnapshot;
+        }
+
+        void InvalidateCandidates() => candidateSnapshot = null;
+
+        var candidates = await GetCandidatesAsync();
+        if (AfterInitialOutboxReconciliationCandidateSnapshotLoadedAsyncForTesting
+            is not null)
+        {
+            await AfterInitialOutboxReconciliationCandidateSnapshotLoadedAsyncForTesting(
+                ct);
+        }
+
+        var currentSessionHasPendingOutbox =
+            HasPendingOutboxForSession(_session, candidates);
+        var currentSessionHasPendingWork =
+            await _local.CountDirtyAsync(_session, ct) > 0 ||
+            currentSessionHasPendingOutbox;
+        var pendingOfficeSummaries =
+            await BuildPendingReconciliationOfficeSummariesOutsideCurrentSessionAsync(
+                candidates,
+                ct);
+        if (!currentSessionHasPendingWork && pendingOfficeSummaries.Count == 0)
             return;
 
-        await ClearStaleDirtyAsync(_api, _session, includeSharedDirty: true, ct);
-        if (await _local.CountDirtyAsync(ct) == 0)
-            return;
+        if (currentSessionHasPendingWork)
+        {
+            try
+            {
+                await ClearStaleDirtyCoreAsync(
+                    _api,
+                    _session,
+                    includeSharedDirty: true,
+                    currentSessionHasPendingOutbox,
+                    ct);
+            }
+            finally
+            {
+                InvalidateCandidates();
+            }
 
-        var pendingOfficeSummaries = await GetPendingDirtyOfficeSummariesOutsideCurrentSessionAsync(ct);
+            candidates = await GetCandidatesAsync();
+            pendingOfficeSummaries =
+                await BuildPendingReconciliationOfficeSummariesOutsideCurrentSessionAsync(
+                    candidates,
+                    ct);
+        }
+
         if (pendingOfficeSummaries.Count == 0)
             return;
 
@@ -1165,7 +2342,8 @@ public sealed class SyncService : IDisposable
 
             try
             {
-                var login = await _api.LoginAsync(credential.Username, credential.Password, ct);
+                var login = await AwaitWithTrackedChangesPreservedAsync(
+                    () => _api.LoginAsync(credential.Username, credential.Password, ct));
                 if (login is null || string.IsNullOrWhiteSpace(login.Token))
                 {
                     await InvalidateStoredOfficeCredentialAsync(credential, ct);
@@ -1174,16 +2352,33 @@ public sealed class SyncService : IDisposable
 
                 var officeSession = new SessionState();
                 officeSession.SetSession(login.Token, login.User, login.ExpiresAtUtc);
-                if (await _local.CountDirtyAsync(officeSession, ct) == 0)
+                candidates = await GetCandidatesAsync();
+                var officeSessionHasPendingOutbox =
+                    HasPendingOutboxForSession(officeSession, candidates);
+                if (await _local.CountDirtyAsync(officeSession, ct) == 0 &&
+                    !officeSessionHasPendingOutbox)
                     continue;
 
-                using var officeHttpClient = new HttpClient
-                {
-                    BaseAddress = _api.GetBaseUri(),
-                    Timeout = TimeSpan.FromSeconds(100)
-                };
+                using var officeHttpClient =
+                    CreateOfficeSessionHttpClient();
                 var officeApi = new ErpApiClient(officeHttpClient, officeSession);
-                await ClearStaleDirtyAsync(officeApi, officeSession, includeSharedDirty: false, ct);
+                try
+                {
+                    await ClearStaleDirtyCoreAsync(
+                        officeApi,
+                        officeSession,
+                        includeSharedDirty: false,
+                        officeSessionHasPendingOutbox,
+                        ct);
+                }
+                finally
+                {
+                    InvalidateCandidates();
+                }
+            }
+            catch (DesktopClientUpgradeRequiredException)
+            {
+                throw;
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
@@ -1202,14 +2397,39 @@ public sealed class SyncService : IDisposable
         SessionState session,
         bool includeSharedDirty,
         CancellationToken ct)
+        => await ClearStaleDirtyCoreAsync(
+            apiClient,
+            session,
+            includeSharedDirty,
+            HasPendingOutboxForSession(
+                session,
+                await LoadEligibleOutboxReconciliationCandidatesAsync(ct)),
+            ct);
+
+    private async Task ClearStaleDirtyCoreAsync(
+        ErpApiClient apiClient,
+        SessionState session,
+        bool includeSharedDirty,
+        bool hasPendingOutbox,
+        CancellationToken ct)
     {
         var sessionDirtyCount = await _local.CountDirtyAsync(session, ct);
-        if (sessionDirtyCount == 0 && (!includeSharedDirty || !session.HasAdministrativePrivileges))
+        if (sessionDirtyCount == 0 &&
+            !hasPendingOutbox &&
+            (!includeSharedDirty || !session.HasAdministrativePrivileges))
             return;
 
-        var pull = await apiClient.PullAsync(0, ct);
+        var pull = await AwaitWithTrackedChangesPreservedAsync(
+            () => apiClient.PullAsync(0, ct));
         if (pull is null)
             return;
+
+        // A stock replay guard may have been established by the upload that
+        // immediately precedes this stale-dirty cleanup. Revalidate after the
+        // network wait and before clearing any local pending state so a
+        // separate-context stock edit cannot be followed by another pull or
+        // by cleanup mutations based on the now-stale response.
+        await EnsureItemWarehouseStockReplayPullGuardUnchangedAsync(ct);
 
         using (_local.SuppressSyncDispatch())
         {
@@ -1263,36 +2483,40 @@ public sealed class SyncService : IDisposable
 
             if (await _db.SyncOutboxEntries.AsNoTracking().AnyAsync(entry => entry.Status != "Acknowledged", ct))
             {
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomerMaster, CustomerMasterDto>(pull.CustomerMasters, ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomer, CustomerDto>(pull.Customers, ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomerContract, CustomerContractDto>(pull.CustomerContracts, ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalItem, ItemDto>(pull.Items, ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalItemPriceGrade, ItemPriceGradeDto>(pull.ItemPriceGrades, ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalTransaction, TransactionDto>(pull.Transactions, ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalTransactionAttachment, TransactionAttachmentDto>(pull.TransactionAttachments, ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalInventoryTransfer, InventoryTransferDto>(pull.InventoryTransfers, ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalBillingProfile, RentalBillingProfileDto>(pull.RentalBillingProfiles, ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalAsset, RentalAssetDto>(pull.RentalAssets, ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalAssetAssignmentHistory, RentalAssetAssignmentHistoryDto>(pull.RentalAssetAssignmentHistories, ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalBillingLog, RentalBillingLogDto>(pull.RentalBillingLogs, ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalInvoice, InvoiceDto>(pull.Invoices, ct);
-                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalPayment, PaymentDto>(pull.Payments, ct);
+                var reconciliationDeviceId = await GetOrCreateDeviceIdAsync(ct);
+                var reconciliationBusinessDatabaseName = TenantScopeCatalog.GetDatabaseName(
+                    session.SelectedBusinessDatabaseName);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomerMaster, CustomerMasterDto>(pull.CustomerMasters, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomer, CustomerDto>(pull.Customers, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomerContract, CustomerContractDto>(pull.CustomerContracts, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalItem, ItemDto>(pull.Items, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalItemPriceGrade, ItemPriceGradeDto>(pull.ItemPriceGrades, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalTransaction, TransactionDto>(pull.Transactions, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalTransactionAttachment, TransactionAttachmentDto>(pull.TransactionAttachments, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalInventoryTransfer, InventoryTransferDto>(pull.InventoryTransfers, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalBillingProfile, RentalBillingProfileDto>(pull.RentalBillingProfiles, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalAsset, RentalAssetDto>(pull.RentalAssets, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalAssetAssignmentHistory, RentalAssetAssignmentHistoryDto>(pull.RentalAssetAssignmentHistories, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalBillingLog, RentalBillingLogDto>(pull.RentalBillingLogs, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalInvoice, InvoiceDto>(pull.Invoices, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalPayment, PaymentDto>(pull.Payments, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
 
                 if (includeSharedDirty && session.HasAdministrativePrivileges)
                 {
-                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCompanyProfile, CompanyProfileDto>(pull.CompanyProfiles, ct);
-                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalUnit, UnitDto>(pull.Units, ct);
-                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomerCategory, CustomerCategoryDto>(pull.CustomerCategories, ct);
-                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalPriceGradeOption, PriceGradeOptionDto>(pull.PriceGradeOptions, ct);
-                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalTradeTypeOption, TradeTypeOptionDto>(pull.TradeTypeOptions, ct);
-                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalItemCategoryOption, ItemCategoryOptionDto>(pull.ItemCategoryOptions, ct);
-                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalManagementCompany, RentalManagementCompanyDto>(pull.RentalManagementCompanies, ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCompanyProfile, CompanyProfileDto>(pull.CompanyProfiles, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalUnit, UnitDto>(pull.Units, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalCustomerCategory, CustomerCategoryDto>(pull.CustomerCategories, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalPriceGradeOption, PriceGradeOptionDto>(pull.PriceGradeOptions, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalTradeTypeOption, TradeTypeOptionDto>(pull.TradeTypeOptions, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalItemCategoryOption, ItemCategoryOptionDto>(pull.ItemCategoryOptions, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
+                    clearedCount += await MarkOutboxAcknowledgedForCleanEntitiesAsync<LocalRentalManagementCompany, RentalManagementCompanyDto>(pull.RentalManagementCompanies, session, reconciliationDeviceId, reconciliationBusinessDatabaseName, ct);
                 }
             }
 
             if (clearedCount > 0)
             {
                 AppLogger.Info("SYNC", $"stale dirty 자동정리: office={session.OfficeCode}, cleaned={clearedCount}");
+                PreservePendingTrackedChangesForSync();
                 await TryRecordDiagnosticAsync(
                     phase: "stale-dirty-repair",
                     rawMessage: $"stale dirty 자동정리 완료: office={OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(session.OfficeCode, session.OfficeCode)}, cleaned={clearedCount}",
@@ -1323,36 +2547,101 @@ public sealed class SyncService : IDisposable
         if (serverMap.Count == 0)
             return 0;
 
-        var trackedEntities = await _db.Set<TLocal>()
-            .IgnoreQueryFilters()
-            .Where(entity => dirtyIds.Contains(entity.Id))
-            .ToListAsync(ct);
-
         var changed = 0;
-        foreach (var entity in trackedEntities)
+        var cleanedIds = new HashSet<Guid>();
+        foreach (var entityId in serverMap.Keys)
         {
+            var entity = await LoadCurrentSyncEntitySnapshotAsync<TLocal>(entityId, ct);
+            if (entity is null)
+                continue;
+
             if (!entity.IsDirty || !serverMap.TryGetValue(entity.Id, out var serverEntity))
                 continue;
 
-            if (!IsStaleDirtyMatch(entity, serverEntity) &&
+            var localEntityName = NormalizeSyncEntityName(typeof(TLocal).Name);
+            var persistedSnapshot = new PreparedMutationSnapshot(
+                entity.Revision,
+                NormalizeMutationUtc(entity.UpdatedAtUtc),
+                entity.IsDeleted,
+                ComputePreparedMutationPayloadHash(
+                    localEntityName,
+                    MapLocalEntityToPreparedMutationDto(entity)),
+                InvoiceNumber: entity is LocalInvoice invoice
+                    ? invoice.InvoiceNumber
+                    : null,
+                TaxInvoiceNumber: entity is LocalInvoice taxInvoice
+                    ? taxInvoice.TaxInvoiceNumber
+                    : null);
+            if (HasPendingTrackedMutationAfterPush<TLocal>(
+                    entity.Id,
+                    localEntityName,
+                    persistedSnapshot))
+            {
+                var key = new SyncEntityKey(localEntityName, entity.Id);
+                if (serverEntity.Revision > 0 &&
+                    _trackedMutationsPreservedDuringSync.TryGetValue(key, out var preservation))
+                {
+                    await _db.Set<TLocal>()
+                        .IgnoreQueryFilters()
+                        .Where(current =>
+                            current.Id == entity.Id &&
+                            current.IsDirty &&
+                            current.Revision < serverEntity.Revision)
+                        .ExecuteUpdateAsync(
+                            setters => setters.SetProperty(
+                                current => current.Revision,
+                                serverEntity.Revision),
+                            ct);
+                    preservation.RebaseAcceptedRevision(serverEntity.Revision);
+                }
+
+                continue;
+            }
+
+            // Revision만 같다는 이유로 dirty를 지우면 아직 전송되지 않은 로컬 재편집을 잃을 수 있다.
+            // 상태와 실제 payload가 모두 서버 스냅샷과 일치할 때만 정리한다.
+            if (!IsStaleDirtyMatch(entity, serverEntity) ||
                 !IsStaleDirtyPayloadMatch(entity, serverEntity))
+            {
+                continue;
+            }
+
+            var expectedRevision = entity.Revision;
+            var expectedUpdatedAtUtc = NormalizeMutationUtc(entity.UpdatedAtUtc);
+            var expectedIsDeleted = entity.IsDeleted;
+            var serverUpdatedAtUtc = NormalizeMutationUtc(serverEntity.UpdatedAtUtc);
+            var affected = await _db.Set<TLocal>()
+                .IgnoreQueryFilters()
+                .Where(current =>
+                    current.Id == entity.Id &&
+                    current.IsDirty &&
+                    current.Revision == expectedRevision &&
+                    current.UpdatedAtUtc == expectedUpdatedAtUtc &&
+                    current.IsDeleted == expectedIsDeleted)
+                .ExecuteUpdateAsync(
+                    setters => setters
+                        .SetProperty(current => current.Revision, serverEntity.Revision)
+                        .SetProperty(current => current.UpdatedAtUtc, serverUpdatedAtUtc)
+                        .SetProperty(current => current.IsDeleted, serverEntity.IsDeleted)
+                        .SetProperty(current => current.IsDirty, false),
+                    ct);
+            if (affected <= 0)
                 continue;
 
-            entity.Revision = serverEntity.Revision;
-            entity.UpdatedAtUtc = serverEntity.UpdatedAtUtc;
-            entity.IsDeleted = serverEntity.IsDeleted;
-            entity.IsDirty = false;
-            changed++;
+            cleanedIds.Add(entity.Id);
+            changed += affected;
         }
 
-        if (changed > 0)
-            await _db.SaveChangesAsync(ct);
+        DetachTrackedEntities<TLocal>(cleanedIds);
 
         return changed;
     }
 
     private async Task<int> MarkOutboxAcknowledgedForCleanEntitiesAsync<TLocal, TDto>(
         IReadOnlyCollection<TDto> serverEntities,
+        SessionState session,
+        string deviceId,
+        string businessDatabaseName,
         CancellationToken ct)
         where TLocal : class, ILocalSyncEntity
         where TDto : SyncEntityDto
@@ -1379,6 +2668,13 @@ public sealed class SyncService : IDisposable
         if (rows.Count == 0)
             return 0;
 
+        var scopeRequest = BuildPreparedMutationScopeRequest(serverEntities);
+        var scopeLookup = await BuildPreparedMutationScopeLookupAsync(
+            _db,
+            scopeRequest,
+            session,
+            ct);
+
         var entityIds = rows
             .Select(entry => entry.EntityId)
             .Where(id => id != Guid.Empty && serverMap.ContainsKey(id))
@@ -1400,7 +2696,8 @@ public sealed class SyncService : IDisposable
             if (!serverMap.TryGetValue(entity.Id, out var serverEntity))
                 continue;
 
-            if (IsStaleDirtyPayloadMatch(entity, serverEntity))
+            if (entity.IsDeleted == serverEntity.IsDeleted &&
+                IsStaleDirtyPayloadMatch(entity, serverEntity))
             {
                 reconciledEntityIds.Add(entity.Id);
             }
@@ -1416,8 +2713,27 @@ public sealed class SyncService : IDisposable
             if (!reconciledEntityIds.Contains(row.EntityId))
                 continue;
 
+            var serverEntity = serverMap[row.EntityId];
+            if (serverEntity.Revision <= row.ExpectedRevision ||
+                !TryBuildOutboxReconciliationOwnerScope(
+                    row,
+                    out var rowScope) ||
+                !TryBuildActivePullOutboxReconciliationOwnerScope(
+                    serverEntity,
+                    session,
+                    deviceId,
+                    businessDatabaseName,
+                    scopeLookup,
+                    out var activePullScope) ||
+                rowScope != activePullScope)
+            {
+                continue;
+            }
+
             row.Status = "Acknowledged";
             row.AcknowledgedAtUtc = now;
+            row.AcceptedRevision = serverEntity.Revision;
+            row.AcceptedUpdatedAtUtc = NormalizeMutationUtc(serverEntity.UpdatedAtUtc);
             row.ErrorMessage = string.Empty;
             changed++;
         }
@@ -1426,6 +2742,70 @@ public sealed class SyncService : IDisposable
             await _db.SaveChangesAsync(ct);
 
         return changed;
+    }
+
+    private static SyncPushRequest BuildPreparedMutationScopeRequest<TDto>(
+        IReadOnlyCollection<TDto> serverEntities)
+        where TDto : SyncEntityDto
+    {
+        var request = new SyncPushRequest();
+        switch (serverEntities)
+        {
+            case IReadOnlyCollection<CustomerContractDto> customerContracts:
+                request.CustomerContracts.AddRange(customerContracts);
+                break;
+            case IReadOnlyCollection<ItemPriceGradeDto> itemPriceGrades:
+                request.ItemPriceGrades.AddRange(itemPriceGrades);
+                break;
+            case IReadOnlyCollection<TransactionAttachmentDto> transactionAttachments:
+                request.TransactionAttachments.AddRange(transactionAttachments);
+                break;
+            case IReadOnlyCollection<PaymentDto> payments:
+                request.Payments.AddRange(payments);
+                break;
+        }
+
+        return request;
+    }
+
+    private bool TryBuildActivePullOutboxReconciliationOwnerScope(
+        SyncEntityDto serverEntity,
+        SessionState session,
+        string deviceId,
+        string businessDatabaseName,
+        PreparedMutationScopeLookup scopeLookup,
+        out OutboxReconciliationOwnerScope scope)
+    {
+        scope = default;
+        if (!TryResolveOutboxReconciliationScope(
+                serverEntity,
+                session,
+                scopeLookup,
+                out var preparedScope))
+        {
+            return false;
+        }
+        var normalizedBusinessDatabaseName = TenantScopeCatalog.GetDatabaseName(
+            businessDatabaseName);
+        var tenantCode = serverEntity is PriceGradeOptionDto
+            ? TenantScopeCatalog.NormalizeTenantCodeOrDefault(
+                normalizedBusinessDatabaseName,
+                preparedScope.TenantCode)
+            : preparedScope.TenantCode;
+        var activePullOwner = new LocalSyncOutboxEntry
+        {
+            TenantCode = tenantCode,
+            OfficeCode = preparedScope.OfficeCode,
+            ResponsibleOfficeCode = preparedScope.ResponsibleOfficeCode,
+            BusinessDatabaseName = normalizedBusinessDatabaseName,
+            DeviceId = deviceId,
+            MutationId = "active-pull-owner",
+            SessionId = session.SessionId,
+            UserId = session.User?.UserId ?? Guid.Empty
+        };
+        return TryBuildOutboxReconciliationOwnerScope(
+            activePullOwner,
+            out scope);
     }
 
     private static bool IsStaleDirtyMatch(ILocalSyncEntity localEntity, SyncEntityDto serverEntity)
@@ -1573,11 +2953,91 @@ public sealed class SyncService : IDisposable
 
     private sealed record RentalTenantSyncPayload(
         string BusinessDatabaseName,
+        List<CustomerDto> Customers,
+        List<PriceGradeOptionDto> PriceGradeOptions,
+        List<ItemDto> Items,
+        List<ItemPriceGradeDto> ItemPriceGrades,
+        List<ItemWarehouseStockDto> ItemWarehouseStocks,
         List<RentalManagementCompanyDto> ManagementCompanies,
         List<RentalBillingProfileDto> BillingProfiles,
         List<RentalAssetDto> Assets,
         List<RentalAssetAssignmentHistoryDto> AssignmentHistories,
         List<RentalBillingLogDto> BillingLogs);
+
+    private async Task MarkDirtyItemCatalogExtensionsPendingAsync(
+        IReadOnlyList<LocalItem> dirtyItems,
+        bool hasObservedCatalogExtensionCapability,
+        CancellationToken ct)
+    {
+        if (dirtyItems.Count == 0)
+            return;
+
+        foreach (var item in dirtyItems)
+        {
+            if (item.IsDeleted)
+                item.CatalogExtensionSyncPending = false;
+            else if (hasObservedCatalogExtensionCapability)
+                item.CatalogExtensionSyncPending = true;
+        }
+
+        if (hasObservedCatalogExtensionCapability)
+        {
+            var activeItemIds = dirtyItems
+                .Where(item => !item.IsDeleted && item.Id != Guid.Empty)
+                .Select(item => item.Id)
+                .Distinct()
+                .ToList();
+            if (activeItemIds.Count > 0)
+            {
+                await _db.Items
+                    .IgnoreQueryFilters()
+                    .Where(item =>
+                        item.IsDirty &&
+                        !item.IsDeleted &&
+                        activeItemIds.Contains(item.Id))
+                    .ExecuteUpdateAsync(
+                        setters => setters.SetProperty(
+                            item => item.CatalogExtensionSyncPending,
+                            true),
+                        ct);
+            }
+        }
+
+        var deletedItemIds = dirtyItems
+            .Where(item => item.IsDeleted && item.Id != Guid.Empty)
+            .Select(item => item.Id)
+            .Distinct()
+            .ToList();
+        if (deletedItemIds.Count > 0)
+        {
+            await _db.Items
+                .IgnoreQueryFilters()
+                .Where(item =>
+                    item.IsDirty &&
+                    item.IsDeleted &&
+                    deletedItemIds.Contains(item.Id))
+                .ExecuteUpdateAsync(
+                    setters => setters.SetProperty(
+                        item => item.CatalogExtensionSyncPending,
+                        false),
+                    ct);
+        }
+    }
+
+    private static ItemDto MapItemForOutboundSync(LocalItem item)
+    {
+        var dto = LocalMappings.ToDto(item);
+        if (item.CatalogExtensionSyncPending)
+            return dto;
+
+        dto.BoxQuantity = null;
+        dto.StorageLocation = null;
+        dto.LastPurchaseDate = null;
+        dto.LastPurchaseDateSpecified = null;
+        dto.LastSaleDate = null;
+        dto.LastSaleDateSpecified = null;
+        return dto;
+    }
 
     private async Task PushDirtyAsync(
         ErpApiClient apiClient,
@@ -1617,7 +3077,7 @@ public sealed class SyncService : IDisposable
                 $"skippedOutOfScopeDirty={customerRepair.SkippedOutOfScopeCount}");
         }
 
-        var scopedDirtyRentalAssetIds = (await _local.GetDirtyRentalAssetsForSyncAsync(session, ct))
+        var scopedDirtyRentalAssetIds = (await _local.GetDirtyRentalAssetsForOutboundSyncAsync(session, ct))
             .Where(asset => !asset.IsDeleted)
             .Select(asset => asset.Id)
             .Distinct()
@@ -1715,8 +3175,22 @@ public sealed class SyncService : IDisposable
 
         var canSyncCompanyProfiles = includeSharedDirty && session.HasPermission(AppPermissionNames.CompanyProfileEdit);
         var canSyncSettings = includeSharedDirty && session.HasPermission(AppPermissionNames.SettingsEdit);
-        var canSyncItemPriceGrades = session.HasPermission(AppPermissionNames.ItemEdit);
-        var canSyncItemWarehouseStocks = includeSharedDirty && session.HasPermission(AppPermissionNames.ItemEdit);
+        var canSyncCustomers =
+            session.HasAdministrativePrivileges ||
+            session.HasPermission(AppPermissionNames.CustomerEdit);
+        var canSyncItems =
+            session.HasAdministrativePrivileges ||
+            session.HasPermission(AppPermissionNames.ItemEdit);
+        var canSyncItemPriceGrades = canSyncItems;
+        var canSyncItemWarehouseStocks = canSyncItems;
+        var canSyncRentalProfiles =
+            session.HasAdministrativePrivileges ||
+            session.HasPermission(AppPermissionNames.RentalProfileEdit) ||
+            session.HasPermission(AppPermissionNames.RentalEditAll);
+        var canSyncRentalAssets =
+            session.HasAdministrativePrivileges ||
+            session.HasPermission(AppPermissionNames.RentalAssetEdit) ||
+            session.HasPermission(AppPermissionNames.RentalEditAll);
         var canSyncRentalSettings = includeSharedDirty && session.HasPermission(AppPermissionNames.RentalSettingsEdit);
 
         var dirtyCompanyProfiles = canSyncCompanyProfiles
@@ -1759,11 +3233,36 @@ public sealed class SyncService : IDisposable
         var dirtyCustomers = await _local.GetDirtyCustomersForSyncAsync(session, ct);
         var dirtyCustomerContracts = await _local.GetDirtyCustomerContractsForSyncAsync(session, ct);
         var dirtyItems = await _local.GetDirtyItemsForSyncAsync(session, ct);
+        var rawItemCatalogExtensionVersion = await _local.GetSettingAsync(
+            ItemCatalogExtensionVersionSettingKey,
+            ct);
+        var hasObservedItemCatalogExtensionCapability =
+            int.TryParse(
+                rawItemCatalogExtensionVersion,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var observedItemCatalogExtensionVersion) &&
+            observedItemCatalogExtensionVersion > 0;
+        await MarkDirtyItemCatalogExtensionsPendingAsync(
+            dirtyItems,
+            hasObservedItemCatalogExtensionCapability,
+            ct);
+        var inventorySnapshotItemIds =
+            dirtyItems
+                .Where(item =>
+                    !item.IsDeleted &&
+                    SupportsInventoryTracking(item))
+                .Select(item => item.Id)
+                .Where(itemId => itemId != Guid.Empty)
+                .ToHashSet();
         var dirtyItemPriceGrades = canSyncItemPriceGrades
             ? await _local.GetDirtyItemPriceGradesForSyncAsync(session, ct)
             : [];
         var dirtyItemWarehouseStocks = canSyncItemWarehouseStocks
-            ? await LoadInventoryTrackedItemWarehouseStocksForPushAsync(ct)
+            ? await LoadInventoryTrackedItemWarehouseStocksForPushForSessionAsync(
+                session,
+                inventorySnapshotItemIds,
+                ct)
             : [];
         var dirtyTransactions = await _local.GetDirtyTransactionsForSyncAsync(session, ct);
         var dirtyTransactionAttachments = await _local.GetDirtyTransactionAttachmentsForSyncAsync(session, ct);
@@ -1774,10 +3273,10 @@ public sealed class SyncService : IDisposable
                 .AsNoTracking()
                 .ToListAsync(ct)
             : [];
-        var dirtyRentalBillingProfiles = await _local.GetDirtyRentalBillingProfilesForSyncAsync(session, ct);
-        var dirtyRentalAssets = await _local.GetDirtyRentalAssetsForSyncAsync(session, ct);
-        var dirtyRentalAssetAssignmentHistories = await _local.GetDirtyRentalAssetAssignmentHistoriesForSyncAsync(session, ct);
-        var dirtyRentalBillingLogs = await _local.GetDirtyRentalBillingLogsForSyncAsync(session, ct);
+        var dirtyRentalBillingProfiles = await _local.GetDirtyRentalBillingProfilesForOutboundSyncAsync(session, ct);
+        var dirtyRentalAssets = await _local.GetDirtyRentalAssetsForOutboundSyncAsync(session, ct);
+        var dirtyRentalAssetAssignmentHistories = await _local.GetDirtyRentalAssetAssignmentHistoriesForOutboundSyncAsync(session, ct);
+        var dirtyRentalBillingLogs = await _local.GetDirtyRentalBillingLogsForOutboundSyncAsync(session, ct);
         var dirtyInvoices = await _local.GetDirtyInvoicesForSyncAsync(session, ct);
         var dirtyPayments = await _local.GetDirtyPaymentsForSyncAsync(session, ct);
 
@@ -1790,28 +3289,100 @@ public sealed class SyncService : IDisposable
         var customerMasters = dirtyCustomerMasters.Select(LocalMappings.ToDto).ToList();
         var customers = dirtyCustomers.Select(LocalMappings.ToDto).ToList();
         var customerContracts = dirtyCustomerContracts.Select(LocalMappings.ToDto).ToList();
-        var items = dirtyItems.Select(LocalMappings.ToDto).ToList();
+        var items = dirtyItems.Select(MapItemForOutboundSync).ToList();
         var itemPriceGrades = dirtyItemPriceGrades.Select(LocalMappings.ToDto).ToList();
         var itemWarehouseStocks = dirtyItemWarehouseStocks.Select(LocalMappings.ToDto).ToList();
+        // A destructive completeness marker is safe only after the client has
+        // durable proof that its scoped warehouse cache is complete. Local
+        // item revisions do not provide that proof, so Desktop sends explicit
+        // zero-quantity rows and leaves omission semantics opt-in for clients
+        // that own a verified completeness token.
+        var itemWarehouseStockSnapshotMarkers =
+            new List<ItemWarehouseStockSnapshotMarkerDto>();
+        var priceGradeOptionsById = await BuildPriceGradeOptionLookupAsync(
+            priceGradeOptions,
+            itemPriceGrades,
+            ct);
         var transactions = dirtyTransactions.Select(LocalMappings.ToDto).ToList();
         var transactionAttachments = dirtyTransactionAttachments
             .Select(entity => LocalMappings.ToDto(entity, ReadTransactionAttachmentContent(entity)))
             .ToList();
-        var inventoryTransfers = dirtyInventoryTransfers.Select(LocalMappings.ToDto).ToList();
-        var referencedRentalBillingProfiles = await LoadReferencedRentalBillingProfilesForPushAsync(
-            dirtyRentalAssets,
-            dirtyRentalBillingProfiles,
-            ct);
+        var inventoryTransfers = dirtyInventoryTransfers
+            .Select(LocalMappings.ToDto)
+            .Select(transfer =>
+            {
+                transfer.Lines = (transfer.Lines ?? [])
+                    .OrderBy(line => line.Id)
+                    .ToList();
+                return transfer;
+            })
+            .ToList();
+        var referencedRentalAssets = canSyncRentalAssets
+            ? await LoadReferencedRentalAssetsForPushAsync(
+                dirtyRentalAssetAssignmentHistories,
+                dirtyRentalAssets,
+                ct)
+            : [];
+        var rentalAssetEntities = dirtyRentalAssets
+            .Concat(referencedRentalAssets)
+            .GroupBy(asset => asset.Id)
+            .Select(group => group.First())
+            .ToList();
+        // 참조용 청구 프로필을 실으면 서버는 Rental.ProfileEdit/Rental.EditAll 권한을 요구한다.
+        // 자산 전용 계정에는 해당 payload를 보내지 않고 서버에 이미 존재하는 참조만 사용한다.
+        var referencedRentalBillingProfiles = canSyncRentalProfiles
+            ? await LoadReferencedRentalBillingProfilesForPushAsync(
+                rentalAssetEntities,
+                dirtyRentalAssetAssignmentHistories,
+                dirtyRentalBillingLogs,
+                dirtyRentalBillingProfiles,
+                ct)
+            : [];
         // 렌탈 관리업체는 Rental.SettingsEdit 전용 기준정보다. 청구 프로필/자산 편집 권한만 있는
         // 담당지점 사용자의 정상 변경에 참조용 관리업체를 함께 싣으면 서버 권한 검사에서 전체
         // push가 403으로 거절된다. 기준정보 편집 권한이 있을 때만 참조 보강 payload를 만든다.
         var referencedRentalManagementCompanies = canSyncRentalSettings
             ? await LoadReferencedRentalManagementCompaniesForPushAsync(
-                dirtyRentalAssets,
+                rentalAssetEntities,
                 dirtyRentalBillingProfiles.Concat(referencedRentalBillingProfiles).ToList(),
                 dirtyRentalManagementCompanies,
                 ct)
             : [];
+        var rentalBillingProfileEntities = dirtyRentalBillingProfiles
+            .Concat(referencedRentalBillingProfiles)
+            .GroupBy(profile => profile.Id)
+            .Select(group => group.First())
+            .ToList();
+        var referencedRentalCustomers = canSyncCustomers
+            ? await LoadReferencedRentalCustomersForPushAsync(
+                rentalAssetEntities,
+                rentalBillingProfileEntities,
+                dirtyRentalAssetAssignmentHistories,
+                dirtyCustomers,
+                ct)
+            : [];
+        var referencedRentalItems = canSyncItems
+            ? await LoadReferencedRentalItemsForPushAsync(
+                rentalAssetEntities,
+                dirtyItems,
+                ct)
+            : [];
+        if (referencedRentalCustomers.Count > 0)
+        {
+            customers = customers
+                .Concat(referencedRentalCustomers.Select(LocalMappings.ToDto))
+                .GroupBy(customer => customer.Id)
+                .Select(group => group.First())
+                .ToList();
+        }
+        if (referencedRentalItems.Count > 0)
+        {
+            items = items
+                .Concat(referencedRentalItems.Select(MapItemForOutboundSync))
+                .GroupBy(item => item.Id)
+                .Select(group => group.First())
+                .ToList();
+        }
         if (referencedRentalManagementCompanies.Count > 0)
         {
             AppLogger.Warn(
@@ -1825,20 +3396,103 @@ public sealed class SyncService : IDisposable
                 $"동기화 전 렌탈 청구 프로필 보강: 자산이 참조하는 청구 프로필 {referencedRentalBillingProfiles.Count}건을 함께 업로드합니다.");
         }
 
-        var rentalManagementCompanies = dirtyRentalManagementCompanies
-            .Concat(referencedRentalManagementCompanies)
-            .GroupBy(company => company.Id)
-            .Select(group => LocalMappings.ToDto(group.First()))
+        var rentalManagementCompanies =
+            BuildRentalManagementCompanyPushPayload(
+                dirtyRentalManagementCompanies,
+                referencedRentalManagementCompanies);
+        var rentalBillingProfiles = rentalBillingProfileEntities
+            .Select(LocalMappings.ToDto)
             .ToList();
-        var rentalBillingProfiles = dirtyRentalBillingProfiles
-            .Concat(referencedRentalBillingProfiles)
-            .GroupBy(profile => profile.Id)
-            .Select(group => LocalMappings.ToDto(group.First()))
-            .ToList();
-        var rentalAssets = dirtyRentalAssets.Select(LocalMappings.ToDto).ToList();
+        var dirtyCustomerIds = dirtyCustomers
+            .Select(customer => customer.Id)
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+        var dirtyItemIds = dirtyItems
+            .Select(item => item.Id)
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+        var dirtyPriceGradeOptionIds = dirtyPriceGradeOptions
+            .Select(option => option.Id)
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+        var dirtyRentalManagementCompanyIds = dirtyRentalManagementCompanies
+            .Select(company => company.Id)
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+        var dirtyRentalBillingProfileIds = dirtyRentalBillingProfiles
+            .Select(profile => profile.Id)
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+        var dependencyOnlyCandidateKeys = new HashSet<SyncEntityKey>();
+        foreach (var option in priceGradeOptionsById.Values)
+        {
+            if (option.Id != Guid.Empty &&
+                !dirtyPriceGradeOptionIds.Contains(option.Id))
+            {
+                dependencyOnlyCandidateKeys.Add(new SyncEntityKey(
+                    NormalizeSyncEntityName(nameof(LocalPriceGradeOption)),
+                    option.Id));
+            }
+        }
+        foreach (var customer in referencedRentalCustomers)
+        {
+            if (customer.Id != Guid.Empty &&
+                !dirtyCustomerIds.Contains(customer.Id))
+            {
+                dependencyOnlyCandidateKeys.Add(new SyncEntityKey(
+                    NormalizeSyncEntityName(nameof(LocalCustomer)),
+                    customer.Id));
+            }
+        }
+        foreach (var item in referencedRentalItems)
+        {
+            if (item.Id != Guid.Empty &&
+                !dirtyItemIds.Contains(item.Id))
+            {
+                dependencyOnlyCandidateKeys.Add(new SyncEntityKey(
+                    NormalizeSyncEntityName(nameof(LocalItem)),
+                    item.Id));
+            }
+        }
+        foreach (var company in referencedRentalManagementCompanies)
+        {
+            if (company.Id != Guid.Empty &&
+                !dirtyRentalManagementCompanyIds.Contains(company.Id))
+            {
+                dependencyOnlyCandidateKeys.Add(new SyncEntityKey(
+                    NormalizeSyncEntityName(nameof(LocalRentalManagementCompany)),
+                    company.Id));
+            }
+        }
+        foreach (var profile in referencedRentalBillingProfiles)
+        {
+            if (profile.Id != Guid.Empty &&
+                !dirtyRentalBillingProfileIds.Contains(profile.Id))
+            {
+                dependencyOnlyCandidateKeys.Add(new SyncEntityKey(
+                    NormalizeSyncEntityName(nameof(LocalRentalBillingProfile)),
+                    profile.Id));
+            }
+        }
+        foreach (var asset in referencedRentalAssets)
+        {
+            if (asset.Id != Guid.Empty)
+            {
+                dependencyOnlyCandidateKeys.Add(new SyncEntityKey(
+                    NormalizeSyncEntityName(nameof(LocalRentalAsset)),
+                    asset.Id));
+            }
+        }
+        var rentalAssets = rentalAssetEntities.Select(LocalMappings.ToDto).ToList();
         var rentalAssetAssignmentHistories = dirtyRentalAssetAssignmentHistories.Select(LocalMappings.ToDto).ToList();
         var rentalBillingLogs = dirtyRentalBillingLogs.Select(LocalMappings.ToDto).ToList();
         var invoices = dirtyInvoices.Select(LocalMappings.ToDto).ToList();
+        foreach (var invoice in invoices)
+        {
+            // Payment는 request.Payments에서 독립 mutation으로 전송한다. Invoice mutation에
+            // 중복 포함하면 수금 변경만으로 동일 Invoice mutation payload가 달라진다.
+            invoice.Payments = [];
+        }
         if (invoices.Count > 0)
         {
             var invoiceCustomerIds = invoices
@@ -1879,6 +3533,8 @@ public sealed class SyncService : IDisposable
             Items = items,
             ItemPriceGrades = itemPriceGrades,
             ItemWarehouseStocks = itemWarehouseStocks,
+            ItemWarehouseStockSnapshotMarkers =
+                itemWarehouseStockSnapshotMarkers,
             Transactions = transactions,
             TransactionAttachments = transactionAttachments,
             InventoryTransfers = inventoryTransfers,
@@ -1893,41 +3549,86 @@ public sealed class SyncService : IDisposable
 
         req.DeviceId = await GetOrCreateDeviceIdAsync(ct);
         var additionalRentalRequests = new List<RentalTenantSyncPayload>();
+        IReadOnlySet<SyncEntityKey>? primaryDependencyOnlyKeys = null;
         if (session.HasAdministrativePrivileges)
         {
             var currentBusinessDatabaseName = TenantScopeCatalog.GetDatabaseName(session.SelectedBusinessDatabaseName);
+            var itemBusinessDatabaseNames = await BuildItemBusinessDatabaseNameLookupAsync(
+                items,
+                itemPriceGrades,
+                itemWarehouseStocks,
+                ct);
             var rentalTenantPayloads = BuildAdministrativeRentalTenantPayloads(
+                customers,
+                items,
+                itemPriceGrades,
+                itemWarehouseStocks,
+                itemBusinessDatabaseNames,
+                priceGradeOptionsById,
+                referencedRentalCustomers
+                    .Select(LocalMappings.ToDto)
+                    .ToDictionary(customer => customer.Id),
                 rentalManagementCompanies,
                 rentalBillingProfiles,
                 rentalAssets,
                 rentalAssetAssignmentHistories,
                 rentalBillingLogs);
-            if (rentalTenantPayloads.Count > 0)
+            if (rentalTenantPayloads.TryGetValue(currentBusinessDatabaseName, out var currentPayload))
             {
-                if (rentalTenantPayloads.TryGetValue(currentBusinessDatabaseName, out var currentPayload))
-                {
-                    req.RentalManagementCompanies = currentPayload.ManagementCompanies;
-                    req.RentalBillingProfiles = currentPayload.BillingProfiles;
-                    req.RentalAssets = currentPayload.Assets;
-                    req.RentalAssetAssignmentHistories = currentPayload.AssignmentHistories;
-                    req.RentalBillingLogs = currentPayload.BillingLogs;
-                    rentalTenantPayloads.Remove(currentBusinessDatabaseName);
-                }
-                else
-                {
-                    req.RentalManagementCompanies = [];
-                    req.RentalBillingProfiles = [];
-                    req.RentalAssets = [];
-                    req.RentalAssetAssignmentHistories = [];
-                    req.RentalBillingLogs = [];
-                }
-
-                additionalRentalRequests.AddRange(rentalTenantPayloads.Values);
+                req.PriceGradeOptions = req.PriceGradeOptions
+                    .Concat(currentPayload.PriceGradeOptions)
+                    .GroupBy(option => option.Id)
+                    .Select(group => group.First())
+                    .ToList();
+                req.Customers = currentPayload.Customers;
+                req.Items = currentPayload.Items;
+                req.ItemPriceGrades = currentPayload.ItemPriceGrades;
+                req.ItemWarehouseStocks = currentPayload.ItemWarehouseStocks;
+                req.RentalManagementCompanies = currentPayload.ManagementCompanies;
+                req.RentalBillingProfiles = currentPayload.BillingProfiles;
+                req.RentalAssets = currentPayload.Assets;
+                req.RentalAssetAssignmentHistories = currentPayload.AssignmentHistories;
+                req.RentalBillingLogs = currentPayload.BillingLogs;
+                rentalTenantPayloads.Remove(currentBusinessDatabaseName);
             }
+            else
+            {
+                req.Customers = [];
+                req.Items = [];
+                req.ItemPriceGrades = [];
+                req.ItemWarehouseStocks = [];
+                req.RentalManagementCompanies = [];
+                req.RentalBillingProfiles = [];
+                req.RentalAssets = [];
+                req.RentalAssetAssignmentHistories = [];
+                req.RentalBillingLogs = [];
+            }
+
+            var currentItemIds = req.Items
+                .Select(item => item.Id)
+                .ToHashSet();
+            req.ItemWarehouseStockSnapshotMarkers =
+                itemWarehouseStockSnapshotMarkers
+                    .Where(marker =>
+                        currentItemIds.Contains(
+                            marker.ItemId))
+                    .ToList();
+            additionalRentalRequests.AddRange(rentalTenantPayloads.Values);
         }
 
-        StampOutgoingMutations(req, req.DeviceId);
-        await PushPreparedRequestAsync(apiClient, session, req, businessDatabaseNameOverride: null, ct);
+        var primaryBusinessDatabaseName = TenantScopeCatalog.GetDatabaseName(session.SelectedBusinessDatabaseName);
+        StampOutgoingMutations(req, req.DeviceId, primaryBusinessDatabaseName);
+        await ExcludeBlockedInventoryTransferScopesAsync(req, ct);
+        primaryDependencyOnlyKeys = SelectDependencyOnlyKeysForRequest(
+            req,
+            dependencyOnlyCandidateKeys);
+        await PushPreparedRequestAsync(
+            apiClient,
+            session,
+            req,
+            businessDatabaseNameOverride: null,
+            primaryDependencyOnlyKeys,
+            ct);
 
         foreach (var additionalRequest in additionalRentalRequests)
         {
@@ -1936,20 +3637,135 @@ public sealed class SyncService : IDisposable
             var supplementalRequest = new SyncPushRequest
             {
                 DeviceId = req.DeviceId,
+                Customers = additionalRequest.Customers,
+                PriceGradeOptions = additionalRequest.PriceGradeOptions,
+                Items = additionalRequest.Items,
+                ItemPriceGrades = additionalRequest.ItemPriceGrades,
+                ItemWarehouseStocks = additionalRequest.ItemWarehouseStocks,
+                ItemWarehouseStockSnapshotMarkers =
+                    itemWarehouseStockSnapshotMarkers
+                        .Where(marker =>
+                            additionalRequest.Items.Any(
+                                item =>
+                                    item.Id ==
+                                    marker.ItemId))
+                        .ToList(),
                 RentalManagementCompanies = additionalRequest.ManagementCompanies,
                 RentalBillingProfiles = additionalRequest.BillingProfiles,
                 RentalAssets = additionalRequest.Assets,
                 RentalAssetAssignmentHistories = additionalRequest.AssignmentHistories,
                 RentalBillingLogs = additionalRequest.BillingLogs
             };
-            StampOutgoingMutations(supplementalRequest, supplementalRequest.DeviceId);
+            StampOutgoingMutations(
+                supplementalRequest,
+                supplementalRequest.DeviceId,
+                additionalRequest.BusinessDatabaseName);
+            var dependencyOnlyKeys = SelectDependencyOnlyKeysForRequest(
+                    supplementalRequest,
+                    dependencyOnlyCandidateKeys)
+                .ToHashSet();
+            dependencyOnlyKeys.UnionWith(
+                supplementalRequest.PriceGradeOptions.Select(option =>
+                    new SyncEntityKey(
+                        NormalizeSyncEntityName(nameof(LocalPriceGradeOption)),
+                        option.Id)));
             await PushPreparedRequestAsync(
                 apiClient,
                 session,
                 supplementalRequest,
                 additionalRequest.BusinessDatabaseName,
+                dependencyOnlyKeys,
                 ct);
         }
+    }
+
+    private async Task ExcludeBlockedInventoryTransferScopesAsync(
+        SyncPushRequest request,
+        CancellationToken ct)
+    {
+        if (request.InventoryTransfers.Count == 0)
+            return;
+
+        var outgoingMutationIds = request.InventoryTransfers
+            .Select(transfer => (transfer.MutationId ?? string.Empty).Trim())
+            .Where(mutationId => !string.IsNullOrWhiteSpace(mutationId))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (outgoingMutationIds.Count == 0)
+            return;
+
+        var failedRows = await _db.SyncOutboxEntries
+            .AsNoTracking()
+            .Where(entry =>
+                entry.Status == "Failed" &&
+                outgoingMutationIds.Contains(entry.MutationId))
+            .Select(entry => new
+            {
+                entry.MutationId,
+                entry.EntityName,
+                entry.ErrorMessage
+            })
+            .ToListAsync(ct);
+        var blockedMutationIds = failedRows
+            .Where(entry =>
+                string.Equals(
+                    NormalizeSyncEntityName(entry.EntityName),
+                    "InventoryTransfer",
+                    StringComparison.OrdinalIgnoreCase) &&
+                ((entry.ErrorMessage ?? string.Empty).StartsWith(
+                     InventoryTransferStockAtomicityRollbackOutboxErrorPrefix,
+                     StringComparison.Ordinal) ||
+                 (entry.ErrorMessage ?? string.Empty).StartsWith(
+                     InventoryTransferTombstoneConflictPolicy
+                         .OutboxErrorPrefix,
+                     StringComparison.Ordinal)))
+            .Select(entry => entry.MutationId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (blockedMutationIds.Count == 0)
+            return;
+
+        var blockedTransfers = request.InventoryTransfers
+            .Where(transfer =>
+                blockedMutationIds.Contains(
+                    (transfer.MutationId ?? string.Empty).Trim()))
+            .ToList();
+        if (blockedTransfers.Count == 0)
+            return;
+
+        var blockedItemIds = blockedTransfers
+            .SelectMany(transfer => transfer.Lines ?? [])
+            .Where(line =>
+                line.ItemId.HasValue &&
+                line.ItemId.Value != Guid.Empty)
+            .Select(line => line.ItemId!.Value)
+            .ToHashSet();
+
+        request.InventoryTransfers = request.InventoryTransfers
+            .Except(blockedTransfers)
+            .ToList();
+        if (blockedItemIds.Count > 0)
+        {
+            request.Items = request.Items
+                .Where(item => !blockedItemIds.Contains(item.Id))
+                .ToList();
+            request.ItemPriceGrades = request.ItemPriceGrades
+                .Where(price => !blockedItemIds.Contains(price.ItemId))
+                .ToList();
+            request.ItemWarehouseStocks =
+                request.ItemWarehouseStocks
+                    .Where(stock =>
+                        !blockedItemIds.Contains(stock.ItemId))
+                    .ToList();
+            request.ItemWarehouseStockSnapshotMarkers =
+                request.ItemWarehouseStockSnapshotMarkers
+                    .Where(marker =>
+                        !blockedItemIds.Contains(marker.ItemId))
+                    .ToList();
+        }
+
+        AppLogger.Warn(
+            "SYNC",
+            $"Blocked inventory-transfer retry scope excluded: transfers={blockedTransfers.Count}, items={blockedItemIds.Count}.");
     }
 
     private static bool IsPushRequestEmpty(SyncPushRequest req)
@@ -1965,6 +3781,7 @@ public sealed class SyncService : IDisposable
            req.Items.Count +
            req.ItemPriceGrades.Count +
            req.ItemWarehouseStocks.Count +
+           req.ItemWarehouseStockSnapshotMarkers.Count +
            req.Transactions.Count +
            req.TransactionAttachments.Count +
            req.InventoryTransfers.Count +
@@ -1981,60 +3798,210 @@ public sealed class SyncService : IDisposable
         SessionState session,
         SyncPushRequest req,
         string? businessDatabaseNameOverride,
+        IReadOnlySet<SyncEntityKey>? dependencyOnlyKeys,
         CancellationToken ct)
     {
         if (IsPushRequestEmpty(req))
             return;
 
-        await RecordPreparedMutationsAsync(req, session, ct);
+        var pushOperationOwner =
+            CaptureSyncOperationOwnerBoundary(
+                session,
+                businessDatabaseNameOverride);
+        var dependencyOnlyRentalCompanyIdentities =
+            SelectDependencyOnlyRentalManagementCompanyIdentitiesForRequest(
+                req,
+                dependencyOnlyKeys);
+        var preparedMutationSnapshots =
+            BuildPreparedMutationSnapshots(req, dependencyOnlyKeys);
+        var dispatchPreparedMutationSnapshots =
+            BuildPreparedMutationSnapshots(req, excludedKeys: null);
+        if (_isolatedOperationOwner is null)
+        {
+            CaptureTrackedChangesBeforePreparedMutationBoundary(
+                preparedMutationSnapshots);
+        }
+
+        var trackedStateBeforePush = CaptureTrackedStateBeforePush();
+        try
+        {
+            await RecordPreparedMutationsAsync(
+                req,
+                session,
+                businessDatabaseNameOverride,
+                dependencyOnlyKeys,
+                ct);
+        }
+        finally
+        {
+            CaptureNonMutationTrackedChangesAtPushBoundary(
+                trackedStateBeforePush,
+                includeExistingChanges: false);
+        }
+
+        var currentPushReceipts = await CaptureCurrentPushMutationReceiptsAsync(
+            req,
+            dispatchPreparedMutationSnapshots,
+            session,
+            businessDatabaseNameOverride,
+            dependencyOnlyKeys,
+            ct);
+        var outgoingForDispatch = EnumerateOutgoingMutations(
+                req,
+                excludedKeys: null)
+            .ToList();
+        var dependencyOutgoingForDispatch = dependencyOnlyKeys is null
+            ? []
+            : outgoingForDispatch
+                .Where(entry => dependencyOnlyKeys.Contains(
+                    new SyncEntityKey(
+                        NormalizeSyncEntityName(entry.EntityName),
+                        entry.Entity.Id)))
+                .ToList();
+        var durableOutgoingForDispatch = outgoingForDispatch
+            .Except(dependencyOutgoingForDispatch)
+            .ToList();
+        if (outgoingForDispatch.Count == 0 ||
+            outgoingForDispatch.Any(entry =>
+                string.IsNullOrWhiteSpace(entry.Entity.MutationId)) ||
+            outgoingForDispatch
+                .Select(entry => entry.Entity.MutationId)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count() != outgoingForDispatch.Count ||
+            durableOutgoingForDispatch.Any(entry =>
+                !currentPushReceipts.TryGetValue(
+                    entry.Entity.MutationId,
+                    out var receipt) ||
+                !receipt.IsDurable) ||
+            dependencyOutgoingForDispatch.Any(entry =>
+                !currentPushReceipts.TryGetValue(
+                    entry.Entity.MutationId,
+                    out var receipt) ||
+                receipt.IsDurable) ||
+            currentPushReceipts.Count !=
+                durableOutgoingForDispatch.Count +
+                dependencyOutgoingForDispatch.Count)
+        {
+            throw new SyncPullBlockedException(
+                "동기화 전송 영수증이 현재 변경 전체와 정확히 일치하지 않아 서버 전송을 중단했습니다.");
+        }
 
         try
         {
-            var result = await apiClient.PushAsync(req, businessDatabaseNameOverride, ct);
+            SyncPushResult? result;
+            try
+            {
+                result = await apiClient.PushAsync(req, businessDatabaseNameOverride, ct);
+            }
+            finally
+            {
+                CaptureNonMutationTrackedChangesAtPushBoundary(
+                    trackedStateBeforePush,
+                    includeExistingChanges: false);
+            }
             if (result is null)
             {
                 var message = "서버 응답이 비어 있어 동기화를 완료하지 못했습니다.";
-                await TryMarkOutboxFailedAsync(req, message, ct);
+                await TryMarkOutboxFailedAsync(
+                    req,
+                    message,
+                    dependencyOnlyKeys,
+                    currentPushReceipts,
+                    ct);
                 throw new HttpRequestException(message);
             }
 
-            await MarkOutboxSentAsync(req, ct);
+            TestSeedSyncConflictDiagnostics.WriteAcceptedRevisionsIfEnabled(
+                result.AcceptedRevisions,
+                Console.Out);
+
+            await MarkOutboxSentAsync(
+                req,
+                dependencyOnlyKeys,
+                currentPushReceipts,
+                ct);
+            var inventoryTransferPurgeAcknowledgements =
+                SelectVerifiedInventoryTransferPurgeAcknowledgements(
+                    req,
+                    result,
+                    pushOperationOwner);
+            if (inventoryTransferPurgeAcknowledgements.Count > 0 &&
+                !IsSyncOperationOwnerCurrent(
+                    pushOperationOwner,
+                    session,
+                    businessDatabaseNameOverride))
+            {
+                throw new SyncPullBlockedException(
+                    "재고이동 영구삭제 응답 대기 중 로그인·업체 DB 범위가 변경되어 이전 범위의 응답을 폐기했습니다.");
+            }
+
+            var handledInventoryTransferPurgeKeys =
+                await ApplyInventoryTransferPurgeAcknowledgementsAtomicallyAsync(
+                    req,
+                    inventoryTransferPurgeAcknowledgements,
+                    preparedMutationSnapshots,
+                    dependencyOnlyKeys,
+                    pushOperationOwner,
+                    session,
+                    businessDatabaseNameOverride,
+                    currentPushReceipts,
+                    ct);
             var acceptedSideEffectsApplied = false;
             async Task ApplyAcceptedSideEffectsAsync()
             {
                 if (acceptedSideEffectsApplied)
                     return;
 
-                if (result.AcceptedRevisions.Count > 0)
-                    await ApplyAcceptedRevisionsAsync(result.AcceptedRevisions, ct);
+                var locallyTrackedAcceptedRevisions = result.AcceptedRevisions
+                    .Where(revision =>
+                    {
+                        var key = new SyncEntityKey(
+                            NormalizeSyncEntityName(revision.EntityName),
+                            revision.EntityId);
+                        return (dependencyOnlyKeys is null ||
+                                !dependencyOnlyKeys.Contains(key)) &&
+                               !handledInventoryTransferPurgeKeys.Contains(key);
+                    })
+                    .ToList();
+                var locallyModifiedAfterPush = new HashSet<SyncEntityKey>();
+                if (locallyTrackedAcceptedRevisions.Count > 0)
+                {
+                    locallyModifiedAfterPush = await ApplyAcceptedRevisionsAsync(
+                        locallyTrackedAcceptedRevisions,
+                        preparedMutationSnapshots,
+                        ct);
+                }
 
                 foreach (var assigned in result.AssignedInvoiceNumbers)
                 {
-                    await _db.Invoices.IgnoreQueryFilters()
-                        .Where(invoice => invoice.Id == assigned.Key)
-                        .ExecuteUpdateAsync(
-                            setters => setters
-                                .SetProperty(invoice => invoice.InvoiceNumber, assigned.Value)
-                                .SetProperty(invoice => invoice.IsDirty, false),
-                            ct);
-
-                    SynchronizeTrackedInvoiceAssignment(assigned.Key, assigned.Value);
+                    await ApplyAssignedInvoiceNumberAsync(
+                        assigned.Key,
+                        assigned.Value,
+                        isTaxInvoiceNumber: false,
+                        preparedMutationSnapshots,
+                        locallyModifiedAfterPush,
+                        ct);
                 }
 
                 foreach (var assigned in result.AssignedTaxInvoiceNumbers)
                 {
-                    await _db.Invoices.IgnoreQueryFilters()
-                        .Where(invoice => invoice.Id == assigned.Key)
-                        .ExecuteUpdateAsync(
-                            setters => setters
-                                .SetProperty(invoice => invoice.TaxInvoiceNumber, assigned.Value)
-                                .SetProperty(invoice => invoice.IsDirty, false),
-                            ct);
-
-                    SynchronizeTrackedTaxInvoiceAssignment(assigned.Key, assigned.Value);
+                    await ApplyAssignedInvoiceNumberAsync(
+                        assigned.Key,
+                        assigned.Value,
+                        isTaxInvoiceNumber: true,
+                        preparedMutationSnapshots,
+                        locallyModifiedAfterPush,
+                        ct);
                 }
 
-                await MarkOutboxAcknowledgedAsync(req, result.AcceptedRevisions, ct);
+                await MarkOutboxAcknowledgedCoreAsync(
+                    req,
+                    locallyTrackedAcceptedRevisions,
+                    dependencyOnlyKeys,
+                    session,
+                    businessDatabaseNameOverride,
+                    currentPushReceipts,
+                    ct);
                 acceptedSideEffectsApplied = true;
             }
 
@@ -2049,21 +4016,118 @@ public sealed class SyncService : IDisposable
                 }
             }
 
+            if (await TryHandleInventoryTransferStockAtomicityRollbackAsync(
+                    req,
+                    result,
+                    ct))
+            {
+                return;
+            }
+
+            var itemWarehouseStockAcknowledgementIssue =
+                BuildItemWarehouseStockAcknowledgementIssue(
+                    req.ItemWarehouseStocks,
+                    result);
+            if (!string.IsNullOrWhiteSpace(
+                    itemWarehouseStockAcknowledgementIssue))
+            {
+                var itemWarehouseStocksForRetry =
+                    SelectItemWarehouseStocksForAcknowledgementRetry(
+                        req.ItemWarehouseStocks,
+                        result);
+                await
+                    ApplyPartialWarehouseStockAcknowledgementAtomicallyAsync(
+                        ApplyAcceptedSideEffectsAsync,
+                        itemWarehouseStocksForRetry,
+                        ct);
+                AppLogger.Warn(
+                    "SYNC",
+                    itemWarehouseStockAcknowledgementIssue);
+                await AppendConflictSummaryAsync(
+                    itemWarehouseStockAcknowledgementIssue);
+                await TryRecordDiagnosticAsync(
+                    "push",
+                    itemWarehouseStockAcknowledgementIssue,
+                    severity: "Error");
+                throw new SyncPullBlockedException(
+                    itemWarehouseStockAcknowledgementIssue);
+            }
+
             if (result.ConflictCount > 0)
             {
-                var serverNewerConflicts = result.Conflicts
+                TestSeedSyncConflictDiagnostics.WriteIfEnabled(
+                    result.Conflicts,
+                    Console.Out);
+                var cleanCanonicalRentalCompanyFallbacks =
+                    await SelectCleanCanonicalRentalCompanyFallbacksAsync(
+                        dependencyOnlyRentalCompanyIdentities,
+                        ct);
+                var dependencyOnlyConflicts = result.Conflicts
+                    .Where(conflict => IsDependencyOnlyConflict(
+                        conflict,
+                        dependencyOnlyKeys,
+                        cleanCanonicalRentalCompanyFallbacks))
+                    .ToList();
+                if (dependencyOnlyConflicts.Count > 0)
+                {
+                    await RebasePreservedConcurrentConflictsAsync(
+                        dependencyOnlyConflicts,
+                        ct);
+                }
+
+                var locallyActionableConflicts = result.Conflicts
+                    .Where(conflict => !IsDependencyOnlyConflict(
+                        conflict,
+                        dependencyOnlyKeys,
+                        cleanCanonicalRentalCompanyFallbacks))
+                    .ToList();
+                var preservedConcurrentConflicts = new List<ConflictLogDto>();
+                var automaticConflicts = new List<ConflictLogDto>();
+                foreach (var conflict in locallyActionableConflicts)
+                {
+                    if (await ShouldPreserveConcurrentConflictAsync(
+                            conflict,
+                            preparedMutationSnapshots,
+                            ct))
+                    {
+                        preservedConcurrentConflicts.Add(conflict);
+                    }
+                    else
+                    {
+                        automaticConflicts.Add(conflict);
+                    }
+                }
+                if (preservedConcurrentConflicts.Count > 0)
+                {
+                    await RebasePreservedConcurrentConflictsAsync(
+                        preservedConcurrentConflicts,
+                        ct);
+                }
+                var serverNewerConflicts = automaticConflicts
                     .Where(conflict => string.Equals(conflict.Reason, "Server version is newer.", StringComparison.OrdinalIgnoreCase))
                     .ToList();
 
                 if (serverNewerConflicts.Count > 0)
                 {
-                    await ResolveServerNewerConflictsAsync(serverNewerConflicts, ct);
-                    AppLogger.Warn("SYNC", $"서버 최신 버전 우선으로 충돌 {serverNewerConflicts.Count}건을 정리했습니다.");
-                    await AppendConflictSummaryAsync($"서버 최신값 우선으로 동기화 충돌 {serverNewerConflicts.Count}건을 자동 정리했습니다.");
+                    var serverNewerResolution =
+                        await ResolvePreparedServerNewerConflictsAsync(
+                            serverNewerConflicts,
+                            preparedMutationSnapshots,
+                            req,
+                            session,
+                            dependencyOnlyKeys,
+                            ct);
+                    preservedConcurrentConflicts.AddRange(
+                        serverNewerResolution.PreservedConflicts);
+                    if (serverNewerResolution.ResolvedConflicts.Count > 0)
+                    {
+                        AppLogger.Warn("SYNC", $"서버 최신 버전 우선으로 충돌 {serverNewerResolution.ResolvedConflicts.Count}건을 정리했습니다.");
+                        await AppendConflictSummaryAsync($"서버 최신값 우선으로 동기화 충돌 {serverNewerResolution.ResolvedConflicts.Count}건을 자동 정리했습니다.");
+                    }
                 }
 
                 var preparedCompanyProfileRevisionRetryConflicts = await PrepareCompanyProfileRevisionRetriesAsync(
-                    result.Conflicts
+                    automaticConflicts
                         .Except(serverNewerConflicts)
                         .ToList(),
                     req.DeviceId,
@@ -2077,7 +4141,7 @@ public sealed class SyncService : IDisposable
                 }
 
                 var preparedCustomerRevisionRetryConflicts = await PrepareCustomerRevisionRetriesAsync(
-                    result.Conflicts
+                    automaticConflicts
                         .Except(serverNewerConflicts)
                         .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .ToList(),
@@ -2092,7 +4156,7 @@ public sealed class SyncService : IDisposable
                 }
 
                 var preparedInvoiceRevisionRetryConflicts = await PrepareInvoiceRevisionRetriesAsync(
-                    result.Conflicts
+                    automaticConflicts
                         .Except(serverNewerConflicts)
                         .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .Except(preparedCustomerRevisionRetryConflicts)
@@ -2108,7 +4172,7 @@ public sealed class SyncService : IDisposable
                 }
 
                 var preparedPaymentRevisionRetryConflicts = await PreparePaymentRevisionRetriesAsync(
-                    result.Conflicts
+                    automaticConflicts
                         .Except(serverNewerConflicts)
                         .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .Except(preparedCustomerRevisionRetryConflicts)
@@ -2125,7 +4189,7 @@ public sealed class SyncService : IDisposable
                 }
 
                 var preparedTransactionRevisionRetryConflicts = await PrepareTransactionRevisionRetriesAsync(
-                    result.Conflicts
+                    automaticConflicts
                         .Except(serverNewerConflicts)
                         .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .Except(preparedCustomerRevisionRetryConflicts)
@@ -2143,7 +4207,7 @@ public sealed class SyncService : IDisposable
                 }
 
                 var preparedTransactionAttachmentRevisionRetryConflicts = await PrepareTransactionAttachmentRevisionRetriesAsync(
-                    result.Conflicts
+                    automaticConflicts
                         .Except(serverNewerConflicts)
                         .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .Except(preparedCustomerRevisionRetryConflicts)
@@ -2162,7 +4226,7 @@ public sealed class SyncService : IDisposable
                 }
 
                 var preparedInventoryTransferRevisionRetryConflicts = await PrepareInventoryTransferRevisionRetriesAsync(
-                    result.Conflicts
+                    automaticConflicts
                         .Except(serverNewerConflicts)
                         .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .Except(preparedCustomerRevisionRetryConflicts)
@@ -2182,7 +4246,7 @@ public sealed class SyncService : IDisposable
                 }
 
                 var repairedItemRevisionConflicts = await ResolveCanonicalItemRevisionConflictsAsync(
-                    result.Conflicts
+                    automaticConflicts
                         .Except(serverNewerConflicts)
                         .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .Except(preparedCustomerRevisionRetryConflicts)
@@ -2201,7 +4265,7 @@ public sealed class SyncService : IDisposable
                 }
 
                 var preparedItemRevisionRetryConflicts = await PrepareItemRevisionRetriesAsync(
-                    result.Conflicts
+                    automaticConflicts
                         .Except(serverNewerConflicts)
                         .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .Except(preparedCustomerRevisionRetryConflicts)
@@ -2223,7 +4287,7 @@ public sealed class SyncService : IDisposable
                 }
 
                 var preparedRentalProfileRevisionRetryConflicts = await PrepareRentalBillingProfileRevisionRetriesAsync(
-                    result.Conflicts
+                    automaticConflicts
                         .Except(serverNewerConflicts)
                         .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .Except(preparedCustomerRevisionRetryConflicts)
@@ -2245,7 +4309,7 @@ public sealed class SyncService : IDisposable
                     await AppendConflictSummaryAsync($"Rental profile revision retry prepared: {preparedRentalProfileRevisionRetryConflicts.Count} conflict(s).");
                 }
                 var rentalAssetConflictRepair = await RepairRentalAssetRevisionConflictsAsync(
-                    result.Conflicts
+                    automaticConflicts
                         .Except(serverNewerConflicts)
                         .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .Except(preparedCustomerRevisionRetryConflicts)
@@ -2274,8 +4338,8 @@ public sealed class SyncService : IDisposable
                     await AppendConflictSummaryAsync($"렌탈 자산 리비전 충돌 {rentalAssetConflictRepair.PreparedRetryCount}건을 서버 최신 rev 기준으로 재시도 준비했습니다.");
                 }
 
-                var resolvedItemWarehouseStockRevisionConflicts = await ResolveItemWarehouseStockRevisionConflictsAsync(
-                    result.Conflicts
+                var itemWarehouseStockConflictResolution = await ResolveItemWarehouseStockRevisionConflictsAsync(
+                    automaticConflicts
                         .Except(serverNewerConflicts)
                         .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .Except(preparedCustomerRevisionRetryConflicts)
@@ -2292,14 +4356,14 @@ public sealed class SyncService : IDisposable
                         .ToList(),
                     ct);
 
-                if (resolvedItemWarehouseStockRevisionConflicts.Count > 0)
+                if (itemWarehouseStockConflictResolution.ResolvedConflicts.Count > 0)
                 {
-                    AppLogger.Warn("SYNC", $"Item warehouse stock revision conflicts resolved/rebased: {resolvedItemWarehouseStockRevisionConflicts.Count} conflict(s).");
-                    await AppendConflictSummaryAsync($"재고 스냅샷 리비전 충돌 {resolvedItemWarehouseStockRevisionConflicts.Count}건을 서버 최신 rev 기준으로 자동 정리했습니다.");
+                    AppLogger.Warn("SYNC", $"Item warehouse stock revision conflicts resolved/rebased: {itemWarehouseStockConflictResolution.ResolvedConflicts.Count} conflict(s).");
+                    await AppendConflictSummaryAsync($"재고 스냅샷 리비전 충돌 {itemWarehouseStockConflictResolution.ResolvedConflicts.Count}건을 서버 최신 rev 기준으로 자동 정리했습니다.");
                 }
 
                 var preparedGenericRevisionRetryConflicts = await PrepareGenericRevisionRetriesAsync(
-                    result.Conflicts
+                    automaticConflicts
                         .Except(serverNewerConflicts)
                         .Except(preparedCompanyProfileRevisionRetryConflicts)
                         .Except(preparedCustomerRevisionRetryConflicts)
@@ -2313,7 +4377,7 @@ public sealed class SyncService : IDisposable
                         .Except(preparedRentalProfileRevisionRetryConflicts)
                         .Except(rentalAssetConflictRepair.ResolvedConflicts)
                         .Except(rentalAssetConflictRepair.PreparedRetryConflicts)
-                        .Except(resolvedItemWarehouseStockRevisionConflicts)
+                        .Except(itemWarehouseStockConflictResolution.ResolvedConflicts)
                         .ToList(),
                     req.DeviceId,
                     session,
@@ -2325,7 +4389,7 @@ public sealed class SyncService : IDisposable
                     await AppendConflictSummaryAsync($"일반 데이터 리비전 충돌 {preparedGenericRevisionRetryConflicts.Count}건을 서버 최신 rev 기준으로 재시도 준비했습니다.");
                 }
 
-                var equivalentRevisionConflicts = result.Conflicts
+                var equivalentRevisionConflicts = automaticConflicts
                     .Except(serverNewerConflicts)
                     .Except(preparedCompanyProfileRevisionRetryConflicts)
                     .Except(preparedCustomerRevisionRetryConflicts)
@@ -2339,7 +4403,7 @@ public sealed class SyncService : IDisposable
                     .Except(preparedRentalProfileRevisionRetryConflicts)
                     .Except(rentalAssetConflictRepair.ResolvedConflicts)
                     .Except(rentalAssetConflictRepair.PreparedRetryConflicts)
-                    .Except(resolvedItemWarehouseStockRevisionConflicts)
+                    .Except(itemWarehouseStockConflictResolution.ResolvedConflicts)
                     .Except(preparedGenericRevisionRetryConflicts)
                     .Where(IsEquivalentRevisionConflict)
                     .ToList();
@@ -2351,7 +4415,7 @@ public sealed class SyncService : IDisposable
                     await AppendConflictSummaryAsync($"재시도 중 서버에 이미 반영된 동일 내용 충돌 {equivalentRevisionConflicts.Count}건을 자동 정리했습니다.");
                 }
 
-                var remainingConflicts = result.Conflicts
+                var remainingConflicts = automaticConflicts
                     .Except(serverNewerConflicts)
                     .Except(preparedCompanyProfileRevisionRetryConflicts)
                     .Except(preparedCustomerRevisionRetryConflicts)
@@ -2365,7 +4429,7 @@ public sealed class SyncService : IDisposable
                     .Except(preparedRentalProfileRevisionRetryConflicts)
                     .Except(rentalAssetConflictRepair.ResolvedConflicts)
                     .Except(rentalAssetConflictRepair.PreparedRetryConflicts)
-                    .Except(resolvedItemWarehouseStockRevisionConflicts)
+                    .Except(itemWarehouseStockConflictResolution.ResolvedConflicts)
                     .Except(preparedGenericRevisionRetryConflicts)
                     .Except(equivalentRevisionConflicts)
                     .ToList();
@@ -2396,20 +4460,99 @@ public sealed class SyncService : IDisposable
                     await AppendConflictSummaryAsync(detail);
                     await TryRecordDiagnosticAsync("push", detail, severity: "Error");
                     await ApplyAcceptedSideEffectsAsync();
+                    if (unresolvedConflicts.Any(conflict =>
+                            string.Equals(
+                                conflict.EntityName,
+                                "ItemWarehouseStock",
+                                StringComparison.OrdinalIgnoreCase)))
+                    {
+                        throw new SyncPullBlockedException(detail);
+                    }
+
                     throw new InvalidOperationException(detail);
+                }
+
+                if (preservedConcurrentConflicts.Count > 0)
+                {
+                    var first = preservedConcurrentConflicts[0];
+                    var detail =
+                        $"서버 응답 대기 중 다시 편집된 항목의 충돌 {preservedConcurrentConflicts.Count}건을 자동 덮어쓰기하지 않았습니다. " +
+                        $"{first.EntityName} {first.EntityId} - {first.Reason}";
+                    AppLogger.Warn("SYNC", detail);
+                    await AppendConflictSummaryAsync(detail);
+                    await TryRecordDiagnosticAsync("push", detail, severity: "Warning");
+                    await ApplyAcceptedSideEffectsAsync();
+                    throw new InvalidOperationException(detail);
+                }
+
+                if (itemWarehouseStockConflictResolution.RetryRequiredConflicts.Count > 0)
+                {
+                    var retryCount =
+                        itemWarehouseStockConflictResolution.RetryRequiredConflicts.Count;
+                    var detail =
+                        $"로컬 재고 수량을 보존한 리비전 재기준 {retryCount}건을 pull 전에 다시 업로드합니다.";
+                    AppLogger.Warn("SYNC", detail);
+                    await AppendConflictSummaryAsync(detail);
+                    await ApplyAcceptedSideEffectsAsync();
+                    try
+                    {
+                        await ReplayItemWarehouseStockSnapshotsBeforePullAsync(
+                            apiClient,
+                            req,
+                            session,
+                            businessDatabaseNameOverride,
+                            itemWarehouseStockConflictResolution
+                                .RetryRequiredConflicts,
+                            ct);
+                    }
+                    catch (DesktopClientUpgradeRequiredException)
+                    {
+                        throw;
+                    }
+                    catch (OperationCanceledException)
+                        when (ct.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (SyncPullBlockedException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new SyncPullBlockedException(
+                            "재고 snapshot 제한 재업로드를 안전하게 완료하지 못해 정상 pull을 중단했습니다.",
+                            ex);
+                    }
                 }
             }
 
             await ApplyAcceptedSideEffectsAsync();
         }
+        catch (DesktopClientUpgradeRequiredException)
+        {
+            throw;
+        }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
-            await TryMarkOutboxFailedAsync(req, ex.InnerException?.Message ?? ex.Message, ct);
+            await TryMarkOutboxFailedAsync(
+                req,
+                ex.InnerException?.Message ?? ex.Message,
+                dependencyOnlyKeys,
+                currentPushReceipts,
+                ct);
             throw;
         }
     }
 
     private static Dictionary<string, RentalTenantSyncPayload> BuildAdministrativeRentalTenantPayloads(
+        IReadOnlyCollection<CustomerDto> customers,
+        IReadOnlyCollection<ItemDto> items,
+        IReadOnlyCollection<ItemPriceGradeDto> itemPriceGrades,
+        IReadOnlyCollection<ItemWarehouseStockDto> itemWarehouseStocks,
+        IReadOnlyDictionary<Guid, string> itemBusinessDatabaseNames,
+        IReadOnlyDictionary<Guid, PriceGradeOptionDto> priceGradeOptionsById,
+        IReadOnlyDictionary<Guid, CustomerDto> referencedRentalCustomersById,
         IReadOnlyCollection<RentalManagementCompanyDto> managementCompanies,
         IReadOnlyCollection<RentalBillingProfileDto> billingProfiles,
         IReadOnlyCollection<RentalAssetDto> assets,
@@ -2417,6 +4560,44 @@ public sealed class SyncService : IDisposable
         IReadOnlyCollection<RentalBillingLogDto> billingLogs)
     {
         var payloads = new Dictionary<string, RentalTenantSyncPayload>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var dto in customers)
+        {
+            var payload = GetOrCreateRentalTenantPayload(
+                payloads,
+                ResolveRentalBusinessDatabaseName(
+                    dto.TenantCode,
+                    dto.OfficeCode,
+                    dto.ResponsibleOfficeCode));
+            if (payload.Customers.All(candidate => candidate.Id != dto.Id))
+                payload.Customers.Add(dto);
+        }
+
+        foreach (var dto in items)
+        {
+            if (itemBusinessDatabaseNames.TryGetValue(dto.Id, out var businessDatabaseName))
+                GetOrCreateRentalTenantPayload(payloads, businessDatabaseName).Items.Add(dto);
+        }
+
+        foreach (var dto in itemPriceGrades)
+        {
+            if (itemBusinessDatabaseNames.TryGetValue(dto.ItemId, out var businessDatabaseName))
+            {
+                var payload = GetOrCreateRentalTenantPayload(payloads, businessDatabaseName);
+                payload.ItemPriceGrades.Add(dto);
+                if (priceGradeOptionsById.TryGetValue(dto.PriceGradeOptionId, out var option) &&
+                    payload.PriceGradeOptions.All(candidate => candidate.Id != option.Id))
+                {
+                    payload.PriceGradeOptions.Add(ClonePriceGradeOption(option));
+                }
+            }
+        }
+
+        foreach (var dto in itemWarehouseStocks)
+        {
+            if (itemBusinessDatabaseNames.TryGetValue(dto.ItemId, out var businessDatabaseName))
+                GetOrCreateRentalTenantPayload(payloads, businessDatabaseName).ItemWarehouseStocks.Add(dto);
+        }
 
         foreach (var dto in managementCompanies)
         {
@@ -2428,18 +4609,21 @@ public sealed class SyncService : IDisposable
         {
             var payload = GetOrCreateRentalTenantPayload(payloads, ResolveRentalBusinessDatabaseName(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode));
             payload.BillingProfiles.Add(dto);
+            AddReferencedRentalCustomer(payload, dto.CustomerId, referencedRentalCustomersById);
         }
 
         foreach (var dto in assets)
         {
             var payload = GetOrCreateRentalTenantPayload(payloads, ResolveRentalBusinessDatabaseName(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode));
             payload.Assets.Add(dto);
+            AddReferencedRentalCustomer(payload, dto.CustomerId, referencedRentalCustomersById);
         }
 
         foreach (var dto in assignmentHistories)
         {
             var payload = GetOrCreateRentalTenantPayload(payloads, ResolveRentalBusinessDatabaseName(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode));
             payload.AssignmentHistories.Add(dto);
+            AddReferencedRentalCustomer(payload, dto.CustomerId, referencedRentalCustomersById);
         }
 
         foreach (var dto in billingLogs)
@@ -2449,6 +4633,22 @@ public sealed class SyncService : IDisposable
         }
 
         return payloads;
+    }
+
+    private static void AddReferencedRentalCustomer(
+        RentalTenantSyncPayload payload,
+        Guid? customerId,
+        IReadOnlyDictionary<Guid, CustomerDto> referencedRentalCustomersById)
+    {
+        if (!customerId.HasValue ||
+            customerId.Value == Guid.Empty ||
+            !referencedRentalCustomersById.TryGetValue(customerId.Value, out var customer) ||
+            payload.Customers.Any(candidate => candidate.Id == customer.Id))
+        {
+            return;
+        }
+
+        payload.Customers.Add(customer);
     }
 
     private static RentalTenantSyncPayload GetOrCreateRentalTenantPayload(
@@ -2464,13 +4664,203 @@ public sealed class SyncService : IDisposable
             [],
             [],
             [],
+            [],
+            [],
+            [],
+            [],
+            [],
             []);
         payloads[businessDatabaseName] = payload;
         return payload;
     }
 
+    private async Task<Dictionary<Guid, PriceGradeOptionDto>> BuildPriceGradeOptionLookupAsync(
+        IReadOnlyCollection<PriceGradeOptionDto> dirtyOptions,
+        IReadOnlyCollection<ItemPriceGradeDto> itemPriceGrades,
+        CancellationToken ct)
+    {
+        var lookup = dirtyOptions
+            .Where(option => option.Id != Guid.Empty)
+            .GroupBy(option => option.Id)
+            .ToDictionary(group => group.Key, group => group.Last());
+        var missingOptionIds = itemPriceGrades
+            .Select(priceGrade => priceGrade.PriceGradeOptionId)
+            .Where(optionId => optionId != Guid.Empty && !lookup.ContainsKey(optionId))
+            .Distinct()
+            .ToList();
+        if (missingOptionIds.Count == 0)
+            return lookup;
+
+        var referencedOptions = await _db.PriceGradeOptions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(option =>
+                missingOptionIds.Contains(option.Id) &&
+                !option.IsDirty &&
+                !option.IsDeleted)
+            .ToListAsync(ct);
+        foreach (var option in referencedOptions)
+            lookup[option.Id] = LocalMappings.ToDto(option);
+
+        var unresolvedCount = missingOptionIds.Count - referencedOptions.Count;
+        if (unresolvedCount > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"관리자 품목 가격등급 동기화에서 참조 가격등급 옵션을 찾지 못했습니다. 서버 FK 검증을 위해 누락 참조는 보강하지 않습니다: count={unresolvedCount:N0}");
+        }
+
+        return lookup;
+    }
+
+    private static PriceGradeOptionDto ClonePriceGradeOption(PriceGradeOptionDto source)
+        => new()
+        {
+            Id = source.Id,
+            Name = source.Name,
+            PriceSource = source.PriceSource,
+            SortOrder = source.SortOrder,
+            IsSystemDefault = source.IsSystemDefault,
+            IsActive = source.IsActive,
+            IsDeleted = source.IsDeleted,
+            CreatedAtUtc = source.CreatedAtUtc,
+            UpdatedAtUtc = source.UpdatedAtUtc,
+            Revision = source.Revision,
+            ExpectedRevision = source.ExpectedRevision,
+            MutationId = source.MutationId,
+            MutationCreatedAtUtc = source.MutationCreatedAtUtc
+        };
+
+    private async Task<Dictionary<Guid, string>> BuildItemBusinessDatabaseNameLookupAsync(
+        IReadOnlyCollection<ItemDto> items,
+        IReadOnlyCollection<ItemPriceGradeDto> itemPriceGrades,
+        IReadOnlyCollection<ItemWarehouseStockDto> itemWarehouseStocks,
+        CancellationToken ct)
+    {
+        var lookup = items
+            .Where(item => item.Id != Guid.Empty)
+            .GroupBy(item => item.Id)
+            .ToDictionary(
+                group => group.Key,
+                group =>
+                {
+                    var item = group.Last();
+                    return ResolveRentalBusinessDatabaseName(
+                        item.TenantCode,
+                        item.OfficeCode,
+                        item.OfficeCode);
+                });
+
+        var missingItemIds = itemPriceGrades
+            .Select(priceGrade => priceGrade.ItemId)
+            .Concat(itemWarehouseStocks.Select(stock => stock.ItemId))
+            .Where(itemId => itemId != Guid.Empty && !lookup.ContainsKey(itemId))
+            .Distinct()
+            .ToList();
+        if (missingItemIds.Count == 0)
+            return lookup;
+
+        var parentItems = await _db.Items.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => missingItemIds.Contains(item.Id))
+            .Select(item => new
+            {
+                item.Id,
+                item.TenantCode,
+                item.OfficeCode
+            })
+            .ToListAsync(ct);
+        foreach (var item in parentItems)
+        {
+            lookup[item.Id] = ResolveRentalBusinessDatabaseName(
+                item.TenantCode,
+                item.OfficeCode,
+                item.OfficeCode);
+        }
+
+        var unresolvedCount = missingItemIds.Count - parentItems.Count;
+        if (unresolvedCount > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"관리자 품목 종속 동기화에서 부모 품목을 찾지 못해 잘못된 업체 DB 전송을 차단했습니다: count={unresolvedCount:N0}");
+        }
+
+        return lookup;
+    }
+
     private static string ResolveRentalManagementCompanyBusinessDatabaseName(RentalManagementCompanyDto dto)
         => ResolveRentalBusinessDatabaseName(dto.TenantCode, dto.Code, dto.Code);
+
+    internal static List<RentalManagementCompanyDto>
+        BuildRentalManagementCompanyPushPayload(
+            IReadOnlyCollection<LocalRentalManagementCompany> dirtyCompanies,
+            IReadOnlyCollection<LocalRentalManagementCompany> referencedCompanies)
+    {
+        var candidates = dirtyCompanies
+            .Select(company => (Company: company, IsDirty: true))
+            .Concat(referencedCompanies.Select(company =>
+                (Company: company, IsDirty: false)))
+            .GroupBy(candidate => candidate.Company.Id)
+            .Select(group => group
+                .OrderByDescending(candidate => candidate.IsDirty)
+                .ThenByDescending(candidate => candidate.Company.Revision)
+                .ThenByDescending(candidate => candidate.Company.UpdatedAtUtc)
+                .First())
+            .Select(candidate => (
+                candidate.Company,
+                candidate.IsDirty,
+                Dto: LocalMappings.ToDto(candidate.Company)))
+            .ToList();
+
+        var payload = new List<RentalManagementCompanyDto>();
+        foreach (var naturalKeyGroup in candidates.GroupBy(candidate =>
+                     BuildRentalManagementCompanyPushNaturalKey(
+                         candidate.Dto)))
+        {
+            var dirtyRows = naturalKeyGroup
+                .Where(candidate => candidate.IsDirty)
+                .ToList();
+            if (dirtyRows.Count > 1)
+            {
+                var ids = string.Join(
+                    ", ",
+                    dirtyRows
+                        .Select(candidate => candidate.Dto.Id)
+                        .OrderBy(id => id)
+                        .Select(id => id.ToString("D")));
+                throw new InvalidOperationException(
+                    "Multiple dirty rental management companies resolve to " +
+                    $"the same sync key '{naturalKeyGroup.Key}'. " +
+                    "The push was blocked before mutation stamping or server " +
+                    $"submission. ids={ids}");
+            }
+
+            var selected = dirtyRows.Count == 1
+                ? dirtyRows[0]
+                : naturalKeyGroup
+                    .OrderByDescending(candidate =>
+                        candidate.Dto.Revision)
+                    .ThenByDescending(candidate =>
+                        candidate.Dto.UpdatedAtUtc)
+                    .ThenBy(candidate => candidate.Dto.Id)
+                    .First();
+            payload.Add(selected.Dto);
+        }
+
+        return payload;
+    }
+
+    private static string BuildRentalManagementCompanyPushNaturalKey(
+        RentalManagementCompanyDto dto)
+    {
+        var businessDatabaseName =
+            ResolveRentalManagementCompanyBusinessDatabaseName(dto);
+        var canonicalCode =
+            OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
+                dto.Code,
+                dto.Code);
+        return $"{businessDatabaseName}|{canonicalCode}";
+    }
 
     private static string ResolveRentalBusinessDatabaseName(string? tenantCode, string? officeCode, string? fallbackOfficeCode)
         => TenantScopeCatalog.GetDatabaseName(
@@ -2480,20 +4870,30 @@ public sealed class SyncService : IDisposable
                 fallbackOfficeCode: fallbackOfficeCode));
 
     private async Task<List<LocalRentalBillingProfile>> LoadReferencedRentalBillingProfilesForPushAsync(
-        IReadOnlyCollection<LocalRentalAsset> dirtyRentalAssets,
+        IReadOnlyCollection<LocalRentalAsset> rentalAssets,
+        IReadOnlyCollection<LocalRentalAssetAssignmentHistory> dirtyRentalAssetAssignmentHistories,
+        IReadOnlyCollection<LocalRentalBillingLog> dirtyRentalBillingLogs,
         IReadOnlyCollection<LocalRentalBillingProfile> dirtyRentalBillingProfiles,
         CancellationToken ct)
     {
-        if (dirtyRentalAssets.Count == 0)
+        if (rentalAssets.Count == 0 &&
+            dirtyRentalAssetAssignmentHistories.Count == 0 &&
+            dirtyRentalBillingLogs.Count == 0)
             return [];
 
         var existingProfileIds = dirtyRentalBillingProfiles
             .Select(profile => profile.Id)
             .ToHashSet();
 
-        var referencedProfileIds = dirtyRentalAssets
+        var referencedProfileIds = rentalAssets
             .Where(asset => !asset.IsDeleted && asset.BillingProfileId.HasValue && asset.BillingProfileId.Value != Guid.Empty)
             .Select(asset => asset.BillingProfileId!.Value)
+            .Concat(dirtyRentalAssetAssignmentHistories
+                .Where(history => history.BillingProfileId.HasValue && history.BillingProfileId.Value != Guid.Empty)
+                .Select(history => history.BillingProfileId!.Value))
+            .Concat(dirtyRentalBillingLogs
+                .Where(log => log.BillingProfileId != Guid.Empty)
+                .Select(log => log.BillingProfileId))
             .Distinct()
             .Where(profileId => !existingProfileIds.Contains(profileId))
             .ToList();
@@ -2504,7 +4904,10 @@ public sealed class SyncService : IDisposable
         var referencedProfiles = await _db.RentalBillingProfiles
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(profile => referencedProfileIds.Contains(profile.Id) && !profile.IsDeleted)
+            .Where(profile =>
+                referencedProfileIds.Contains(profile.Id) &&
+                !profile.IsDirty &&
+                !profile.IsDeleted)
             .ToListAsync(ct);
 
         var missingProfileIds = referencedProfileIds
@@ -2522,8 +4925,144 @@ public sealed class SyncService : IDisposable
         return referencedProfiles;
     }
 
-    private async Task<List<LocalRentalManagementCompany>> LoadReferencedRentalManagementCompaniesForPushAsync(
+    private async Task<List<LocalCustomer>> LoadReferencedRentalCustomersForPushAsync(
+        IReadOnlyCollection<LocalRentalAsset> rentalAssets,
+        IReadOnlyCollection<LocalRentalBillingProfile> rentalBillingProfiles,
+        IReadOnlyCollection<LocalRentalAssetAssignmentHistory> dirtyRentalAssetAssignmentHistories,
+        IReadOnlyCollection<LocalCustomer> dirtyCustomers,
+        CancellationToken ct)
+    {
+        var existingCustomerIds = dirtyCustomers
+            .Select(customer => customer.Id)
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+        var referencedCustomerIds = rentalAssets
+            .Select(asset => asset.CustomerId)
+            .Concat(rentalBillingProfiles.Select(profile => profile.CustomerId))
+            .Concat(dirtyRentalAssetAssignmentHistories.Select(history => history.CustomerId))
+            .Where(customerId =>
+                customerId.HasValue &&
+                customerId.Value != Guid.Empty &&
+                !existingCustomerIds.Contains(customerId.Value))
+            .Select(customerId => customerId!.Value)
+            .Distinct()
+            .ToList();
+
+        if (referencedCustomerIds.Count == 0)
+            return [];
+
+        var referencedCustomers = await _db.Customers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(customer =>
+                referencedCustomerIds.Contains(customer.Id) &&
+                !customer.IsDirty &&
+                !customer.IsDeleted)
+            .ToListAsync(ct);
+        var unavailableCustomerIds = referencedCustomerIds
+            .Except(referencedCustomers.Select(customer => customer.Id))
+            .ToList();
+        if (unavailableCustomerIds.Count > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"동기화 전 렌탈 거래처 참조 보강 제외: 로컬 참조가 없거나 별도 dirty 변경인 거래처 {unavailableCustomerIds.Count}건은 참조 전용 payload로 보내지 않습니다. " +
+                $"details={string.Join(", ", unavailableCustomerIds.Take(10))}");
+        }
+
+        return referencedCustomers;
+    }
+
+    private async Task<List<LocalItem>> LoadReferencedRentalItemsForPushAsync(
+        IReadOnlyCollection<LocalRentalAsset> rentalAssets,
+        IReadOnlyCollection<LocalItem> dirtyItems,
+        CancellationToken ct)
+    {
+        var existingItemIds = dirtyItems
+            .Select(item => item.Id)
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+        var referencedItemIds = rentalAssets
+            .Select(asset => asset.ItemId)
+            .Where(itemId =>
+                itemId.HasValue &&
+                itemId.Value != Guid.Empty &&
+                !existingItemIds.Contains(itemId.Value))
+            .Select(itemId => itemId!.Value)
+            .Distinct()
+            .ToList();
+
+        if (referencedItemIds.Count == 0)
+            return [];
+
+        var referencedItems = await _db.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item =>
+                referencedItemIds.Contains(item.Id) &&
+                !item.IsDirty &&
+                !item.IsDeleted)
+            .ToListAsync(ct);
+        var unavailableItemIds = referencedItemIds
+            .Except(referencedItems.Select(item => item.Id))
+            .ToList();
+        if (unavailableItemIds.Count > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"동기화 전 렌탈 품목 참조 보강 제외: 로컬 참조가 없거나 별도 dirty 변경인 품목 {unavailableItemIds.Count}건은 참조 전용 payload로 보내지 않습니다. " +
+                $"details={string.Join(", ", unavailableItemIds.Take(10))}");
+        }
+
+        return referencedItems;
+    }
+
+    private async Task<List<LocalRentalAsset>> LoadReferencedRentalAssetsForPushAsync(
+        IReadOnlyCollection<LocalRentalAssetAssignmentHistory> dirtyRentalAssetAssignmentHistories,
         IReadOnlyCollection<LocalRentalAsset> dirtyRentalAssets,
+        CancellationToken ct)
+    {
+        if (dirtyRentalAssetAssignmentHistories.Count == 0)
+            return [];
+
+        var existingAssetIds = dirtyRentalAssets
+            .Select(asset => asset.Id)
+            .Where(id => id != Guid.Empty)
+            .ToHashSet();
+        var referencedAssetIds = dirtyRentalAssetAssignmentHistories
+            .Select(history => history.AssetId)
+            .Where(assetId => assetId != Guid.Empty && !existingAssetIds.Contains(assetId))
+            .Distinct()
+            .ToList();
+
+        if (referencedAssetIds.Count == 0)
+            return [];
+
+        var referencedAssets = await _db.RentalAssets
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(asset =>
+                referencedAssetIds.Contains(asset.Id) &&
+                !asset.IsDirty &&
+                !asset.IsDeleted)
+            .ToListAsync(ct);
+        var missingAssetIds = referencedAssetIds
+            .Except(referencedAssets.Select(asset => asset.Id))
+            .ToList();
+
+        if (missingAssetIds.Count > 0)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"동기화 전 렌탈 자산 누락 감지: 로컬 배정 이력이 참조하지만 로컬 자산이 없는 항목 {missingAssetIds.Count}건을 확인했습니다. " +
+                $"details={string.Join(", ", missingAssetIds.Take(10))}");
+        }
+
+        return referencedAssets;
+    }
+
+    private async Task<List<LocalRentalManagementCompany>> LoadReferencedRentalManagementCompaniesForPushAsync(
+        IReadOnlyCollection<LocalRentalAsset> rentalAssets,
         IReadOnlyCollection<LocalRentalBillingProfile> referencedRentalBillingProfiles,
         IReadOnlyCollection<LocalRentalManagementCompany> dirtyRentalManagementCompanies,
         CancellationToken ct)
@@ -2533,7 +5072,7 @@ public sealed class SyncService : IDisposable
             .Where(code => !string.IsNullOrWhiteSpace(code))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        var referencedCodes = dirtyRentalAssets
+        var referencedCodes = rentalAssets
             .Where(asset => !asset.IsDeleted)
             .Select(asset => (asset.ManagementCompanyCode ?? string.Empty).Trim())
             .Concat(referencedRentalBillingProfiles.Select(profile => (profile.ManagementCompanyCode ?? string.Empty).Trim()))
@@ -2547,7 +5086,10 @@ public sealed class SyncService : IDisposable
         var referencedCompanies = await _db.RentalManagementCompanies
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(company => referencedCodes.Contains(company.Code) && !company.IsDeleted)
+            .Where(company =>
+                referencedCodes.Contains(company.Code) &&
+                !company.IsDirty &&
+                !company.IsDeleted)
             .ToListAsync(ct);
 
         var missingCodes = referencedCodes
@@ -3525,7 +6067,7 @@ public sealed class SyncService : IDisposable
         if (item is null || !item.IsDirty || item.IsDeleted)
             return false;
 
-        var localSnapshot = LocalMappings.ToDto(item);
+        var localSnapshot = MapItemForOutboundSync(item);
         if (!AreEquivalentConflictPayloads(localSnapshot, clientSnapshot, EquivalentConflictIgnoredPropertyNames))
             return false;
 
@@ -3540,7 +6082,7 @@ public sealed class SyncService : IDisposable
         item.Revision = serverSnapshot.Revision;
         item.IsDirty = true;
 
-        var rebasedSnapshot = LocalMappings.ToDto(item);
+        var rebasedSnapshot = MapItemForOutboundSync(item);
         await RequeuePreparedMutationAsync(
             nameof(LocalItem),
             itemId,
@@ -4340,7 +6882,16 @@ public sealed class SyncService : IDisposable
         }
     }
 
-    private async Task<bool> TryApplyServerItemConflictSnapshotAsync(ConflictLogDto conflict, CancellationToken ct)
+    private Task<bool> TryApplyServerItemConflictSnapshotAsync(
+        ConflictLogDto conflict,
+        CancellationToken ct)
+        => _db.ExecuteRuntimeMutationOperationAsync(
+            () => TryApplyServerItemConflictSnapshotCoreAsync(conflict, ct),
+            ct);
+
+    private async Task<bool> TryApplyServerItemConflictSnapshotCoreAsync(
+        ConflictLogDto conflict,
+        CancellationToken ct)
     {
         if (!string.Equals(conflict.EntityName, "Item", StringComparison.OrdinalIgnoreCase))
             return false;
@@ -4637,87 +7188,1119 @@ public sealed class SyncService : IDisposable
     private static bool AreEquivalentItemSnapshots(LocalItem local, ItemDto server)
         => AreEquivalentConflictPayloads(LocalMappings.ToDto(local), server, ItemCanonicalRepairIgnoredPropertyNames);
 
-    private async Task<List<ConflictLogDto>> ResolveItemWarehouseStockRevisionConflictsAsync(
+    private async Task<ItemWarehouseStockRevisionConflictResolution> ResolveItemWarehouseStockRevisionConflictsAsync(
         IReadOnlyCollection<ConflictLogDto> conflicts,
         CancellationToken ct)
     {
         var resolved = new List<ConflictLogDto>();
+        var retryRequired = new List<ConflictLogDto>();
         foreach (var conflict in conflicts)
         {
-            if (await TryResolveItemWarehouseStockRevisionConflictAsync(conflict, ct))
-                resolved.Add(conflict);
+            var outcome =
+                await TryResolveItemWarehouseStockRevisionConflictAsync(
+                    conflict,
+                    ct);
+            if (outcome == ItemWarehouseStockRevisionConflictOutcome.Unresolved)
+                continue;
+
+            resolved.Add(conflict);
+            if (outcome ==
+                ItemWarehouseStockRevisionConflictOutcome.RetryRequired)
+            {
+                retryRequired.Add(conflict);
+            }
         }
 
-        return resolved;
+        return new ItemWarehouseStockRevisionConflictResolution(
+            resolved,
+            retryRequired);
     }
 
-    private async Task<bool> TryResolveItemWarehouseStockRevisionConflictAsync(
+    private async Task ReplayItemWarehouseStockSnapshotsBeforePullAsync(
+        ErpApiClient apiClient,
+        SyncPushRequest originalRequest,
+        SessionState session,
+        string? businessDatabaseNameOverride,
+        IReadOnlyCollection<ConflictLogDto> retryRequiredConflicts,
+        CancellationToken ct)
+    {
+        var conflictServerSnapshots =
+            new Dictionary<string, ItemWarehouseStockDto>(
+                StringComparer.OrdinalIgnoreCase);
+        foreach (var conflict in retryRequiredConflicts)
+        {
+            if (!TryGetItemWarehouseStockRevisionConflictSnapshots(
+                    conflict,
+                    out var clientSnapshot,
+                    out var conflictServerSnapshot))
+            {
+                throw new SyncPullBlockedException(
+                    "재고 snapshot 재업로드에 필요한 충돌 정보를 확인할 수 없어 pull을 중단했습니다.");
+            }
+
+            var key = BuildItemWarehouseStockKey(
+                clientSnapshot.ItemId,
+                clientSnapshot.WarehouseCode);
+            if (!conflictServerSnapshots.TryAdd(
+                    key,
+                    conflictServerSnapshot))
+            {
+                throw new SyncPullBlockedException(
+                    "동일 재고 snapshot 충돌이 중복되어 안전한 재업로드를 중단했습니다.");
+            }
+        }
+
+        var affectedItemIds = conflictServerSnapshots.Values
+            .Select(stock => stock.ItemId)
+            .ToHashSet();
+        var outgoingStocks = originalRequest.ItemWarehouseStocks
+            .Where(stock => affectedItemIds.Contains(stock.ItemId))
+            .ToList();
+        var outgoingByKey = TryBuildUniqueItemWarehouseStockLookup(
+            outgoingStocks);
+        if (outgoingByKey is null ||
+            affectedItemIds.Any(itemId =>
+                outgoingStocks.All(stock => stock.ItemId != itemId)))
+        {
+            throw new SyncPullBlockedException(
+                "영향 품목의 전체 재고 snapshot을 구성할 수 없어 pull을 중단했습니다.");
+        }
+
+        var currentServerState = await apiClient.PullAsync(
+            0,
+            businessDatabaseNameOverride,
+            ct);
+        if (currentServerState is null)
+        {
+            throw new SyncPullBlockedException(
+                "재고 snapshot 재업로드 전 서버 상태 응답이 비어 있어 pull을 중단했습니다.");
+        }
+
+        var currentLocalRows = await _db.ItemWarehouseStocks
+            .AsNoTracking()
+            .Where(stock => affectedItemIds.Contains(stock.ItemId))
+            .ToListAsync(ct);
+        var affectedItemsById = await _db.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => affectedItemIds.Contains(item.Id))
+            .ToDictionaryAsync(item => item.Id, ct);
+        if (affectedItemIds.Any(itemId =>
+                !affectedItemsById.ContainsKey(itemId)))
+        {
+            throw new SyncPullBlockedException(
+                "영향 품목의 로컬 범위 정보를 찾을 수 없어 제한 재업로드와 pull을 중단했습니다.");
+        }
+
+        var currentLocalStocks = currentLocalRows
+            .Select(LocalMappings.ToDto)
+            .ToList();
+        var currentLocalByKey = TryBuildUniqueItemWarehouseStockLookup(
+            currentLocalStocks);
+        var writableCurrentLocalByKey =
+            TryBuildUniqueItemWarehouseStockLookup(
+                currentLocalRows
+                    .Where(stock =>
+                        affectedItemsById.TryGetValue(
+                            stock.ItemId,
+                            out var item) &&
+                        _local.CanWriteItemScope(
+                            item,
+                            session) &&
+                        CanWriteItemWarehouseStockForPush(
+                            stock,
+                            item,
+                            session))
+                    .Select(LocalMappings.ToDto)
+                    .ToList());
+        if (currentLocalByKey is null ||
+            writableCurrentLocalByKey is null ||
+            !outgoingByKey.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase)
+                .SetEquals(writableCurrentLocalByKey.Keys))
+        {
+            throw new SyncPullBlockedException(
+                "서버 상태 확인 중 로컬의 쓰기 가능 재고 warehouse 구성이 변경되어 제한 재업로드와 pull을 중단했습니다.");
+        }
+
+        foreach (var (key, outgoingStock) in outgoingByKey)
+        {
+            if (!AreEquivalentConflictPayloads(
+                    writableCurrentLocalByKey[key],
+                    outgoingStock))
+            {
+                throw new SyncPullBlockedException(
+                    "서버 상태 확인 중 로컬 재고 snapshot이 변경되어 제한 재업로드와 pull을 중단했습니다.");
+            }
+        }
+
+        var serverStocks = currentServerState.ItemWarehouseStocks
+            .Where(stock => affectedItemIds.Contains(stock.ItemId))
+            .ToList();
+        var serverByKey = TryBuildUniqueItemWarehouseStockLookup(
+            serverStocks);
+        var writableServerByKey =
+            TryBuildUniqueItemWarehouseStockLookup(
+                serverStocks
+                    .Where(stock =>
+                        affectedItemsById.TryGetValue(
+                            stock.ItemId,
+                            out var item) &&
+                        _local.CanWriteItemScope(
+                            item,
+                            session) &&
+                        CanWriteItemWarehouseCodeForPush(
+                            stock.WarehouseCode,
+                            item,
+                            session))
+                    .ToList());
+        if (serverByKey is null ||
+            writableServerByKey is null ||
+            !outgoingByKey.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase)
+                .SetEquals(writableServerByKey.Keys))
+        {
+            throw new SyncPullBlockedException(
+                "영향 품목의 서버/로컬 쓰기 가능 재고 warehouse 구성이 달라 안전한 재업로드와 pull을 중단했습니다.");
+        }
+
+        foreach (var (key, outgoingStock) in outgoingByKey)
+        {
+            var serverStock = writableServerByKey[key];
+            if (conflictServerSnapshots.TryGetValue(
+                    key,
+                    out var conflictServerSnapshot))
+            {
+                if (!AreEquivalentConflictPayloads(
+                        serverStock,
+                        conflictServerSnapshot))
+                {
+                    throw new SyncPullBlockedException(
+                        "충돌 재고 snapshot이 다시 변경되어 재업로드와 pull을 중단했습니다.");
+                }
+            }
+            else if (!AreEquivalentConflictPayloads(
+                         serverStock,
+                         outgoingStock))
+            {
+                throw new SyncPullBlockedException(
+                    "동일 품목의 다른 warehouse 재고가 변경되어 재업로드와 pull을 중단했습니다.");
+            }
+        }
+
+        var replayRequest = new SyncPushRequest
+        {
+            DeviceId = originalRequest.DeviceId,
+            ItemWarehouseStocks = outgoingStocks
+                .Select(stock =>
+                {
+                    var serverRevision = writableServerByKey[
+                        BuildItemWarehouseStockKey(
+                            stock.ItemId,
+                            stock.WarehouseCode)].Revision;
+                    return new ItemWarehouseStockDto
+                    {
+                        ItemId = stock.ItemId,
+                        WarehouseCode = stock.WarehouseCode,
+                        Quantity = stock.Quantity,
+                        UpdatedAtUtc = stock.UpdatedAtUtc,
+                        Revision = serverRevision,
+                        ExpectedRevision = serverRevision
+                    };
+                })
+                .ToList()
+        };
+        var replayResult = await apiClient.PushAsync(
+            replayRequest,
+            businessDatabaseNameOverride,
+            ct);
+        if (replayResult is null ||
+            replayResult.ConflictCount > 0 ||
+            replayResult.Conflicts.Count > 0 ||
+            replayResult.Notices.Count > 0)
+        {
+            throw new SyncPullBlockedException(
+                "제한 재고 snapshot 재업로드가 완전히 승인되지 않아 정상 pull을 중단했습니다.");
+        }
+
+        var submittedReplayKeys = replayRequest.ItemWarehouseStocks
+            .Select(stock => BuildItemWarehouseStockKey(
+                stock.ItemId,
+                stock.WarehouseCode))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var acceptedReplayKeys =
+            TryBuildUniqueAcceptedItemWarehouseStockKeyLookup(
+                replayResult.AcceptedItemWarehouseStockKeys);
+        if (acceptedReplayKeys is null ||
+            !submittedReplayKeys.SetEquals(acceptedReplayKeys))
+        {
+            throw new SyncPullBlockedException(
+                "제한 재고 snapshot 재업로드의 승인 key가 제출 범위와 일치하지 않아 정상 pull을 중단했습니다.");
+        }
+
+        var localRowsAfterReplay = await _db.ItemWarehouseStocks
+            .AsNoTracking()
+            .Where(stock => affectedItemIds.Contains(stock.ItemId))
+            .ToListAsync(ct);
+        var localStocksAfterReplay = localRowsAfterReplay
+            .Select(LocalMappings.ToDto)
+            .ToList();
+        var localByKeyAfterReplay =
+            TryBuildUniqueItemWarehouseStockLookup(
+                localStocksAfterReplay);
+        var writableLocalByKeyAfterReplay =
+            TryBuildUniqueItemWarehouseStockLookup(
+                localRowsAfterReplay
+                    .Where(stock =>
+                        affectedItemsById.TryGetValue(
+                            stock.ItemId,
+                            out var item) &&
+                        _local.CanWriteItemScope(
+                            item,
+                            session) &&
+                        CanWriteItemWarehouseStockForPush(
+                            stock,
+                            item,
+                            session))
+                    .Select(LocalMappings.ToDto)
+                    .ToList());
+        if (localByKeyAfterReplay is null ||
+            writableLocalByKeyAfterReplay is null ||
+            !outgoingByKey.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase)
+                .SetEquals(writableLocalByKeyAfterReplay.Keys))
+        {
+            throw new SyncPullBlockedException(
+                "제한 재고 snapshot 재업로드 중 로컬의 쓰기 가능 warehouse 구성이 변경되어 정상 pull을 중단했습니다.");
+        }
+
+        foreach (var (key, outgoingStock) in outgoingByKey)
+        {
+            if (!AreEquivalentConflictPayloads(
+                    writableLocalByKeyAfterReplay[key],
+                    outgoingStock))
+            {
+                throw new SyncPullBlockedException(
+                    "제한 재고 snapshot 재업로드 중 로컬 재고가 변경되어 정상 pull을 중단했습니다.");
+            }
+        }
+
+        PreserveItemWarehouseStockReplayPullGuard(
+            affectedItemIds,
+            localByKeyAfterReplay);
+
+        AppLogger.Info(
+            "SYNC",
+            $"Pull 전 재고 snapshot 제한 재업로드 완료: items={affectedItemIds.Count}, rows={replayRequest.ItemWarehouseStocks.Count}");
+    }
+
+    private void PreserveItemWarehouseStockReplayPullGuard(
+        IReadOnlySet<Guid> affectedItemIds,
+        IReadOnlyDictionary<string, ItemWarehouseStockDto>
+            expectedStocksByKey)
+    {
+        HashSet<Guid> preservedItemIds =
+            _itemWarehouseStockReplayPullGuard?.AffectedItemIds
+                .ToHashSet() ??
+            [];
+        preservedItemIds.UnionWith(affectedItemIds);
+        var preservedStocks =
+            _itemWarehouseStockReplayPullGuard?.ExpectedStocksByKey
+                .ToDictionary(
+                    pair => pair.Key,
+                    pair => pair.Value,
+                    StringComparer.OrdinalIgnoreCase) ??
+            new Dictionary<string, ItemWarehouseStockDto>(
+                StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (key, expectedStock) in expectedStocksByKey)
+        {
+            if (preservedStocks.TryGetValue(
+                    key,
+                    out var preservedStock) &&
+                !AreEquivalentConflictPayloads(
+                    preservedStock,
+                    expectedStock))
+            {
+                throw new SyncPullBlockedException(
+                    "동일 재고 snapshot에 서로 다른 replay guard가 생성되어 정상 pull을 중단했습니다.");
+            }
+
+            preservedStocks[key] = expectedStock;
+        }
+
+        _itemWarehouseStockReplayPullGuard =
+            new ItemWarehouseStockReplayPullGuard(
+                preservedItemIds,
+                preservedStocks);
+    }
+
+    private static Dictionary<string, ItemWarehouseStockDto>?
+        TryBuildUniqueItemWarehouseStockLookup(
+            IReadOnlyCollection<ItemWarehouseStockDto> stocks)
+    {
+        var lookup = new Dictionary<string, ItemWarehouseStockDto>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var stock in stocks)
+        {
+            if (stock.ItemId == Guid.Empty ||
+                string.IsNullOrWhiteSpace(stock.WarehouseCode) ||
+                !lookup.TryAdd(
+                    BuildItemWarehouseStockKey(
+                        stock.ItemId,
+                        stock.WarehouseCode),
+                    stock))
+            {
+                return null;
+            }
+        }
+
+        return lookup;
+    }
+
+    private static HashSet<string>?
+        TryBuildUniqueAcceptedItemWarehouseStockKeyLookup(
+            IReadOnlyCollection<SyncAcceptedItemWarehouseStockKeyDto>?
+                acceptedKeys)
+    {
+        if (acceptedKeys is null)
+            return null;
+
+        var lookup = new HashSet<string>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var acceptedKey in acceptedKeys)
+        {
+            if (acceptedKey is null ||
+                acceptedKey.ItemId == Guid.Empty ||
+                string.IsNullOrWhiteSpace(
+                    acceptedKey.WarehouseCode) ||
+                !lookup.Add(BuildItemWarehouseStockKey(
+                    acceptedKey.ItemId,
+                    acceptedKey.WarehouseCode)))
+            {
+                return null;
+            }
+        }
+
+        return lookup;
+    }
+
+    private async Task<bool>
+        TryHandleInventoryTransferStockAtomicityRollbackAsync(
+            SyncPushRequest request,
+            SyncPushResult result,
+            CancellationToken ct)
+    {
+        var blockedTransfers =
+            SelectValidatedInventoryTransferStockAtomicityRollbackTransfers(
+                request,
+                result);
+        if (blockedTransfers is null)
+            return false;
+
+        var mutationIds = blockedTransfers
+            .Select(transfer =>
+                (transfer.MutationId ?? string.Empty).Trim())
+            .Where(mutationId =>
+                !string.IsNullOrWhiteSpace(mutationId))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (mutationIds.Count != blockedTransfers.Count)
+            return false;
+
+        var firstConflictReason = result.Conflicts
+            .First(conflict =>
+                string.Equals(
+                    conflict.EntityName,
+                    "InventoryTransfer",
+                    StringComparison.OrdinalIgnoreCase))
+            .Reason;
+        var errorMessage =
+            $"{InventoryTransferStockAtomicityRollbackOutboxErrorPrefix} " +
+            $"{(firstConflictReason ?? string.Empty).Trim()}";
+        var markedCount = await _local.MarkSyncOutboxFailedAsync(
+            mutationIds,
+            errorMessage,
+            ct);
+        if (markedCount != mutationIds.Count)
+            return false;
+
+        var detail =
+            $"Inventory transfer stock rollback isolated: blocked transfers={blockedTransfers.Count}. " +
+            "No rolled-back mutation or stock snapshot was acknowledged; unrelated dirty data will retry separately.";
+        AppLogger.Warn("SYNC", detail);
+        await AppendConflictSummaryAsync(detail);
+        await TryRecordDiagnosticAsync(
+            "push-conflict",
+            detail,
+            severity: "Warning",
+            recoveryAttempted: true,
+            recoverySucceeded: true);
+        return true;
+    }
+
+    private static List<InventoryTransferDto>?
+        SelectValidatedInventoryTransferStockAtomicityRollbackTransfers(
+            SyncPushRequest request,
+            SyncPushResult result)
+    {
+        var notice = result.Notices.Count == 1
+            ? result.Notices[0]
+            : null;
+        if (notice is null ||
+            !string.Equals(
+                notice.EntityName,
+                "InventoryTransfer",
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                notice.EntityId,
+                string.Empty,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                notice.Code,
+                InventoryTransferStockAtomicityRollbackNoticeCode,
+                StringComparison.Ordinal) ||
+            result.AcceptedCount != 0 ||
+            result.DuplicateMutationCount != 0 ||
+            result.AcceptedRevisions.Count != 0 ||
+            result.AcceptedItemWarehouseStockKeys.Count != 0 ||
+            result.AssignedInvoiceNumbers.Count != 0 ||
+            result.AssignedTaxInvoiceNumbers.Count != 0 ||
+            result.ConflictCount <= 0 ||
+            result.ConflictCount != result.Conflicts.Count)
+        {
+            return null;
+        }
+
+        var conflictTransferIds = new HashSet<Guid>();
+        foreach (var conflict in result.Conflicts)
+        {
+            if (!string.Equals(
+                    conflict.EntityName,
+                    "InventoryTransfer",
+                    StringComparison.OrdinalIgnoreCase) ||
+                !Guid.TryParse(conflict.EntityId, out var transferId) ||
+                transferId == Guid.Empty)
+            {
+                return null;
+            }
+
+            conflictTransferIds.Add(transferId);
+        }
+
+        if (conflictTransferIds.Count == 0)
+            return null;
+
+        var requestTransfersById = request.InventoryTransfers
+            .Where(transfer => transfer.Id != Guid.Empty)
+            .GroupBy(transfer => transfer.Id)
+            .ToDictionary(group => group.Key, group => group.ToList());
+        if (conflictTransferIds.Any(transferId =>
+                !requestTransfersById.TryGetValue(
+                    transferId,
+                    out var rows) ||
+                rows.Count != 1))
+        {
+            return null;
+        }
+
+        return conflictTransferIds
+            .Select(transferId =>
+                requestTransfersById[transferId][0])
+            .ToList();
+    }
+
+    private static string?
+        BuildItemWarehouseStockAcknowledgementIssue(
+            IReadOnlyCollection<ItemWarehouseStockDto> submittedStocks,
+            SyncPushResult result)
+    {
+        var acceptedKeys =
+            TryBuildUniqueAcceptedItemWarehouseStockKeyLookup(
+                result.AcceptedItemWarehouseStockKeys);
+        if (submittedStocks.Count == 0)
+        {
+            var hasUnexpectedWarehouseStockConflict =
+                (result.Conflicts ?? []).Any(conflict =>
+                    string.Equals(
+                        conflict.EntityName,
+                        "ItemWarehouseStock",
+                        StringComparison.OrdinalIgnoreCase));
+            return result.AcceptedItemWarehouseStockKeys is null ||
+                   result.AcceptedItemWarehouseStockKeys.Count > 0 ||
+                   hasUnexpectedWarehouseStockConflict
+                ? "서버 재고 승인 key 응답이 제출하지 않은 재고 범위와 일치하지 않아 pull을 중단했습니다."
+                : null;
+        }
+
+        var submittedByKey =
+            TryBuildUniqueItemWarehouseStockLookup(
+                submittedStocks);
+        if (submittedByKey is null)
+        {
+            return "제출 재고 snapshot에 비어 있거나 중복된 논리 key가 있어 서버 응답을 안전하게 확인할 수 없으므로 pull을 중단했습니다.";
+        }
+
+        if (acceptedKeys is null)
+        {
+            return "서버 재고 승인 key 응답이 없거나 유효하지 않아 제출 재고를 확인할 수 없으므로 pull을 중단했습니다.";
+        }
+
+        var submittedKeys = submittedByKey.Keys
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!acceptedKeys.IsSubsetOf(submittedKeys))
+        {
+            return "서버 재고 승인 key에 제출하지 않은 항목이 포함되어 응답 범위를 신뢰할 수 없으므로 pull을 중단했습니다.";
+        }
+
+        var unacknowledgedKeys = submittedKeys
+            .Except(
+                acceptedKeys,
+                StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (unacknowledgedKeys.Count == 0)
+            return null;
+
+        if (result.ConflictCount <= 0)
+        {
+            return $"서버에서 승인하지 않은 재고 snapshot {unacknowledgedKeys.Count:N0}건이 충돌 정보 없이 남아 pull을 중단했습니다.";
+        }
+
+        var conflictKeys =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var conflict in result.Conflicts ?? [])
+        {
+            if (!string.Equals(
+                    conflict.EntityName,
+                    "ItemWarehouseStock",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!TryParseItemWarehouseStockConflictId(
+                    conflict.EntityId,
+                    out var itemId,
+                    out var warehouseCode))
+            {
+                return "서버 재고 충돌 식별자가 유효하지 않아 미승인 재고 범위를 확인할 수 없으므로 pull을 중단했습니다.";
+            }
+
+            conflictKeys.Add(
+                BuildItemWarehouseStockKey(
+                    itemId,
+                    warehouseCode));
+        }
+
+        if (conflictKeys.Except(
+                submittedKeys,
+                StringComparer.OrdinalIgnoreCase).Any() ||
+            conflictKeys.Overlaps(acceptedKeys))
+        {
+            return "서버 재고 충돌 key가 제출·승인 범위와 모순되어 응답을 안전하게 적용할 수 없으므로 pull을 중단했습니다.";
+        }
+
+        unacknowledgedKeys.ExceptWith(conflictKeys);
+        return unacknowledgedKeys.Count == 0
+            ? null
+            : $"서버에서 승인하지 않은 재고 snapshot {unacknowledgedKeys.Count:N0}건에 대응하는 충돌 정보가 없어 pull을 중단했습니다.";
+    }
+
+    private static IReadOnlyCollection<ItemWarehouseStockDto>
+        SelectItemWarehouseStocksForAcknowledgementRetry(
+            IReadOnlyCollection<ItemWarehouseStockDto> submittedStocks,
+            SyncPushResult result)
+    {
+        var submittedByKey =
+            TryBuildUniqueItemWarehouseStockLookup(
+                submittedStocks);
+        var acceptedKeys =
+            TryBuildUniqueAcceptedItemWarehouseStockKeyLookup(
+                result.AcceptedItemWarehouseStockKeys);
+        if (submittedByKey is null ||
+            acceptedKeys is null ||
+            !acceptedKeys.IsSubsetOf(submittedByKey.Keys))
+        {
+            return submittedStocks.ToList();
+        }
+
+        var unacknowledgedKeys = submittedByKey.Keys
+            .Except(
+                acceptedKeys,
+                StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (unacknowledgedKeys.Count == 0)
+            return submittedStocks.ToList();
+
+        return submittedStocks
+            .Where(stock =>
+                unacknowledgedKeys.Contains(
+                    BuildItemWarehouseStockKey(
+                        stock.ItemId,
+                        stock.WarehouseCode)))
+            .ToList();
+    }
+
+    private async Task
+        ApplyPartialWarehouseStockAcknowledgementAtomicallyAsync(
+            Func<Task> applyAcceptedSideEffectsAsync,
+            IReadOnlyCollection<ItemWarehouseStockDto> submittedStocks,
+            CancellationToken ct)
+    {
+        async Task ApplyAsync()
+        {
+            await applyAcceptedSideEffectsAsync();
+            if (AfterPartialWarehouseStockAcceptedSideEffectsAsyncForTesting
+                is not null)
+            {
+                await
+                    AfterPartialWarehouseStockAcceptedSideEffectsAsyncForTesting(
+                        ct);
+            }
+            await MarkItemWarehouseStockSnapshotsPendingAsync(
+                submittedStocks,
+                ct);
+        }
+
+        if (_db.Database.CurrentTransaction is not null)
+        {
+            await ApplyAsync();
+            return;
+        }
+
+        await using var transaction =
+            await _db.BeginRuntimeMutationTransactionAsync(ct);
+        try
+        {
+            await ApplyAsync();
+            await transaction.CommitAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                await transaction.RollbackAsync(
+                    CancellationToken.None);
+            }
+            catch (Exception rollbackException)
+            {
+                AppLogger.Warn(
+                    "SYNC",
+                    "Partial warehouse-stock acknowledgement rollback " +
+                    $"failed: {rollbackException.Message}");
+            }
+
+            _db.ChangeTracker.Clear();
+            if (ex is SyncPullBlockedException ||
+                ex is DesktopClientUpgradeRequiredException ||
+                ex is OperationCanceledException &&
+                ct.IsCancellationRequested)
+            {
+                throw;
+            }
+
+            throw new SyncPullBlockedException(
+                "재고 승인 응답과 재시도 상태를 원자적으로 저장하지 못해 " +
+                "정상 pull을 중단했습니다.",
+                ex);
+        }
+    }
+
+    private async Task MarkItemWarehouseStockSnapshotsPendingAsync(
+        IReadOnlyCollection<ItemWarehouseStockDto> submittedStocks,
+        CancellationToken ct)
+    {
+        var itemIds = submittedStocks
+            .Select(stock => stock.ItemId)
+            .Where(itemId => itemId != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (itemIds.Count == 0)
+            return;
+
+        var items = await _db.Items
+            .IgnoreQueryFilters()
+            .Where(item =>
+                itemIds.Contains(item.Id) &&
+                !item.IsDeleted)
+            .ToListAsync(ct);
+        var changed = false;
+        foreach (var item in items)
+        {
+            if (item.IsDirty)
+                continue;
+
+            item.IsDirty = true;
+            changed = true;
+        }
+
+        if (changed)
+            await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task
+        EnsureItemWarehouseStockReplayPullGuardUnchangedAsync(
+            CancellationToken ct)
+    {
+        var guard = _itemWarehouseStockReplayPullGuard;
+        if (guard is null)
+            return;
+
+        var persistedStocks = await _db.ItemWarehouseStocks
+            .AsNoTracking()
+            .Where(stock =>
+                guard.AffectedItemIds.Contains(stock.ItemId))
+            .ToListAsync(ct);
+        var persistedByKey =
+            TryBuildUniqueItemWarehouseStockLookup(
+                persistedStocks
+                    .Select(LocalMappings.ToDto)
+                    .ToList());
+        if (persistedByKey is null ||
+            !guard.ExpectedStocksByKey.Keys
+                .ToHashSet(StringComparer.OrdinalIgnoreCase)
+                .SetEquals(persistedByKey.Keys))
+        {
+            throw new SyncPullBlockedException(
+                "정상 pull 응답 대기 중 로컬 재고 warehouse 구성이 변경되어 반영을 중단했습니다.");
+        }
+
+        foreach (var (key, expectedStock) in
+                 guard.ExpectedStocksByKey)
+        {
+            if (!AreEquivalentConflictPayloads(
+                    persistedByKey[key],
+                    expectedStock))
+            {
+                throw new SyncPullBlockedException(
+                    "정상 pull 응답 대기 중 로컬 재고 snapshot이 변경되어 반영을 중단했습니다.");
+            }
+        }
+    }
+
+    private async Task<ItemWarehouseStockRevisionConflictOutcome> TryResolveItemWarehouseStockRevisionConflictAsync(
         ConflictLogDto conflict,
         CancellationToken ct)
     {
-        if (!string.Equals(conflict.EntityName, "ItemWarehouseStock", StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        var reason = (conflict.Reason ?? string.Empty).Trim();
-        if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        if (!TryDeserializeConflictItemWarehouseStockDto(conflict.ClientJson, out var clientSnapshot) ||
-            clientSnapshot is null ||
-            !TryDeserializeConflictItemWarehouseStockDto(conflict.ServerJson, out var serverSnapshot) ||
-            serverSnapshot is null)
+        if (!TryGetItemWarehouseStockRevisionConflictSnapshots(
+                conflict,
+                out var clientSnapshot,
+                out var serverSnapshot))
         {
-            return false;
+            return ItemWarehouseStockRevisionConflictOutcome.Unresolved;
         }
 
-        if (!IsSameItemWarehouseStockIdentity(clientSnapshot, serverSnapshot))
-            return false;
-
-        if (TryParseItemWarehouseStockConflictId(conflict.EntityId, out var entityItemId, out var entityWarehouseCode) &&
-            (entityItemId != clientSnapshot.ItemId ||
-             !string.Equals(NormalizeWarehouseCode(entityWarehouseCode), NormalizeWarehouseCode(clientSnapshot.WarehouseCode), StringComparison.OrdinalIgnoreCase)))
+        if (serverSnapshot.IsDeleted)
         {
-            return false;
-        }
-
-        var normalizedWarehouseCode = NormalizeWarehouseCode(clientSnapshot.WarehouseCode);
-        var stock = await _db.ItemWarehouseStocks
-            .FirstOrDefaultAsync(
-                current => current.ItemId == clientSnapshot.ItemId &&
-                           current.WarehouseCode == normalizedWarehouseCode,
+            return await TryResolveItemWarehouseStockTombstoneAsync(
+                clientSnapshot,
                 ct);
-        if (stock is null)
-        {
-            stock = await _db.ItemWarehouseStocks
-                .FirstOrDefaultAsync(
-                    current => current.ItemId == clientSnapshot.ItemId &&
-                               current.WarehouseCode == clientSnapshot.WarehouseCode,
-                    ct);
         }
 
-        if (stock is null)
-            return false;
+        var logicalKey = BuildItemWarehouseStockKey(
+            clientSnapshot.ItemId,
+            clientSnapshot.WarehouseCode);
+        var itemStocks = await _db.ItemWarehouseStocks
+            .Where(current =>
+                current.ItemId == clientSnapshot.ItemId)
+            .ToListAsync(ct);
+        var matchingStocks = itemStocks
+            .Where(current =>
+                string.Equals(
+                    BuildItemWarehouseStockKey(
+                        current.ItemId,
+                        current.WarehouseCode),
+                    logicalKey,
+                    StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (matchingStocks.Count == 0)
+            return ItemWarehouseStockRevisionConflictOutcome.Unresolved;
+
+        if (matchingStocks.Count != 1)
+            return ItemWarehouseStockRevisionConflictOutcome.Unresolved;
+
+        var stock = matchingStocks[0];
 
         var localSnapshot = LocalMappings.ToDto(stock);
+        localSnapshot.WarehouseCode =
+            NormalizeWarehouseCode(localSnapshot.WarehouseCode);
         var localMatchesClient = AreEquivalentConflictPayloads(localSnapshot, clientSnapshot);
         var localMatchesServer = AreEquivalentConflictPayloads(localSnapshot, serverSnapshot);
         if (!localMatchesClient && !localMatchesServer)
-            return false;
+            return ItemWarehouseStockRevisionConflictOutcome.Unresolved;
 
         var localUpdatedAtUtc = NormalizeMutationUtc(localSnapshot.UpdatedAtUtc);
         var serverUpdatedAtUtc = NormalizeMutationUtc(serverSnapshot.UpdatedAtUtc);
         if (localMatchesClient && localUpdatedAtUtc >= serverUpdatedAtUtc)
         {
             stock.Revision = serverSnapshot.Revision;
-        }
-        else
-        {
-            stock.Quantity = serverSnapshot.Quantity;
-            stock.UpdatedAtUtc = NormalizeMutationUtc(serverSnapshot.UpdatedAtUtc);
-            stock.Revision = serverSnapshot.Revision;
+            await _db.SaveChangesAsync(ct);
+            return ItemWarehouseStockRevisionConflictOutcome.RetryRequired;
         }
 
+        stock.Quantity = serverSnapshot.Quantity;
+        stock.UpdatedAtUtc = NormalizeMutationUtc(serverSnapshot.UpdatedAtUtc);
+        stock.Revision = serverSnapshot.Revision;
         await _db.SaveChangesAsync(ct);
+        return ItemWarehouseStockRevisionConflictOutcome.ResolvedFromServer;
+    }
+
+    private async Task<ItemWarehouseStockRevisionConflictOutcome>
+        TryResolveItemWarehouseStockTombstoneAsync(
+            ItemWarehouseStockDto clientSnapshot,
+            CancellationToken ct)
+    {
+        var hasPendingItemMutation = _db.ChangeTracker
+            .Entries<LocalItem>()
+            .Any(entry =>
+                entry.Entity.Id == clientSnapshot.ItemId &&
+                entry.State is EntityState.Added or
+                    EntityState.Modified or
+                    EntityState.Deleted);
+        var hasPendingStockMutation = _db.ChangeTracker
+            .Entries<LocalItemWarehouseStock>()
+            .Any(entry =>
+                entry.Entity.ItemId == clientSnapshot.ItemId &&
+                entry.State is EntityState.Added or
+                    EntityState.Modified or
+                    EntityState.Deleted);
+        if (hasPendingItemMutation ||
+            hasPendingStockMutation)
+            return ItemWarehouseStockRevisionConflictOutcome.Unresolved;
+
+        var logicalKey = BuildItemWarehouseStockKey(
+            clientSnapshot.ItemId,
+            clientSnapshot.WarehouseCode);
+        var itemStocks = await _db.ItemWarehouseStocks
+            .AsNoTracking()
+            .Where(current =>
+                current.ItemId == clientSnapshot.ItemId)
+            .ToListAsync(ct);
+        var matchingStocks = itemStocks
+            .Where(current =>
+                string.Equals(
+                    BuildItemWarehouseStockKey(
+                        current.ItemId,
+                        current.WarehouseCode),
+                    logicalKey,
+                    StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (matchingStocks.Count == 0)
+        {
+            DetachUnchangedItemWarehouseStocks(
+                clientSnapshot.ItemId);
+            DetachUnchangedItem(clientSnapshot.ItemId);
+            return ItemWarehouseStockRevisionConflictOutcome
+                .ResolvedFromServer;
+        }
+
+        if (matchingStocks.Count != 1)
+            return ItemWarehouseStockRevisionConflictOutcome.Unresolved;
+
+        var stock = matchingStocks[0];
+        var localSnapshot = LocalMappings.ToDto(stock);
+        localSnapshot.WarehouseCode =
+            NormalizeWarehouseCode(localSnapshot.WarehouseCode);
+        if (!AreEquivalentConflictPayloads(
+                localSnapshot,
+                clientSnapshot))
+        {
+            DetachUnchangedItemWarehouseStocks(
+                clientSnapshot.ItemId);
+            DetachUnchangedItem(clientSnapshot.ItemId);
+            return ItemWarehouseStockRevisionConflictOutcome.Unresolved;
+        }
+
+        if (BeforeItemWarehouseStockTombstoneConditionalDeleteAsyncForTesting
+            is not null)
+        {
+            await BeforeItemWarehouseStockTombstoneConditionalDeleteAsyncForTesting(
+                ct);
+        }
+
+        IDbContextTransaction? transaction = null;
+        try
+        {
+            transaction = await _db.BeginRuntimeMutationTransactionAsync(ct);
+            var deletedRows = await _db.ItemWarehouseStocks
+                .Where(current =>
+                    current.ItemId == stock.ItemId &&
+                    current.WarehouseCode == stock.WarehouseCode &&
+                    current.Quantity == stock.Quantity &&
+                    current.Revision == stock.Revision &&
+                    current.UpdatedAtUtc == stock.UpdatedAtUtc)
+                .ExecuteDeleteAsync(ct);
+            if (deletedRows != 1)
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                DetachUnchangedItemWarehouseStocks(
+                    clientSnapshot.ItemId);
+                DetachUnchangedItem(clientSnapshot.ItemId);
+                return ItemWarehouseStockRevisionConflictOutcome
+                    .Unresolved;
+            }
+
+            var remainingQuantities = await _db.ItemWarehouseStocks
+                .AsNoTracking()
+                .Where(current =>
+                    current.ItemId == clientSnapshot.ItemId)
+                .Select(current => current.Quantity)
+                .ToListAsync(ct);
+            var remainingQuantity = remainingQuantities.Sum();
+            var updatedItems = await _db.Items
+                .IgnoreQueryFilters()
+                .Where(current =>
+                    current.Id == clientSnapshot.ItemId &&
+                    !current.IsDeleted)
+                .ExecuteUpdateAsync(
+                    setters => setters.SetProperty(
+                        current => current.CurrentStock,
+                        remainingQuantity),
+                    ct);
+            if (updatedItems != 1)
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                DetachUnchangedItemWarehouseStocks(
+                    clientSnapshot.ItemId);
+                DetachUnchangedItem(clientSnapshot.ItemId);
+                return ItemWarehouseStockRevisionConflictOutcome
+                    .Unresolved;
+            }
+
+            await transaction.CommitAsync(ct);
+            DetachUnchangedItemWarehouseStocks(
+                clientSnapshot.ItemId);
+            DetachUnchangedItem(clientSnapshot.ItemId);
+            return ItemWarehouseStockRevisionConflictOutcome
+                .ResolvedFromServer;
+        }
+        catch (OperationCanceledException)
+            when (ct.IsCancellationRequested)
+        {
+            if (transaction is not null)
+            {
+                await transaction.RollbackAsync(
+                    CancellationToken.None);
+            }
+
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (transaction is not null)
+            {
+                try
+                {
+                    await transaction.RollbackAsync(
+                        CancellationToken.None);
+                }
+                catch
+                {
+                    // Preserve the original failure and fail closed.
+                }
+            }
+
+            throw new SyncPullBlockedException(
+                "로컬 재고 삭제 상태를 원자적으로 확인하지 못해 pull을 중단했습니다.",
+                ex);
+        }
+        finally
+        {
+            if (transaction is not null)
+                await transaction.DisposeAsync();
+        }
+    }
+
+    private void DetachUnchangedItemWarehouseStocks(Guid itemId)
+    {
+        foreach (var entry in _db.ChangeTracker
+                     .Entries<LocalItemWarehouseStock>()
+                     .Where(entry =>
+                         entry.Entity.ItemId == itemId &&
+                         entry.State == EntityState.Unchanged)
+                     .ToList())
+        {
+            entry.State = EntityState.Detached;
+        }
+    }
+
+    private void DetachUnchangedItem(Guid itemId)
+    {
+        foreach (var entry in _db.ChangeTracker
+                     .Entries<LocalItem>()
+                     .Where(entry =>
+                         entry.Entity.Id == itemId &&
+                         entry.State == EntityState.Unchanged)
+                     .ToList())
+        {
+            entry.State = EntityState.Detached;
+        }
+    }
+
+    private static bool TryGetItemWarehouseStockRevisionConflictSnapshots(
+        ConflictLogDto conflict,
+        out ItemWarehouseStockDto clientSnapshot,
+        out ItemWarehouseStockDto serverSnapshot)
+    {
+        clientSnapshot = null!;
+        serverSnapshot = null!;
+        if (!string.Equals(
+                conflict.EntityName,
+                "ItemWarehouseStock",
+                StringComparison.OrdinalIgnoreCase) ||
+            !(conflict.Reason ?? string.Empty)
+                .Trim()
+                .StartsWith(
+                    "Expected revision mismatch.",
+                    StringComparison.OrdinalIgnoreCase) ||
+            !TryDeserializeConflictItemWarehouseStockDto(
+                conflict.ClientJson,
+                out var parsedClientSnapshot) ||
+            parsedClientSnapshot is null ||
+            !TryDeserializeConflictItemWarehouseStockDto(
+                conflict.ServerJson,
+                out var parsedServerSnapshot) ||
+            parsedServerSnapshot is null ||
+            !TryParseItemWarehouseStockConflictId(
+                conflict.EntityId,
+                out var entityItemId,
+                out var entityWarehouseCode))
+        {
+            return false;
+        }
+
+        parsedClientSnapshot.WarehouseCode =
+            NormalizeWarehouseCode(
+                parsedClientSnapshot.WarehouseCode);
+        parsedServerSnapshot.WarehouseCode =
+            NormalizeWarehouseCode(
+                parsedServerSnapshot.WarehouseCode);
+        var isServerTombstone =
+            parsedServerSnapshot.IsDeleted &&
+            parsedServerSnapshot.Revision == 0 &&
+            parsedServerSnapshot.ExpectedRevision > 0 &&
+            parsedServerSnapshot.Quantity == 0m &&
+            (parsedClientSnapshot.ExpectedRevision > 0
+                ? parsedClientSnapshot.ExpectedRevision
+                : parsedClientSnapshot.Revision) ==
+            parsedServerSnapshot.ExpectedRevision &&
+            (conflict.Reason ?? string.Empty).Contains(
+                "Server warehouse stock row no longer exists.",
+                StringComparison.OrdinalIgnoreCase);
+        if (!IsSameItemWarehouseStockIdentity(
+                parsedClientSnapshot,
+                parsedServerSnapshot) ||
+            (!isServerTombstone &&
+             (parsedServerSnapshot.IsDeleted ||
+              parsedServerSnapshot.Revision <= 0)) ||
+            entityItemId != parsedClientSnapshot.ItemId ||
+            !string.Equals(
+                NormalizeWarehouseCode(entityWarehouseCode),
+                parsedClientSnapshot.WarehouseCode,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        clientSnapshot = parsedClientSnapshot;
+        serverSnapshot = parsedServerSnapshot;
         return true;
     }
 
@@ -4745,7 +8328,8 @@ public sealed class SyncService : IDisposable
     }
 
     private static string NormalizeWarehouseCode(string? warehouseCode)
-        => (warehouseCode ?? string.Empty).Trim();
+        => NormalizeItemWarehouseStockLogicalWarehouseCode(
+            warehouseCode);
 
     private static bool IsEquivalentRevisionConflict(ConflictLogDto conflict)
     {
@@ -4868,6 +8452,8 @@ public sealed class SyncService : IDisposable
         primary.PreparedAtUtc = DateTime.UtcNow;
         primary.SentAtUtc = null;
         primary.AcknowledgedAtUtc = null;
+        primary.AcceptedRevision = 0;
+        primary.AcceptedUpdatedAtUtc = null;
     }
 
     private static bool TryDeserializeConflictDto<TDto>(string? json, out TDto? dto)
@@ -5510,42 +9096,695 @@ public sealed class SyncService : IDisposable
         SynchronizeTrackedCleanState<T>(ids);
     }
 
-    private async Task ApplyAcceptedRevisionsAsync(
+    private async Task<HashSet<SyncEntityKey>> ApplyAcceptedRevisionsAsync(
         IReadOnlyCollection<SyncAcceptedRevisionDto> acceptedRevisions,
+        IReadOnlyDictionary<SyncEntityKey, PreparedMutationSnapshot> preparedMutationSnapshots,
         CancellationToken ct)
     {
+        var locallyModifiedAfterPush = new HashSet<SyncEntityKey>();
         if (acceptedRevisions.Count == 0)
-            return;
+            return locallyModifiedAfterPush;
 
-        await ApplyAcceptedRevisionsAsync<LocalCompanyProfile>(acceptedRevisions, ct, nameof(LocalCompanyProfile), "CompanyProfile");
-        await ApplyAcceptedRevisionsAsync<LocalUnit>(acceptedRevisions, ct, nameof(LocalUnit), "Unit");
-        await ApplyAcceptedRevisionsAsync<LocalCustomerCategory>(acceptedRevisions, ct, nameof(LocalCustomerCategory), "CustomerCategory");
-        await ApplyAcceptedRevisionsAsync<LocalPriceGradeOption>(acceptedRevisions, ct, nameof(LocalPriceGradeOption), "PriceGradeOption");
-        await ApplyAcceptedRevisionsAsync<LocalTradeTypeOption>(acceptedRevisions, ct, nameof(LocalTradeTypeOption), "TradeTypeOption");
-        await ApplyAcceptedRevisionsAsync<LocalItemCategoryOption>(acceptedRevisions, ct, nameof(LocalItemCategoryOption), "ItemCategoryOption");
-        await ApplyAcceptedRevisionsAsync<LocalCustomerMaster>(acceptedRevisions, ct, nameof(LocalCustomerMaster), "CustomerMaster");
-        await ApplyAcceptedRevisionsAsync<LocalCustomer>(acceptedRevisions, ct, nameof(LocalCustomer), "Customer");
-        await ApplyAcceptedRevisionsAsync<LocalCustomerContract>(acceptedRevisions, ct, nameof(LocalCustomerContract), "CustomerContract");
-        await ApplyAcceptedRevisionsAsync<LocalItem>(acceptedRevisions, ct, nameof(LocalItem), "Item");
-        await ApplyAcceptedRevisionsAsync<LocalItemPriceGrade>(acceptedRevisions, ct, nameof(LocalItemPriceGrade), "ItemPriceGrade");
-        await ApplyAcceptedRevisionsAsync<LocalTransaction>(acceptedRevisions, ct, nameof(LocalTransaction), "TransactionRecord", "Transaction");
-        await ApplyAcceptedRevisionsAsync<LocalTransactionAttachment>(acceptedRevisions, ct, nameof(LocalTransactionAttachment), "TransactionAttachment");
-        await ApplyAcceptedRevisionsAsync<LocalInventoryTransfer>(acceptedRevisions, ct, nameof(LocalInventoryTransfer), "InventoryTransfer");
-        await ApplyAcceptedRevisionsAsync<LocalRentalManagementCompany>(acceptedRevisions, ct, nameof(LocalRentalManagementCompany), "RentalManagementCompany");
-        await ApplyAcceptedRevisionsAsync<LocalRentalBillingProfile>(acceptedRevisions, ct, nameof(LocalRentalBillingProfile), "RentalBillingProfile");
-        await ApplyAcceptedRevisionsAsync<LocalRentalAsset>(acceptedRevisions, ct, nameof(LocalRentalAsset), "RentalAsset");
-        await ApplyAcceptedRevisionsAsync<LocalRentalAssetAssignmentHistory>(acceptedRevisions, ct, nameof(LocalRentalAssetAssignmentHistory), "RentalAssetAssignmentHistory");
-        await ApplyAcceptedRevisionsAsync<LocalRentalBillingLog>(acceptedRevisions, ct, nameof(LocalRentalBillingLog), "RentalBillingLog");
-        await ApplyAcceptedRevisionsAsync<LocalInvoice>(acceptedRevisions, ct, nameof(LocalInvoice), "Invoice");
-        await ApplyAcceptedRevisionsAsync<LocalPayment>(acceptedRevisions, ct, nameof(LocalPayment), "Payment");
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalCompanyProfile>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalCompanyProfile), "CompanyProfile"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalUnit>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalUnit), "Unit"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalCustomerCategory>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalCustomerCategory), "CustomerCategory"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalPriceGradeOption>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalPriceGradeOption), "PriceGradeOption"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalTradeTypeOption>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalTradeTypeOption), "TradeTypeOption"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalItemCategoryOption>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalItemCategoryOption), "ItemCategoryOption"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalCustomerMaster>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalCustomerMaster), "CustomerMaster"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalCustomer>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalCustomer), "Customer"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalCustomerContract>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalCustomerContract), "CustomerContract"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalItem>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalItem), "Item"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalItemPriceGrade>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalItemPriceGrade), "ItemPriceGrade"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalTransaction>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalTransaction), "TransactionRecord", "Transaction"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalTransactionAttachment>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalTransactionAttachment), "TransactionAttachment"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalInventoryTransfer>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalInventoryTransfer), "InventoryTransfer"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalRentalManagementCompany>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalRentalManagementCompany), "RentalManagementCompany"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalRentalBillingProfile>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalRentalBillingProfile), "RentalBillingProfile"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalRentalAsset>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalRentalAsset), "RentalAsset"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalRentalAssetAssignmentHistory>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalRentalAssetAssignmentHistory), "RentalAssetAssignmentHistory"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalRentalBillingLog>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalRentalBillingLog), "RentalBillingLog"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalInvoice>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalInvoice), "Invoice"));
+        locallyModifiedAfterPush.UnionWith(
+            await ApplyAcceptedRevisionsAsync<LocalPayment>(acceptedRevisions, preparedMutationSnapshots, ct, nameof(LocalPayment), "Payment"));
+
+        if (locallyModifiedAfterPush.Count > 0)
+        {
+            AppLogger.Info(
+                "SYNC",
+                $"Preserved {locallyModifiedAfterPush.Count} newer local change(s) after push acknowledgement: " +
+                string.Join(
+                    ", ",
+                    locallyModifiedAfterPush.Select(key =>
+                        $"{key.EntityName}/{key.EntityId:N}")));
+        }
+
+        return locallyModifiedAfterPush;
     }
 
-    private async Task ApplyAcceptedRevisionsAsync<T>(
+    private static IReadOnlyList<InventoryTransferPurgePushAcknowledgement>
+        SelectVerifiedInventoryTransferPurgeAcknowledgements(
+            SyncPushRequest request,
+            SyncPushResult result,
+            SyncOperationOwnerBoundary expectedOwner)
+    {
+        var submittedGroups = request.InventoryTransfers
+            .Where(transfer => transfer.Id != Guid.Empty)
+            .GroupBy(transfer => transfer.Id)
+            .ToList();
+        var duplicateSubmission = submittedGroups
+            .FirstOrDefault(group => group.Count() != 1);
+        if (duplicateSubmission is not null)
+        {
+            throw new SyncPullBlockedException(
+                $"Malformed inventory transfer purge response boundary: duplicate request entity. transfer={duplicateSubmission.Key:D}");
+        }
+
+        var submittedById = submittedGroups
+            .ToDictionary(group => group.Key, group => group.Single());
+        if (submittedById.Count == 0)
+            return [];
+
+        var responseAcceptedRevisions = result.AcceptedRevisions ??
+            throw new SyncPullBlockedException(
+                "Malformed inventory transfer purge response: accepted revisions are missing.");
+        var responsePurgeRecords = result.PurgeRecords ??
+            throw new SyncPullBlockedException(
+                "Malformed inventory transfer purge response: purge receipts are missing.");
+        var responseConflicts = result.Conflicts ??
+            throw new SyncPullBlockedException(
+                "Malformed inventory transfer purge response: conflicts are missing.");
+        if (responseAcceptedRevisions.Any(revision => revision is null) ||
+            responsePurgeRecords.Any(receipt => receipt is null) ||
+            responseConflicts.Any(conflict => conflict is null))
+        {
+            throw new SyncPullBlockedException(
+                "Malformed inventory transfer purge response: a response collection contains a null entry.");
+        }
+
+        var inventoryTransferEntityName =
+            NormalizeSyncEntityName(nameof(LocalInventoryTransfer));
+        var relevantAcceptedRevisions = responseAcceptedRevisions
+            .Where(revision =>
+                revision.EntityId != Guid.Empty &&
+                submittedById.ContainsKey(revision.EntityId) &&
+                string.Equals(
+                    NormalizeSyncEntityName(revision.EntityName),
+                    inventoryTransferEntityName,
+                    StringComparison.OrdinalIgnoreCase))
+            .GroupBy(revision => revision.EntityId)
+            .ToDictionary(group => group.Key, group => group.ToList());
+        var receiptsForSubmittedTransfers = responsePurgeRecords
+            .Where(receipt => submittedById.ContainsKey(receipt.EntityId))
+            .ToList();
+        var invalidRelevantReceiptKind = receiptsForSubmittedTransfers
+            .FirstOrDefault(receipt =>
+                !string.Equals(
+                    (receipt.Kind ?? string.Empty).Trim(),
+                    "inventory-transfer",
+                    StringComparison.OrdinalIgnoreCase));
+        if (invalidRelevantReceiptKind is not null)
+        {
+            throw new SyncPullBlockedException(
+                $"Malformed inventory transfer purge response: receipt kind is not canonical. transfer={invalidRelevantReceiptKind.EntityId:D}");
+        }
+
+        var candidateEntityIds = receiptsForSubmittedTransfers
+            .Select(receipt => receipt.EntityId)
+            .Concat(relevantAcceptedRevisions
+                .Where(group =>
+                    !submittedById[group.Key].IsDeleted &&
+                    group.Value.Any(revision => revision.IsDeleted == true))
+                .Select(group => group.Key))
+            .Distinct()
+            .ToList();
+        if (candidateEntityIds.Count == 0)
+            return [];
+
+        if (result.ConflictCount < 0 ||
+            result.ConflictCount != responseConflicts.Count)
+        {
+            throw new SyncPullBlockedException(
+                "Malformed inventory transfer purge response: conflict count does not match the conflict collection.");
+        }
+
+        var malformedInventoryTransferConflict = responseConflicts
+            .FirstOrDefault(conflict =>
+                string.Equals(
+                    NormalizeSyncEntityName(conflict.EntityName),
+                    inventoryTransferEntityName,
+                    StringComparison.OrdinalIgnoreCase) &&
+                !Guid.TryParse(conflict.EntityId, out _));
+        if (malformedInventoryTransferConflict is not null)
+        {
+            throw new SyncPullBlockedException(
+                "Malformed inventory transfer purge response: an inventory transfer conflict has an invalid entity id.");
+        }
+
+        var duplicateReceiptId = responsePurgeRecords
+            .Where(receipt => receipt.Id != Guid.Empty)
+            .GroupBy(receipt => receipt.Id)
+            .FirstOrDefault(group => group.Count() != 1);
+        if (duplicateReceiptId is not null)
+        {
+            throw new SyncPullBlockedException(
+                $"Malformed inventory transfer purge response: duplicate receipt id. receipt={duplicateReceiptId.Key:D}");
+        }
+
+        var expectedBusinessTenant =
+            TenantScopeCatalog.NormalizeTenantCodeOrDefault(
+                expectedOwner.BusinessDatabaseName);
+        var acknowledgements =
+            new List<InventoryTransferPurgePushAcknowledgement>(
+                candidateEntityIds.Count);
+        foreach (var entityId in candidateEntityIds)
+        {
+            if (!relevantAcceptedRevisions.TryGetValue(
+                    entityId,
+                    out var acceptedCandidates) ||
+                acceptedCandidates.Count != 1 ||
+                acceptedCandidates[0].IsDeleted != true)
+            {
+                throw new SyncPullBlockedException(
+                    $"Malformed inventory transfer purge response: exactly one accepted tombstone is required. transfer={entityId:D}");
+            }
+
+            var matchingReceipts = receiptsForSubmittedTransfers
+                .Where(receipt => receipt.EntityId == entityId)
+                .ToList();
+            if (matchingReceipts.Count != 1)
+            {
+                throw new SyncPullBlockedException(
+                    $"Malformed inventory transfer purge response: exactly one durable receipt is required. transfer={entityId:D}");
+            }
+
+            var accepted = acceptedCandidates[0];
+            var receipt = matchingReceipts[0];
+            var submitted = submittedById[entityId];
+            var key = new SyncEntityKey(
+                inventoryTransferEntityName,
+                entityId);
+            if (responseConflicts.Any(conflict =>
+                    TryBuildConflictEntityKey(conflict, out var conflictKey) &&
+                    conflictKey == key))
+            {
+                throw new SyncPullBlockedException(
+                    $"Malformed inventory transfer purge response: the same transfer is both accepted and conflicted. transfer={entityId:D}");
+            }
+
+            var knownSubmittedRevision = Math.Max(
+                submitted.ExpectedRevision,
+                submitted.Revision);
+            var legacyTimestamps = new[]
+                {
+                    submitted.MutationCreatedAtUtc.GetValueOrDefault(),
+                    submitted.UpdatedAtUtc
+                }
+                .Where(timestamp => timestamp != default)
+                .Select(NormalizeMutationUtc)
+                .ToList();
+            var isPriorIncarnation = knownSubmittedRevision > 0
+                ? knownSubmittedRevision <= receipt.Revision
+                : submitted.IsDeleted ||
+                  legacyTimestamps.Count > 0 &&
+                  legacyTimestamps.Max() <=
+                      NormalizeMutationUtc(receipt.PurgedAtUtc);
+            if (!TenantScopeCatalog.TryNormalizeTenantCode(
+                    submitted.TenantCode,
+                    out var submittedTenant) ||
+                !TenantScopeCatalog.TryNormalizeTenantCode(
+                    receipt.TenantCode,
+                    out var receiptTenant) ||
+                !OfficeCodeCatalog.TryNormalizeOfficeCode(
+                    submitted.SourceOfficeCode,
+                    out var submittedSourceOffice) ||
+                !OfficeCodeCatalog.TryNormalizeOfficeCode(
+                    submitted.TargetOfficeCode,
+                    out var submittedTargetOffice) ||
+                !OfficeCodeCatalog.TryNormalizeOfficeCode(
+                    receipt.SourceOfficeCode,
+                    out var receiptSourceOffice) ||
+                !OfficeCodeCatalog.TryNormalizeOfficeCode(
+                    receipt.TargetOfficeCode,
+                    out var receiptTargetOffice) ||
+                !OfficeCodeCatalog.TryNormalizeScope(
+                    receipt.OfficeCode,
+                    out var receiptOfficeScope) ||
+                receipt.Id == Guid.Empty ||
+                receipt.EntityId != entityId ||
+                receipt.IsDeleted ||
+                accepted.Revision <= 0 ||
+                receipt.Revision != accepted.Revision ||
+                result.CurrentServerRevision < receipt.Revision ||
+                accepted.UpdatedAtUtc == default ||
+                receipt.CreatedAtUtc == default ||
+                receipt.UpdatedAtUtc == default ||
+                receipt.PurgedAtUtc == default ||
+                NormalizeMutationUtc(accepted.UpdatedAtUtc) !=
+                    NormalizeMutationUtc(receipt.UpdatedAtUtc) ||
+                NormalizeMutationUtc(receipt.UpdatedAtUtc) <
+                    NormalizeMutationUtc(receipt.CreatedAtUtc) ||
+                NormalizeMutationUtc(receipt.PurgedAtUtc) >
+                    NormalizeMutationUtc(receipt.UpdatedAtUtc) ||
+                !isPriorIncarnation ||
+                !string.Equals(
+                    submittedTenant,
+                    receiptTenant,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(
+                    receiptTenant,
+                    expectedBusinessTenant,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(
+                    receiptOfficeScope,
+                    OfficeCodeCatalog.Shared,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(
+                    submittedSourceOffice,
+                    receiptSourceOffice,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(
+                    submittedTargetOffice,
+                    receiptTargetOffice,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new SyncPullBlockedException(
+                    $"Malformed inventory transfer purge response: identity, scope, revision, or timestamp validation failed. transfer={entityId:D}");
+            }
+
+            acknowledgements.Add(
+                new InventoryTransferPurgePushAcknowledgement(
+                    receipt,
+                    accepted,
+                    submitted));
+        }
+
+        return acknowledgements;
+    }
+
+    private LocalInventoryTransfer SelectInventoryTransferConflictSnapshotSource(
+        LocalInventoryTransfer persisted,
+        IReadOnlyDictionary<SyncEntityKey, PreparedMutationSnapshot>
+            preparedMutationSnapshots)
+    {
+        var key = new SyncEntityKey(
+            NormalizeSyncEntityName(nameof(LocalInventoryTransfer)),
+            persisted.Id);
+        if (!_trackedMutationsPreservedDuringSync.TryGetValue(
+                key,
+                out var preservation) ||
+            preservation.Entity is not LocalInventoryTransfer tracked ||
+            !preparedMutationSnapshots.TryGetValue(key, out var prepared))
+        {
+            return persisted;
+        }
+
+        var trackedPayloadHash = ComputePreparedMutationPayloadHash(
+            key.EntityName,
+            LocalMappings.ToDto(tracked));
+        return string.Equals(
+            trackedPayloadHash,
+            prepared.PayloadHash,
+            StringComparison.Ordinal)
+            ? persisted
+            : tracked;
+    }
+
+    private async Task
+        ValidateAndStageVerifiedInventoryTransferPurgeReceiptsAsync(
+            IReadOnlyCollection<InventoryTransferPurgePushAcknowledgement>
+                acknowledgements,
+            DeferredPurgeOwnerScope ownerScope,
+            CancellationToken ct)
+    {
+        var receiptIds = acknowledgements
+            .Select(acknowledgement => acknowledgement.PurgeRecord.Id)
+            .ToList();
+        var existingById = await _db.DeferredRecycleBinPurgeRecords
+            .Where(record => receiptIds.Contains(record.Id))
+            .ToDictionaryAsync(record => record.Id, ct);
+        var now = DateTime.UtcNow;
+        foreach (var acknowledgement in acknowledgements)
+        {
+            var receipt = acknowledgement.PurgeRecord;
+            if (existingById.TryGetValue(receipt.Id, out var existing))
+            {
+                var exactReplay =
+                    DeferredPurgeRecordBelongsToOwner(existing, ownerScope) &&
+                    string.Equals(
+                        NormalizePurgeRecordKind(existing.Kind),
+                        "inventory-transfer",
+                        StringComparison.OrdinalIgnoreCase) &&
+                    existing.EntityId == receipt.EntityId &&
+                    existing.Revision == receipt.Revision &&
+                    NormalizeMutationUtc(existing.PurgedAtUtc) ==
+                        NormalizeMutationUtc(receipt.PurgedAtUtc) &&
+                    existing.AppliedAtUtc is null;
+                if (!exactReplay)
+                {
+                    throw new SyncPullBlockedException(
+                        $"Verified inventory transfer purge receipt collides with different local receipt state. receipt={receipt.Id:D}");
+                }
+
+                continue;
+            }
+
+            _db.DeferredRecycleBinPurgeRecords.Add(
+                new LocalDeferredRecycleBinPurgeRecord
+                {
+                    Id = receipt.Id,
+                    BusinessDatabaseName = ownerScope.BusinessDatabaseName,
+                    TenantCode = ownerScope.TenantCode,
+                    OfficeCode = ownerScope.OfficeCode,
+                    ResponsibleOfficeCode =
+                        ownerScope.ResponsibleOfficeCode,
+                    Kind = "inventory-transfer",
+                    EntityId = receipt.EntityId,
+                    Revision = receipt.Revision,
+                    PurgedAtUtc = NormalizeMutationUtc(receipt.PurgedAtUtc),
+                    AttemptCount = 0,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                });
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task RemoveConsumedInventoryTransferPurgeReceiptsAsync(
+        IReadOnlyCollection<InventoryTransferPurgePushAcknowledgement>
+            acknowledgements,
+        DeferredPurgeOwnerScope ownerScope,
+        CancellationToken ct)
+    {
+        var expectedReceiptIds = acknowledgements
+            .Select(acknowledgement =>
+                acknowledgement.PurgeRecord.Id)
+            .ToHashSet();
+        var entityIds = acknowledgements
+            .Select(acknowledgement =>
+                acknowledgement.AcceptedRevision.EntityId)
+            .ToList();
+        var consumedRecords = await _db.DeferredRecycleBinPurgeRecords
+            .Where(record =>
+                record.BusinessDatabaseName ==
+                    ownerScope.BusinessDatabaseName &&
+                record.TenantCode == ownerScope.TenantCode &&
+                record.OfficeCode == ownerScope.OfficeCode &&
+                record.ResponsibleOfficeCode ==
+                    ownerScope.ResponsibleOfficeCode &&
+                entityIds.Contains(record.EntityId))
+            .ToListAsync(ct);
+        var unrelatedKind = consumedRecords.FirstOrDefault(record =>
+            !string.Equals(
+                NormalizePurgeRecordKind(record.Kind),
+                "inventory-transfer",
+                StringComparison.OrdinalIgnoreCase));
+        if (unrelatedKind is not null)
+        {
+            throw new SyncPullBlockedException(
+                $"Verified inventory transfer purge receipt removal encountered a different entity kind. receipt={unrelatedKind.Id:D}");
+        }
+
+        var unexpectedReceipt = consumedRecords.FirstOrDefault(record =>
+            !expectedReceiptIds.Contains(record.Id));
+        if (unexpectedReceipt is not null)
+        {
+            throw new SyncPullBlockedException(
+                $"Verified inventory transfer purge receipt removal encountered an unexpected receipt for the same entity. receipt={unexpectedReceipt.Id:D}");
+        }
+
+        if (consumedRecords.Count != expectedReceiptIds.Count)
+        {
+            throw new SyncPullBlockedException(
+                "Verified inventory transfer purge receipt removal could not resolve every expected receipt exactly once.");
+        }
+
+        _db.DeferredRecycleBinPurgeRecords.RemoveRange(consumedRecords);
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task<HashSet<SyncEntityKey>>
+        ApplyInventoryTransferPurgeAcknowledgementsAtomicallyAsync(
+            SyncPushRequest request,
+            IReadOnlyCollection<InventoryTransferPurgePushAcknowledgement>
+                acknowledgements,
+            IReadOnlyDictionary<SyncEntityKey, PreparedMutationSnapshot>
+                preparedMutationSnapshots,
+            IReadOnlySet<SyncEntityKey>? excludedKeys,
+            SyncOperationOwnerBoundary expectedOwner,
+            SessionState ownerSession,
+            string? businessDatabaseNameOverride,
+            IReadOnlyDictionary<string, CurrentPushMutationReceipt>
+                currentPushReceipts,
+            CancellationToken ct)
+    {
+        var applicableAcknowledgements = acknowledgements
+            .Where(acknowledgement =>
+            {
+                var key = new SyncEntityKey(
+                    NormalizeSyncEntityName(nameof(LocalInventoryTransfer)),
+                    acknowledgement.AcceptedRevision.EntityId);
+                return excludedKeys is null || !excludedKeys.Contains(key);
+            })
+            .ToList();
+        if (applicableAcknowledgements.Count == 0)
+            return [];
+
+        var acceptedRevisions = applicableAcknowledgements
+            .Select(acknowledgement => acknowledgement.AcceptedRevision)
+            .ToList();
+        var handledKeys = acceptedRevisions
+            .Select(revision => new SyncEntityKey(
+                NormalizeSyncEntityName(revision.EntityName),
+                revision.EntityId))
+            .ToHashSet();
+        var ownerScope = BuildDeferredPurgeOwnerScope(expectedOwner);
+        var reservedAcknowledgementOutboxRowIds = request.InventoryTransfers
+            .Where(transfer => handledKeys.Contains(new SyncEntityKey(
+                NormalizeSyncEntityName(nameof(LocalInventoryTransfer)),
+                transfer.Id)))
+            .Select(transfer => transfer.MutationId)
+            .Where(mutationId =>
+                !string.IsNullOrWhiteSpace(mutationId) &&
+                currentPushReceipts.ContainsKey(mutationId))
+            .Select(mutationId =>
+                currentPushReceipts[mutationId].OutboxRowId)
+            .ToHashSet();
+        await RecoverIncompleteAttachmentFileJournalsAsync(ct);
+        await using var transaction =
+            await _db.BeginRuntimeMutationTransactionAsync(ct);
+        using var attachmentFiles = new AttachmentFileJournal(
+            AppPaths.AttachmentFileJournalDir,
+            AppPaths.AttachmentsDir);
+        using var inventoryStateChangeCapture =
+            _local.CaptureInventoryStateChanges();
+        var commitAttempted = false;
+        var committed = false;
+
+        try
+        {
+            await ValidateAndStageVerifiedInventoryTransferPurgeReceiptsAsync(
+                applicableAcknowledgements,
+                ownerScope,
+                ct);
+            foreach (var acknowledgement in applicableAcknowledgements)
+            {
+                var accepted = acknowledgement.AcceptedRevision;
+                var receipt = acknowledgement.PurgeRecord;
+                var existing = await _db.InventoryTransfers
+                    .IgnoreQueryFilters()
+                    .Include(transfer => transfer.Lines)
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(
+                        transfer => transfer.Id == accepted.EntityId,
+                        ct);
+                if (existing is null || existing.IsDeleted)
+                {
+                    continue;
+                }
+
+                var conflictSource =
+                    SelectInventoryTransferConflictSnapshotSource(
+                        existing,
+                        preparedMutationSnapshots);
+                var serverTombstone = LocalMappings.ToDto(conflictSource);
+                serverTombstone.TenantCode = receipt.TenantCode;
+                serverTombstone.SourceOfficeCode =
+                    receipt.SourceOfficeCode;
+                serverTombstone.TargetOfficeCode =
+                    receipt.TargetOfficeCode;
+                serverTombstone.IsDeleted = true;
+                serverTombstone.Revision = accepted.Revision;
+                serverTombstone.UpdatedAtUtc =
+                    accepted.UpdatedAtUtc == default
+                        ? NormalizeMutationUtc(receipt.UpdatedAtUtc)
+                        : NormalizeMutationUtc(accepted.UpdatedAtUtc);
+                serverTombstone.Lines = [];
+                await PersistInventoryTransferTombstoneConflictAsync(
+                    conflictSource,
+                    serverTombstone,
+                    ct,
+                    expectedOwner.BusinessDatabaseName,
+                    ownerSession,
+                    reservedAcknowledgementOutboxRowIds);
+            }
+
+            await MarkOutboxAcknowledgedCoreAsync(
+                request,
+                acceptedRevisions,
+                excludedKeys,
+                ownerSession,
+                businessDatabaseNameOverride,
+                currentPushReceipts,
+                ct);
+            foreach (var acknowledgement in applicableAcknowledgements)
+            {
+                var purgeResult = await _local
+                    .ApplyConfirmedInventoryTransferPurgeAsync(
+                        acknowledgement.PurgeRecord,
+                        expectedOwner.BusinessDatabaseName,
+                        attachmentFiles,
+                        ct);
+                if (!purgeResult.Success && !purgeResult.NotFound)
+                {
+                    throw new SyncPullBlockedException(
+                        string.IsNullOrWhiteSpace(purgeResult.Message)
+                            ? "The verified inventory transfer purge could not be applied atomically."
+                            : purgeResult.Message);
+                }
+            }
+
+            await RemoveConsumedInventoryTransferPurgeReceiptsAsync(
+                applicableAcknowledgements,
+                ownerScope,
+                ct);
+            if (AfterInventoryTransferPurgePushAppliedAsyncForTesting is not null)
+            {
+                await AfterInventoryTransferPurgePushAppliedAsyncForTesting(ct);
+            }
+
+            committed =
+                await CommitAttachmentTransactionUnderOwnerLeaseAsync(
+                    transaction,
+                    attachmentFiles,
+                    expectedOwner,
+                    () => commitAttempted = true,
+                    ct,
+                    ownerSession,
+                    businessDatabaseNameOverride);
+            if (!committed)
+            {
+                await transaction.RollbackAsync(
+                    CancellationToken.None);
+                attachmentFiles.Rollback();
+                _db.ChangeTracker.Clear();
+                throw new SyncPullBlockedException(
+                    "재고이동 영구삭제 응답 반영 직전에 로그인·업체 DB 범위가 변경되어 전체 반영을 취소했습니다.");
+            }
+
+            await transaction.DisposeAsync().ConfigureAwait(false);
+            await attachmentFiles.CompleteAfterDatabaseCommitAsync(
+                _db,
+                CancellationToken.None);
+        }
+        catch
+        {
+            var commitResolution =
+                AttachmentCommitResolution.RolledBack;
+            try
+            {
+                await transaction.RollbackAsync(
+                    CancellationToken.None);
+            }
+            catch (Exception rollbackException)
+            {
+                AppLogger.Error(
+                    "ATTACHMENT",
+                    "재고이동 push 영구삭제 반영의 DB 롤백 결과를 확정하지 못했습니다.",
+                    rollbackException);
+            }
+
+            if (!commitAttempted)
+            {
+                attachmentFiles.Rollback();
+            }
+            else
+            {
+                commitResolution =
+                    await attachmentFiles.ResolveCommitAmbiguityAsync(
+                        _db,
+                        CancellationToken.None);
+            }
+
+            _db.ChangeTracker.Clear();
+            if (commitResolution != AttachmentCommitResolution.Committed)
+                throw;
+
+            await transaction.DisposeAsync().ConfigureAwait(false);
+            committed = true;
+        }
+
+        if (!committed)
+        {
+            throw new SyncPullBlockedException(
+                "재고이동 영구삭제 응답을 원자적으로 반영하지 못했습니다.");
+        }
+
+        foreach (var handledKey in handledKeys)
+            _trackedMutationsPreservedDuringSync.Remove(handledKey);
+
+        inventoryStateChangeCapture.Dispose();
+        if (inventoryStateChangeCapture.HasChanges)
+        {
+            if (ReferenceEquals(ownerSession, _session) &&
+                IsSyncOperationOwnerCurrent(
+                    expectedOwner,
+                    ownerSession,
+                    businessDatabaseNameOverride))
+            {
+                _local.TryPublishInventoryStateChanged();
+            }
+            else
+            {
+                await ScheduleCurrentOwnerRefreshAfterCommittedOwnerChangeAsync();
+            }
+        }
+
+        AppLogger.Warn(
+            "SYNC",
+            $"Applied {applicableAcknowledgements.Count} durable inventory transfer purge acknowledgement(s) before pull.");
+        return handledKeys;
+    }
+
+    private async Task<HashSet<SyncEntityKey>> ApplyAcceptedRevisionsAsync<T>(
         IReadOnlyCollection<SyncAcceptedRevisionDto> acceptedRevisions,
+        IReadOnlyDictionary<SyncEntityKey, PreparedMutationSnapshot> preparedMutationSnapshots,
         CancellationToken ct,
         params string[] entityNames)
         where T : class, ILocalSyncEntity
     {
+        var locallyModifiedAfterPush = new HashSet<SyncEntityKey>();
         var revisionsById = acceptedRevisions
             .Where(revision => revision.EntityId != Guid.Empty &&
                                entityNames.Any(name => string.Equals(revision.EntityName, name, StringComparison.OrdinalIgnoreCase)))
@@ -5557,32 +9796,913 @@ public sealed class SyncService : IDisposable
             .ToDictionary(revision => revision.EntityId);
 
         if (revisionsById.Count == 0)
-            return;
+            return locallyModifiedAfterPush;
 
-        var ids = revisionsById.Keys.ToList();
-        var rows = await _db.Set<T>().IgnoreQueryFilters()
-            .Where(entity => ids.Contains(entity.Id))
-            .ToListAsync(ct);
-
-        if (rows.Count == 0)
-            return;
-
-        foreach (var row in rows)
+        var canonicalEntityName = NormalizeSyncEntityName(entityNames[0]);
+        var cleanedIds = new HashSet<Guid>();
+        var preservedDirtyIds = new HashSet<Guid>();
+        foreach (var (entityId, accepted) in revisionsById)
         {
-            if (!revisionsById.TryGetValue(row.Id, out var accepted))
+            var key = new SyncEntityKey(canonicalEntityName, entityId);
+            if (!preparedMutationSnapshots.TryGetValue(key, out var prepared))
+            {
+                // 서버가 canonical/alias revision을 함께 반환해도 실제 전송한 mutation이 아니면
+                // 해당 로컬 행의 dirty 상태를 변경하지 않는다.
+                continue;
+            }
+
+            var current = await LoadCurrentSyncEntitySnapshotAsync<T>(entityId, ct);
+            if (current is null)
                 continue;
 
-            if (accepted.Revision > 0 && accepted.Revision >= row.Revision)
-                row.Revision = accepted.Revision;
+            var currentPayloadHash = ComputePreparedMutationPayloadHash(
+                canonicalEntityName,
+                MapLocalEntityToPreparedMutationDto(current));
+            var hasPendingTrackedMutation =
+                HasPendingTrackedMutationAfterPush<T>(
+                    entityId,
+                    canonicalEntityName,
+                    prepared);
+            if (hasPendingTrackedMutation &&
+                accepted.Revision > 0 &&
+                _trackedMutationsPreservedDuringSync.TryGetValue(key, out var preservation))
+            {
+                preservation.RebaseAcceptedRevision(accepted.Revision);
+            }
+            var exactPreparedMutation =
+                current.IsDirty &&
+                !hasPendingTrackedMutation &&
+                IsPreparedMutationCurrent(current, prepared) &&
+                string.Equals(
+                    currentPayloadHash,
+                    prepared.PayloadHash,
+                    StringComparison.Ordinal);
 
-            if (accepted.UpdatedAtUtc != default)
-                row.UpdatedAtUtc = accepted.UpdatedAtUtc;
+            if (exactPreparedMutation)
+            {
+                var acceptedRevision = accepted.Revision > 0 && accepted.Revision >= current.Revision
+                    ? accepted.Revision
+                    : current.Revision;
+                var acceptedUpdatedAtUtc = accepted.UpdatedAtUtc != default
+                    ? NormalizeMutationUtc(accepted.UpdatedAtUtc)
+                    : NormalizeMutationUtc(current.UpdatedAtUtc);
+                if (BeforeAcceptedRevisionCleanAsyncForTesting is not null)
+                {
+                    await BeforeAcceptedRevisionCleanAsyncForTesting(ct);
+                }
 
-            row.IsDirty = false;
+                var affected = await _db.Set<T>()
+                    .IgnoreQueryFilters()
+                    .Where(row =>
+                        row.Id == entityId &&
+                        row.IsDirty &&
+                        row.Revision == prepared.ExpectedRevision &&
+                        row.UpdatedAtUtc == prepared.UpdatedAtUtc &&
+                        row.IsDeleted == prepared.IsDeleted)
+                    .ExecuteUpdateAsync(
+                        setters => setters
+                            .SetProperty(row => row.Revision, acceptedRevision)
+                            .SetProperty(row => row.UpdatedAtUtc, acceptedUpdatedAtUtc)
+                            .SetProperty(row => row.IsDirty, false),
+                        ct);
+                AcceptedRevisionCleanAffectedRowsForTesting?.Invoke(affected);
+                if (affected > 0)
+                {
+                    cleanedIds.Add(entityId);
+                    continue;
+                }
+            }
+            // 비교 이후 다른 DbContext가 다시 수정한 경우에도 사용자 payload와 시각은 건드리지
+            // 않고 서버가 승인한 revision만 rebase한다.
+            if (accepted.Revision > 0)
+            {
+                await _db.Set<T>()
+                    .IgnoreQueryFilters()
+                    .Where(row =>
+                        row.Id == entityId &&
+                        row.IsDirty &&
+                        row.Revision < accepted.Revision)
+                    .ExecuteUpdateAsync(
+                        setters => setters.SetProperty(row => row.Revision, accepted.Revision),
+                        ct);
+            }
+
+            var remainsDirty = await _db.Set<T>()
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .AnyAsync(row => row.Id == entityId && row.IsDirty, ct);
+            if (!remainsDirty)
+                continue;
+
+            preservedDirtyIds.Add(entityId);
+            locallyModifiedAfterPush.Add(key);
         }
 
-        await _db.SaveChangesAsync(ct);
-        SynchronizeTrackedAcceptedRevisionState<T>(revisionsById);
+        SynchronizeTrackedAcceptedRevisionState<T>(
+            revisionsById,
+            cleanedIds,
+            preservedDirtyIds);
+        return locallyModifiedAfterPush;
+    }
+
+    private static bool IsPreparedMutationCurrent(
+        ILocalSyncEntity current,
+        PreparedMutationSnapshot prepared)
+        => current.Revision == prepared.ExpectedRevision &&
+           NormalizeMutationUtc(current.UpdatedAtUtc) == prepared.UpdatedAtUtc &&
+           current.IsDeleted == prepared.IsDeleted;
+
+    private bool HasPendingTrackedUserChanges()
+    {
+        _db.ChangeTracker.DetectChanges();
+        var hasLocalChanges = _db.ChangeTracker.Entries()
+            .Any(entry =>
+                entry.Entity is not LocalSyncOutboxEntry &&
+                entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted);
+        return hasLocalChanges ||
+               (_isolatedOperationOwner is not null &&
+                _isolatedOperationOwner.HasPendingTrackedUserChanges());
+    }
+
+    private void PreservePendingTrackedChangesForSync()
+    {
+        var trackedState = CaptureTrackedStateBeforePush();
+        CaptureNonMutationTrackedChangesAtPushBoundary(
+            trackedState,
+            includeExistingChanges: true);
+    }
+
+    private bool PreserveTrackedChangesSinceBoundary(
+        IReadOnlyDictionary<object, TrackedEntryPushBaseline> trackedState)
+    {
+        var preservedCountBefore =
+            _trackedMutationsPreservedDuringSync.Count +
+            _trackedNonMutationChangesPreservedDuringSync.Count;
+        CaptureNonMutationTrackedChangesAtPushBoundary(
+            trackedState,
+            includeExistingChanges: false);
+        var preservedCountAfter =
+            _trackedMutationsPreservedDuringSync.Count +
+            _trackedNonMutationChangesPreservedDuringSync.Count;
+        return preservedCountAfter > preservedCountBefore;
+    }
+
+    private bool HasTrackedUserChangesSinceBoundary(
+        IReadOnlyDictionary<object, TrackedEntryPushBaseline> trackedState)
+    {
+        _db.ChangeTracker.DetectChanges();
+        var hasLocalChanges = _db.ChangeTracker.Entries()
+            .Where(entry =>
+                entry.Entity is not LocalSyncOutboxEntry &&
+                entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+            .Any(entry =>
+                !trackedState.TryGetValue(entry.Entity, out var baseline) ||
+                baseline.HasChanged(entry));
+        return hasLocalChanges ||
+               (_isolatedOperationOwner is not null &&
+                _isolatedOperationOwner.HasPendingTrackedUserChanges());
+    }
+
+    private IReadOnlyDictionary<object, TrackedEntryPushBaseline>?
+        CaptureIsolatedOwnerTrackedState()
+        => _isolatedOperationOwner?.CaptureTrackedStateBeforePush();
+
+    private bool HasIsolatedOwnerTrackedChangesSinceBoundary(
+        IReadOnlyDictionary<object, TrackedEntryPushBaseline>? trackedState)
+        => trackedState is not null &&
+           _isolatedOperationOwner is not null &&
+           _isolatedOperationOwner.HasTrackedUserChangesSinceBoundary(
+               trackedState);
+
+    private IReadOnlyDictionary<object, TrackedEntryPushBaseline> CaptureTrackedStateBeforePush()
+    {
+        _db.ChangeTracker.DetectChanges();
+        return _db.ChangeTracker.Entries()
+            .ToDictionary(
+                entry => entry.Entity,
+                TrackedEntryPushBaseline.Capture,
+                ReferenceEqualityComparer.Instance);
+    }
+
+    private void CaptureTrackedChangesBeforePreparedMutationBoundary(
+        IReadOnlyDictionary<SyncEntityKey, PreparedMutationSnapshot> preparedMutationSnapshots)
+    {
+        _db.ChangeTracker.DetectChanges();
+        var changedEntries = _db.ChangeTracker.Entries()
+            .Where(entry =>
+                entry.Entity is not LocalSyncOutboxEntry &&
+                entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+            .ToList();
+        if (changedEntries.Count == 0)
+            return;
+
+        var exactPreparedMutationEntities =
+            new HashSet<object>(ReferenceEqualityComparer.Instance);
+
+        void PreserveIfNewerThanPrepared(ILocalSyncEntity root)
+        {
+            var key = new SyncEntityKey(
+                NormalizeSyncEntityName(root.GetType().Name),
+                root.Id);
+            if (IsExactPreparedMutation(root, key, preparedMutationSnapshots))
+            {
+                foreach (var entry in GetTrackedMutationGraphEntries(root))
+                    exactPreparedMutationEntities.Add(entry.Entity);
+                return;
+            }
+
+            PreserveTrackedMutationForSync(key, root);
+        }
+
+        foreach (var root in changedEntries
+                     .Select(entry => entry.Entity)
+                     .OfType<ILocalSyncEntity>()
+                     .ToList())
+        {
+            PreserveIfNewerThanPrepared(root);
+        }
+
+        foreach (var dependent in changedEntries
+                     .Where(entry => entry.State != EntityState.Detached)
+                     .Select(entry => entry.Entity)
+                     .ToList())
+        {
+            var root = FindTrackedMutationRootForDependent(dependent);
+            if (root is not null)
+                PreserveIfNewerThanPrepared(root);
+        }
+
+        var preservedMutationEntities = _trackedMutationsPreservedDuringSync.Values
+            .SelectMany(preservation => preservation.Entries)
+            .Select(preservation => preservation.Entity)
+            .ToHashSet(ReferenceEqualityComparer.Instance);
+        var standaloneEntries = changedEntries
+            .Where(entry => entry.State != EntityState.Detached)
+            .Where(entry => !preservedMutationEntities.Contains(entry.Entity))
+            .Where(entry => !exactPreparedMutationEntities.Contains(entry.Entity))
+            .Select(entry => TrackedEntityPreservation.Capture(entry, entry.State))
+            .ToList();
+        _trackedNonMutationChangesPreservedDuringSync.AddRange(standaloneEntries);
+
+        foreach (var preservedEntry in standaloneEntries.AsEnumerable().Reverse())
+        {
+            var entry = _db.Entry(preservedEntry.Entity);
+            if (entry.State != EntityState.Detached)
+                entry.State = EntityState.Detached;
+        }
+    }
+
+    private static bool IsExactPreparedMutation(
+        ILocalSyncEntity current,
+        SyncEntityKey key,
+        IReadOnlyDictionary<SyncEntityKey, PreparedMutationSnapshot> preparedMutationSnapshots)
+    {
+        if (!preparedMutationSnapshots.TryGetValue(key, out var prepared) ||
+            !IsPreparedMutationCurrent(current, prepared))
+        {
+            return false;
+        }
+
+        var currentPayloadHash = ComputePreparedMutationPayloadHash(
+            key.EntityName,
+            MapLocalEntityToPreparedMutationDto(current));
+        return string.Equals(
+            currentPayloadHash,
+            prepared.PayloadHash,
+            StringComparison.Ordinal);
+    }
+
+    private void CaptureTrackedMutationsChangedAfterPush(
+        IReadOnlyDictionary<SyncEntityKey, PreparedMutationSnapshot> preparedMutationSnapshots)
+    {
+        if (preparedMutationSnapshots.Count == 0)
+            return;
+
+        _db.ChangeTracker.DetectChanges();
+        var roots = _db.ChangeTracker.Entries()
+            .Where(entry => entry.Entity is ILocalSyncEntity)
+            .ToList();
+        foreach (var rootEntry in roots)
+        {
+            var root = (ILocalSyncEntity)rootEntry.Entity;
+            var key = new SyncEntityKey(
+                NormalizeSyncEntityName(root.GetType().Name),
+                root.Id);
+            if (!preparedMutationSnapshots.ContainsKey(key) ||
+                _trackedMutationsPreservedDuringSync.ContainsKey(key))
+            {
+                continue;
+            }
+
+            var graphEntries = GetTrackedMutationGraphEntries(root);
+            if (graphEntries.Any(entry =>
+                    entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted))
+            {
+                PreserveTrackedMutationForSync(key, root, graphEntries);
+            }
+        }
+    }
+
+    private void CaptureNonMutationTrackedChangesAtPushBoundary(
+        IReadOnlyDictionary<object, TrackedEntryPushBaseline> trackedStateBeforePush,
+        bool includeExistingChanges)
+    {
+        _db.ChangeTracker.DetectChanges();
+        var changedEntries = _db.ChangeTracker.Entries()
+            .Where(entry =>
+                entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+            .Where(entry =>
+                includeExistingChanges ||
+                !trackedStateBeforePush.TryGetValue(entry.Entity, out var baseline) ||
+                baseline.HasChanged(entry))
+            .Where(entry => entry.Entity is not LocalSyncOutboxEntry)
+            .ToList();
+        if (changedEntries.Count == 0)
+            return;
+
+        foreach (var root in changedEntries
+                     .Select(entry => entry.Entity)
+                     .OfType<ILocalSyncEntity>()
+                     .ToList())
+        {
+            var key = new SyncEntityKey(
+                NormalizeSyncEntityName(root.GetType().Name),
+                root.Id);
+            PreserveTrackedMutationForSync(key, root);
+        }
+
+        foreach (var dependent in changedEntries
+                     .Where(entry => entry.State != EntityState.Detached)
+                     .Select(entry => entry.Entity)
+                     .ToList())
+        {
+            var root = FindTrackedMutationRootForDependent(dependent);
+            if (root is null)
+                continue;
+
+            var key = new SyncEntityKey(
+                NormalizeSyncEntityName(root.GetType().Name),
+                root.Id);
+            PreserveTrackedMutationForSync(key, root);
+        }
+
+        var preservedMutationEntities = _trackedMutationsPreservedDuringSync.Values
+            .SelectMany(preservation => preservation.Entries)
+            .Select(preservation => preservation.Entity)
+            .ToHashSet(ReferenceEqualityComparer.Instance);
+        var standaloneEntries = changedEntries
+            .Where(entry => entry.State != EntityState.Detached)
+            .Where(entry => !preservedMutationEntities.Contains(entry.Entity))
+            .Select(entry => TrackedEntityPreservation.Capture(entry, entry.State))
+            .ToList();
+        _trackedNonMutationChangesPreservedDuringSync.AddRange(standaloneEntries);
+
+        foreach (var preservedEntry in standaloneEntries.AsEnumerable().Reverse())
+        {
+            var entry = _db.Entry(preservedEntry.Entity);
+            if (entry.State != EntityState.Detached)
+                entry.State = EntityState.Detached;
+        }
+    }
+
+    private ILocalSyncEntity? FindTrackedMutationRootForDependent(object dependent)
+        => dependent switch
+        {
+            LocalInvoiceLine line => _db.ChangeTracker.Entries<LocalInvoice>()
+                .Select(entry => entry.Entity)
+                .FirstOrDefault(invoice => invoice.Id == line.InvoiceId),
+            LocalInventoryTransferLine line => _db.ChangeTracker.Entries<LocalInventoryTransfer>()
+                .Select(entry => entry.Entity)
+                .FirstOrDefault(transfer => transfer.Id == line.TransferId),
+            _ => null
+        };
+
+    private static bool TryBuildConflictEntityKey(
+        ConflictLogDto conflict,
+        out SyncEntityKey key)
+    {
+        key = default;
+        if (!Guid.TryParse(conflict.EntityId, out var entityId))
+            return false;
+
+        key = new SyncEntityKey(
+            NormalizeSyncEntityName(conflict.EntityName),
+            entityId);
+        return true;
+    }
+
+    private async Task<bool> ShouldPreserveConcurrentConflictAsync(
+        ConflictLogDto conflict,
+        IReadOnlyDictionary<SyncEntityKey, PreparedMutationSnapshot> preparedMutationSnapshots,
+        CancellationToken ct)
+    {
+        if (IsConflictForPreservedTrackedMutation(conflict))
+            return true;
+        if (TryGetItemWarehouseStockRevisionConflictSnapshots(
+                conflict,
+                out _,
+                out _))
+            return false;
+        if (!TryBuildConflictEntityKey(conflict, out var key) ||
+            !preparedMutationSnapshots.TryGetValue(key, out var prepared))
+        {
+            return true;
+        }
+
+        return !await IsPreparedMutationStillCurrentAsync(
+            key,
+            prepared,
+            ct);
+    }
+
+    private Task<bool> IsPreparedMutationStillCurrentAsync(
+        SyncEntityKey key,
+        PreparedMutationSnapshot prepared,
+        CancellationToken ct)
+        => key.EntityName switch
+        {
+            "CompanyProfile" => IsPreparedMutationStillCurrentAsync<LocalCompanyProfile>(key, prepared, ct),
+            "Unit" => IsPreparedMutationStillCurrentAsync<LocalUnit>(key, prepared, ct),
+            "CustomerCategory" => IsPreparedMutationStillCurrentAsync<LocalCustomerCategory>(key, prepared, ct),
+            "PriceGradeOption" => IsPreparedMutationStillCurrentAsync<LocalPriceGradeOption>(key, prepared, ct),
+            "TradeTypeOption" => IsPreparedMutationStillCurrentAsync<LocalTradeTypeOption>(key, prepared, ct),
+            "ItemCategoryOption" => IsPreparedMutationStillCurrentAsync<LocalItemCategoryOption>(key, prepared, ct),
+            "CustomerMaster" => IsPreparedMutationStillCurrentAsync<LocalCustomerMaster>(key, prepared, ct),
+            "Customer" => IsPreparedMutationStillCurrentAsync<LocalCustomer>(key, prepared, ct),
+            "CustomerContract" => IsPreparedMutationStillCurrentAsync<LocalCustomerContract>(key, prepared, ct),
+            "Item" => IsPreparedMutationStillCurrentAsync<LocalItem>(key, prepared, ct),
+            "ItemPriceGrade" => IsPreparedMutationStillCurrentAsync<LocalItemPriceGrade>(key, prepared, ct),
+            "TransactionRecord" => IsPreparedMutationStillCurrentAsync<LocalTransaction>(key, prepared, ct),
+            "TransactionAttachment" => IsPreparedMutationStillCurrentAsync<LocalTransactionAttachment>(key, prepared, ct),
+            "InventoryTransfer" => IsPreparedMutationStillCurrentAsync<LocalInventoryTransfer>(key, prepared, ct),
+            "RentalManagementCompany" => IsPreparedMutationStillCurrentAsync<LocalRentalManagementCompany>(key, prepared, ct),
+            "RentalBillingProfile" => IsPreparedMutationStillCurrentAsync<LocalRentalBillingProfile>(key, prepared, ct),
+            "RentalAsset" => IsPreparedMutationStillCurrentAsync<LocalRentalAsset>(key, prepared, ct),
+            "RentalAssetAssignmentHistory" => IsPreparedMutationStillCurrentAsync<LocalRentalAssetAssignmentHistory>(key, prepared, ct),
+            "RentalBillingLog" => IsPreparedMutationStillCurrentAsync<LocalRentalBillingLog>(key, prepared, ct),
+            "Invoice" => IsPreparedMutationStillCurrentAsync<LocalInvoice>(key, prepared, ct),
+            "Payment" => IsPreparedMutationStillCurrentAsync<LocalPayment>(key, prepared, ct),
+            _ => Task.FromResult(true)
+        };
+
+    private async Task<bool> IsPreparedMutationStillCurrentAsync<T>(
+        SyncEntityKey key,
+        PreparedMutationSnapshot prepared,
+        CancellationToken ct)
+        where T : class, ILocalSyncEntity
+    {
+        var current = await LoadCurrentSyncEntitySnapshotAsync<T>(
+            key.EntityId,
+            ct);
+        if (current is null ||
+            !current.IsDirty ||
+            !IsPreparedMutationCurrent(current, prepared))
+        {
+            return false;
+        }
+
+        var currentPayloadHash = ComputePreparedMutationPayloadHash(
+            key.EntityName,
+            MapLocalEntityToPreparedMutationDto(current));
+        return string.Equals(
+            currentPayloadHash,
+            prepared.PayloadHash,
+            StringComparison.Ordinal);
+    }
+
+    private async Task<ServerNewerConflictResolution>
+        ResolvePreparedServerNewerConflictsAsync(
+            IReadOnlyCollection<ConflictLogDto> conflicts,
+            IReadOnlyDictionary<SyncEntityKey, PreparedMutationSnapshot> preparedMutationSnapshots,
+            SyncPushRequest request,
+            SessionState session,
+            IReadOnlySet<SyncEntityKey>? excludedKeys,
+            CancellationToken ct)
+    {
+        var resolvedConflicts = new List<ConflictLogDto>();
+        var preservedConflicts = new List<ConflictLogDto>();
+
+        foreach (var conflict in conflicts)
+        {
+            if (!TryBuildConflictEntityKey(conflict, out var key) ||
+                !preparedMutationSnapshots.TryGetValue(key, out var prepared) ||
+                !TryReadConflictServerRevision(
+                    conflict.ServerJson,
+                    out var serverRevision) ||
+                serverRevision <= 0)
+            {
+                preservedConflicts.Add(conflict);
+                continue;
+            }
+
+            if (await TryResolvePreparedServerNewerConflictAsync(
+                    key,
+                    prepared,
+                    conflict,
+                    request,
+                    session,
+                    excludedKeys,
+                    ct))
+            {
+                resolvedConflicts.Add(conflict);
+                continue;
+            }
+
+            preservedConflicts.Add(conflict);
+            await RebasePreservedConcurrentConflictsAsync(
+                [conflict],
+                ct);
+        }
+
+        return new ServerNewerConflictResolution(
+            resolvedConflicts,
+            preservedConflicts);
+    }
+
+    private Task<bool> TryResolvePreparedServerNewerConflictAsync(
+        SyncEntityKey key,
+        PreparedMutationSnapshot prepared,
+        ConflictLogDto conflict,
+        SyncPushRequest request,
+        SessionState session,
+        IReadOnlySet<SyncEntityKey>? excludedKeys,
+        CancellationToken ct)
+        => Task.FromResult(false);
+
+    private async Task RebasePreservedConcurrentConflictsAsync(
+        IReadOnlyCollection<ConflictLogDto> conflicts,
+        CancellationToken ct)
+    {
+        foreach (var conflict in conflicts)
+        {
+            if (!TryBuildConflictEntityKey(conflict, out var key) ||
+                !TryReadConflictServerRevision(conflict.ServerJson, out var serverRevision) ||
+                serverRevision <= 0)
+            {
+                continue;
+            }
+
+            await RebasePersistedDirtyMutationRevisionAsync(
+                key,
+                serverRevision,
+                ct);
+            if (_trackedMutationsPreservedDuringSync.TryGetValue(
+                    key,
+                    out var preservation))
+            {
+                preservation.RebaseAcceptedRevision(serverRevision);
+            }
+
+        }
+    }
+
+    private Task RebasePersistedDirtyMutationRevisionAsync(
+        SyncEntityKey key,
+        long serverRevision,
+        CancellationToken ct)
+        => key.EntityName switch
+        {
+            "CompanyProfile" => RebasePersistedDirtyMutationRevisionAsync<LocalCompanyProfile>(key.EntityId, serverRevision, ct),
+            "Unit" => RebasePersistedDirtyMutationRevisionAsync<LocalUnit>(key.EntityId, serverRevision, ct),
+            "CustomerCategory" => RebasePersistedDirtyMutationRevisionAsync<LocalCustomerCategory>(key.EntityId, serverRevision, ct),
+            "PriceGradeOption" => RebasePersistedDirtyMutationRevisionAsync<LocalPriceGradeOption>(key.EntityId, serverRevision, ct),
+            "TradeTypeOption" => RebasePersistedDirtyMutationRevisionAsync<LocalTradeTypeOption>(key.EntityId, serverRevision, ct),
+            "ItemCategoryOption" => RebasePersistedDirtyMutationRevisionAsync<LocalItemCategoryOption>(key.EntityId, serverRevision, ct),
+            "CustomerMaster" => RebasePersistedDirtyMutationRevisionAsync<LocalCustomerMaster>(key.EntityId, serverRevision, ct),
+            "Customer" => RebasePersistedDirtyMutationRevisionAsync<LocalCustomer>(key.EntityId, serverRevision, ct),
+            "CustomerContract" => RebasePersistedDirtyMutationRevisionAsync<LocalCustomerContract>(key.EntityId, serverRevision, ct),
+            "Item" => RebasePersistedDirtyMutationRevisionAsync<LocalItem>(key.EntityId, serverRevision, ct),
+            "ItemPriceGrade" => RebasePersistedDirtyMutationRevisionAsync<LocalItemPriceGrade>(key.EntityId, serverRevision, ct),
+            "TransactionRecord" => RebasePersistedDirtyMutationRevisionAsync<LocalTransaction>(key.EntityId, serverRevision, ct),
+            "TransactionAttachment" => RebasePersistedDirtyMutationRevisionAsync<LocalTransactionAttachment>(key.EntityId, serverRevision, ct),
+            "InventoryTransfer" => RebasePersistedDirtyMutationRevisionAsync<LocalInventoryTransfer>(key.EntityId, serverRevision, ct),
+            "RentalManagementCompany" => RebasePersistedDirtyMutationRevisionAsync<LocalRentalManagementCompany>(key.EntityId, serverRevision, ct),
+            "RentalBillingProfile" => RebasePersistedDirtyMutationRevisionAsync<LocalRentalBillingProfile>(key.EntityId, serverRevision, ct),
+            "RentalAsset" => RebasePersistedDirtyMutationRevisionAsync<LocalRentalAsset>(key.EntityId, serverRevision, ct),
+            "RentalAssetAssignmentHistory" => RebasePersistedDirtyMutationRevisionAsync<LocalRentalAssetAssignmentHistory>(key.EntityId, serverRevision, ct),
+            "RentalBillingLog" => RebasePersistedDirtyMutationRevisionAsync<LocalRentalBillingLog>(key.EntityId, serverRevision, ct),
+            "Invoice" => RebasePersistedDirtyMutationRevisionAsync<LocalInvoice>(key.EntityId, serverRevision, ct),
+            "Payment" => RebasePersistedDirtyMutationRevisionAsync<LocalPayment>(key.EntityId, serverRevision, ct),
+            _ => Task.CompletedTask
+        };
+
+    private async Task RebasePersistedDirtyMutationRevisionAsync<T>(
+        Guid entityId,
+        long serverRevision,
+        CancellationToken ct)
+        where T : class, ILocalSyncEntity
+    {
+        await _db.Set<T>()
+            .IgnoreQueryFilters()
+            .Where(entity =>
+                entity.Id == entityId &&
+                entity.IsDirty &&
+                entity.Revision < serverRevision)
+            .ExecuteUpdateAsync(
+                setters => setters.SetProperty(
+                    entity => entity.Revision,
+                    serverRevision),
+                ct);
+    }
+
+    private static bool TryReadConflictServerRevision(
+        string? serverJson,
+        out long revision)
+    {
+        revision = 0;
+        if (string.IsNullOrWhiteSpace(serverJson))
+            return false;
+
+        try
+        {
+            using var document = JsonDocument.Parse(serverJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+                return false;
+
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (!string.Equals(
+                        property.Name,
+                        nameof(SyncEntityDto.Revision),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                return property.Value.TryGetInt64(out revision);
+            }
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    private bool IsConflictForPreservedTrackedMutation(ConflictLogDto conflict)
+    {
+        if (!TryBuildConflictEntityKey(conflict, out var key))
+            return false;
+
+        return _trackedMutationsPreservedDuringSync.ContainsKey(key);
+    }
+
+    private void PreserveTrackedMutationForSync(
+        SyncEntityKey key,
+        ILocalSyncEntity root,
+        IReadOnlyCollection<EntityEntry>? capturedGraphEntries = null)
+    {
+        if (_trackedMutationsPreservedDuringSync.ContainsKey(key))
+            return;
+
+        var graphEntries = capturedGraphEntries?.ToList() ??
+                           GetTrackedMutationGraphEntries(root);
+        if (graphEntries.All(entry => !ReferenceEquals(entry.Entity, root)))
+        {
+            graphEntries.Insert(0, _db.Entry(root));
+        }
+        else
+        {
+            graphEntries = graphEntries
+                .OrderBy(entry => ReferenceEquals(entry.Entity, root) ? 0 : 1)
+                .ToList();
+        }
+
+        var preservedEntries = graphEntries
+            .Select(entry => TrackedEntityPreservation.Capture(
+                entry,
+                ReferenceEquals(entry.Entity, root) &&
+                entry.State == EntityState.Unchanged
+                    ? EntityState.Modified
+                    : entry.State))
+            .ToList();
+        var preservation = new TrackedMutationPreservation(root, preservedEntries);
+        if (!_trackedMutationsPreservedDuringSync.TryAdd(key, preservation))
+            return;
+
+        foreach (var preservedEntry in preservedEntries.AsEnumerable().Reverse())
+        {
+            var entry = _db.Entry(preservedEntry.Entity);
+            if (entry.State != EntityState.Detached)
+                entry.State = EntityState.Detached;
+        }
+    }
+
+    private List<EntityEntry> GetTrackedMutationGraphEntries(ILocalSyncEntity root)
+        => _db.ChangeTracker.Entries()
+            .Where(entry => IsTrackedMutationGraphEntity(root, entry.Entity))
+            .ToList();
+
+    private static bool IsTrackedMutationGraphEntity(
+        ILocalSyncEntity root,
+        object candidate)
+        => ReferenceEquals(root, candidate) ||
+           root switch
+           {
+               LocalInvoice invoice =>
+                   candidate is LocalInvoiceLine line &&
+                   line.InvoiceId == invoice.Id,
+               LocalInventoryTransfer transfer =>
+                   candidate is LocalInventoryTransferLine line &&
+                   line.TransferId == transfer.Id,
+               _ => false
+           };
+
+    private void DetachTrackedDuplicateIfSafe(object entity)
+    {
+        var entry = _db.Entry(entity);
+        if (entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+        {
+            throw new InvalidOperationException(
+                "동일한 동기화 엔터티에 복원 대기 중인 편집과 별도의 미저장 편집이 동시에 존재합니다.");
+        }
+
+        entry.State = EntityState.Detached;
+    }
+
+    private bool HasPendingTrackedMutationAfterPush<T>(
+        Guid entityId,
+        string entityName,
+        PreparedMutationSnapshot prepared)
+        where T : class, ILocalSyncEntity
+    {
+        _db.ChangeTracker.DetectChanges();
+        var key = new SyncEntityKey(
+            NormalizeSyncEntityName(entityName),
+            entityId);
+        var entry = _db.ChangeTracker.Entries<T>()
+            .FirstOrDefault(candidate => candidate.Entity.Id == entityId);
+        if (_trackedMutationsPreservedDuringSync.TryGetValue(key, out var existing))
+        {
+            if (entry is not null && !ReferenceEquals(entry.Entity, existing.Entity))
+                DetachTrackedDuplicateIfSafe(entry.Entity);
+            return true;
+        }
+
+        if (entry is null)
+            return false;
+
+        var hasPendingMutation =
+            entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted;
+
+        if (hasPendingMutation)
+            PreserveTrackedMutationForSync(key, entry.Entity);
+
+        return hasPendingMutation;
+    }
+
+    private async Task<T?> LoadCurrentSyncEntitySnapshotAsync<T>(
+        Guid entityId,
+        CancellationToken ct)
+        where T : class, ILocalSyncEntity
+    {
+        if (typeof(T) == typeof(LocalInvoice))
+        {
+            var invoice = await _db.Invoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .AsSplitQuery()
+                .Include(current => current.Lines)
+                .Include(current => current.Payments)
+                .SingleOrDefaultAsync(current => current.Id == entityId, ct);
+            return invoice is null ? null : (T)(object)invoice;
+        }
+
+        if (typeof(T) == typeof(LocalInventoryTransfer))
+        {
+            var transfer = await _db.InventoryTransfers
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .AsSplitQuery()
+                .Include(current => current.Lines)
+                .SingleOrDefaultAsync(current => current.Id == entityId, ct);
+            return transfer is null ? null : (T)(object)transfer;
+        }
+
+        return await _db.Set<T>()
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleOrDefaultAsync(current => current.Id == entityId, ct);
+    }
+
+    private static SyncEntityDto MapLocalEntityToPreparedMutationDto(ILocalSyncEntity entity)
+        => entity switch
+        {
+            LocalItem value => MapItemForOutboundSync(value),
+            LocalTransactionAttachment value =>
+                LocalMappings.ToDto(value, ReadTransactionAttachmentContent(value)),
+            _ => TryMapLocalEntityToDto(entity)
+                 ?? throw new InvalidOperationException(
+                     $"지원되지 않는 동기화 엔터티입니다. {entity.GetType().Name}")
+        };
+
+    private static string ComputePreparedMutationPayloadHash(
+        string entityName,
+        SyncEntityDto entity)
+    {
+        var ignoredProperties = string.Equals(
+            NormalizeSyncEntityName(entityName),
+            "Invoice",
+            StringComparison.OrdinalIgnoreCase)
+            ? PreparedInvoiceMutationPayloadIgnoredPropertyNames
+            : PreparedMutationPayloadIgnoredPropertyNames;
+        var element = JsonSerializer.SerializeToElement((object)entity, entity.GetType());
+        var normalized = NormalizeConflictJson(element, ignoredProperties);
+        var payload = JsonSerializer.SerializeToUtf8Bytes(normalized);
+        return Convert.ToHexString(SHA256.HashData(payload));
+    }
+
+    private async Task ApplyAssignedInvoiceNumberAsync(
+        Guid invoiceId,
+        string assignedNumber,
+        bool isTaxInvoiceNumber,
+        IReadOnlyDictionary<SyncEntityKey, PreparedMutationSnapshot> preparedMutationSnapshots,
+        IReadOnlySet<SyncEntityKey> locallyModifiedAfterPush,
+        CancellationToken ct)
+    {
+        if (invoiceId == Guid.Empty || string.IsNullOrWhiteSpace(assignedNumber))
+            return;
+
+        var key = new SyncEntityKey("Invoice", invoiceId);
+        if (!preparedMutationSnapshots.TryGetValue(key, out var prepared))
+            return;
+
+        var preparedNumber = isTaxInvoiceNumber
+            ? prepared.TaxInvoiceNumber ?? string.Empty
+            : prepared.InvoiceNumber ?? string.Empty;
+        LocalInvoice? preservedInvoice = null;
+        if (_trackedMutationsPreservedDuringSync.TryGetValue(key, out var preservation) &&
+            preservation.Entity is LocalInvoice candidate)
+        {
+            var preservedNumber = isTaxInvoiceNumber
+                ? candidate.TaxInvoiceNumber
+                : candidate.InvoiceNumber;
+            if (!string.Equals(
+                    preservedNumber ?? string.Empty,
+                    preparedNumber,
+                    StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            preservedInvoice = candidate;
+        }
+
+        _db.ChangeTracker.DetectChanges();
+        var trackedEntry = _db.ChangeTracker.Entries<LocalInvoice>()
+            .FirstOrDefault(entry => entry.Entity.Id == invoiceId);
+        if (trackedEntry is not null)
+        {
+            var trackedNumber = isTaxInvoiceNumber
+                ? trackedEntry.Entity.TaxInvoiceNumber
+                : trackedEntry.Entity.InvoiceNumber;
+            if (!string.Equals(
+                    trackedNumber ?? string.Empty,
+                    preparedNumber,
+                    StringComparison.Ordinal))
+            {
+                return;
+            }
+        }
+
+        var affected = isTaxInvoiceNumber
+            ? await _db.Invoices
+                .IgnoreQueryFilters()
+                .Where(invoice =>
+                    invoice.Id == invoiceId &&
+                    invoice.TaxInvoiceNumber == preparedNumber)
+                .ExecuteUpdateAsync(
+                    setters => setters.SetProperty(
+                        invoice => invoice.TaxInvoiceNumber,
+                        assignedNumber),
+                    ct)
+            : await _db.Invoices
+                .IgnoreQueryFilters()
+                .Where(invoice =>
+                    invoice.Id == invoiceId &&
+                    invoice.InvoiceNumber == preparedNumber)
+                .ExecuteUpdateAsync(
+                    setters => setters.SetProperty(
+                        invoice => invoice.InvoiceNumber,
+                        assignedNumber),
+                    ct);
+        if (affected <= 0)
+            return;
+
+        if (preservedInvoice is not null)
+        {
+            if (isTaxInvoiceNumber)
+                preservedInvoice.TaxInvoiceNumber = assignedNumber;
+            else
+                preservedInvoice.InvoiceNumber = assignedNumber;
+        }
+
+        SynchronizeTrackedInvoiceAssignment(
+            invoiceId,
+            assignedNumber,
+            isTaxInvoiceNumber,
+            locallyModifiedAfterPush.Contains(key));
     }
 
     private async Task MarkServerNewerConflictsCleanAsync<T>(IReadOnlyCollection<Guid> ids, CancellationToken ct)
@@ -5680,26 +10800,193 @@ public sealed class SyncService : IDisposable
         }
     }
 
+    private void DetachTrackedEntities<T>(IReadOnlySet<Guid> ids)
+        where T : class, ILocalSyncEntity
+    {
+        if (ids.Count == 0)
+            return;
+
+        foreach (var entry in _db.ChangeTracker.Entries<T>().ToList())
+        {
+            if (ids.Contains(entry.Entity.Id))
+                entry.State = EntityState.Detached;
+        }
+    }
+
     private void SynchronizeTrackedAcceptedRevisionState<T>(
-        IReadOnlyDictionary<Guid, SyncAcceptedRevisionDto> revisionsById)
+        IReadOnlyDictionary<Guid, SyncAcceptedRevisionDto> revisionsById,
+        IReadOnlySet<Guid> cleanedIds,
+        IReadOnlySet<Guid> preservedDirtyIds)
         where T : class, ILocalSyncEntity
     {
         if (revisionsById.Count == 0)
             return;
 
-        foreach (var entry in _db.ChangeTracker.Entries<T>())
+        foreach (var entry in _db.ChangeTracker.Entries<T>().ToList())
         {
             if (!revisionsById.TryGetValue(entry.Entity.Id, out var accepted))
+                continue;
+
+            if (preservedDirtyIds.Contains(entry.Entity.Id))
+            {
+                if (entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+                {
+                    // 동일 DbContext에만 존재하는 미저장 편집은 절대 detach/clean하지 않는다.
+                    // 서버가 승인한 revision만 rebase하고 사용자의 변경 상태를 그대로 유지한다.
+                    if (accepted.Revision > 0 && accepted.Revision >= entry.Entity.Revision)
+                        entry.Entity.Revision = accepted.Revision;
+                    entry.Entity.IsDirty = true;
+                }
+                else
+                {
+                    // 이 인스턴스는 push 준비 당시 값일 수 있다. 새 DbContext가 저장한 최신
+                    // payload를 뒤이은 SaveChanges가 덮지 않도록 tracker에서 분리한다.
+                    entry.State = EntityState.Detached;
+                }
+                continue;
+            }
+
+            if (!cleanedIds.Contains(entry.Entity.Id))
                 continue;
 
             if (accepted.Revision > 0 && accepted.Revision >= entry.Entity.Revision)
                 entry.Entity.Revision = accepted.Revision;
 
             if (accepted.UpdatedAtUtc != default)
-                entry.Entity.UpdatedAtUtc = accepted.UpdatedAtUtc;
+                entry.Entity.UpdatedAtUtc = NormalizeMutationUtc(accepted.UpdatedAtUtc);
 
             entry.Entity.IsDirty = false;
             entry.State = EntityState.Unchanged;
+        }
+    }
+
+    private void RestoreTrackedMutationsPreservedDuringSync()
+    {
+        if (_trackedMutationsPreservedDuringSync.Count == 0 &&
+            _trackedNonMutationChangesPreservedDuringSync.Count == 0)
+            return;
+
+        try
+        {
+            var preservedEntries = _trackedMutationsPreservedDuringSync.Values
+                .SelectMany(preservation => preservation.Entries)
+                .Concat(_trackedNonMutationChangesPreservedDuringSync)
+                .ToList();
+            var unchangedDuplicates = new List<EntityEntry>();
+            foreach (var preservedEntry in preservedEntries)
+            {
+                foreach (var duplicate in FindTrackedDuplicates(preservedEntry))
+                {
+                    if (duplicate.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+                    {
+                        throw new InvalidOperationException(
+                            "동기화 후 로컬 편집을 복구하는 동안 동일 행의 별도 미저장 편집이 발견되었습니다.");
+                    }
+
+                    unchangedDuplicates.Add(duplicate);
+                }
+            }
+
+            foreach (var duplicate in unchangedDuplicates.Distinct())
+                duplicate.State = EntityState.Detached;
+
+            foreach (var preservation in _trackedMutationsPreservedDuringSync.Values)
+                preservation.Entity.IsDirty = true;
+
+            foreach (var preservedEntry in preservedEntries)
+                RestoreTrackedEntityState(preservedEntry);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"동기화 중 보존한 로컬 편집 상태를 복구하지 못했습니다: {ex.Message}");
+            throw;
+        }
+
+        _trackedMutationsPreservedDuringSync.Clear();
+        _trackedNonMutationChangesPreservedDuringSync.Clear();
+    }
+
+    private IReadOnlyCollection<EntityEntry> FindTrackedDuplicates(
+        TrackedEntityPreservation preserved)
+    {
+        if (preserved.PrimaryKeyValues.Count == 0)
+            return [];
+
+        return _db.ChangeTracker.Entries()
+            .Where(entry =>
+                !ReferenceEquals(entry.Entity, preserved.Entity) &&
+                entry.Entity.GetType() == preserved.Entity.GetType() &&
+                preserved.PrimaryKeyValues.All(key =>
+                    Equals(entry.Property(key.Key).CurrentValue, key.Value)))
+            .ToList();
+    }
+
+    private void RestoreTrackedEntityState(TrackedEntityPreservation preserved)
+    {
+        var entry = _db.Entry(preserved.Entity);
+        if (entry.State == EntityState.Detached)
+            _db.Attach(preserved.Entity);
+
+        entry = _db.Entry(preserved.Entity);
+        var currentValues = entry.Properties.ToDictionary(
+            property => property.Metadata.Name,
+            property => property.CurrentValue,
+            StringComparer.Ordinal);
+        var modifiedProperties = preserved.ModifiedProperties.ToHashSet(
+            StringComparer.Ordinal);
+        foreach (var (propertyName, currentValue) in currentValues)
+        {
+            if (preserved.OriginalValues.TryGetValue(propertyName, out var originalValue) &&
+                !Equals(currentValue, originalValue))
+            {
+                modifiedProperties.Add(propertyName);
+            }
+        }
+
+        entry.State = EntityState.Unchanged;
+        foreach (var property in entry.Properties)
+        {
+            var isModified = modifiedProperties.Contains(
+                property.Metadata.Name);
+            if (isModified &&
+                preserved.OriginalValues.TryGetValue(
+                    property.Metadata.Name,
+                    out var originalValue))
+            {
+                property.OriginalValue = originalValue;
+            }
+            else if (currentValues.TryGetValue(
+                         property.Metadata.Name,
+                         out var currentValue))
+            {
+                property.OriginalValue = currentValue;
+            }
+
+            if (currentValues.TryGetValue(
+                    property.Metadata.Name,
+                    out var restoredCurrentValue))
+            {
+                property.CurrentValue = restoredCurrentValue;
+            }
+        }
+
+        if (preserved.OriginalState == EntityState.Added)
+        {
+            entry.State = EntityState.Added;
+        }
+        else if (preserved.OriginalState == EntityState.Deleted)
+        {
+            entry.State = EntityState.Deleted;
+        }
+        else if (preserved.OriginalState == EntityState.Modified)
+        {
+            foreach (var property in entry.Properties)
+            {
+                property.IsModified = modifiedProperties.Contains(
+                    property.Metadata.Name);
+            }
         }
     }
 
@@ -5733,39 +11020,172 @@ public sealed class SyncService : IDisposable
         }
     }
 
-    private void SynchronizeTrackedInvoiceAssignment(Guid invoiceId, string invoiceNumber)
+    private void SynchronizeTrackedInvoiceAssignment(
+        Guid invoiceId,
+        string assignedNumber,
+        bool isTaxInvoiceNumber,
+        bool detachStaleTrackedEntity)
     {
-        foreach (var entry in _db.ChangeTracker.Entries<LocalInvoice>())
+        foreach (var entry in _db.ChangeTracker.Entries<LocalInvoice>().ToList())
         {
             if (entry.Entity.Id != invoiceId)
                 continue;
 
-            entry.Entity.InvoiceNumber = invoiceNumber;
-            entry.Entity.IsDirty = false;
-            entry.State = EntityState.Unchanged;
+            if (detachStaleTrackedEntity &&
+                entry.State is not (
+                    EntityState.Added or
+                    EntityState.Modified or
+                    EntityState.Deleted))
+            {
+                entry.State = EntityState.Detached;
+                continue;
+            }
+
+            if (isTaxInvoiceNumber)
+                entry.Entity.TaxInvoiceNumber = assignedNumber;
+            else
+                entry.Entity.InvoiceNumber = assignedNumber;
         }
     }
 
-    private void SynchronizeTrackedTaxInvoiceAssignment(Guid invoiceId, string taxInvoiceNumber)
-    {
-        foreach (var entry in _db.ChangeTracker.Entries<LocalInvoice>())
-        {
-            if (entry.Entity.Id != invoiceId)
-                continue;
+    private SyncOperationOwnerBoundary CaptureSyncOperationOwnerBoundary()
+        => CaptureSyncOperationOwnerBoundary(
+            _session,
+            businessDatabaseNameOverride: null);
 
-            entry.Entity.TaxInvoiceNumber = taxInvoiceNumber;
-            entry.Entity.IsDirty = false;
-            entry.State = EntityState.Unchanged;
-        }
+    private SyncOperationOwnerBoundary CaptureSyncOperationOwnerBoundary(
+        SessionState ownerSession,
+        string? businessDatabaseNameOverride)
+    {
+        using var scopeLease = ownerSession.AcquireSyncScopeSnapshotLease();
+        return CaptureSyncOperationOwnerBoundaryWithLeaseHeld(
+            ownerSession,
+            businessDatabaseNameOverride);
+    }
+
+    private SyncOperationOwnerBoundary
+        CaptureSyncOperationOwnerBoundaryWithLeaseHeld()
+        => CaptureSyncOperationOwnerBoundaryWithLeaseHeld(
+            _session,
+            businessDatabaseNameOverride: null);
+
+    private static SyncOperationOwnerBoundary
+        CaptureSyncOperationOwnerBoundaryWithLeaseHeld(
+            SessionState ownerSession,
+            string? businessDatabaseNameOverride)
+        => new(
+            ownerSession.SyncScopeEpoch,
+            ownerSession.SessionId,
+            ownerSession.User?.UserId ?? Guid.Empty,
+            TenantScopeCatalog.NormalizeTenantCodeOrDefault(
+                ownerSession.AuthenticatedTenantCode),
+            TenantScopeCatalog.NormalizeTenantCodeOrDefault(
+                ownerSession.TenantCode,
+                ownerSession.AuthenticatedTenantCode),
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+                ownerSession.OfficeCode),
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+                ownerSession.BusinessOfficeCode,
+                ownerSession.OfficeCode),
+            (ownerSession.ScopeType ?? string.Empty).Trim(),
+            TenantScopeCatalog.GetDatabaseName(
+                string.IsNullOrWhiteSpace(businessDatabaseNameOverride)
+                    ? ownerSession.SelectedBusinessDatabaseName
+                    : businessDatabaseNameOverride));
+
+    private bool IsSyncOperationOwnerCurrent(
+        SyncOperationOwnerBoundary expected,
+        bool scopeLeaseHeld = false)
+        => IsSyncOperationOwnerCurrent(
+            expected,
+            _session,
+            businessDatabaseNameOverride: null,
+            scopeLeaseHeld);
+
+    private bool IsSyncOperationOwnerCurrent(
+        SyncOperationOwnerBoundary expected,
+        SessionState ownerSession,
+        string? businessDatabaseNameOverride,
+        bool scopeLeaseHeld = false)
+    {
+        var current = scopeLeaseHeld
+            ? CaptureSyncOperationOwnerBoundaryWithLeaseHeld(
+                ownerSession,
+                businessDatabaseNameOverride)
+            : CaptureSyncOperationOwnerBoundary(
+                ownerSession,
+                businessDatabaseNameOverride);
+        return expected.ScopeEpoch == current.ScopeEpoch &&
+               expected.SessionId == current.SessionId &&
+               expected.UserId == current.UserId &&
+               string.Equals(
+                   expected.AuthenticatedTenantCode,
+                   current.AuthenticatedTenantCode,
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(
+                   expected.TenantCode,
+                   current.TenantCode,
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(
+                   expected.OfficeCode,
+                   current.OfficeCode,
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(
+                   expected.BusinessOfficeCode,
+                   current.BusinessOfficeCode,
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(
+                   expected.ScopeType,
+                   current.ScopeType,
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(
+                   expected.BusinessDatabaseName,
+                   current.BusinessDatabaseName,
+                   StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task PullNewAsync(CancellationToken ct)
+        => _ = await PullNewCoreAsync(
+            rejectPulledDirtyCollisions: false,
+            ct);
+
+    private Task<bool> PullNewAuthoritativeOnlyAsync(CancellationToken ct)
+        => PullNewCoreAsync(
+            rejectPulledDirtyCollisions: true,
+            ct);
+
+    private async Task<bool> PullNewCoreAsync(
+        bool rejectPulledDirtyCollisions,
+        CancellationToken ct)
     {
+        var serverMirrorRequestBoundary = rejectPulledDirtyCollisions
+            ? _local.CaptureServerMirrorRefreshRequestBoundary()
+            : (LocalStateService.ServerMirrorRefreshRequestBoundary?)null;
         var revStr = await _local.GetSettingAsync("LastSyncRevision", ct) ?? "0";
         var sinceRev = long.TryParse(revStr, out var r) ? r : 0L;
         var pendingDirtyCount = await _local.CountDirtyAsync(ct);
         var hasPendingDirty = pendingDirtyCount > 0;
         var requiresMirrorRefresh = await _local.IsServerMirrorRefreshRequiredAsync(ct);
+        var operationOwner = CaptureSyncOperationOwnerBoundary();
+
+        if (await HasPendingReconciliationForOperationOwnerAsync(operationOwner, ct))
+        {
+            if (rejectPulledDirtyCollisions)
+                return false;
+
+            throw new SyncPullBlockedException(
+                "A current-owner non-acknowledged mutation still requires reconciliation before a server pull can be applied.");
+        }
+
+        if (rejectPulledDirtyCollisions &&
+            (requiresMirrorRefresh ||
+             sinceRev <= 0 ||
+             serverMirrorRequestBoundary.HasValue &&
+             _local.HasServerMirrorRefreshRequestSince(
+                 serverMirrorRequestBoundary.Value)))
+        {
+            return false;
+        }
 
         if (!requiresMirrorRefresh && !hasPendingDirty && await _local.HasLikelyCorruptedPrimaryWorkCacheAsync(_session, ct))
         {
@@ -5776,11 +11196,10 @@ public sealed class SyncService : IDisposable
         if (requiresMirrorRefresh && !hasPendingDirty)
         {
             AppLogger.Info("SYNC", "버전 정비 후 범위 불일치 데이터를 정리하기 위해 중앙 서버 기준 전체 캐시 재구성을 수행합니다.");
-            if (!await TryRefreshSharedMirrorCoreAsync(ct))
+            if (!await TryRefreshSharedMirrorCoreAsync(ct, preserveTrackedChanges: true))
                 throw new InvalidOperationException("중앙 서버 기준 캐시 재구성에 실패했습니다.");
 
-            await _local.ClearServerMirrorRefreshRequiredAsync(ct);
-            return;
+            return true;
         }
 
         if (requiresMirrorRefresh && hasPendingDirty)
@@ -5789,38 +11208,109 @@ public sealed class SyncService : IDisposable
         if (sinceRev <= 0 && !hasPendingDirty)
         {
             AppLogger.Info("SYNC", "마지막 동기화 리비전이 없어 중앙 서버 기준 전체 캐시 재구성을 사용합니다.");
-            if (!await TryRefreshSharedMirrorCoreAsync(ct))
+            if (!await TryRefreshSharedMirrorCoreAsync(ct, preserveTrackedChanges: true))
                 throw new InvalidOperationException("중앙 서버 기준 캐시 재구성에 실패했습니다.");
 
-            return;
+            return true;
         }
 
-        var pull = await _api.PullAsync(sinceRev, ct);
+        var ownerTrackedStateBeforePull =
+            CaptureIsolatedOwnerTrackedState();
+        if (rejectPulledDirtyCollisions &&
+            HasPendingTrackedUserChanges())
+        {
+            return false;
+        }
+        var ownerTrackedChangesArrivedDuringPull = false;
+        SyncPullResponse? pull;
+        try
+        {
+            pull = await _api.PullAsync(
+                sinceRev,
+                operationOwner.BusinessDatabaseName,
+                ct);
+        }
+        finally
+        {
+            PreservePendingTrackedChangesForSync();
+            ownerTrackedChangesArrivedDuringPull =
+                HasIsolatedOwnerTrackedChangesSinceBoundary(
+                    ownerTrackedStateBeforePull);
+        }
+
         if (pull is null)
             throw new HttpRequestException("서버 응답이 비어 있어 동기화 다운로드를 완료하지 못했습니다.");
+        if (!IsSyncOperationOwnerCurrent(operationOwner))
+        {
+            await DeferPullForChangedOperationOwnerAsync();
+            return false;
+        }
+        if (ownerTrackedChangesArrivedDuringPull)
+        {
+            await DeferPullForConcurrentOwnerEditAsync();
+            return false;
+        }
+        if (rejectPulledDirtyCollisions &&
+            pull.CurrentServerRevision < sinceRev)
+        {
+            await _local.MarkServerMirrorRefreshRequiredAsync(ct);
+            return false;
+        }
+        if (serverMirrorRequestBoundary.HasValue &&
+            _local.HasServerMirrorRefreshRequestSince(
+                serverMirrorRequestBoundary.Value))
+        {
+            return false;
+        }
+        if (await HasPendingReconciliationForOperationOwnerAsync(operationOwner, ct))
+        {
+            if (rejectPulledDirtyCollisions)
+                return false;
 
+            throw new SyncPullBlockedException(
+                "A current-owner non-acknowledged mutation appeared while the server pull was in flight.");
+        }
+
+        pendingDirtyCount = await _local.CountDirtyAsync(ct);
+        hasPendingDirty = pendingDirtyCount > 0;
         LastPullChangeCount = CountPullChanges(pull);
 
         try
         {
+            PreservePendingTrackedChangesForSync();
             _db.ChangeTracker.Clear();
             using (_local.SuppressSyncDispatch())
             {
-                await ApplyPullAsync(pull, sinceRev, ct);
+                var applied = await TryApplyPullAtomicallyAsync(
+                    pull,
+                    sinceRev,
+                    ct,
+                    updateSyncRevision: true,
+                    expectedOwner: operationOwner,
+                    rejectPulledDirtyCollisions:
+                        rejectPulledDirtyCollisions,
+                    serverMirrorRequestBoundary:
+                        serverMirrorRequestBoundary);
+                if (!applied)
+                {
+                    await DeferPullForChangedOperationOwnerAsync();
+                    return false;
+                }
             }
         }
         catch (DbUpdateConcurrencyException ex)
+            when (_itemWarehouseStockReplayPullGuard is null)
         {
             _db.ChangeTracker.Clear();
 
             if (hasPendingDirty)
             {
                 await DeferPullRefreshUntilDirtyChangesArePushedAsync(pendingDirtyCount, ex);
-                return;
+                return false;
             }
 
             AppLogger.Info("SYNC", $"증분 pull 반영 중 동시성 충돌이 발생해 전체 캐시 재구성을 수행합니다: {ex.Message}");
-            var recovered = await TryRefreshSharedMirrorCoreAsync(ct);
+            var recovered = await TryRefreshSharedMirrorCoreAsync(ct, preserveTrackedChanges: true);
             await TryRecordDiagnosticAsync(
                 phase: "pull",
                 rawMessage: $"증분 pull 반영 중 동시성 충돌: {ex.Message}",
@@ -5832,11 +11322,23 @@ public sealed class SyncService : IDisposable
             if (!recovered)
                 throw;
         }
-        catch
+        catch (Exception ex)
         {
             _db.ChangeTracker.Clear();
+            if (_itemWarehouseStockReplayPullGuard is not null &&
+                ex is not SyncPullBlockedException &&
+                !(ex is OperationCanceledException &&
+                  ct.IsCancellationRequested))
+            {
+                throw new SyncPullBlockedException(
+                    "재고 snapshot guard가 활성화된 정상 pull 적용 중 DB 동시성 또는 저장 실패가 발생해 후속 pull을 중단했습니다.",
+                    ex);
+            }
+
             throw;
         }
+
+        return true;
     }
 
     private async Task ApplyPullAsync(
@@ -5845,6 +11347,394 @@ public sealed class SyncService : IDisposable
         CancellationToken ct,
         bool updateSyncRevision = true)
     {
+        _ = await TryApplyPullAtomicallyAsync(
+            pull,
+            sinceRev,
+            ct,
+            updateSyncRevision,
+            expectedOwner: null);
+    }
+
+    private async Task<bool> TryApplyPullAtomicallyAsync(
+        SyncPullResponse pull,
+        long sinceRev,
+        CancellationToken ct,
+        bool updateSyncRevision,
+        SyncOperationOwnerBoundary? expectedOwner,
+        bool applyCompleteItemWarehouseStockSnapshot = true,
+        Action? markOwnerRefreshScheduled = null,
+        bool rejectPulledDirtyCollisions = false,
+        LocalStateService.ServerMirrorRefreshRequestBoundary?
+            serverMirrorRequestBoundary = null)
+        => await TryApplyPullAtomicallyCoreAsync(
+            pull,
+            sinceRev,
+            ct,
+            updateSyncRevision,
+            expectedOwner,
+            applyCompleteItemWarehouseStockSnapshot,
+            markOwnerRefreshScheduled,
+            replaceLocalBusinessCache: false,
+            rejectPulledDirtyCollisions:
+                rejectPulledDirtyCollisions,
+            serverMirrorRequestBoundary:
+                serverMirrorRequestBoundary);
+
+    private async Task<bool> TryApplyPullAtomicallyCoreAsync(
+        SyncPullResponse pull,
+        long sinceRev,
+        CancellationToken ct,
+        bool updateSyncRevision,
+        SyncOperationOwnerBoundary? expectedOwner,
+        bool applyCompleteItemWarehouseStockSnapshot = true,
+        Action? markOwnerRefreshScheduled = null,
+        bool replaceLocalBusinessCache = false,
+        bool rejectPulledDirtyCollisions = false,
+        LocalStateService.ServerMirrorRefreshRequestBoundary?
+            serverMirrorRequestBoundary = null)
+    {
+        if (expectedOwner is not null &&
+            !IsSyncOperationOwnerCurrent(expectedOwner))
+        {
+            return false;
+        }
+
+        await RecoverIncompleteAttachmentFileJournalsAsync(ct);
+        await using var transaction =
+            await _db.BeginRuntimeMutationTransactionAsync(ct);
+        _itemWarehouseStockReplayGuardValidatedForPullTransaction =
+            false;
+        using var attachmentFiles = new AttachmentFileJournal(
+            AppPaths.AttachmentFileJournalDir,
+            AppPaths.AttachmentsDir);
+        var commitAttempted = false;
+        var itemInvoiceHistoryChanged = false;
+        using var inventoryStateChangeCapture =
+            _local.CaptureInventoryStateChanges();
+
+        try
+        {
+            if (expectedOwner is not null &&
+                !IsSyncOperationOwnerCurrent(expectedOwner))
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                attachmentFiles.Rollback();
+                _db.ChangeTracker.Clear();
+                return false;
+            }
+
+            if (rejectPulledDirtyCollisions &&
+                (HasPendingTrackedUserChanges() ||
+                 await _local.IsServerMirrorRefreshRequiredAsync(ct) ||
+                 serverMirrorRequestBoundary.HasValue &&
+                 _local.HasServerMirrorRefreshRequestSince(
+                     serverMirrorRequestBoundary.Value)))
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                attachmentFiles.Rollback();
+                _db.ChangeTracker.Clear();
+                return false;
+            }
+
+            if (expectedOwner is not null &&
+                await HasPendingReconciliationForOperationOwnerAsync(
+                    expectedOwner,
+                    ct))
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                attachmentFiles.Rollback();
+                _db.ChangeTracker.Clear();
+                if (rejectPulledDirtyCollisions)
+                    return false;
+
+                throw new SyncPullBlockedException(
+                    "A current-owner non-acknowledged mutation requires reconciliation before pull application.");
+            }
+
+            if (rejectPulledDirtyCollisions &&
+                await HasAuthoritativePullDirtyCollisionAsync(
+                    pull,
+                    applyCompleteItemWarehouseStockSnapshot,
+                    ct))
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                attachmentFiles.Rollback();
+                _db.ChangeTracker.Clear();
+                return false;
+            }
+
+            if (applyCompleteItemWarehouseStockSnapshot)
+            {
+                await EnsureItemWarehouseStockReplayPullGuardUnchangedAsync(
+                    ct);
+                _itemWarehouseStockReplayGuardValidatedForPullTransaction =
+                    _itemWarehouseStockReplayPullGuard is not null;
+            }
+
+            if (replaceLocalBusinessCache)
+            {
+                await _local.ResetBusinessDataCacheWithAttachmentJournalAsync(
+                    attachmentFiles,
+                    ct);
+            }
+
+            var purgeOwner =
+                expectedOwner ?? CaptureSyncOperationOwnerBoundary();
+            itemInvoiceHistoryChanged = await ApplyPullInternalAsync(
+                pull,
+                sinceRev,
+                ct,
+                updateSyncRevision,
+                attachmentFiles,
+                publishRentalStateChanges: false,
+                applyCompleteItemWarehouseStockSnapshot:
+                    applyCompleteItemWarehouseStockSnapshot,
+                purgeOwner);
+
+            if (rejectPulledDirtyCollisions &&
+                (HasPendingTrackedUserChanges() ||
+                 await _local.IsServerMirrorRefreshRequiredAsync(ct) ||
+                 serverMirrorRequestBoundary.HasValue &&
+                 _local.HasServerMirrorRefreshRequestSince(
+                     serverMirrorRequestBoundary.Value)))
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                attachmentFiles.Rollback();
+                _db.ChangeTracker.Clear();
+                return false;
+            }
+
+            var committed =
+                await CommitAttachmentTransactionUnderOwnerLeaseAsync(
+                    transaction,
+                    attachmentFiles,
+                    expectedOwner,
+                    () => commitAttempted = true,
+                    ct,
+                    additionalCommitGuard:
+                        rejectPulledDirtyCollisions
+                            ? async guardCt =>
+                                !HasPendingTrackedUserChanges() &&
+                                !await _local.IsServerMirrorRefreshRequiredAsync(guardCt) &&
+                                (!serverMirrorRequestBoundary.HasValue ||
+                                 !_local.HasServerMirrorRefreshRequestSince(
+                                     serverMirrorRequestBoundary.Value))
+                            : null);
+            _itemWarehouseStockReplayGuardValidatedForPullTransaction =
+                false;
+            if (!committed)
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                attachmentFiles.Rollback();
+                _db.ChangeTracker.Clear();
+                return false;
+            }
+
+            await transaction.DisposeAsync().ConfigureAwait(false);
+            await attachmentFiles.CompleteAfterDatabaseCommitAsync(
+                _db,
+                CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _itemWarehouseStockReplayGuardValidatedForPullTransaction =
+                false;
+            var commitResolution = AttachmentCommitResolution.RolledBack;
+            try
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+            }
+            catch (Exception rollbackException)
+            {
+                AppLogger.Error(
+                    "ATTACHMENT",
+                    "증분 pull 실패 후 DB 롤백 결과를 확정하지 못했습니다.",
+                    rollbackException);
+            }
+
+            if (!commitAttempted)
+            {
+                attachmentFiles.Rollback();
+            }
+            else
+            {
+                commitResolution = await attachmentFiles.ResolveCommitAmbiguityAsync(
+                    _db,
+                    CancellationToken.None);
+            }
+
+            _db.ChangeTracker.Clear();
+            if (commitResolution != AttachmentCommitResolution.Committed)
+            {
+                if (_itemWarehouseStockReplayPullGuard is not null &&
+                    ex is not SyncPullBlockedException &&
+                    !(ex is OperationCanceledException &&
+                      ct.IsCancellationRequested))
+                {
+                    throw new SyncPullBlockedException(
+                        "재고 snapshot guard가 활성화된 pull 적용 중 DB 동시성 또는 저장 실패가 발생해 후속 pull을 중단했습니다.",
+                        ex);
+                }
+
+                throw;
+            }
+
+            // The ambiguity resolver completes the journal through an
+            // independent context. Ensure this context is transaction-free
+            // before the owner-bound post-commit effects below.
+            await transaction.DisposeAsync().ConfigureAwait(false);
+        }
+
+        if (expectedOwner is not null)
+        {
+            var effectsPublished =
+                await TryRunPostCommitEffectsForCurrentOwnerAsync(
+                    expectedOwner,
+                    _ => Task.CompletedTask,
+                    () => TryPublishOwnerBoundRentalState(
+                        expectedOwner,
+                        pull.RentalAssets.Select(asset => asset.Id),
+                        pull.RentalBillingProfiles.Select(profile => profile.Id)),
+                    () => TryPublishOwnerBoundItemInvoiceHistory(
+                        expectedOwner,
+                        itemInvoiceHistoryChanged),
+                    () => TryPublishOwnerBoundInventoryState(
+                        expectedOwner,
+                        inventoryStateChangeCapture.HasChanges));
+            if (!effectsPublished)
+            {
+                _db.ChangeTracker.Clear();
+                await ScheduleCurrentOwnerRefreshAfterCommittedOwnerChangeAsync();
+                markOwnerRefreshScheduled?.Invoke();
+            }
+
+            return true;
+        }
+
+        _rental.PublishSynchronizedStateChanges(
+            pull.RentalAssets.Select(asset => asset.Id),
+            pull.RentalBillingProfiles.Select(profile => profile.Id));
+        if (itemInvoiceHistoryChanged)
+        {
+            try
+            {
+                _local.TryPublishItemInvoiceHistoryChanged();
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error(
+                    "SYNC",
+                    "커밋된 증분 pull의 품목별 전표이력 변경 알림 중 오류가 발생했습니다.",
+                    ex);
+            }
+        }
+        if (inventoryStateChangeCapture.HasChanges)
+        {
+            try
+            {
+                _local.TryPublishInventoryStateChanged();
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error(
+                    "SYNC",
+                    "커밋된 증분 pull의 재고 변경 알림 중 오류가 발생했습니다.",
+                    ex);
+            }
+        }
+        return true;
+    }
+
+    private async Task<bool> CommitAttachmentTransactionUnderOwnerLeaseAsync(
+        IDbContextTransaction transaction,
+        AttachmentFileJournal attachmentFiles,
+        SyncOperationOwnerBoundary? expectedOwner,
+        Action markCommitAttempted,
+        CancellationToken ct,
+        SessionState? ownerSession = null,
+        string? businessDatabaseNameOverride = null,
+        Func<CancellationToken, Task<bool>>? additionalCommitGuard = null)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+        ArgumentNullException.ThrowIfNull(attachmentFiles);
+        ArgumentNullException.ThrowIfNull(markCommitAttempted);
+
+        var commitOwnerSession = ownerSession ?? _session;
+        IDisposable? commitScopeLease = null;
+        if (expectedOwner is not null)
+        {
+            commitScopeLease = await commitOwnerSession
+                .AcquireSyncScopeCommitLeaseAsync(ct)
+                .ConfigureAwait(false);
+        }
+
+        using (commitScopeLease)
+        {
+            if (_itemWarehouseStockReplayPullGuard is not null &&
+                !_itemWarehouseStockReplayGuardValidatedForPullTransaction)
+            {
+                throw new SyncPullBlockedException(
+                    "재고 snapshot guard가 pull 적용 트랜잭션에서 검증되지 않아 커밋을 중단했습니다.");
+            }
+
+            if (expectedOwner is not null &&
+                !IsSyncOperationOwnerCurrent(
+                    expectedOwner,
+                    commitOwnerSession,
+                    businessDatabaseNameOverride,
+                    scopeLeaseHeld: true))
+            {
+                return false;
+            }
+
+            await attachmentFiles
+                .StageCommitEvidenceAsync(_db, ct)
+                .ConfigureAwait(false);
+            attachmentFiles.Promote();
+            if (additionalCommitGuard is not null &&
+                BeforeStrictPullCommitGuardAsyncForTesting is not null)
+            {
+                await BeforeStrictPullCommitGuardAsyncForTesting(ct)
+                    .ConfigureAwait(false);
+            }
+            if (additionalCommitGuard is not null &&
+                !await additionalCommitGuard(ct).ConfigureAwait(false))
+            {
+                return false;
+            }
+            markCommitAttempted();
+
+            // Session mutators are synchronous because UI selection changes are
+            // immediate. Do not capture that UI context while holding the commit
+            // lease: the continuation must release the lease before a blocked UI
+            // mutation can resume.
+            await transaction.CommitAsync(ct).ConfigureAwait(false);
+        }
+
+        if (AfterAttachmentCommitAsyncForTesting is not null)
+        {
+            await AfterAttachmentCommitAsyncForTesting(
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+
+        return true;
+    }
+
+    private async Task<bool> ApplyPullInternalAsync(
+        SyncPullResponse pull,
+        long sinceRev,
+        CancellationToken ct,
+        bool updateSyncRevision,
+        AttachmentFileJournal? attachmentFileJournal,
+        bool publishRentalStateChanges,
+        bool applyCompleteItemWarehouseStockSnapshot = true,
+        SyncOperationOwnerBoundary? purgeOwner = null)
+    {
+        await ApplyItemCatalogExtensionCapabilityAsync(
+            pull.ItemCatalogExtensionVersion,
+            ct);
+        _db.ChangeTracker.Clear();
         await UpsertPulledCompanyProfilesAsync(pull.CompanyProfiles, ct);
         _db.ChangeTracker.Clear();
         await UpsertPulledUnitsAsync(pull.Units, ct);
@@ -5863,20 +11753,40 @@ public sealed class SyncService : IDisposable
         _db.ChangeTracker.Clear();
         await UpsertPulledCustomerContractsAsync(pull.CustomerContracts, ct);
         _db.ChangeTracker.Clear();
-        await UpsertPulledItemsAsync(pull.Items, ct);
+        var pulledItemAliasMap = await UpsertPulledItemsAsync(
+            pull.Items,
+            ct,
+            preserveExistingInventoryStock:
+                !applyCompleteItemWarehouseStockSnapshot);
         _db.ChangeTracker.Clear();
         await UpsertPulledAsync(pull.ItemPriceGrades, _db.ItemPriceGrades, LocalMappings.ToLocal, ct);
         _db.ChangeTracker.Clear();
-        await UpsertPulledItemWarehouseStocksAsync(pull.ItemWarehouseStocks, ct);
-        _db.ChangeTracker.Clear();
+        if (applyCompleteItemWarehouseStockSnapshot)
+        {
+            if (!_itemWarehouseStockReplayGuardValidatedBeforeMirrorReset)
+            {
+                await EnsureItemWarehouseStockReplayPullGuardUnchangedAsync(
+                    ct);
+            }
+            await UpsertPulledItemWarehouseStocksAsync(
+                pull.ItemWarehouseStocks,
+                ct);
+            _db.ChangeTracker.Clear();
+        }
         var transactionSideEffects = await UpsertPulledTransactionsAsync(pull.Transactions, ct);
         _db.ChangeTracker.Clear();
-        await UpsertPulledTransactionAttachmentsAsync(pull.TransactionAttachments, ct);
+        await UpsertPulledTransactionAttachmentsAsync(
+            pull.TransactionAttachments,
+            ct,
+            attachmentFileJournal);
         _db.ChangeTracker.Clear();
         await UpsertPulledInventoryTransfersAsync(pull.InventoryTransfers, ct);
         _db.ChangeTracker.Clear();
         await UpsertPulledRentalManagementCompaniesAsync(pull.RentalManagementCompanies, ct);
         _db.ChangeTracker.Clear();
+        RemapPulledRentalBillingTemplateCatalogItemReferences(
+            pull.RentalBillingProfiles,
+            pulledItemAliasMap);
         await UpsertPulledRentalBillingProfilesAsync(pull.RentalBillingProfiles, ct);
         _db.ChangeTracker.Clear();
         await UpsertPulledRentalAssetsAsync(pull.RentalAssets, ct);
@@ -5891,11 +11801,93 @@ public sealed class SyncService : IDisposable
         _db.ChangeTracker.Clear();
         await UpsertPulledPaymentsAsync(pull.Payments, ct);
         _db.ChangeTracker.Clear();
-        await ApplyPulledPurgeRecordsAsync(pull.PurgeRecords, ct);
+        var invoicePurgeApplied = await ApplyPulledPurgeRecordsAsync(
+            pull.PurgeRecords,
+            purgeOwner ?? CaptureSyncOperationOwnerBoundary(),
+            ct,
+            attachmentFileJournal);
+        if (AfterPulledPurgeRecordsAsyncForTesting is not null)
+            await AfterPulledPurgeRecordsAsyncForTesting(ct);
         _db.ChangeTracker.Clear();
 
+        if (publishRentalStateChanges)
+        {
+            _rental.PublishSynchronizedStateChanges(
+                pull.RentalAssets.Select(asset => asset.Id),
+                pull.RentalBillingProfiles.Select(profile => profile.Id));
+        }
+
         if (updateSyncRevision && pull.LatestRevision > sinceRev)
-            await TrySetSettingSafeAsync("LastSyncRevision", pull.LatestRevision.ToString(), ct);
+        {
+            await _local.SetSettingAsync(
+                "LastSyncRevision",
+                pull.LatestRevision.ToString(CultureInfo.InvariantCulture),
+                ct);
+        }
+
+        return ShouldPublishItemInvoiceHistoryChanged(
+            pull.Invoices.Count > 0,
+            invoicePurgeApplied);
+    }
+
+    private async Task ApplyItemCatalogExtensionCapabilityAsync(
+        int observedVersion,
+        CancellationToken ct)
+    {
+        var rawPreviousVersion = await _local.GetSettingAsync(
+            ItemCatalogExtensionVersionSettingKey,
+            ct);
+        var previousVersion =
+            int.TryParse(
+                rawPreviousVersion,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var parsedPreviousVersion)
+                ? Math.Max(0, parsedPreviousVersion)
+                : 0;
+        var normalizedObservedVersion = Math.Max(0, observedVersion);
+
+        if (normalizedObservedVersion == 0)
+        {
+            if (rawPreviousVersion is not null &&
+                (previousVersion != 0 ||
+                 !string.Equals(
+                     rawPreviousVersion.Trim(),
+                     "0",
+                     StringComparison.Ordinal)))
+            {
+                await _local.SetSettingAsync(
+                    ItemCatalogExtensionVersionSettingKey,
+                    "0",
+                    ct);
+            }
+
+            return;
+        }
+
+        if (previousVersion == 0)
+        {
+            await _db.Items
+                .IgnoreQueryFilters()
+                .Where(item =>
+                    !item.IsDeleted &&
+                    !item.IsDirty &&
+                    item.CatalogExtensionSyncPending)
+                .ExecuteUpdateAsync(
+                    setters => setters.SetProperty(
+                        item => item.IsDirty,
+                        true),
+                    ct);
+        }
+
+        if (rawPreviousVersion is null ||
+            previousVersion != normalizedObservedVersion)
+        {
+            await _local.SetSettingAsync(
+                ItemCatalogExtensionVersionSettingKey,
+                normalizedObservedVersion.ToString(CultureInfo.InvariantCulture),
+                ct);
+        }
     }
 
     private static int CountPullChanges(SyncPullResponse pull)
@@ -5923,6 +11915,346 @@ public sealed class SyncService : IDisposable
            + pull.Payments.Count
            + pull.PurgeRecords.Count;
 
+    private async Task<bool> HasAuthoritativePullDirtyCollisionAsync(
+        SyncPullResponse pull,
+        bool applyCompleteItemWarehouseStockSnapshot,
+        CancellationToken ct)
+    {
+        if (pull.ItemCatalogExtensionVersion > 0 &&
+            (applyCompleteItemWarehouseStockSnapshot ||
+             pull.Items.Count > 0 ||
+             pull.ItemPriceGrades.Count > 0 ||
+             pull.ItemWarehouseStocks.Count > 0))
+        {
+            var rawCatalogVersion = await _local.GetSettingAsync(
+                ItemCatalogExtensionVersionSettingKey,
+                ct);
+            var previousCatalogVersion = int.TryParse(
+                rawCatalogVersion,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var parsedCatalogVersion)
+                    ? Math.Max(0, parsedCatalogVersion)
+                    : 0;
+            if (previousCatalogVersion == 0 &&
+                await _db.Items.IgnoreQueryFilters()
+                    .AnyAsync(item =>
+                        !item.IsDeleted &&
+                        !item.IsDirty &&
+                        item.CatalogExtensionSyncPending,
+                        ct))
+            {
+                return true;
+            }
+        }
+
+        if (await HasDirtyPulledEntityAsync(pull.CompanyProfiles, _db.CompanyProfiles, ct) ||
+            await HasDirtyPulledEntityAsync(pull.Units, _db.Units, ct) ||
+            await HasDirtyPulledEntityAsync(pull.CustomerCategories, _db.CustomerCategories, ct) ||
+            await HasDirtyPulledEntityAsync(pull.PriceGradeOptions, _db.PriceGradeOptions, ct) ||
+            await HasDirtyPulledEntityAsync(pull.TradeTypeOptions, _db.TradeTypeOptions, ct) ||
+            await HasDirtyPulledEntityAsync(pull.ItemCategoryOptions, _db.ItemCategoryOptions, ct) ||
+            await HasDirtyPulledEntityAsync(pull.CustomerMasters, _db.CustomerMasters, ct) ||
+            await HasDirtyPulledEntityAsync(pull.Customers, _db.Customers, ct) ||
+            await HasDirtyPulledEntityAsync(pull.CustomerContracts, _db.CustomerContracts, ct) ||
+            await HasDirtyPulledEntityAsync(pull.Items, _db.Items, ct) ||
+            await HasDirtyPulledEntityAsync(pull.ItemPriceGrades, _db.ItemPriceGrades, ct) ||
+            await HasDirtyPulledEntityAsync(pull.Transactions, _db.Transactions, ct) ||
+            await HasDirtyPulledEntityAsync(pull.TransactionAttachments, _db.TransactionAttachments, ct) ||
+            await HasDirtyPulledEntityAsync(pull.InventoryTransfers, _db.InventoryTransfers, ct) ||
+            await HasDirtyPulledEntityAsync(pull.RentalManagementCompanies, _db.RentalManagementCompanies, ct) ||
+            await HasDirtyPulledEntityAsync(pull.RentalBillingProfiles, _db.RentalBillingProfiles, ct) ||
+            await HasDirtyPulledEntityAsync(pull.RentalAssets, _db.RentalAssets, ct) ||
+            await HasDirtyPulledEntityAsync(pull.RentalAssetAssignmentHistories, _db.RentalAssetAssignmentHistories, ct) ||
+            await HasDirtyPulledEntityAsync(pull.RentalBillingLogs, _db.RentalBillingLogs, ct) ||
+            await HasDirtyPulledEntityAsync(pull.Invoices, _db.Invoices, ct) ||
+            await HasDirtyPulledEntityAsync(pull.Payments, _db.Payments, ct))
+        {
+            return true;
+        }
+
+        if (applyCompleteItemWarehouseStockSnapshot &&
+            await _db.Items.IgnoreQueryFilters()
+                .AnyAsync(entity => entity.IsDirty, ct))
+        {
+            return true;
+        }
+
+        if (pull.Invoices.Count > 0 &&
+            await _db.Invoices.IgnoreQueryFilters()
+                .AnyAsync(entity => entity.IsDirty, ct))
+        {
+            return true;
+        }
+
+        // Strict authoritative roots include direct DTOs plus every local
+        // sync entity that pull application can mirror or cascade from them:
+        // transaction/payment twins, invoice nested payments and linked
+        // transactions, attachment parents, invoice/transfer item roots,
+        // rental-profile links, and recycle purge targets.
+        var pulledTransactionIds = pull.Transactions
+            .Select(transaction => transaction.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (await HasDirtyLocalEntityAsync(
+                pulledTransactionIds,
+                _db.Payments,
+                ct))
+        {
+            return true;
+        }
+
+        var pulledPaymentIds = pull.Payments
+            .Concat(pull.Invoices.SelectMany(invoice => invoice.Payments))
+            .Select(payment => payment.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (await HasDirtyLocalEntityAsync(
+                pulledPaymentIds,
+                _db.Payments,
+                ct) ||
+            await HasDirtyLocalEntityAsync(
+                pulledPaymentIds,
+                _db.Transactions,
+                ct))
+        {
+            return true;
+        }
+
+        var attachmentParentIds = pull.TransactionAttachments
+            .Select(attachment => attachment.TransactionId)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (await HasDirtyLocalEntityAsync(
+                attachmentParentIds,
+                _db.Transactions,
+                ct))
+        {
+            return true;
+        }
+
+        var pulledInvoiceIds = pull.Invoices
+            .Select(invoice => invoice.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        foreach (var batch in pulledInvoiceIds.Chunk(PullQueryContainsBatchSize))
+        {
+            var ids = batch;
+            if (await _db.Payments.IgnoreQueryFilters()
+                    .AnyAsync(payment =>
+                        ids.Contains(payment.InvoiceId) &&
+                        payment.IsDirty,
+                        ct) ||
+                await _db.Transactions.IgnoreQueryFilters()
+                    .AnyAsync(transaction =>
+                        transaction.LinkedInvoiceId.HasValue &&
+                        ids.Contains(transaction.LinkedInvoiceId.Value) &&
+                        transaction.IsDirty,
+                        ct))
+            {
+                return true;
+            }
+        }
+
+        var pulledItemRootIds = pull.Invoices
+            .SelectMany(invoice => invoice.Lines)
+            .Select(line => line.ItemId)
+            .Concat(pull.InventoryTransfers
+                .SelectMany(transfer => transfer.Lines)
+                .Select(line => line.ItemId))
+            .Where(id => id.HasValue && id.Value != Guid.Empty)
+            .Select(id => id!.Value)
+            .Distinct()
+            .ToList();
+        if (await HasDirtyLocalEntityAsync(
+                pulledItemRootIds,
+                _db.Items,
+                ct))
+        {
+            return true;
+        }
+
+        if (pull.Items.Count > 0 &&
+            (await _db.Items.IgnoreQueryFilters()
+                 .AnyAsync(entity => entity.IsDirty, ct) ||
+             await _db.ItemPriceGrades.IgnoreQueryFilters()
+                 .AnyAsync(entity => entity.IsDirty, ct) ||
+             await _db.Invoices.IgnoreQueryFilters()
+                 .AnyAsync(entity => entity.IsDirty, ct) ||
+             await _db.InventoryTransfers.IgnoreQueryFilters()
+                 .AnyAsync(entity => entity.IsDirty, ct) ||
+             await _db.RentalAssets.IgnoreQueryFilters()
+                 .AnyAsync(entity => entity.IsDirty, ct) ||
+             await _db.RentalBillingProfiles.IgnoreQueryFilters()
+                 .AnyAsync(entity => entity.IsDirty, ct)))
+        {
+            return true;
+        }
+
+        if ((pull.Transactions.Count > 0 ||
+             pull.Invoices.Count > 0 ||
+             pull.Payments.Count > 0) &&
+            await _db.RentalBillingProfiles.IgnoreQueryFilters()
+                .AnyAsync(entity => entity.IsDirty, ct))
+        {
+            return true;
+        }
+
+        // These upserts can canonicalize/default-match a different local row
+        // than the incoming ID. Treat any dirty row in that canonical root as
+        // a strict collision rather than risk a silent skip or overwrite.
+        if (pull.CompanyProfiles.Count > 0 &&
+                await _db.CompanyProfiles.IgnoreQueryFilters()
+                    .AnyAsync(entity => entity.IsDirty, ct) ||
+            pull.Units.Count > 0 &&
+                await _db.Units.IgnoreQueryFilters()
+                    .AnyAsync(entity => entity.IsDirty, ct) ||
+            pull.PriceGradeOptions.Count > 0 &&
+                await _db.PriceGradeOptions.IgnoreQueryFilters()
+                    .AnyAsync(entity => entity.IsDirty, ct) ||
+            pull.TradeTypeOptions.Count > 0 &&
+                await _db.TradeTypeOptions.IgnoreQueryFilters()
+                    .AnyAsync(entity => entity.IsDirty, ct) ||
+            pull.ItemCategoryOptions.Count > 0 &&
+                await _db.ItemCategoryOptions.IgnoreQueryFilters()
+                    .AnyAsync(entity => entity.IsDirty, ct) ||
+            pull.RentalManagementCompanies.Count > 0 &&
+                await _db.RentalManagementCompanies.IgnoreQueryFilters()
+                    .AnyAsync(entity => entity.IsDirty, ct) ||
+            pull.RentalBillingProfiles.Count > 0 &&
+                await _db.RentalBillingProfiles.IgnoreQueryFilters()
+                    .AnyAsync(entity => entity.IsDirty, ct) ||
+            pull.RentalAssets.Count > 0 &&
+                await _db.RentalAssets.IgnoreQueryFilters()
+                    .AnyAsync(entity => entity.IsDirty, ct))
+        {
+            return true;
+        }
+
+        var pulledRentalProfileIds = pull.RentalBillingProfiles
+            .Select(profile => profile.Id)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        foreach (var batch in pulledRentalProfileIds.Chunk(PullQueryContainsBatchSize))
+        {
+            var ids = batch;
+            if (await _db.Transactions.IgnoreQueryFilters()
+                    .AnyAsync(transaction =>
+                        transaction.LinkedRentalBillingProfileId.HasValue &&
+                        ids.Contains(transaction.LinkedRentalBillingProfileId.Value) &&
+                        transaction.IsDirty,
+                        ct) ||
+                await _db.Invoices.IgnoreQueryFilters()
+                    .AnyAsync(invoice =>
+                        invoice.LinkedRentalBillingProfileId.HasValue &&
+                        ids.Contains(invoice.LinkedRentalBillingProfileId.Value) &&
+                        invoice.IsDirty,
+                        ct) ||
+                await _db.RentalAssets.IgnoreQueryFilters()
+                    .AnyAsync(asset =>
+                        asset.BillingProfileId.HasValue &&
+                        ids.Contains(asset.BillingProfileId.Value) &&
+                        asset.IsDirty,
+                        ct))
+            {
+                return true;
+            }
+        }
+
+        foreach (var purgeRecord in pull.PurgeRecords)
+        {
+            if (await HasDirtyRecycleBinPurgeTargetAsync(
+                    purgeRecord.Kind,
+                    purgeRecord.EntityId,
+                    ct))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private async Task<bool> HasDirtyRecycleBinPurgeTargetAsync(
+        string? kind,
+        Guid entityId,
+        CancellationToken ct)
+    {
+        if (entityId == Guid.Empty)
+            return false;
+
+        var normalizedKind = new string((kind ?? string.Empty)
+            .Where(char.IsLetterOrDigit)
+            .Select(char.ToLowerInvariant)
+            .ToArray());
+        return normalizedKind switch
+        {
+            "customer" => await HasDirtyLocalEntityAsync([entityId], _db.Customers, ct),
+            "customercontract" => await HasDirtyLocalEntityAsync([entityId], _db.CustomerContracts, ct),
+            "item" => await HasDirtyLocalEntityAsync([entityId], _db.Items, ct),
+            "companyprofile" => await HasDirtyLocalEntityAsync([entityId], _db.CompanyProfiles, ct),
+            "customercategory" => await HasDirtyLocalEntityAsync([entityId], _db.CustomerCategories, ct),
+            "pricegradeoption" => await HasDirtyLocalEntityAsync([entityId], _db.PriceGradeOptions, ct),
+            "tradetypeoption" => await HasDirtyLocalEntityAsync([entityId], _db.TradeTypeOptions, ct),
+            "itemcategoryoption" => await HasDirtyLocalEntityAsync([entityId], _db.ItemCategoryOptions, ct),
+            "invoice" => await HasDirtyLocalEntityAsync([entityId], _db.Invoices, ct),
+            "payment" => await HasDirtyLocalEntityAsync([entityId], _db.Payments, ct),
+            "transaction" => await HasDirtyLocalEntityAsync([entityId], _db.Transactions, ct),
+            "inventorytransfer" => await HasDirtyLocalEntityAsync([entityId], _db.InventoryTransfers, ct),
+            "rentalmanagementcompany" => await HasDirtyLocalEntityAsync([entityId], _db.RentalManagementCompanies, ct),
+            "rentalbillingprofile" => await HasDirtyLocalEntityAsync([entityId], _db.RentalBillingProfiles, ct),
+            "rentalasset" => await HasDirtyLocalEntityAsync([entityId], _db.RentalAssets, ct),
+            "rentalbillinglog" => await HasDirtyLocalEntityAsync([entityId], _db.RentalBillingLogs, ct),
+            _ => true
+        };
+    }
+
+    private async Task<bool> HasDirtyPulledEntityAsync<TDto, TLocal>(
+        IReadOnlyCollection<TDto> pulled,
+        DbSet<TLocal> set,
+        CancellationToken ct)
+        where TDto : SyncEntityDto
+        where TLocal : LocalSyncEntity
+        => await HasDirtyLocalEntityAsync(
+            pulled.Select(dto => dto.Id),
+            set,
+            ct);
+
+    private static async Task<bool> HasDirtyLocalEntityAsync<TLocal>(
+        IEnumerable<Guid> entityIds,
+        DbSet<TLocal> set,
+        CancellationToken ct)
+        where TLocal : LocalSyncEntity
+    {
+        foreach (var batch in entityIds
+                     .Where(id => id != Guid.Empty)
+                     .Distinct()
+                     .Chunk(PullQueryContainsBatchSize))
+        {
+            var ids = batch;
+            if (await set.IgnoreQueryFilters()
+                    .AnyAsync(entity =>
+                        ids.Contains(entity.Id) &&
+                        entity.IsDirty,
+                        ct))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    internal static bool ShouldPublishItemInvoiceHistoryChanged(
+        bool hasPulledInvoices,
+        bool invoicePurgeApplied)
+        => hasPulledInvoices || invoicePurgeApplied;
+
     private async Task UpsertPulledCompanyProfilesAsync(
         IReadOnlyList<CompanyProfileDto> dtos,
         CancellationToken ct)
@@ -5945,6 +12277,39 @@ public sealed class SyncService : IDisposable
         var assignmentSettings = await _db.Settings
             .Where(setting => EF.Functions.Like(setting.Key, "CompanyProfile.Assigned.%"))
             .ToListAsync(ct);
+        foreach (var incoming in incomingProfiles.Where(profile =>
+                     profile.IsDefaultForOffice &&
+                     !profile.IsDeleted &&
+                     profile.IsActive))
+        {
+            var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+                incoming.OfficeCode,
+                incoming.OfficeCode);
+            if (profiles.Any(profile =>
+                    profile.Id != incoming.Id &&
+                    profile.IsDirty &&
+                    !profile.IsDeleted &&
+                    profile.IsActive &&
+                    profile.IsDefaultForOffice &&
+                    string.Equals(
+                        OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+                            profile.OfficeCode,
+                            profile.OfficeCode),
+                        officeCode,
+                        StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new SyncPullBlockedException(
+                    "회사 프로필 canonicalization이 dirty 기본 프로필을 변경할 수 있어 pull을 중단했습니다.");
+            }
+        }
+        await ThrowIfPendingCanonicalDeleteOutboxAsync(
+            GetCompanyProfileCanonicalMutationIds(
+                incomingProfiles,
+                profiles,
+                now),
+            [nameof(LocalCompanyProfile), "CompanyProfile"],
+            "회사 프로필 canonicalization",
+            ct);
 
         foreach (var local in incomingProfiles)
         {
@@ -5964,6 +12329,8 @@ public sealed class SyncService : IDisposable
                                      officeCode,
                                      StringComparison.OrdinalIgnoreCase)))
                     {
+                        if (conflict.IsDirty)
+                            continue;
                         foreach (var setting in assignmentSettings.Where(setting =>
                                      string.Equals(setting.Value, conflict.Id.ToString(), StringComparison.OrdinalIgnoreCase)))
                         {
@@ -6015,6 +12382,8 @@ public sealed class SyncService : IDisposable
 
             foreach (var profile in group)
             {
+                if (profile.IsDirty)
+                    continue;
                 var shouldBeDefault = profile.Id == canonical.Id;
                 if (profile.IsDefaultForOffice != shouldBeDefault)
                 {
@@ -6026,6 +12395,174 @@ public sealed class SyncService : IDisposable
         }
 
         await _db.SaveChangesAsync(ct);
+    }
+
+    private static IReadOnlyCollection<Guid> GetCompanyProfileCanonicalMutationIds(
+        IReadOnlyList<LocalCompanyProfile> incomingProfiles,
+        IReadOnlyList<LocalCompanyProfile> existingProfiles,
+        DateTime now)
+    {
+        static LocalCompanyProfile CloneCanonicalState(LocalCompanyProfile profile)
+            => new()
+            {
+                Id = profile.Id,
+                OfficeCode = profile.OfficeCode,
+                ProfileName = profile.ProfileName,
+                IsDefaultForOffice = profile.IsDefaultForOffice,
+                IsActive = profile.IsActive,
+                IsDeleted = profile.IsDeleted,
+                IsDirty = profile.IsDirty,
+                Revision = profile.Revision,
+                CreatedAtUtc = profile.CreatedAtUtc,
+                UpdatedAtUtc = profile.UpdatedAtUtc
+            };
+
+        static void ApplyIncomingBaseline(
+            LocalCompanyProfile target,
+            LocalCompanyProfile incoming)
+        {
+            target.OfficeCode = incoming.OfficeCode;
+            target.ProfileName = incoming.ProfileName;
+            target.IsDefaultForOffice = incoming.IsDefaultForOffice;
+            target.IsActive = incoming.IsActive;
+            target.IsDeleted = incoming.IsDeleted;
+            target.IsDirty = false;
+            target.Revision = incoming.Revision;
+            target.UpdatedAtUtc = incoming.UpdatedAtUtc;
+        }
+
+        var baseline = existingProfiles
+            .Select(CloneCanonicalState)
+            .ToList();
+        foreach (var local in incomingProfiles)
+        {
+            var existing = baseline.FirstOrDefault(profile => profile.Id == local.Id);
+            if (existing is null)
+            {
+                baseline.Add(CloneCanonicalState(local));
+                continue;
+            }
+
+            if (existing.IsDirty)
+                continue;
+            var incomingIsNewer = local.Revision > existing.Revision ||
+                                  local.Revision == existing.Revision &&
+                                  local.UpdatedAtUtc >= existing.UpdatedAtUtc;
+            if (incomingIsNewer)
+                ApplyIncomingBaseline(existing, local);
+        }
+
+        var projected = existingProfiles
+            .Select(CloneCanonicalState)
+            .ToList();
+
+        foreach (var local in incomingProfiles)
+        {
+            var existing = projected.FirstOrDefault(profile => profile.Id == local.Id);
+            if (existing is null)
+            {
+                if (local.IsDefaultForOffice && !local.IsDeleted && local.IsActive)
+                {
+                    var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+                        local.OfficeCode,
+                        local.OfficeCode);
+                    foreach (var conflict in projected.Where(profile =>
+                                 !profile.IsDeleted &&
+                                 profile.IsActive &&
+                                 profile.IsDefaultForOffice &&
+                                 string.Equals(
+                                     OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+                                         profile.OfficeCode,
+                                         profile.OfficeCode),
+                                     officeCode,
+                                     StringComparison.OrdinalIgnoreCase)))
+                    {
+                        if (conflict.IsDirty)
+                            continue;
+                        conflict.IsDefaultForOffice = false;
+                        if (string.Equals(
+                                conflict.ProfileName?.Trim(),
+                                $"{officeCode} 기본",
+                                StringComparison.OrdinalIgnoreCase))
+                        {
+                            conflict.IsActive = false;
+                            conflict.IsDeleted = true;
+                        }
+
+                        conflict.IsDirty = false;
+                        conflict.UpdatedAtUtc = now;
+                    }
+                }
+
+                projected.Add(new LocalCompanyProfile
+                {
+                    Id = local.Id,
+                    OfficeCode = local.OfficeCode,
+                    ProfileName = local.ProfileName,
+                    IsDefaultForOffice = local.IsDefaultForOffice,
+                    IsActive = local.IsActive,
+                    IsDeleted = local.IsDeleted,
+                    IsDirty = false,
+                    Revision = local.Revision,
+                    CreatedAtUtc = local.CreatedAtUtc,
+                    UpdatedAtUtc = local.UpdatedAtUtc
+                });
+                continue;
+            }
+
+            if (existing.IsDirty)
+                continue;
+            var incomingIsNewer = local.Revision > existing.Revision ||
+                                  local.Revision == existing.Revision &&
+                                  local.UpdatedAtUtc >= existing.UpdatedAtUtc;
+            if (!incomingIsNewer)
+                continue;
+
+            ApplyIncomingBaseline(existing, local);
+        }
+
+        foreach (var group in projected
+                     .Where(profile => !profile.IsDeleted && profile.IsActive)
+                     .GroupBy(
+                         profile => OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+                             profile.OfficeCode,
+                             OfficeCodeCatalog.Usenet),
+                         StringComparer.OrdinalIgnoreCase))
+        {
+            var canonicalId = OfficeCodeCatalog.GetDefaultCompanyProfileId(group.Key);
+            var canonical = group.FirstOrDefault(profile => profile.Id == canonicalId)
+                ?? group.OrderByDescending(profile => profile.IsDefaultForOffice)
+                    .ThenByDescending(profile => profile.UpdatedAtUtc)
+                    .ThenBy(profile => profile.Id)
+                    .First();
+            foreach (var profile in group)
+            {
+                if (profile.IsDirty)
+                    continue;
+                var shouldBeDefault = profile.Id == canonical.Id;
+                if (profile.IsDefaultForOffice != shouldBeDefault)
+                {
+                    profile.IsDefaultForOffice = shouldBeDefault;
+                    profile.IsDirty = false;
+                    profile.UpdatedAtUtc = now;
+                }
+            }
+        }
+
+        var baselineById = baseline.ToDictionary(profile => profile.Id);
+        return existingProfiles
+            .Where(original =>
+            {
+                var expected = baselineById[original.Id];
+                var final = projected.Single(profile => profile.Id == original.Id);
+                return expected.IsDefaultForOffice != final.IsDefaultForOffice ||
+                       expected.IsActive != final.IsActive ||
+                       expected.IsDeleted != final.IsDeleted ||
+                       expected.IsDirty != final.IsDirty;
+            })
+            .Select(profile => profile.Id)
+            .Distinct()
+            .ToList();
     }
 
     private async Task UpsertPulledCustomerContractsAsync(
@@ -6107,28 +12644,75 @@ public sealed class SyncService : IDisposable
         var invoiceIdsToRecalculate = dtos
             .Select(dto => dto.InvoiceId)
             .Where(id => id != Guid.Empty)
+            .Distinct()
             .ToList();
         var paymentIds = dtos
             .Select(dto => dto.Id)
             .Where(id => id != Guid.Empty)
             .Distinct()
             .ToList();
-        if (paymentIds.Count > 0)
+        var existingPaymentsById = new Dictionary<Guid, LocalPayment>();
+        foreach (var paymentIdBatch in paymentIds.Chunk(PullQueryContainsBatchSize))
         {
-            var previousInvoiceIds = await _db.Payments
+            ct.ThrowIfCancellationRequested();
+            var scopedPaymentIds = paymentIdBatch;
+            var existingPayments = await _db.Payments
                 .IgnoreQueryFilters()
-                .AsNoTracking()
-                .Where(payment => paymentIds.Contains(payment.Id) && payment.InvoiceId != Guid.Empty)
-                .Select(payment => payment.InvoiceId)
+                .Where(payment => scopedPaymentIds.Contains(payment.Id))
                 .ToListAsync(ct);
-            invoiceIdsToRecalculate.AddRange(previousInvoiceIds);
+            foreach (var existingPayment in existingPayments)
+                existingPaymentsById[existingPayment.Id] = existingPayment;
+            invoiceIdsToRecalculate.AddRange(existingPayments
+                .Where(payment => payment.InvoiceId != Guid.Empty)
+                .Select(payment => payment.InvoiceId));
         }
 
-        await UpsertPulledAsync(dtos, _db.Payments, LocalMappings.ToLocal, ct);
+        invoiceIdsToRecalculate = invoiceIdsToRecalculate.Distinct().ToList();
+
+        foreach (var dto in dtos)
+        {
+            var local = LocalMappings.ToLocal(dto);
+            local.IsDirty = false;
+            if (existingPaymentsById.TryGetValue(local.Id, out var existingPayment))
+            {
+                if (!existingPayment.IsDirty)
+                    _db.Entry(existingPayment).CurrentValues.SetValues(local);
+            }
+            else
+            {
+                _db.Payments.Add(local);
+                existingPaymentsById[local.Id] = local;
+            }
+        }
+        await _db.SaveChangesAsync(ct);
         await ReconcilePulledPaymentTransactionMirrorsAsync(paymentIds, invoiceIdsToRecalculate, ct);
+        invoiceIdsToRecalculate = invoiceIdsToRecalculate.Distinct().ToList();
+        var affectedRentalProfileIds = new HashSet<Guid>();
+        foreach (var invoiceIdBatch in invoiceIdsToRecalculate.Chunk(PullQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedInvoiceIds = invoiceIdBatch;
+            var batchProfileIds = await _db.Invoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(invoice =>
+                    scopedInvoiceIds.Contains(invoice.Id) &&
+                    invoice.LinkedRentalBillingProfileId.HasValue &&
+                    invoice.LinkedRentalBillingProfileId.Value != Guid.Empty)
+                .Select(invoice => invoice.LinkedRentalBillingProfileId!.Value)
+                .Distinct()
+                .ToListAsync(ct);
+            affectedRentalProfileIds.UnionWith(batchProfileIds);
+        }
         await _local.RecalculateRentalSettlementForInvoicePaymentsAsync(
             invoiceIdsToRecalculate,
-            ct);
+            ct,
+            preserveDirtyProfiles: true);
+        _db.ChangeTracker.Clear();
+        await _local.RefreshRentalProfileSummariesFromAuthoritativeRunEvidenceAsync(
+            affectedRentalProfileIds,
+            ct,
+            markDirty: false);
     }
 
     private async Task ReconcilePulledPaymentTransactionMirrorsAsync(
@@ -6139,20 +12723,62 @@ public sealed class SyncService : IDisposable
         if (paymentIds.Count == 0)
             return;
 
-        var payments = await _db.Payments
-            .IgnoreQueryFilters()
-            .Where(payment => paymentIds.Contains(payment.Id))
-            .ToListAsync(ct);
+        var payments = new List<LocalPayment>();
+        foreach (var paymentIdBatch in paymentIds.Chunk(PullQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedPaymentIds = paymentIdBatch;
+            payments.AddRange(await _db.Payments
+                .IgnoreQueryFilters()
+                .Where(payment => scopedPaymentIds.Contains(payment.Id))
+                .ToListAsync(ct));
+        }
         if (payments.Count == 0)
             return;
 
+        var transactionsById = new Dictionary<Guid, LocalTransaction>();
+        foreach (var paymentIdBatch in paymentIds.Chunk(PullQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedPaymentIds = paymentIdBatch;
+            var transactions = await _db.Transactions
+                .IgnoreQueryFilters()
+                .Where(transaction => scopedPaymentIds.Contains(transaction.Id))
+                .ToListAsync(ct);
+            foreach (var transaction in transactions)
+                transactionsById[transaction.Id] = transaction;
+        }
+
+        var invoicesById = new Dictionary<Guid, LocalInvoice>();
+        var activeInvoiceIds = payments
+            .Where(payment => !payment.IsDirty && !payment.IsDeleted && payment.InvoiceId != Guid.Empty)
+            .Select(payment => payment.InvoiceId)
+            .Distinct()
+            .ToList();
+        foreach (var invoiceIdBatch in activeInvoiceIds.Chunk(PullQueryContainsBatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            var scopedInvoiceIds = invoiceIdBatch;
+            var invoices = await _db.Invoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(invoice => scopedInvoiceIds.Contains(invoice.Id))
+                .ToListAsync(ct);
+            foreach (var invoice in invoices)
+                invoicesById[invoice.Id] = invoice;
+        }
+
         foreach (var payment in payments)
         {
-            var transaction = await _db.Transactions
-                .IgnoreQueryFilters()
-                .FirstOrDefaultAsync(current => current.Id == payment.Id, ct);
+            if (payment.IsDirty)
+                continue;
+
+            transactionsById.TryGetValue(payment.Id, out var transaction);
             if (transaction?.LinkedInvoiceId is Guid previousLinkedInvoiceId && previousLinkedInvoiceId != Guid.Empty)
                 invoiceIdsToRecalculate.Add(previousLinkedInvoiceId);
+
+            if (transaction?.IsDirty == true)
+                continue;
 
             if (payment.IsDeleted)
             {
@@ -6167,10 +12793,7 @@ public sealed class SyncService : IDisposable
                 continue;
             }
 
-            var invoice = await _db.Invoices
-                .IgnoreQueryFilters()
-                .AsNoTracking()
-                .FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, ct);
+            invoicesById.TryGetValue(payment.InvoiceId, out var invoice);
             if (invoice == null || invoice.IsDeleted)
             {
                 if (transaction != null)
@@ -6194,6 +12817,7 @@ public sealed class SyncService : IDisposable
                     Revision = 0
                 };
                 _db.Transactions.Add(transaction);
+                transactionsById[transaction.Id] = transaction;
             }
 
             ApplyPulledPaymentToTransactionMirror(payment, invoice, transaction);
@@ -6306,8 +12930,15 @@ public sealed class SyncService : IDisposable
             return;
         }
 
-        await _local.ReconcilePulledTransactionSideEffectsAsync(sideEffects.AppliedTransactionIds, ct);
-        await _local.RecalculateRentalSettlementsAsync(sideEffects.PreviousRentalTargets, ct, markDirty: false);
+        var affectedBillingProfileIds = await _local.ReconcilePulledTransactionSideEffectsAsync(
+            sideEffects.AppliedTransactionIds,
+            ct);
+        await _local.RefreshRentalProfileSummariesFromAuthoritativeRunEvidenceAsync(
+            affectedBillingProfileIds
+                .Concat(sideEffects.PreviousRentalTargets.Select(target => target.ProfileId))
+                .Distinct(),
+            ct,
+            markDirty: false);
     }
 
     private sealed class PulledTransactionSideEffectState
@@ -6319,14 +12950,41 @@ public sealed class SyncService : IDisposable
             Array.Empty<(Guid ProfileId, Guid? RunId)>();
     }
 
-    private async Task UpsertPulledItemsAsync(
+    private async Task<IReadOnlyDictionary<Guid, Guid>> UpsertPulledItemsAsync(
         IReadOnlyList<ItemDto> dtos,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool preserveExistingInventoryStock = false)
     {
         if (dtos.Count == 0)
-            return;
+            return new Dictionary<Guid, Guid>();
 
-        var skippedIncomingIds = await RemoveStalePulledItemConflictsAsync(dtos, ct);
+        var conflictResolution = await RemoveStalePulledItemConflictsAsync(dtos, ct);
+        var skippedIncomingIds = conflictResolution.SkippedIncomingIds;
+        var preservedWarehouseStockTotals =
+            new Dictionary<Guid, decimal>();
+        if (preserveExistingInventoryStock)
+        {
+            var incomingItemIds = dtos
+                .Where(dto => !skippedIncomingIds.Contains(dto.Id))
+                .Select(dto => dto.Id)
+                .Where(itemId => itemId != Guid.Empty)
+                .Distinct()
+                .ToList();
+            var preservedWarehouseStocks =
+                await _db.ItemWarehouseStocks
+                    .AsNoTracking()
+                    .Where(stock =>
+                        incomingItemIds.Contains(stock.ItemId))
+                    .ToListAsync(ct);
+            preservedWarehouseStockTotals =
+                preservedWarehouseStocks
+                    .GroupBy(stock => stock.ItemId)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group.Sum(stock => stock.Quantity));
+        }
+        var failSafeRequeues =
+            new Dictionary<Guid, (long Revision, DateTime UpdatedAtUtc)>();
 
         foreach (var dto in dtos)
         {
@@ -6335,20 +12993,141 @@ public sealed class SyncService : IDisposable
 
             var local = LocalMappings.ToLocal(dto);
             local.IsDirty = false;
+            var hasPreservedWarehouseStockTotal =
+                preservedWarehouseStockTotals.TryGetValue(
+                    local.Id,
+                    out var preservedWarehouseStockTotal);
+            if (hasPreservedWarehouseStockTotal)
+            {
+                local.CurrentStock =
+                    preservedWarehouseStockTotal;
+            }
 
             var existing = await _db.Items.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(item => item.Id == local.Id, ct);
             if (existing is null)
             {
+                local.CatalogExtensionSyncPending = false;
                 _db.Items.Add(local);
             }
             else if (!existing.IsDirty)
             {
+                if (preserveExistingInventoryStock &&
+                    !hasPreservedWarehouseStockTotal)
+                {
+                    local.CurrentStock = existing.CurrentStock;
+                }
+
+                if (existing.IsDeleted || dto.IsDeleted)
+                {
+                    local.CatalogExtensionSyncPending = false;
+                }
+                else if (!HasFullItemCatalogExtensionShape(dto))
+                {
+                    PreserveLocalItemCatalogExtensions(local, existing);
+                    local.CatalogExtensionSyncPending =
+                        existing.CatalogExtensionSyncPending ||
+                        HasMeaningfulItemCatalogExtensions(existing);
+                }
+                else if (existing.CatalogExtensionSyncPending)
+                {
+                    if (ItemCatalogExtensionsMatch(existing, dto))
+                    {
+                        local.CatalogExtensionSyncPending = false;
+                    }
+                    else
+                    {
+                        PreserveLocalItemCatalogExtensions(local, existing);
+                        local.CatalogExtensionSyncPending = true;
+                        failSafeRequeues[existing.Id] =
+                            (local.Revision, local.UpdatedAtUtc);
+                    }
+                }
+                else
+                {
+                    local.CatalogExtensionSyncPending = false;
+                }
+
                 _db.Entry(existing).CurrentValues.SetValues(local);
             }
         }
 
         await _db.SaveChangesAsync(ct);
+        if (failSafeRequeues.Count > 0 &&
+            BeforePulledItemCatalogMismatchRequeueAsyncForTesting is not null)
+        {
+            await BeforePulledItemCatalogMismatchRequeueAsyncForTesting(ct);
+        }
+
+        foreach (var (itemId, preserved) in failSafeRequeues)
+        {
+            var requeuedRowCount = await _db.Items
+                .IgnoreQueryFilters()
+                .Where(item =>
+                    item.Id == itemId &&
+                    !item.IsDeleted &&
+                    !item.IsDirty &&
+                    item.Revision == preserved.Revision &&
+                    item.UpdatedAtUtc == preserved.UpdatedAtUtc)
+                .ExecuteUpdateAsync(
+                    setters => setters
+                        .SetProperty(item => item.IsDirty, true)
+                        .SetProperty(
+                            item => item.CatalogExtensionSyncPending,
+                            true),
+                    ct);
+
+            var trackedEntry = _db.ChangeTracker
+                .Entries<LocalItem>()
+                .FirstOrDefault(entry => entry.Entity.Id == itemId);
+            if (requeuedRowCount > 0 && trackedEntry is not null)
+            {
+                trackedEntry.Entity.IsDirty = true;
+                trackedEntry.Entity.CatalogExtensionSyncPending = true;
+                trackedEntry.Entity.Revision = preserved.Revision;
+                trackedEntry.Entity.UpdatedAtUtc = preserved.UpdatedAtUtc;
+                trackedEntry.State = EntityState.Unchanged;
+            }
+            else if (trackedEntry is not null)
+            {
+                trackedEntry.State = EntityState.Detached;
+            }
+        }
+
+        return conflictResolution.DuplicateToCanonicalIdMap;
+    }
+
+    private static bool HasFullItemCatalogExtensionShape(ItemDto dto)
+        => dto.BoxQuantity.HasValue &&
+           dto.StorageLocation is not null &&
+           dto.LastPurchaseDateSpecified == true &&
+           dto.LastSaleDateSpecified == true;
+
+    private static bool HasMeaningfulItemCatalogExtensions(LocalItem item)
+        => item.BoxQuantity != 0m ||
+           !string.IsNullOrWhiteSpace(item.StorageLocation) ||
+           item.LastPurchaseDate.HasValue ||
+           item.LastSaleDate.HasValue;
+
+    private static bool ItemCatalogExtensionsMatch(
+        LocalItem local,
+        ItemDto incoming)
+        => incoming.BoxQuantity == local.BoxQuantity &&
+           string.Equals(
+               incoming.StorageLocation,
+               local.StorageLocation,
+               StringComparison.Ordinal) &&
+           incoming.LastPurchaseDate == local.LastPurchaseDate &&
+           incoming.LastSaleDate == local.LastSaleDate;
+
+    private static void PreserveLocalItemCatalogExtensions(
+        LocalItem target,
+        LocalItem source)
+    {
+        target.BoxQuantity = source.BoxQuantity;
+        target.StorageLocation = source.StorageLocation;
+        target.LastPurchaseDate = source.LastPurchaseDate;
+        target.LastSaleDate = source.LastSaleDate;
     }
 
     private async Task UpsertPulledUnitsAsync(
@@ -6387,6 +13166,11 @@ public sealed class SyncService : IDisposable
 
         if (unitsToDelete.Count > 0)
         {
+            await ThrowIfPendingCanonicalDeleteOutboxAsync(
+                unitsToDelete.Select(unit => unit.Id),
+                [nameof(LocalUnit), "Unit"],
+                "단위 충돌",
+                ct);
             AppLogger.Warn(
                 "SYNC",
                 $"pull Units 충돌 정리: incomingGroups={incomingActiveByNormalizedName.Count}, removedExisting={unitsToDelete.Count}");
@@ -6425,6 +13209,49 @@ public sealed class SyncService : IDisposable
             .OrderBy(unit => unit.CreatedAtUtc)
             .ThenBy(unit => unit.Name)
             .ToListAsync(ct);
+
+        var normalizationDeleteIds = activeUnits
+            .GroupBy(
+                unit => UnitCatalogNormalizer.Normalize(unit.Name),
+                StringComparer.Ordinal)
+            .Where(group => !string.IsNullOrWhiteSpace(group.Key))
+            .SelectMany(group =>
+            {
+                var canonical = UnitCatalogNormalizer.CanonicalDefinitions
+                    .FirstOrDefault(definition =>
+                        string.Equals(
+                            definition.Name,
+                            group.Key,
+                            StringComparison.Ordinal));
+                if (canonical is not null)
+                {
+                    return group
+                        .Where(unit => unit.Id != canonical.Id)
+                        .Select(unit => unit.Id);
+                }
+
+                var kept = group
+                    .OrderByDescending(unit =>
+                        string.Equals(
+                            unit.Name,
+                            group.Key,
+                            StringComparison.Ordinal))
+                    .ThenByDescending(unit => unit.Revision)
+                    .ThenByDescending(unit => unit.UpdatedAtUtc)
+                    .ThenBy(unit => unit.CreatedAtUtc)
+                    .ThenBy(unit => unit.Id)
+                    .First();
+                return group
+                    .Where(unit => unit.Id != kept.Id)
+                    .Select(unit => unit.Id);
+            })
+            .Distinct()
+            .ToList();
+        await ThrowIfPendingCanonicalDeleteOutboxAsync(
+            normalizationDeleteIds,
+            [nameof(LocalUnit), "Unit"],
+            "단위 정규화",
+            ct);
 
         var canonicalDefinitionByName = UnitCatalogNormalizer.CanonicalDefinitions
             .ToDictionary(current => current.Name, StringComparer.Ordinal);
@@ -6708,12 +13535,18 @@ public sealed class SyncService : IDisposable
         }
     }
 
-    private async Task<HashSet<Guid>> RemoveStalePulledItemConflictsAsync(
+    private sealed record PulledItemConflictResolution(
+        HashSet<Guid> SkippedIncomingIds,
+        IReadOnlyDictionary<Guid, Guid> DuplicateToCanonicalIdMap);
+
+    private async Task<PulledItemConflictResolution> RemoveStalePulledItemConflictsAsync(
         IReadOnlyList<ItemDto> dtos,
         CancellationToken ct)
     {
         if (dtos.Count == 0)
-            return [];
+            return new PulledItemConflictResolution(
+                [],
+                new Dictionary<Guid, Guid>());
 
         var incomingItems = dtos
             .GroupBy(dto => dto.Id)
@@ -6724,18 +13557,34 @@ public sealed class SyncService : IDisposable
                 .ThenBy(dto => dto.Id)
                 .First())
             .ToList();
+        var incomingCanonicalItems = incomingItems
+            .Where(dto => !dto.IsDeleted)
+            .ToList();
+        var incomingCanonicalIds = incomingCanonicalItems
+            .Select(dto => dto.Id)
+            .ToHashSet();
         var candidates = await _db.Items.IgnoreQueryFilters().ToListAsync(ct);
         if (candidates.Count == 0)
-            return [];
+            return new PulledItemConflictResolution(
+                [],
+                new Dictionary<Guid, Guid>());
 
         var duplicateToCanonicalIdMap = new Dictionary<Guid, Guid>();
         var skippedIncomingIds = new HashSet<Guid>();
         var dirtyConflictDetails = new List<string>();
         var ambiguousConflictDetails = new List<string>();
+        var candidateMatches = new List<(LocalItem Candidate, List<Guid> IncomingIds)>();
 
         foreach (var candidate in candidates)
         {
-            var matchingIncomingIds = incomingItems
+            // An active server row is already authoritative for its own ID. It
+            // must never be treated as an alias of a same-key tombstone (or of
+            // another active row), otherwise a full pull can build A->B/B->A
+            // remap cycles and move canonical references onto the tombstone.
+            if (incomingCanonicalIds.Contains(candidate.Id))
+                continue;
+
+            var matchingIncomingIds = incomingCanonicalItems
                 .Where(dto => dto.Id != candidate.Id)
                 .Where(dto => ItemsSharePullNaturalKey(candidate, dto))
                 .Select(dto => dto.Id)
@@ -6745,8 +13594,11 @@ public sealed class SyncService : IDisposable
             if (matchingIncomingIds.Count == 0)
                 continue;
 
+            candidateMatches.Add((candidate, matchingIncomingIds));
+
             if (matchingIncomingIds.Count > 1)
             {
+                skippedIncomingIds.UnionWith(matchingIncomingIds);
                 ambiguousConflictDetails.Add($"{candidate.MaterialNumber}/{candidate.SerialNumber} -> {candidate.Id}");
                 continue;
             }
@@ -6756,14 +13608,34 @@ public sealed class SyncService : IDisposable
             {
                 skippedIncomingIds.Add(incomingId);
                 dirtyConflictDetails.Add($"{candidate.MaterialNumber}/{candidate.SerialNumber} -> {candidate.Id}");
-                continue;
             }
+        }
 
-            duplicateToCanonicalIdMap[candidate.Id] = incomingId;
+        // Decide per incoming canonical ID before mutating anything. If one
+        // matching local row is dirty or one local row matches multiple
+        // server candidates, every alias move targeting those incoming IDs is
+        // withheld. This prevents a clean alias from being deleted and its
+        // references moved to an incoming row that the same pass must skip.
+        foreach (var (candidate, matchingIncomingIds) in candidateMatches)
+        {
+            if (candidate.IsDirty || matchingIncomingIds.Count != 1)
+                continue;
+
+            var incomingId = matchingIncomingIds[0];
+            if (!skippedIncomingIds.Contains(incomingId))
+                duplicateToCanonicalIdMap[candidate.Id] = incomingId;
         }
 
         if (duplicateToCanonicalIdMap.Count > 0)
         {
+            await ThrowIfPendingCanonicalDeleteOutboxAsync(
+                duplicateToCanonicalIdMap.Keys,
+                [nameof(LocalItem), "Item"],
+                "품목 별칭",
+                ct);
+            await ThrowIfPendingItemAliasReferenceOutboxesAsync(
+                duplicateToCanonicalIdMap,
+                ct);
             await RemapLocalItemReferencesAsync(duplicateToCanonicalIdMap, ct);
 
             _db.ChangeTracker.Clear();
@@ -6793,8 +13665,147 @@ public sealed class SyncService : IDisposable
                 $"details={string.Join(", ", ambiguousConflictDetails.Take(10))}");
         }
 
-        return skippedIncomingIds;
+        return new PulledItemConflictResolution(
+            skippedIncomingIds,
+            duplicateToCanonicalIdMap);
     }
+
+    private static void RemapPulledRentalBillingTemplateCatalogItemReferences(
+        IReadOnlyList<RentalBillingProfileDto> profiles,
+        IReadOnlyDictionary<Guid, Guid> duplicateToCanonicalIdMap)
+    {
+        if (profiles.Count == 0 || duplicateToCanonicalIdMap.Count == 0)
+            return;
+
+        foreach (var profile in profiles)
+        {
+            if (!TryRemapRentalBillingTemplateCatalogItemReferences(
+                    profile.BillingTemplateJson,
+                    duplicateToCanonicalIdMap,
+                    out var remappedTemplateJson))
+            {
+                throw new SyncPullBlockedException(
+                    $"품목 별칭을 참조하는 청구 템플릿을 안전하게 해석할 수 없어 pull을 중단했습니다. profile={profile.Id:D}");
+            }
+
+            if (!string.Equals(
+                    profile.BillingTemplateJson ?? string.Empty,
+                    remappedTemplateJson,
+                    StringComparison.Ordinal))
+            {
+                profile.BillingTemplateJson = remappedTemplateJson;
+            }
+        }
+    }
+
+    private static bool TryRemapRentalBillingTemplateCatalogItemReferences(
+        string? billingTemplateJson,
+        IReadOnlyDictionary<Guid, Guid> duplicateToCanonicalIdMap,
+        out string remappedTemplateJson)
+    {
+        var original = billingTemplateJson ?? string.Empty;
+        remappedTemplateJson = original;
+        if (string.IsNullOrWhiteSpace(original) ||
+            duplicateToCanonicalIdMap.Count == 0)
+        {
+            return true;
+        }
+
+        try
+        {
+            if (JsonNode.Parse(original) is not JsonArray templateItems)
+                return !ContainsAnyItemAlias(original, duplicateToCanonicalIdMap.Keys);
+
+            var changed = false;
+            foreach (var templateNode in templateItems)
+            {
+                if (templateNode is not JsonObject item)
+                {
+                    if (templateNode is not null &&
+                        ContainsAnyItemAlias(
+                            templateNode.ToJsonString(),
+                            duplicateToCanonicalIdMap.Keys))
+                    {
+                        return false;
+                    }
+
+                    continue;
+                }
+
+                var catalogItemProperties = item
+                    .Where(property => string.Equals(
+                        property.Key,
+                        nameof(RentalBillingTemplateItemModel.CatalogItemId),
+                        StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (catalogItemProperties.Count == 0)
+                    continue;
+
+                if (catalogItemProperties.Count != 1)
+                {
+                    if (ContainsAnyItemAlias(
+                            item.ToJsonString(),
+                            duplicateToCanonicalIdMap.Keys))
+                    {
+                        return false;
+                    }
+
+                    continue;
+                }
+
+                var catalogItemProperty = catalogItemProperties[0];
+                if (catalogItemProperty.Value is not JsonValue catalogItemValue ||
+                    !catalogItemValue.TryGetValue<string>(out var rawCatalogItemId) ||
+                    !Guid.TryParse(rawCatalogItemId, out var catalogItemId))
+                {
+                    if (catalogItemProperty.Value is not null &&
+                        ContainsAnyItemAlias(
+                            catalogItemProperty.Value.ToJsonString(),
+                            duplicateToCanonicalIdMap.Keys))
+                    {
+                        return false;
+                    }
+
+                    continue;
+                }
+
+                if (!duplicateToCanonicalIdMap.TryGetValue(
+                        catalogItemId,
+                        out var canonicalItemId))
+                {
+                    continue;
+                }
+
+                item[catalogItemProperty.Key] = canonicalItemId.ToString("D");
+                changed = true;
+            }
+
+            var serializedTemplateJson = templateItems.ToJsonString();
+            if (ContainsAnyItemAlias(
+                    serializedTemplateJson,
+                    duplicateToCanonicalIdMap.Keys))
+            {
+                return false;
+            }
+
+            if (changed)
+                remappedTemplateJson = serializedTemplateJson;
+            return true;
+        }
+        catch (JsonException)
+        {
+            return !ContainsAnyItemAlias(original, duplicateToCanonicalIdMap.Keys);
+        }
+        catch (InvalidOperationException)
+        {
+            return !ContainsAnyItemAlias(original, duplicateToCanonicalIdMap.Keys);
+        }
+    }
+
+    private static bool ContainsAnyItemAlias(
+        string value,
+        IEnumerable<Guid> duplicateItemIds)
+        => JsonGuidTokenSafety.ContainsExactGuidToken(value, duplicateItemIds);
 
     private async Task UpsertPulledRentalBillingProfilesAsync(
         IReadOnlyList<RentalBillingProfileDto> dtos,
@@ -6904,6 +13915,14 @@ public sealed class SyncService : IDisposable
 
         if (staleConflictIds.Count > 0)
         {
+            await ThrowIfPendingCanonicalDeleteOutboxAsync(
+                staleConflictIds,
+                [nameof(LocalRentalBillingProfile), "RentalBillingProfile"],
+                "렌탈 청구 프로필 충돌",
+                ct);
+            await ThrowIfDirtyRentalBillingProfileDependenciesAsync(
+                staleConflictIds,
+                ct);
             _db.ChangeTracker.Clear();
             await _db.RentalBillingProfiles.IgnoreQueryFilters()
                 .Where(profile => staleConflictIds.Contains(profile.Id))
@@ -6980,13 +13999,89 @@ public sealed class SyncService : IDisposable
         var duplicateIds = duplicateToCanonicalIdMap.Keys.Distinct().ToList();
         var canonicalIds = duplicateToCanonicalIdMap.Values.Distinct().ToList();
 
+        var rentalBillingProfiles = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .ToListAsync(ct);
+        var remappedBillingTemplates = new Dictionary<Guid, string>();
+        foreach (var profile in rentalBillingProfiles)
+        {
+            if (!TryRemapRentalBillingTemplateCatalogItemReferences(
+                    profile.BillingTemplateJson,
+                    duplicateToCanonicalIdMap,
+                    out var remappedTemplateJson))
+            {
+                throw new SyncPullBlockedException(
+                    $"품목 별칭을 참조하는 로컬 청구 템플릿을 안전하게 해석할 수 없어 pull을 중단했습니다. profile={profile.Id:D}");
+            }
+
+            if (!string.Equals(
+                    profile.BillingTemplateJson ?? string.Empty,
+                    remappedTemplateJson,
+                    StringComparison.Ordinal))
+            {
+                remappedBillingTemplates[profile.Id] = remappedTemplateJson;
+            }
+        }
+
+        var itemPriceGrades = await _db.ItemPriceGrades.IgnoreQueryFilters()
+            .Where(grade => duplicateIds.Contains(grade.ItemId) || canonicalIds.Contains(grade.ItemId))
+            .ToListAsync(ct);
+        var conflictingPriceGradeGroup = itemPriceGrades
+            .GroupBy(grade => new
+            {
+                ItemId = duplicateToCanonicalIdMap.TryGetValue(grade.ItemId, out var canonicalId)
+                    ? canonicalId
+                    : grade.ItemId,
+                grade.PriceGradeOptionId
+            })
+            .FirstOrDefault(group =>
+                group.Count() > 1 &&
+                group.Any(grade => duplicateIds.Contains(grade.ItemId)));
+        if (conflictingPriceGradeGroup is not null)
+        {
+            throw new InvalidOperationException(
+                $"Item alias remap would create a duplicate price-grade key: " +
+                $"ItemId={conflictingPriceGradeGroup.Key.ItemId:D}, " +
+                $"PriceGradeOptionId={conflictingPriceGradeGroup.Key.PriceGradeOptionId:D}.");
+        }
+
+        var priceGradeRemapUpdatedAtUtc = DateTime.UtcNow;
+        foreach (var grade in itemPriceGrades.Where(current => duplicateIds.Contains(current.ItemId)))
+        {
+            if (!duplicateToCanonicalIdMap.TryGetValue(grade.ItemId, out var canonicalId))
+                continue;
+
+            grade.ItemId = canonicalId;
+            if (grade.IsDirty)
+            {
+                grade.UpdatedAtUtc = priceGradeRemapUpdatedAtUtc > grade.UpdatedAtUtc
+                    ? priceGradeRemapUpdatedAtUtc
+                    : grade.UpdatedAtUtc == DateTime.MaxValue
+                        ? grade.UpdatedAtUtc.AddTicks(-1)
+                        : grade.UpdatedAtUtc.AddTicks(1);
+            }
+        }
+
         var invoiceLines = await _db.InvoiceLines.IgnoreQueryFilters()
             .Where(line => line.ItemId.HasValue && duplicateIds.Contains(line.ItemId.Value))
             .ToListAsync(ct);
+        var remappedInvoiceIds = new HashSet<Guid>();
         foreach (var line in invoiceLines)
         {
             if (line.ItemId.HasValue && duplicateToCanonicalIdMap.TryGetValue(line.ItemId.Value, out var canonicalId))
+            {
                 line.ItemId = canonicalId;
+                if (line.InvoiceId != Guid.Empty)
+                    remappedInvoiceIds.Add(line.InvoiceId);
+            }
+        }
+        if (remappedInvoiceIds.Count > 0)
+        {
+            await _db.Invoices.IgnoreQueryFilters()
+                .Where(invoice =>
+                    invoice.IsDirty &&
+                    remappedInvoiceIds.Contains(invoice.Id))
+                .LoadAsync(ct);
         }
 
         var invoiceLineSerials = await _db.InvoiceLineSerials
@@ -7007,6 +14102,14 @@ public sealed class SyncService : IDisposable
                 asset.ItemId = canonicalId;
         }
 
+        foreach (var profile in rentalBillingProfiles)
+        {
+            if (remappedBillingTemplates.TryGetValue(
+                    profile.Id,
+                    out var remappedTemplateJson))
+                profile.BillingTemplateJson = remappedTemplateJson;
+        }
+
         var serialLedgers = await _db.SerialLedgers
             .Where(ledger => ledger.ItemId.HasValue && duplicateIds.Contains(ledger.ItemId.Value))
             .ToListAsync(ct);
@@ -7019,10 +14122,23 @@ public sealed class SyncService : IDisposable
         var inventoryTransferLines = await _db.InventoryTransferLines.IgnoreQueryFilters()
             .Where(line => line.ItemId.HasValue && duplicateIds.Contains(line.ItemId.Value))
             .ToListAsync(ct);
+        var remappedTransferIds = new HashSet<Guid>();
         foreach (var line in inventoryTransferLines)
         {
             if (line.ItemId.HasValue && duplicateToCanonicalIdMap.TryGetValue(line.ItemId.Value, out var canonicalId))
+            {
                 line.ItemId = canonicalId;
+                if (line.TransferId != Guid.Empty)
+                    remappedTransferIds.Add(line.TransferId);
+            }
+        }
+        if (remappedTransferIds.Count > 0)
+        {
+            await _db.InventoryTransfers.IgnoreQueryFilters()
+                .Where(transfer =>
+                    transfer.IsDirty &&
+                    remappedTransferIds.Contains(transfer.Id))
+                .LoadAsync(ct);
         }
 
         var inventoryMovements = await _db.InventoryMovements
@@ -7072,7 +14188,8 @@ public sealed class SyncService : IDisposable
                 ItemId = canonicalId,
                 WarehouseCode = stock.WarehouseCode,
                 Quantity = stock.Quantity,
-                UpdatedAtUtc = stock.UpdatedAtUtc
+                UpdatedAtUtc = stock.UpdatedAtUtc,
+                Revision = stock.Revision
             };
             canonicalStockLookup[stockKey] = migratedStock;
             _db.ItemWarehouseStocks.Add(migratedStock);
@@ -7080,6 +14197,92 @@ public sealed class SyncService : IDisposable
         }
 
         await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task ThrowIfPendingItemAliasReferenceOutboxesAsync(
+        IReadOnlyDictionary<Guid, Guid> duplicateToCanonicalIdMap,
+        CancellationToken ct)
+    {
+        if (duplicateToCanonicalIdMap.Count == 0)
+            return;
+
+        var duplicateIds = duplicateToCanonicalIdMap.Keys.Distinct().ToList();
+        var priceGradeIds = await _db.ItemPriceGrades.IgnoreQueryFilters()
+            .Where(grade => duplicateIds.Contains(grade.ItemId))
+            .Select(grade => grade.Id)
+            .Distinct()
+            .ToListAsync(ct);
+        await ThrowIfPendingCanonicalDeleteOutboxAsync(
+            priceGradeIds,
+            [nameof(LocalItemPriceGrade), "ItemPriceGrade"],
+            "품목 별칭 가격등급 remap",
+            ct);
+
+        var invoiceIds = await _db.InvoiceLines.IgnoreQueryFilters()
+            .Where(line => line.ItemId.HasValue && duplicateIds.Contains(line.ItemId.Value))
+            .Select(line => line.InvoiceId)
+            .Concat(_db.InvoiceLineSerials
+                .Where(serial => serial.ItemId.HasValue && duplicateIds.Contains(serial.ItemId.Value))
+                .Select(serial => serial.InvoiceId))
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToListAsync(ct);
+        await ThrowIfPendingCanonicalDeleteOutboxAsync(
+            invoiceIds,
+            [nameof(LocalInvoice), "Invoice"],
+            "품목 별칭 전표 remap",
+            ct);
+
+        var rentalAssetIds = await _db.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => asset.ItemId.HasValue && duplicateIds.Contains(asset.ItemId.Value))
+            .Select(asset => asset.Id)
+            .Distinct()
+            .ToListAsync(ct);
+        await ThrowIfPendingCanonicalDeleteOutboxAsync(
+            rentalAssetIds,
+            [nameof(LocalRentalAsset), "RentalAsset"],
+            "품목 별칭 렌탈 자산 remap",
+            ct);
+
+        var profileIds = new List<Guid>();
+        foreach (var profile in await _db.RentalBillingProfiles.IgnoreQueryFilters()
+                     .AsNoTracking()
+                     .ToListAsync(ct))
+        {
+            if (!TryRemapRentalBillingTemplateCatalogItemReferences(
+                    profile.BillingTemplateJson,
+                    duplicateToCanonicalIdMap,
+                    out var remappedTemplateJson))
+            {
+                throw new SyncPullBlockedException(
+                    $"품목 별칭을 참조하는 로컬 청구 템플릿을 안전하게 해석할 수 없어 pull을 중단했습니다. profile={profile.Id:D}");
+            }
+
+            if (!string.Equals(
+                    profile.BillingTemplateJson ?? string.Empty,
+                    remappedTemplateJson,
+                    StringComparison.Ordinal))
+            {
+                profileIds.Add(profile.Id);
+            }
+        }
+        await ThrowIfPendingCanonicalDeleteOutboxAsync(
+            profileIds,
+            [nameof(LocalRentalBillingProfile), "RentalBillingProfile"],
+            "품목 별칭 청구 프로필 remap",
+            ct);
+
+        var transferIds = await _db.InventoryTransferLines.IgnoreQueryFilters()
+            .Where(line => line.ItemId.HasValue && duplicateIds.Contains(line.ItemId.Value))
+            .Select(line => line.TransferId)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToListAsync(ct);
+        await ThrowIfPendingCanonicalDeleteOutboxAsync(
+            transferIds,
+            [nameof(LocalInventoryTransfer), "InventoryTransfer"],
+            "품목 별칭 재고이동 remap",
+            ct);
     }
 
     private async Task<HashSet<Guid>> RemoveStalePulledRentalAssetConflictsAsync(
@@ -7132,7 +14335,14 @@ public sealed class SyncService : IDisposable
                 incomingByManagementId,
                 incomingByAssetKey);
 
-            if (matchingIncomingIds.Count == 0 || matchingIncomingIds.Contains(candidate.Id))
+            if (matchingIncomingIds.Count == 0)
+                continue;
+            if (matchingIncomingIds.Count != 1)
+            {
+                throw new SyncPullBlockedException(
+                    $"렌탈 자산 natural key가 여러 incoming ID와 교차 일치하여 pull을 중단했습니다. asset={candidate.Id:D}");
+            }
+            if (matchingIncomingIds.Contains(candidate.Id))
                 continue;
 
             if (candidate.IsDirty)
@@ -7158,6 +14368,20 @@ public sealed class SyncService : IDisposable
 
         if (staleConflictIds.Count > 0)
         {
+            await ThrowIfPendingCanonicalDeleteOutboxAsync(
+                staleConflictIds,
+                [nameof(LocalRentalAsset), "RentalAsset"],
+                "렌탈 자산 충돌",
+                ct);
+            if (await _db.RentalAssetAssignmentHistories
+                    .IgnoreQueryFilters()
+                    .AnyAsync(history =>
+                        staleConflictIds.Contains(history.AssetId),
+                        ct))
+            {
+                throw new SyncPullBlockedException(
+                    "렌탈 자산 canonical delete가 배정 이력을 orphan 처리할 수 있어 pull을 중단했습니다.");
+            }
             _db.ChangeTracker.Clear();
             await _db.RentalAssets.IgnoreQueryFilters()
                 .Where(asset => staleConflictIds.Contains(asset.Id))
@@ -7493,7 +14717,19 @@ public sealed class SyncService : IDisposable
         });
     }
 
-    private async Task<List<LocalItemWarehouseStock>> LoadInventoryTrackedItemWarehouseStocksForPushAsync(CancellationToken ct)
+    private Task<List<LocalItemWarehouseStock>>
+        LoadInventoryTrackedItemWarehouseStocksForPushAsync(
+            CancellationToken ct)
+        => LoadInventoryTrackedItemWarehouseStocksForPushForSessionAsync(
+            _session,
+            itemIds: null,
+            ct: ct);
+
+    private async Task<List<LocalItemWarehouseStock>>
+        LoadInventoryTrackedItemWarehouseStocksForPushForSessionAsync(
+            SessionState session,
+            IReadOnlySet<Guid>? itemIds,
+            CancellationToken ct)
     {
         var rows = await (from stock in _db.ItemWarehouseStocks.AsNoTracking()
                           join item in _db.Items.IgnoreQueryFilters().AsNoTracking()
@@ -7504,9 +14740,14 @@ public sealed class SyncService : IDisposable
         return rows
             .Where(row =>
                 !row.Item.IsDeleted &&
+                (itemIds is null ||
+                 itemIds.Contains(row.Item.Id)) &&
                 SupportsInventoryTracking(row.Item) &&
-                _local.CanWriteItemScope(row.Item, _session) &&
-                CanWriteItemWarehouseStockForPush(row.Stock, row.Item))
+                _local.CanWriteItemScope(row.Item, session) &&
+                CanWriteItemWarehouseStockForPush(
+                    row.Stock,
+                    row.Item,
+                    session))
             .Select(row => row.Stock)
             .ToList();
     }
@@ -7609,16 +14850,42 @@ public sealed class SyncService : IDisposable
     }
 
     private bool CanWriteItemWarehouseStockForPush(LocalItemWarehouseStock stock, LocalItem item)
+        => CanWriteItemWarehouseStockForPush(
+            stock,
+            item,
+            _session);
+
+    private bool CanWriteItemWarehouseStockForPush(
+        LocalItemWarehouseStock stock,
+        LocalItem item,
+        SessionState session)
+        => CanWriteItemWarehouseCodeForPush(
+            stock.WarehouseCode,
+            item,
+            session);
+
+    private bool CanWriteItemWarehouseCodeForPush(
+        string? warehouseCode,
+        LocalItem item)
+        => CanWriteItemWarehouseCodeForPush(
+            warehouseCode,
+            item,
+            _session);
+
+    private bool CanWriteItemWarehouseCodeForPush(
+        string? warehouseCode,
+        LocalItem item,
+        SessionState session)
     {
-        if (_session.HasGlobalDataScope)
+        if (session.HasGlobalDataScope)
             return true;
 
         var normalizedWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(
-            stock.WarehouseCode,
+            warehouseCode,
             item.OfficeCode,
-            _session.OfficeCode);
+            session.OfficeCode);
         var writableWarehouseCodes = _local
-            .GetWritableOfficeCodesForSession(_session)
+            .GetWritableOfficeCodesForSession(session)
             .Select(OfficeCodeCatalog.GetMainWarehouseCode)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         return writableWarehouseCodes.Contains(normalizedWarehouseCode);
@@ -7642,7 +14909,18 @@ public sealed class SyncService : IDisposable
     }
 
     private static string BuildItemWarehouseStockKey(Guid itemId, string? warehouseCode)
-        => $"{itemId:D}|{(warehouseCode ?? string.Empty).Trim().ToUpperInvariant()}";
+        => $"{itemId:D}|{NormalizeItemWarehouseStockLogicalWarehouseCode(warehouseCode)}";
+
+    private static string
+        NormalizeItemWarehouseStockLogicalWarehouseCode(
+            string? warehouseCode)
+        => OfficeCodeCatalog.TryNormalizeWarehouseCode(
+                warehouseCode,
+                out var canonicalWarehouseCode)
+            ? canonicalWarehouseCode
+            : (warehouseCode ?? string.Empty)
+                .Trim()
+                .ToUpperInvariant();
 
     private async Task UpsertPulledSelectionOptionsAsync<TLocal, TDto>(
         IReadOnlyList<TDto> dtos,
@@ -7680,6 +14958,76 @@ public sealed class SyncService : IDisposable
                     .ThenByDescending(entity => entity.CreatedAtUtc)
                     .First())
                 .ToList();
+
+            var initialExistingEntities = await set.IgnoreQueryFilters()
+                .AsNoTracking()
+                .ToListAsync(ct);
+            var logicalMutationIds = new HashSet<Guid>();
+            foreach (var local in incomingOptions)
+            {
+                var normalizedName = NormalizeOptionName(nameSelector(local));
+                var existing = initialExistingEntities.FirstOrDefault(entity => entity.Id == local.Id);
+                if (existing is not null)
+                {
+                    if (existing.IsDirty &&
+                        !CanAcceptServerSelectionOptionSnapshot(existing, local, nameSelector))
+                    {
+                        continue;
+                    }
+
+                    if (!existing.IsDirty && existing.UpdatedAtUtc > local.UpdatedAtUtc)
+                        continue;
+                }
+
+                var localDeletion = initialExistingEntities
+                    .Where(entity =>
+                        string.Equals(
+                            NormalizeOptionName(nameSelector(entity)),
+                            normalizedName,
+                            StringComparison.CurrentCultureIgnoreCase) &&
+                        (entity.IsDeleted || !GetOptionalBoolProperty(entity, "IsActive", true)))
+                    .OrderByDescending(entity => entity.UpdatedAtUtc)
+                    .FirstOrDefault();
+                if (localDeletion is not null && localDeletion.UpdatedAtUtc >= local.UpdatedAtUtc)
+                    continue;
+
+                var conflicts = initialExistingEntities
+                    .Where(entity =>
+                        entity.Id != local.Id &&
+                        !entity.IsDeleted &&
+                        string.Equals(
+                            NormalizeOptionName(nameSelector(entity)),
+                            normalizedName,
+                            StringComparison.CurrentCultureIgnoreCase))
+                    .ToList();
+                if (conflicts.Any(entity => entity.IsDirty))
+                    continue;
+
+                logicalMutationIds.UnionWith(conflicts.Select(entity => entity.Id));
+            }
+
+            var optionOutboxEntityNames = typeof(TLocal) == typeof(LocalPriceGradeOption)
+                ? new[] { nameof(LocalPriceGradeOption), "PriceGradeOption" }
+                : typeof(TLocal) == typeof(LocalTradeTypeOption)
+                    ? new[] { nameof(LocalTradeTypeOption), "TradeTypeOption" }
+                    : typeof(TLocal) == typeof(LocalItemCategoryOption)
+                        ? new[] { nameof(LocalItemCategoryOption), "ItemCategoryOption" }
+                        : [];
+            if (typeof(TLocal) == typeof(LocalPriceGradeOption) &&
+                logicalMutationIds.Count > 0 &&
+                await _db.ItemPriceGrades.IgnoreQueryFilters()
+                    .AnyAsync(grade =>
+                        logicalMutationIds.Contains(grade.PriceGradeOptionId),
+                        ct))
+            {
+                throw new SyncPullBlockedException(
+                    "가격등급 옵션 canonicalization이 품목 가격등급 참조를 orphan 처리할 수 있어 pull을 중단했습니다.");
+            }
+            await ThrowIfPendingCanonicalDeleteOutboxAsync(
+                logicalMutationIds,
+                optionOutboxEntityNames,
+                $"{typeof(TLocal).Name} canonicalization",
+                ct);
 
             foreach (var local in incomingOptions)
             {
@@ -7815,6 +15163,42 @@ public sealed class SyncService : IDisposable
 
         var existingCompanies = await _db.RentalManagementCompanies.IgnoreQueryFilters().ToListAsync(ct);
 
+        var pendingPhysicalDeleteIds = new HashSet<Guid>();
+        foreach (var local in incomingCompanies)
+        {
+            var normalizedCode = NormalizeRentalManagementCompanyCode(local.Code);
+            if (string.IsNullOrWhiteSpace(normalizedCode))
+                continue;
+
+            var conflictingCompanies = existingCompanies
+                .Where(company =>
+                    company.Id != local.Id &&
+                    string.Equals(
+                        NormalizeRentalManagementCompanyCode(company.Code),
+                        normalizedCode,
+                        StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (conflictingCompanies.Any(company => company.IsDirty))
+                continue;
+
+            foreach (var conflict in conflictingCompanies)
+                pendingPhysicalDeleteIds.Add(conflict.Id);
+
+            var exactExisting = existingCompanies.FirstOrDefault(company => company.Id == local.Id);
+            if (local.IsDeleted &&
+                exactExisting is not null &&
+                !exactExisting.IsDirty)
+            {
+                pendingPhysicalDeleteIds.Add(exactExisting.Id);
+            }
+        }
+
+        await ThrowIfPendingCanonicalDeleteOutboxAsync(
+            pendingPhysicalDeleteIds,
+            [nameof(LocalRentalManagementCompany), "RentalManagementCompany"],
+            "관리업체 canonical pull",
+            ct);
+
         foreach (var local in incomingCompanies)
         {
             var normalizedCode = NormalizeRentalManagementCompanyCode(local.Code);
@@ -7872,12 +15256,7 @@ public sealed class SyncService : IDisposable
                         continue;
                     }
 
-                    _db.ChangeTracker.Clear();
-                    await _db.RentalManagementCompanies.IgnoreQueryFilters()
-                        .Where(company => company.Id == local.Id)
-                        .ExecuteDeleteAsync(ct);
-                    _db.ChangeTracker.Clear();
-                    existingCompanies = await _db.RentalManagementCompanies.IgnoreQueryFilters().ToListAsync(ct);
+                    _db.Entry(existing).CurrentValues.SetValues(local);
                 }
 
                 continue;
@@ -8047,10 +15426,21 @@ public sealed class SyncService : IDisposable
             : dtos
                 .Where(dto => !nonInventoryIncomingItemIds.Contains(dto.ItemId))
                 .ToList();
-        var pulledKeys = filteredDtos
+        var logicalDtos = filteredDtos
+            .GroupBy(
+                dto => BuildItemWarehouseStockKey(
+                    dto.ItemId,
+                    dto.WarehouseCode),
+                StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderByDescending(dto => dto.Revision)
+                .ThenByDescending(dto => dto.UpdatedAtUtc)
+                .First())
+            .ToList();
+        var pulledKeys = logicalDtos
             .Select(dto => BuildItemWarehouseStockKey(dto.ItemId, dto.WarehouseCode))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var affectedItemIds = filteredDtos
+        var affectedItemIds = logicalDtos
             .Where(dto => dto.ItemId != Guid.Empty)
             .Select(dto => dto.ItemId)
             .ToHashSet();
@@ -8083,17 +15473,60 @@ public sealed class SyncService : IDisposable
             }
         }
 
-        foreach (var dto in filteredDtos)
+        List<LocalItemWarehouseStock> existingStocks =
+            affectedItemIds.Count == 0
+            ? []
+            : await _db.ItemWarehouseStocks
+                .Where(stock =>
+                    affectedItemIds.Contains(stock.ItemId))
+                .ToListAsync(ct);
+        var existingStocksByLogicalKey = existingStocks
+            .GroupBy(
+                stock => BuildItemWarehouseStockKey(
+                    stock.ItemId,
+                    stock.WarehouseCode),
+                StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.ToList(),
+                StringComparer.OrdinalIgnoreCase);
+
+        foreach (var dto in logicalDtos)
         {
             var local = LocalMappings.ToLocal(dto);
-            var existing = await _db.ItemWarehouseStocks.FindAsync([local.ItemId, local.WarehouseCode], ct);
-            if (existing is null)
+            local.WarehouseCode =
+                NormalizeItemWarehouseStockLogicalWarehouseCode(
+                    dto.WarehouseCode);
+            var logicalKey = BuildItemWarehouseStockKey(
+                local.ItemId,
+                local.WarehouseCode);
+            var logicalMatches =
+                existingStocksByLogicalKey.GetValueOrDefault(
+                    logicalKey) ??
+                [];
+            var canonicalExisting = logicalMatches
+                .FirstOrDefault(stock => string.Equals(
+                    stock.WarehouseCode,
+                    local.WarehouseCode,
+                    StringComparison.Ordinal));
+            if (canonicalExisting is null)
             {
+                if (logicalMatches.Count > 0)
+                    _db.ItemWarehouseStocks.RemoveRange(logicalMatches);
                 _db.ItemWarehouseStocks.Add(local);
             }
             else
             {
-                _db.Entry(existing).CurrentValues.SetValues(local);
+                _db.Entry(canonicalExisting)
+                    .CurrentValues.SetValues(local);
+                var aliases = logicalMatches
+                    .Where(stock =>
+                        !ReferenceEquals(
+                            stock,
+                            canonicalExisting))
+                    .ToList();
+                if (aliases.Count > 0)
+                    _db.ItemWarehouseStocks.RemoveRange(aliases);
             }
         }
 
@@ -8129,6 +15562,9 @@ public sealed class SyncService : IDisposable
         var readableOfficeCodes = _local
             .GetReadableOfficeCodesForSession(_session)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var readableWarehouseCodes = readableOfficeCodes
+            .Select(OfficeCodeCatalog.GetMainWarehouseCode)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         foreach (var candidate in candidates)
         {
@@ -8139,7 +15575,12 @@ public sealed class SyncService : IDisposable
             if (candidate.Item.IsDirty)
                 continue;
 
-            if (!IsItemWarehouseStockInCurrentPullScope(candidate.Item, sessionTenantCode, readableOfficeCodes))
+            if (!IsItemWarehouseStockInCurrentPullScope(
+                    candidate.Item,
+                    candidate.Stock,
+                    sessionTenantCode,
+                    readableOfficeCodes,
+                    readableWarehouseCodes))
                 continue;
 
             _db.ItemWarehouseStocks.Remove(candidate.Stock);
@@ -8181,83 +15622,188 @@ public sealed class SyncService : IDisposable
 
     private bool IsItemWarehouseStockInCurrentPullScope(
         LocalItem item,
+        LocalItemWarehouseStock stock,
         string sessionTenantCode,
-        IReadOnlySet<string> readableOfficeCodes)
+        IReadOnlySet<string> readableOfficeCodes,
+        IReadOnlySet<string> readableWarehouseCodes)
     {
         if (_session.HasGlobalDataScope)
             return true;
 
-        var itemTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
-            item.TenantCode,
-            item.OfficeCode,
-            sessionTenantCode,
-            _session.OfficeCode);
+        if (item.IsDeleted ||
+            !TenantScopeCatalog.TryNormalizeTenantCode(
+                item.TenantCode,
+                out var itemTenantCode))
+        {
+            return false;
+        }
+
         if (!string.Equals(itemTenantCode, sessionTenantCode, StringComparison.OrdinalIgnoreCase))
             return false;
 
-        var itemOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(item.OfficeCode, OfficeCodeCatalog.Shared);
-        return string.Equals(itemOfficeCode, OfficeCodeCatalog.Shared, StringComparison.OrdinalIgnoreCase) ||
-               readableOfficeCodes.Contains(itemOfficeCode);
+        if (!string.Equals(
+                item.OfficeCode,
+                OfficeCodeCatalog.Shared,
+                StringComparison.OrdinalIgnoreCase) &&
+            !readableOfficeCodes.Contains(item.OfficeCode))
+        {
+            return false;
+        }
+
+        if (!OfficeCodeCatalog.TryNormalizeWarehouseCode(
+                stock.WarehouseCode,
+                out var normalizedWarehouseCode))
+            return false;
+
+        return readableWarehouseCodes.Contains(normalizedWarehouseCode);
     }
 
     private async Task UpsertPulledTransactionAttachmentsAsync(
         IReadOnlyList<TransactionAttachmentDto> dtos,
+        CancellationToken ct,
+        AttachmentFileJournal? attachmentFileJournal)
+    {
+        var ownsFileJournal = attachmentFileJournal is null;
+        if (ownsFileJournal && _db.Database.CurrentTransaction is null)
+            await RecoverIncompleteAttachmentFileJournalsAsync(ct);
+
+        if (dtos.Count == 0)
+            return;
+
+        if (ownsFileJournal && _db.Database.CurrentTransaction is not null)
+        {
+            throw new InvalidOperationException(
+                "외부 DB 트랜잭션에서 첨부파일 pull을 적용하려면 동일 범위의 파일 저널이 필요합니다.");
+        }
+
+        var ownedFileJournal = ownsFileJournal
+            ? new AttachmentFileJournal(
+                AppPaths.AttachmentFileJournalDir,
+                AppPaths.AttachmentsDir)
+            : null;
+        var fileJournal = attachmentFileJournal ?? ownedFileJournal!;
+        Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? ownedDatabaseTransaction = null;
+        var commitAttempted = false;
+
+        try
+        {
+            if (ownsFileJournal)
+                ownedDatabaseTransaction = await _db.BeginRuntimeMutationTransactionAsync(ct);
+
+            foreach (var dto in dtos)
+            {
+                var existing = await _db.TransactionAttachments.IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(current => current.Id == dto.Id, ct);
+                if (existing?.IsDirty == true)
+                    continue;
+
+                var existingPath = existing?.StoredPath;
+                var attachmentPath = string.Empty;
+                if (!dto.IsDeleted)
+                {
+                    var verifiedContent = ValidatePulledTransactionAttachmentContent(dto);
+                    attachmentPath = ResolvePulledTransactionAttachmentPath(
+                        dto,
+                        verifiedContent);
+                    await fileJournal.StageWriteAsync(
+                        attachmentPath,
+                        verifiedContent,
+                        ct);
+                }
+
+                var local = LocalMappings.ToLocal(
+                    dto,
+                    storedFileName: Path.GetFileName(attachmentPath),
+                    storedPath: attachmentPath);
+                local.IsDirty = false;
+
+                if (existing is null)
+                {
+                    _db.TransactionAttachments.Add(local);
+                }
+                else
+                {
+                    _db.Entry(existing).CurrentValues.SetValues(local);
+                    if (dto.IsDeleted)
+                    {
+                        TryStageTransactionAttachmentDelete(fileJournal, existingPath);
+                    }
+                    else if (!string.Equals(
+                                 existingPath,
+                                 attachmentPath,
+                                 StringComparison.OrdinalIgnoreCase))
+                    {
+                        TryStageTransactionAttachmentDelete(fileJournal, existingPath);
+                    }
+                }
+            }
+
+            await _db.SaveChangesAsync(ct);
+
+            if (ownsFileJournal)
+            {
+                await fileJournal.StageCommitEvidenceAsync(_db, ct);
+                fileJournal.Promote();
+                commitAttempted = true;
+                await ownedDatabaseTransaction!.CommitAsync(ct);
+                await ownedDatabaseTransaction.DisposeAsync().ConfigureAwait(false);
+                await fileJournal.CompleteAfterDatabaseCommitAsync(
+                    _db,
+                    CancellationToken.None);
+            }
+        }
+        catch
+        {
+            var commitResolution = AttachmentCommitResolution.RolledBack;
+            if (ownedDatabaseTransaction is not null)
+            {
+                try
+                {
+                    await ownedDatabaseTransaction.RollbackAsync(CancellationToken.None);
+                }
+                catch (Exception rollbackException)
+                {
+                    AppLogger.Error(
+                        "ATTACHMENT",
+                        "첨부파일 pull 실패 후 DB 롤백을 완료하지 못했습니다.",
+                        rollbackException);
+                }
+            }
+
+            if (ownsFileJournal)
+            {
+                if (!commitAttempted)
+                {
+                    fileJournal.Rollback();
+                }
+                else
+                {
+                    commitResolution = await fileJournal.ResolveCommitAmbiguityAsync(
+                        _db,
+                        CancellationToken.None);
+                }
+            }
+
+            _db.ChangeTracker.Clear();
+            if (commitResolution != AttachmentCommitResolution.Committed)
+                throw;
+        }
+        finally
+        {
+            if (ownedDatabaseTransaction is not null)
+                await ownedDatabaseTransaction.DisposeAsync();
+            ownedFileJournal?.Dispose();
+        }
+    }
+
+    private async Task RecoverIncompleteAttachmentFileJournalsAsync(
         CancellationToken ct)
     {
-        var filesToWriteAfterSave = new List<TransactionAttachmentFileWrite>();
-        var filesToDeleteAfterSave = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var dto in dtos)
-        {
-            var existing = await _db.TransactionAttachments.IgnoreQueryFilters()
-                .FirstOrDefaultAsync(current => current.Id == dto.Id, ct);
-            if (existing?.IsDirty == true)
-                continue;
-
-            var existingPath = existing?.StoredPath;
-            var attachmentPath = PrepareTransactionAttachmentFile(dto, filesToWriteAfterSave);
-            var local = LocalMappings.ToLocal(dto, storedFileName: Path.GetFileName(attachmentPath), storedPath: attachmentPath);
-            local.IsDirty = false;
-
-            if (existing is null)
-            {
-                _db.TransactionAttachments.Add(local);
-            }
-            else
-            {
-                _db.Entry(existing).CurrentValues.SetValues(local);
-                if (dto.IsDeleted)
-                {
-                    QueueTransactionAttachmentFileDelete(filesToDeleteAfterSave, existingPath);
-                }
-                else if (!string.Equals(existingPath, attachmentPath, StringComparison.OrdinalIgnoreCase))
-                {
-                    QueueTransactionAttachmentFileDelete(filesToDeleteAfterSave, existingPath);
-                }
-            }
-        }
-
-        try
-        {
-            await _db.SaveChangesAsync(ct);
-        }
-        catch
-        {
-            DeleteTemporaryTransactionAttachmentFiles(filesToWriteAfterSave);
-            throw;
-        }
-
-        try
-        {
-            CommitTransactionAttachmentFileWrites(filesToWriteAfterSave);
-        }
-        catch
-        {
-            DeleteTemporaryTransactionAttachmentFiles(filesToWriteAfterSave);
-            throw;
-        }
-
-        DeleteTransactionAttachmentFiles(filesToDeleteAfterSave);
+        await AttachmentFileJournal.RecoverIncompleteJournalsAsync(
+            _db,
+            AppPaths.AttachmentFileJournalDir,
+            AppPaths.AttachmentsDir,
+            ct);
     }
 
     private async Task UpsertPulledInventoryTransfersAsync(
@@ -8290,40 +15836,526 @@ public sealed class SyncService : IDisposable
         ScheduleTransientFailureRetry();
     }
 
-    private async Task<bool> TryRefreshSharedMirrorCoreAsync(CancellationToken ct)
+    private async Task DeferPullForConcurrentOwnerEditAsync()
     {
+        const string deferredMessage =
+            "서버 응답 대기 중 새 편집이 발생해 이번 다운로드 반영을 보류했습니다. 편집을 저장하거나 취소한 뒤 자동으로 다시 불러옵니다.";
+        AppLogger.Warn("SYNC", deferredMessage);
+        await _local.MarkServerMirrorRefreshRequiredAsync(
+            CancellationToken.None);
+        await TryRecordDiagnosticAsync(
+            phase: "pull",
+            rawMessage: deferredMessage,
+            severity: "Info",
+            recoveryAttempted: true,
+            recoverySucceeded: false);
+        SetStatus(deferredMessage);
+        ScheduleTransientFailureRetry();
+    }
+
+    private async Task DeferPullForChangedOperationOwnerAsync()
+    {
+        const string deferredMessage =
+            "서버 응답 대기 또는 반영 중 로그인·업체 DB 범위가 변경되어 이전 범위의 다운로드를 폐기했습니다. 현재 범위로 자동 재시도합니다.";
+        AppLogger.Warn("SYNC", deferredMessage);
+        await _local.MarkServerMirrorRefreshRequiredAsync(
+            CancellationToken.None);
+        await TryRecordDiagnosticAsync(
+            phase: "pull-owner",
+            rawMessage: deferredMessage,
+            severity: "Info",
+            recoveryAttempted: true,
+            recoverySucceeded: true);
+        SetStatus(deferredMessage);
+        ScheduleTransientFailureRetry();
+    }
+
+    private async Task ScheduleCurrentOwnerRefreshAfterCommittedOwnerChangeAsync()
+    {
+        AppLogger.Info(
+            "SYNC",
+            "The prior owner transaction committed after the active session scope changed. " +
+            "Prior-owner post-commit notifications were suppressed and a current-owner refresh was queued.");
+        try
+        {
+            await _local.MarkServerMirrorRefreshRequiredAsync(
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error(
+                "SYNC",
+                "The current-owner full refresh requirement could not be persisted after an owner change.",
+                ex);
+        }
+
+        CurrentOwnerRefreshScheduledForTesting?.Invoke();
+        _dispatcher.RequestDebouncedSync();
+    }
+
+    private async Task<bool> TryRunPostCommitEffectsForCurrentOwnerAsync(
+        SyncOperationOwnerBoundary expectedOwner,
+        Func<CancellationToken, Task> protectedEffects,
+        params Func<bool>[] synchronousNotifications)
+    {
+        ArgumentNullException.ThrowIfNull(expectedOwner);
+        ArgumentNullException.ThrowIfNull(protectedEffects);
+        ArgumentNullException.ThrowIfNull(synchronousNotifications);
+
+        using var scopeLease = await _session
+            .AcquireSyncScopeCommitLeaseAsync(CancellationToken.None)
+            .ConfigureAwait(false);
+        if (!IsSyncOperationOwnerCurrent(
+                expectedOwner,
+                scopeLeaseHeld: true))
+        {
+            return false;
+        }
+
+        if (AfterPostCommitOwnerCheckAsyncForTesting is not null)
+        {
+            await AfterPostCommitOwnerCheckAsyncForTesting(
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+
+        if (!IsSyncOperationOwnerCurrent(
+                expectedOwner,
+                scopeLeaseHeld: true))
+        {
+            return false;
+        }
+
+        await protectedEffects(CancellationToken.None).ConfigureAwait(false);
+        if (!IsSyncOperationOwnerCurrent(
+                expectedOwner,
+                scopeLeaseHeld: true))
+        {
+            return false;
+        }
+
+        foreach (var notification in synchronousNotifications)
+        {
+            ArgumentNullException.ThrowIfNull(notification);
+            if (!IsSyncOperationOwnerCurrent(
+                    expectedOwner,
+                    scopeLeaseHeld: true))
+            {
+                return false;
+            }
+
+            try
+            {
+                if (!notification())
+                    return false;
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error(
+                    "SYNC",
+                    "커밋된 동기화의 UI 변경 알림 중 오류가 발생했습니다.",
+                    ex);
+            }
+        }
+
+        return IsSyncOperationOwnerCurrent(
+            expectedOwner,
+            scopeLeaseHeld: true);
+    }
+
+    private bool TryPublishOwnerBoundRentalState(
+        SyncOperationOwnerBoundary expectedOwner,
+        IEnumerable<Guid>? assetIds,
+        IEnumerable<Guid>? billingProfileIds)
+        => _rental.TryPublishSynchronizedStateChanges(
+            assetIds,
+            billingProfileIds,
+            () => IsSyncOperationOwnerCurrent(
+                expectedOwner,
+                scopeLeaseHeld: true),
+            EnterOwnerBoundCallbackScope);
+
+    private bool TryPublishOwnerBoundItemInvoiceHistory(
+        SyncOperationOwnerBoundary expectedOwner,
+        bool hasPulledInvoices)
+    {
+        if (!hasPulledInvoices)
+        {
+            return IsSyncOperationOwnerCurrent(
+                expectedOwner,
+                scopeLeaseHeld: true);
+        }
+
+        return _local.TryPublishItemInvoiceHistoryChanged(
+            () => IsSyncOperationOwnerCurrent(
+                expectedOwner,
+                scopeLeaseHeld: true),
+            EnterOwnerBoundCallbackScope);
+    }
+
+    private bool TryPublishOwnerBoundInventoryState(
+        SyncOperationOwnerBoundary expectedOwner,
+        bool inventoryStateChanged)
+    {
+        if (!inventoryStateChanged)
+        {
+            return IsSyncOperationOwnerCurrent(
+                expectedOwner,
+                scopeLeaseHeld: true);
+        }
+
+        return _local.TryPublishInventoryStateChanged(
+            () => IsSyncOperationOwnerCurrent(
+                expectedOwner,
+                scopeLeaseHeld: true),
+            EnterOwnerBoundCallbackScope);
+    }
+
+    private bool TryPublishOwnerBoundStatus(
+        SyncOperationOwnerBoundary expectedOwner,
+        string message)
+    {
+        if (SyncStatusChanged is not { } handlers)
+        {
+            return IsSyncOperationOwnerCurrent(
+                expectedOwner,
+                scopeLeaseHeld: true);
+        }
+
+        foreach (Action<string> handler in handlers.GetInvocationList())
+        {
+            if (!IsSyncOperationOwnerCurrent(
+                    expectedOwner,
+                    scopeLeaseHeld: true))
+            {
+                return false;
+            }
+
+            using var callbackScope = EnterOwnerBoundCallbackScope();
+            handler(message);
+        }
+
+        return IsSyncOperationOwnerCurrent(
+            expectedOwner,
+            scopeLeaseHeld: true);
+    }
+
+    private IDisposable EnterOwnerBoundCallbackScope()
+        => new OwnerBoundCallbackScope(
+            _session.EnterSyncScopeSynchronousCallback(),
+            LocalDbContext.SuppressRuntimeMutationOwnerForCallback());
+
+    private sealed class OwnerBoundCallbackScope(
+        IDisposable sessionScope,
+        IDisposable runtimeMutationScope) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+            try
+            {
+                runtimeMutationScope.Dispose();
+            }
+            finally
+            {
+                sessionScope.Dispose();
+            }
+        }
+    }
+
+    private async Task<bool> TryRefreshSharedMirrorCoreAsync(
+        CancellationToken ct,
+        bool preserveTrackedChanges = false)
+    {
+        if (!_session.HasGlobalDataScope)
+        {
+            SetStatus("전체 공유 미러를 초기화하지 않고 현재 권한 범위의 서버 데이터를 갱신합니다.");
+            return await TryRefreshCurrentBusinessScopeCoreAsync(
+                ct,
+                preserveTrackedChanges);
+        }
+
+        if (!preserveTrackedChanges && HasPendingTrackedUserChanges())
+        {
+            SetStatus("저장되지 않은 편집이 있어 서버 캐시 새로고침을 중단했습니다.");
+            return false;
+        }
+
         for (var attempt = 0; attempt < 2; attempt++)
         {
-            var pull = await _api.PullAsync(0, ct);
+            var operationOwner =
+                CaptureSyncOperationOwnerBoundary();
+            var trackedStateBeforePull = CaptureTrackedStateBeforePush();
+            var ownerTrackedStateBeforePull =
+                CaptureIsolatedOwnerTrackedState();
+            var trackedChangesArrivedDuringPull = false;
+            SyncPullResponse? pull;
+            try
+            {
+                pull = await _api.PullAsync(
+                    0,
+                    operationOwner.BusinessDatabaseName,
+                    ct);
+            }
+            finally
+            {
+                if (preserveTrackedChanges)
+                {
+                    PreservePendingTrackedChangesForSync();
+                    trackedChangesArrivedDuringPull =
+                        HasIsolatedOwnerTrackedChangesSinceBoundary(
+                            ownerTrackedStateBeforePull);
+                }
+                else
+                {
+                    trackedChangesArrivedDuringPull =
+                        PreserveTrackedChangesSinceBoundary(trackedStateBeforePull) ||
+                        HasIsolatedOwnerTrackedChangesSinceBoundary(
+                            ownerTrackedStateBeforePull);
+                }
+            }
+
             if (pull is null)
                 return false;
+            if (!IsSyncOperationOwnerCurrent(operationOwner))
+            {
+                SetStatus(
+                    "서버 응답 대기 중 로그인·업체 DB 범위가 변경되어 이전 범위의 전체 캐시 응답을 폐기했습니다.");
+                return false;
+            }
+            if (trackedChangesArrivedDuringPull)
+            {
+                SetStatus("서버 응답 대기 중 저장되지 않은 편집이 발생해 서버 캐시 새로고침을 중단했습니다.");
+                return false;
+            }
+            if (await _local.CountDirtyAsync(ct) > 0)
+            {
+                SetStatus("서버 응답 대기 중 저장된 미동기화 변경이 발생해 서버 캐시 새로고침을 중단했습니다.");
+                return false;
+            }
+
+            if (await HasPendingReconciliationForOperationOwnerAsync(
+                    operationOwner,
+                    ct))
+            {
+                SetStatus("Pending local mutation reconciliation blocked the full mirror refresh.");
+                return false;
+            }
 
             LastPullChangeCount = Math.Max(1, CountPullChanges(pull));
 
             try
             {
+                if (preserveTrackedChanges)
+                {
+                    PreservePendingTrackedChangesForSync();
+                }
+                else if (HasPendingTrackedUserChanges())
+                {
+                    SetStatus("저장되지 않은 편집이 있어 서버 캐시 새로고침을 중단했습니다.");
+                    return false;
+                }
+
                 _db.ChangeTracker.Clear();
                 if (await ShouldRejectEmptyMirrorPullAsync(pull, ct))
                     return false;
 
-                await using var transaction = await _db.Database.BeginTransactionAsync(ct);
-                using (_local.SuppressSyncDispatch())
+                await RecoverIncompleteAttachmentFileJournalsAsync(ct);
+                if (BeforeSharedMirrorResetAsyncForTesting is not null)
+                    await BeforeSharedMirrorResetAsyncForTesting(ct);
+
+                if (!IsSyncOperationOwnerCurrent(operationOwner))
                 {
-                    await _local.ResetSharedMirrorCacheAsync(ct);
-                    await ApplyPullAsync(pull, 0L, ct);
+                    SetStatus(
+                        "전체 캐시 반영 직전에 로그인·업체 DB 범위가 변경되어 이전 범위의 응답을 폐기했습니다.");
+                    return false;
                 }
 
-                await transaction.CommitAsync(ct);
-                await _local.ClearServerMirrorRefreshRequiredAsync(CancellationToken.None);
-                await TrySetSettingSafeAsync("Sync.LastSuccessAt", DateTime.Now.ToString("O"), CancellationToken.None);
-                await TrySetSettingSafeAsync("Sync.LastError", string.Empty, CancellationToken.None);
-                await _diagnostics.ResolveOpenIssuesAsync(ct: CancellationToken.None);
-                _lastSyncCompletedUtc = DateTime.UtcNow;
-                SetStatus($"중앙 서버 기준 캐시 재구성 완료 {DateTime.Now:HH:mm:ss}");
+                await using var transaction = await _db.BeginRuntimeMutationTransactionAsync(ct);
+                _itemWarehouseStockReplayGuardValidatedForPullTransaction =
+                    false;
+                if (HasPendingTrackedUserChanges() ||
+                    await _local.CountDirtyAsync(ct) > 0 ||
+                    await HasPendingReconciliationForOperationOwnerAsync(
+                        operationOwner,
+                        ct))
+                {
+                    await transaction.RollbackAsync(CancellationToken.None);
+                    SetStatus(
+                        "전체 캐시 재구성 직전에 새 편집 또는 미동기화 변경이 확인되어 데이터 보존을 위해 반영을 보류했습니다.");
+                    return false;
+                }
+
+                using var attachmentFiles = new AttachmentFileJournal(
+                    AppPaths.AttachmentFileJournalDir,
+                    AppPaths.AttachmentsDir);
+                var itemInvoiceHistoryChanged = false;
+                using var inventoryStateChangeCapture =
+                    _local.CaptureInventoryStateChanges();
+                using (_local.SuppressSyncDispatch())
+                {
+                    await EnsureItemWarehouseStockReplayPullGuardUnchangedAsync(
+                        ct);
+                    _itemWarehouseStockReplayGuardValidatedBeforeMirrorReset =
+                        _itemWarehouseStockReplayPullGuard is not null;
+                    _itemWarehouseStockReplayGuardValidatedForPullTransaction =
+                        _itemWarehouseStockReplayPullGuard is not null;
+                    try
+                    {
+                        await _local.ResetSharedMirrorCacheWithAttachmentJournalAsync(
+                            attachmentFiles,
+                            ct);
+                        itemInvoiceHistoryChanged = await ApplyPullInternalAsync(
+                            pull,
+                            0L,
+                            ct,
+                            updateSyncRevision: true,
+                            attachmentFileJournal: attachmentFiles,
+                            publishRentalStateChanges: false);
+                        // A successful full mirror replaces the entire invoice
+                        // snapshot. Even an empty response can remove history
+                        // that an open item screen is still displaying.
+                        itemInvoiceHistoryChanged = true;
+                    }
+                    finally
+                    {
+                        _itemWarehouseStockReplayGuardValidatedBeforeMirrorReset =
+                            false;
+                    }
+                }
+
+                if (!IsSyncOperationOwnerCurrent(operationOwner))
+                {
+                    _itemWarehouseStockReplayGuardValidatedForPullTransaction =
+                        false;
+                    await transaction.RollbackAsync(CancellationToken.None);
+                    attachmentFiles.Rollback();
+                    _db.ChangeTracker.Clear();
+                    SetStatus(
+                        "전체 캐시 반영 중 로그인·업체 DB 범위가 변경되어 DB와 첨부파일 변경을 모두 롤백했습니다.");
+                    return false;
+                }
+
+                var commitAttempted = false;
+                try
+                {
+                    var committed =
+                        await CommitAttachmentTransactionUnderOwnerLeaseAsync(
+                            transaction,
+                            attachmentFiles,
+                            operationOwner,
+                            () => commitAttempted = true,
+                            ct);
+                    _itemWarehouseStockReplayGuardValidatedForPullTransaction =
+                        false;
+                    if (!committed)
+                    {
+                        await transaction.RollbackAsync(CancellationToken.None);
+                        attachmentFiles.Rollback();
+                        _db.ChangeTracker.Clear();
+                        SetStatus(
+                            "전체 캐시 커밋 직전에 로그인·업체 DB 범위가 변경되어 DB와 첨부파일 변경을 모두 롤백했습니다.");
+                        return false;
+                    }
+
+                    await transaction.DisposeAsync().ConfigureAwait(false);
+                    await attachmentFiles.CompleteAfterDatabaseCommitAsync(
+                        _db,
+                        CancellationToken.None);
+                }
+                catch
+                {
+                    _itemWarehouseStockReplayGuardValidatedForPullTransaction =
+                        false;
+                    var commitResolution = AttachmentCommitResolution.RolledBack;
+                    try
+                    {
+                        await transaction.RollbackAsync(CancellationToken.None);
+                    }
+                    catch (Exception rollbackException)
+                    {
+                        AppLogger.Error(
+                            "ATTACHMENT",
+                            "전체 미러 커밋 실패 후 DB 롤백 결과를 확정하지 못했습니다.",
+                            rollbackException);
+                    }
+
+                    if (commitAttempted)
+                    {
+                        commitResolution = await attachmentFiles.ResolveCommitAmbiguityAsync(
+                            _db,
+                            CancellationToken.None);
+                    }
+                    else
+                    {
+                        attachmentFiles.Rollback();
+                    }
+
+                    if (commitResolution != AttachmentCommitResolution.Committed)
+                        throw;
+
+                    // The ambiguity resolver verifies the commit with an
+                    // independent context and finalizes the durable journal.
+                    // Release the original context transaction before any
+                    // post-commit settings or diagnostics access.
+                    await transaction.DisposeAsync().ConfigureAwait(false);
+                }
+
+                var postCommitEffectsApplied =
+                    await TryRunPostCommitEffectsForCurrentOwnerAsync(
+                        operationOwner,
+                        async _ =>
+                        {
+                            await _local.ClearServerMirrorRefreshRequiredAsync(
+                                    CancellationToken.None)
+                                .ConfigureAwait(false);
+                            await TrySetSettingSafeAsync(
+                                    "Sync.LastSuccessAt",
+                                    DateTime.Now.ToString("O"),
+                                    CancellationToken.None)
+                                .ConfigureAwait(false);
+                            await TrySetSettingSafeAsync(
+                                    "Sync.LastError",
+                                    string.Empty,
+                                    CancellationToken.None)
+                                .ConfigureAwait(false);
+                            await _diagnostics.ResolveOpenIssuesAsync(
+                                    ct: CancellationToken.None)
+                                .ConfigureAwait(false);
+                            _lastSyncCompletedUtc = DateTime.UtcNow;
+                        },
+                        () => TryPublishOwnerBoundRentalState(
+                            operationOwner,
+                            pull.RentalAssets.Select(asset => asset.Id),
+                            pull.RentalBillingProfiles.Select(profile => profile.Id)),
+                        () => TryPublishOwnerBoundItemInvoiceHistory(
+                            operationOwner,
+                            itemInvoiceHistoryChanged),
+                        () => TryPublishOwnerBoundInventoryState(
+                            operationOwner,
+                            inventoryStateChanged: true),
+                        () => TryPublishOwnerBoundStatus(
+                            operationOwner,
+                            $"중앙 서버 기준 캐시 재구성 완료 {DateTime.Now:HH:mm:ss}"));
+                if (!postCommitEffectsApplied)
+                {
+                    _db.ChangeTracker.Clear();
+                    await ScheduleCurrentOwnerRefreshAfterCommittedOwnerChangeAsync();
+                    return true;
+                }
+
                 return true;
             }
-            catch (DbUpdateConcurrencyException ex) when (attempt == 0)
+            catch (DbUpdateConcurrencyException ex)
+                when (attempt == 0 &&
+                      _itemWarehouseStockReplayPullGuard is null)
             {
+                _itemWarehouseStockReplayGuardValidatedForPullTransaction =
+                    false;
                 AppLogger.Warn("SYNC", $"공유 캐시 재구성 중 동시성 충돌 재시도: {ex.Message}");
                 await TryRecordDiagnosticAsync(
                     phase: "shared-refresh",
@@ -8334,9 +16366,21 @@ public sealed class SyncService : IDisposable
                     recoverySucceeded: false);
                 _db.ChangeTracker.Clear();
             }
-            catch
+            catch (Exception ex)
             {
+                _itemWarehouseStockReplayGuardValidatedForPullTransaction =
+                    false;
                 _db.ChangeTracker.Clear();
+                if (_itemWarehouseStockReplayPullGuard is not null &&
+                    ex is not SyncPullBlockedException &&
+                    !(ex is OperationCanceledException &&
+                      ct.IsCancellationRequested))
+                {
+                    throw new SyncPullBlockedException(
+                        "재고 snapshot guard가 활성화된 전체 mirror pull 적용 중 DB 동시성 또는 저장 실패가 발생해 후속 pull을 중단했습니다.",
+                        ex);
+                }
+
                 throw;
             }
         }
@@ -8396,29 +16440,145 @@ public sealed class SyncService : IDisposable
            || pull.RentalAssets.Count > 0
            || pull.RentalBillingLogs.Count > 0;
 
-    private async Task<bool> TryRefreshCurrentBusinessScopeCoreAsync(CancellationToken ct)
+    private async Task<bool> TryRefreshCurrentBusinessScopeCoreAsync(
+        CancellationToken ct,
+        bool preserveTrackedChanges = false)
+        => await TryRefreshCurrentBusinessScopeCoreInternalAsync(
+            ct,
+            preserveTrackedChanges,
+            replaceLocalBusinessCache: false);
+
+    private async Task<bool> TryRefreshCurrentBusinessScopeCoreInternalAsync(
+        CancellationToken ct,
+        bool preserveTrackedChanges = false,
+        bool replaceLocalBusinessCache = false)
     {
+        if (!preserveTrackedChanges && HasPendingTrackedUserChanges())
+        {
+            SetStatus("저장되지 않은 편집이 있어 현재 업체 캐시 새로고침을 중단했습니다.");
+            return false;
+        }
+
         for (var attempt = 0; attempt < 2; attempt++)
         {
-            var pull = await _api.PullAsync(0, ct);
+            var operationOwner =
+                CaptureSyncOperationOwnerBoundary();
+            var trackedStateBeforePull = CaptureTrackedStateBeforePush();
+            var ownerTrackedStateBeforePull =
+                CaptureIsolatedOwnerTrackedState();
+            var trackedChangesArrivedDuringPull = false;
+            SyncPullResponse? pull;
+            try
+            {
+                pull = await _api.PullAsync(
+                    0,
+                    operationOwner.BusinessDatabaseName,
+                    ct);
+            }
+            finally
+            {
+                if (preserveTrackedChanges)
+                {
+                    PreservePendingTrackedChangesForSync();
+                    trackedChangesArrivedDuringPull =
+                        HasIsolatedOwnerTrackedChangesSinceBoundary(
+                            ownerTrackedStateBeforePull);
+                }
+                else
+                {
+                    trackedChangesArrivedDuringPull =
+                        PreserveTrackedChangesSinceBoundary(trackedStateBeforePull) ||
+                        HasIsolatedOwnerTrackedChangesSinceBoundary(
+                            ownerTrackedStateBeforePull);
+                }
+            }
+
             if (pull is null)
                 return false;
+            if (!IsSyncOperationOwnerCurrent(operationOwner))
+            {
+                SetStatus(
+                    "서버 응답 대기 중 로그인·업체 DB 범위가 변경되어 이전 범위의 현재 업체 응답을 폐기했습니다.");
+                return false;
+            }
+            if (trackedChangesArrivedDuringPull)
+            {
+                SetStatus("서버 응답 대기 중 저장되지 않은 편집이 발생해 현재 업체 캐시 새로고침을 중단했습니다.");
+                return false;
+            }
+            if (await _local.CountDirtyAsync(_session, ct) > 0)
+            {
+                SetStatus("서버 응답 대기 중 저장된 미동기화 변경이 발생해 현재 업체 캐시 새로고침을 중단했습니다.");
+                return false;
+            }
 
             LastPullChangeCount = Math.Max(1, CountPullChanges(pull));
 
             try
             {
-                _db.ChangeTracker.Clear();
-                using (_local.SuppressSyncDispatch())
+                if (preserveTrackedChanges)
                 {
-                    await ApplyPullAsync(pull, 0L, ct);
+                    PreservePendingTrackedChangesForSync();
+                }
+                else if (HasPendingTrackedUserChanges())
+                {
+                    SetStatus("저장되지 않은 편집이 있어 현재 업체 캐시 새로고침을 중단했습니다.");
+                    return false;
                 }
 
-                await TrySetSettingSafeAsync("Sync.LastSuccessAt", DateTime.Now.ToString("O"), CancellationToken.None);
-                await TrySetSettingSafeAsync("Sync.LastError", string.Empty, CancellationToken.None);
-                await _diagnostics.ResolveOpenIssuesAsync(ct: CancellationToken.None);
-                _lastSyncCompletedUtc = DateTime.UtcNow;
-                SetStatus($"현재 업체 DB 기준 캐시 재구성 완료 {DateTime.Now:HH:mm:ss}");
+                _db.ChangeTracker.Clear();
+                var ownerRefreshScheduled = false;
+                using (_local.SuppressSyncDispatch())
+                {
+                    var applied = await TryApplyPullAtomicallyCoreAsync(
+                        pull,
+                        0L,
+                        ct,
+                        updateSyncRevision: true,
+                        expectedOwner: operationOwner,
+                        markOwnerRefreshScheduled: () =>
+                            ownerRefreshScheduled = true,
+                        replaceLocalBusinessCache: replaceLocalBusinessCache);
+                    if (!applied)
+                    {
+                        SetStatus(
+                            "현재 업체 캐시 반영 중 로그인·업체 DB 범위가 변경되어 DB와 첨부파일 변경을 모두 롤백했습니다.");
+                        return false;
+                    }
+                }
+
+                if (ownerRefreshScheduled)
+                    return true;
+
+                var postCommitEffectsApplied =
+                    await TryRunPostCommitEffectsForCurrentOwnerAsync(
+                        operationOwner,
+                        async _ =>
+                        {
+                            await TrySetSettingSafeAsync(
+                                    "Sync.LastSuccessAt",
+                                    DateTime.Now.ToString("O"),
+                                    CancellationToken.None)
+                                .ConfigureAwait(false);
+                            await TrySetSettingSafeAsync(
+                                    "Sync.LastError",
+                                    string.Empty,
+                                    CancellationToken.None)
+                                .ConfigureAwait(false);
+                            await _diagnostics.ResolveOpenIssuesAsync(
+                                    ct: CancellationToken.None)
+                                .ConfigureAwait(false);
+                            _lastSyncCompletedUtc = DateTime.UtcNow;
+                        },
+                        () => TryPublishOwnerBoundStatus(
+                            operationOwner,
+                            $"현재 업체 DB 기준 캐시 재구성 완료 {DateTime.Now:HH:mm:ss}"));
+                if (!postCommitEffectsApplied)
+                {
+                    _db.ChangeTracker.Clear();
+                    await ScheduleCurrentOwnerRefreshAfterCommittedOwnerChangeAsync();
+                }
+
                 return true;
             }
             catch (DbUpdateConcurrencyException ex) when (attempt == 0)
@@ -8447,12 +16607,16 @@ public sealed class SyncService : IDisposable
     {
         try
         {
-            await _local.SetSettingAsync(key, value, ct);
+            await _local.SetSyncMetadataSettingIndependentAsync(key, value, ct);
         }
         catch (Exception ex)
         {
-            _db.ChangeTracker.Clear();
-            AppLogger.Warn("SYNC", $"설정값 저장 실패 무시 ({key}): {ex.Message}");
+            var sqliteException = ex as Microsoft.Data.Sqlite.SqliteException
+                ?? ex.InnerException as Microsoft.Data.Sqlite.SqliteException;
+            var safeFailure = sqliteException is null
+                ? ex.GetType().Name
+                : $"{ex.GetType().Name}; SQLite={sqliteException.SqliteErrorCode}; Extended={sqliteException.SqliteExtendedErrorCode}";
+            AppLogger.Warn("SYNC", $"설정값 저장 실패 무시 ({key}): {safeFailure}");
         }
     }
 
@@ -8467,7 +16631,15 @@ public sealed class SyncService : IDisposable
         return current;
     }
 
-    private static void StampOutgoingMutations(SyncPushRequest request, string deviceId)
+    internal Task<string> EnsureDeviceIdAsync(CancellationToken ct = default)
+    {
+        return GetOrCreateDeviceIdAsync(ct);
+    }
+
+    private static void StampOutgoingMutations(
+        SyncPushRequest request,
+        string deviceId,
+        string businessDatabaseName)
     {
         StampOutgoingMutations(request.CompanyProfiles, nameof(LocalCompanyProfile), deviceId);
         StampOutgoingMutations(request.Units, nameof(LocalUnit), deviceId);
@@ -8490,6 +16662,10 @@ public sealed class SyncService : IDisposable
         StampOutgoingMutations(request.RentalBillingLogs, nameof(LocalRentalBillingLog), deviceId);
         StampOutgoingMutations(request.Invoices, nameof(LocalInvoice), deviceId);
         StampOutgoingMutations(request.Payments, nameof(LocalPayment), deviceId);
+
+        var normalizedBusinessDatabaseName = TenantScopeCatalog.GetDatabaseName(businessDatabaseName);
+        foreach (var option in request.PriceGradeOptions)
+            option.MutationId = $"{option.MutationId}:{normalizedBusinessDatabaseName.ToUpperInvariant()}";
     }
 
     private static void StampOutgoingMutations<TDto>(IEnumerable<TDto> entities, string entityName, string deviceId)
@@ -8505,7 +16681,245 @@ public sealed class SyncService : IDisposable
         }
     }
 
-    private IEnumerable<(string EntityName, SyncEntityDto Entity)> EnumerateOutgoingMutations(SyncPushRequest request)
+    private static IReadOnlySet<SyncEntityKey> SelectDependencyOnlyKeysForRequest(
+        SyncPushRequest request,
+        IReadOnlySet<SyncEntityKey> dependencyOnlyCandidateKeys)
+        => EnumerateAllOutgoingMutations(request)
+            .Select(entry => new SyncEntityKey(
+                NormalizeSyncEntityName(entry.EntityName),
+                entry.Entity.Id))
+            .Where(dependencyOnlyCandidateKeys.Contains)
+            .ToHashSet();
+
+    private static IReadOnlyDictionary<
+            string,
+            RentalManagementCompanyDependencyIdentity>
+        SelectDependencyOnlyRentalManagementCompanyIdentitiesForRequest(
+        SyncPushRequest request,
+        IReadOnlySet<SyncEntityKey>? dependencyOnlyKeys)
+    {
+        if (dependencyOnlyKeys is null || dependencyOnlyKeys.Count == 0)
+        {
+            return new Dictionary<
+                string,
+                RentalManagementCompanyDependencyIdentity>(
+                StringComparer.OrdinalIgnoreCase);
+        }
+
+        return request.RentalManagementCompanies
+            .Where(company => dependencyOnlyKeys.Contains(
+                new SyncEntityKey(
+                    NormalizeSyncEntityName(
+                        nameof(LocalRentalManagementCompany)),
+                    company.Id)))
+            .Select(company => new
+            {
+                Company = company,
+                MutationId = (company.MutationId ?? string.Empty).Trim()
+            })
+            .Where(entry =>
+                !string.IsNullOrWhiteSpace(entry.MutationId) &&
+                entry.Company.Id != Guid.Empty)
+            .GroupBy(
+                entry => entry.MutationId,
+                StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() == 1)
+            .ToDictionary(
+                group => group.Key,
+                group =>
+                {
+                    var company = group.Single().Company;
+                    return new RentalManagementCompanyDependencyIdentity(
+                        company.Id,
+                        TenantScopeCatalog.NormalizeTenantCodeOrDefault(
+                            company.TenantCode),
+                        OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
+                            company.Code,
+                            company.Code));
+                },
+                StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task<IReadOnlyDictionary<
+            string,
+            RentalManagementCompanyDependencyIdentity>>
+        SelectCleanCanonicalRentalCompanyFallbacksAsync(
+            IReadOnlyDictionary<
+                string,
+                RentalManagementCompanyDependencyIdentity> candidates,
+            CancellationToken ct)
+    {
+        if (candidates.Count == 0)
+            return candidates;
+
+        var candidateIds = candidates.Values
+            .Select(identity => identity.OriginalEntityId)
+            .Distinct()
+            .ToList();
+        var cleanEntityIds = await _db.RentalManagementCompanies
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(company =>
+                candidateIds.Contains(company.Id) &&
+                !company.IsDirty)
+            .Select(company => company.Id)
+            .ToListAsync(ct);
+        var cleanEntityIdSet = cleanEntityIds.ToHashSet();
+
+        _db.ChangeTracker.DetectChanges();
+        var locallyChangedEntityIds = _db.ChangeTracker
+            .Entries<LocalRentalManagementCompany>()
+            .Where(entry =>
+                entry.State != EntityState.Unchanged ||
+                entry.Entity.IsDirty)
+            .Select(entry => entry.Entity.Id)
+            .ToHashSet();
+
+        return candidates
+            .Where(entry =>
+                cleanEntityIdSet.Contains(entry.Value.OriginalEntityId) &&
+                !locallyChangedEntityIds.Contains(
+                    entry.Value.OriginalEntityId))
+            .ToDictionary(
+                entry => entry.Key,
+                entry => entry.Value,
+                StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool IsDependencyOnlyConflict(
+        ConflictLogDto conflict,
+        IReadOnlySet<SyncEntityKey>? dependencyOnlyKeys,
+        IReadOnlyDictionary<
+            string,
+            RentalManagementCompanyDependencyIdentity>
+            cleanCanonicalRentalCompanyFallbacks)
+    {
+        if (dependencyOnlyKeys is not null &&
+            TryBuildConflictEntityKey(conflict, out var key) &&
+            dependencyOnlyKeys.Contains(key))
+        {
+            return true;
+        }
+
+        if (cleanCanonicalRentalCompanyFallbacks.Count == 0 ||
+            !string.Equals(
+                NormalizeSyncEntityName(conflict.EntityName),
+                NormalizeSyncEntityName(
+                    nameof(LocalRentalManagementCompany)),
+                StringComparison.OrdinalIgnoreCase) ||
+            !IsCanonicalRentalManagementCompanyCompatibilityReason(
+                conflict.Reason) ||
+            !TryReadConflictRentalManagementCompanyIdentity(
+                conflict.ClientJson,
+                out var mutationId,
+                out var tenantCode,
+                out var companyCode) ||
+            !cleanCanonicalRentalCompanyFallbacks.TryGetValue(
+                mutationId,
+                out var expected))
+        {
+            return false;
+        }
+
+        return string.Equals(
+                   TenantScopeCatalog.NormalizeTenantCodeOrDefault(
+                       tenantCode),
+                   expected.TenantCode,
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(
+                   OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
+                       companyCode,
+                       companyCode),
+                   expected.CompanyCode,
+                   StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsCanonicalRentalManagementCompanyCompatibilityReason(
+        string? reason)
+    {
+        var normalized = (reason ?? string.Empty).Trim();
+        return normalized.StartsWith(
+                   "Expected revision mismatch.",
+                   StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(
+                   normalized,
+                   "Server version is newer.",
+                   StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryReadConflictRentalManagementCompanyIdentity(
+        string? clientJson,
+        out string mutationId,
+        out string tenantCode,
+        out string companyCode)
+    {
+        mutationId = string.Empty;
+        tenantCode = string.Empty;
+        companyCode = string.Empty;
+        if (string.IsNullOrWhiteSpace(clientJson))
+            return false;
+
+        try
+        {
+            using var document = JsonDocument.Parse(clientJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+                return false;
+
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (property.Value.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                var value =
+                    (property.Value.GetString() ?? string.Empty).Trim();
+                if (string.Equals(
+                        property.Name,
+                        nameof(SyncEntityDto.MutationId),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    mutationId = value;
+                }
+                else if (string.Equals(
+                             property.Name,
+                             nameof(RentalManagementCompanyDto.TenantCode),
+                             StringComparison.OrdinalIgnoreCase))
+                {
+                    tenantCode = value;
+                }
+                else if (string.Equals(
+                             property.Name,
+                             nameof(RentalManagementCompanyDto.Code),
+                             StringComparison.OrdinalIgnoreCase))
+                {
+                    companyCode = value;
+                }
+            }
+
+            return !string.IsNullOrWhiteSpace(mutationId) &&
+                   !string.IsNullOrWhiteSpace(companyCode);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private IEnumerable<(string EntityName, SyncEntityDto Entity)> EnumerateOutgoingMutations(
+        SyncPushRequest request,
+        IReadOnlySet<SyncEntityKey>? excludedKeys = null)
+    {
+        foreach (var entry in EnumerateAllOutgoingMutations(request))
+        {
+            var key = new SyncEntityKey(NormalizeSyncEntityName(entry.EntityName), entry.Entity.Id);
+            if (excludedKeys is null || !excludedKeys.Contains(key))
+                yield return entry;
+        }
+    }
+
+    private static IEnumerable<(string EntityName, SyncEntityDto Entity)> EnumerateAllOutgoingMutations(
+        SyncPushRequest request)
     {
         foreach (var entity in request.CompanyProfiles)
             yield return (nameof(LocalCompanyProfile), entity);
@@ -8551,22 +16965,77 @@ public sealed class SyncService : IDisposable
             yield return (nameof(LocalPayment), entity);
     }
 
-    private async Task RecordPreparedMutationsAsync(SyncPushRequest request, SessionState session, CancellationToken ct)
+    private IReadOnlyDictionary<SyncEntityKey, PreparedMutationSnapshot>
+        BuildPreparedMutationSnapshots(
+            SyncPushRequest request,
+            IReadOnlySet<SyncEntityKey>? excludedKeys)
     {
-        var outgoing = EnumerateOutgoingMutations(request)
+        return EnumerateOutgoingMutations(request, excludedKeys)
+            .Where(entry => entry.Entity.Id != Guid.Empty)
+            .GroupBy(entry => new SyncEntityKey(
+                NormalizeSyncEntityName(entry.EntityName),
+                entry.Entity.Id))
+            .ToDictionary(
+                group => group.Key,
+                group =>
+                {
+                    var entry = group.Last();
+                    var mutationUpdatedAtUtc =
+                        entry.Entity.MutationCreatedAtUtc is { } preparedAtUtc &&
+                        preparedAtUtc != default
+                            ? preparedAtUtc
+                            : entry.Entity.UpdatedAtUtc;
+                    return new PreparedMutationSnapshot(
+                        entry.Entity.ExpectedRevision,
+                        NormalizeMutationUtc(mutationUpdatedAtUtc),
+                        entry.Entity.IsDeleted,
+                        ComputePreparedMutationPayloadHash(
+                            entry.EntityName,
+                            entry.Entity),
+                        InvoiceNumber: entry.Entity is InvoiceDto invoice
+                            ? invoice.InvoiceNumber
+                            : null,
+                        TaxInvoiceNumber: entry.Entity is InvoiceDto taxInvoice
+                            ? taxInvoice.TaxInvoiceNumber
+                            : null);
+                });
+    }
+
+    private async Task RecordPreparedMutationsAsync(
+        SyncPushRequest request,
+        SessionState session,
+        string? businessDatabaseNameOverride,
+        IReadOnlySet<SyncEntityKey>? excludedKeys,
+        CancellationToken ct)
+    {
+        var outgoing = EnumerateOutgoingMutations(request, excludedKeys)
             .Where(entry => !string.IsNullOrWhiteSpace(entry.Entity.MutationId))
             .ToList();
         if (outgoing.Count == 0)
             return;
 
-        var scopeLookup = await BuildPreparedMutationScopeLookupAsync(request, session, ct);
+        var outboxOptions = new DbContextOptionsBuilder<LocalDbContext>()
+            .UseSqlite(
+                _db.Database.GetDbConnection(),
+                sqliteOptions => sqliteOptions.CommandTimeout(30))
+            .Options;
+        await using var outboxDb = new LocalDbContext(outboxOptions);
+        var scopeLookup = await BuildPreparedMutationScopeLookupAsync(
+            outboxDb,
+            request,
+            session,
+            ct);
         var mutationIds = outgoing.Select(entry => entry.Entity.MutationId).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        var existingIds = await _db.SyncOutboxEntries
+        var existingIds = await outboxDb.SyncOutboxEntries
             .AsNoTracking()
             .Where(entry => mutationIds.Contains(entry.MutationId))
             .Select(entry => entry.MutationId)
             .ToListAsync(ct);
         var existingIdSet = existingIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var businessDatabaseName = TenantScopeCatalog.GetDatabaseName(
+            businessDatabaseNameOverride ?? session.SelectedBusinessDatabaseName);
+        var userId = session.User?.UserId ?? Guid.Empty;
+        var addedCount = 0;
 
         foreach (var (entityName, entity) in outgoing)
         {
@@ -8574,7 +17043,10 @@ public sealed class SyncService : IDisposable
                 continue;
 
             var scope = ResolvePreparedMutationScope(entity, session, scopeLookup);
-            _db.SyncOutboxEntries.Add(new LocalSyncOutboxEntry
+            var tenantCode = entity is PriceGradeOptionDto
+                ? TenantScopeCatalog.NormalizeTenantCodeOrDefault(businessDatabaseName, scope.TenantCode)
+                : scope.TenantCode;
+            outboxDb.SyncOutboxEntries.Add(new LocalSyncOutboxEntry
             {
                 Id = Guid.NewGuid(),
                 MutationId = entity.MutationId,
@@ -8582,15 +17054,207 @@ public sealed class SyncService : IDisposable
                 EntityName = entityName,
                 EntityId = entity.Id,
                 ExpectedRevision = entity.ExpectedRevision,
-                TenantCode = scope.TenantCode,
+                TenantCode = tenantCode,
                 OfficeCode = scope.OfficeCode,
                 ResponsibleOfficeCode = scope.ResponsibleOfficeCode,
+                BusinessDatabaseName = businessDatabaseName,
+                SessionId = session.SessionId,
+                UserId = userId,
                 Status = "Prepared",
                 PreparedAtUtc = DateTime.UtcNow
             });
+            addedCount++;
         }
 
-        await _db.SaveChangesAsync(ct);
+        if (addedCount == 0)
+            return;
+
+        if (BeforePreparedOutboxSaveAsyncForTesting is not null)
+            await BeforePreparedOutboxSaveAsyncForTesting(ct);
+
+        await outboxDb.SaveChangesAsync(ct);
+    }
+
+    private async Task<IReadOnlyDictionary<string, CurrentPushMutationReceipt>>
+        CaptureCurrentPushMutationReceiptsAsync(
+            SyncPushRequest request,
+            IReadOnlyDictionary<SyncEntityKey, PreparedMutationSnapshot>
+                preparedMutationSnapshots,
+            SessionState ownerSession,
+            string? businessDatabaseNameOverride,
+            IReadOnlySet<SyncEntityKey>? excludedKeys,
+            CancellationToken ct)
+    {
+        var outgoingByMutationId = EnumerateOutgoingMutations(request, excludedKeys)
+            .Where(entry => !string.IsNullOrWhiteSpace(entry.Entity.MutationId))
+            .GroupBy(entry => entry.Entity.MutationId, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() == 1)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Single(),
+                StringComparer.OrdinalIgnoreCase);
+        var mutationIds = outgoingByMutationId.Keys.ToList();
+        var rows = mutationIds.Count == 0
+            ? []
+            : await _db.SyncOutboxEntries
+                .AsNoTracking()
+                .Where(entry => mutationIds.Contains(entry.MutationId))
+                .ToListAsync(ct);
+        var uniqueRows = rows
+            .GroupBy(row => row.MutationId, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() == 1)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Single(),
+                StringComparer.OrdinalIgnoreCase);
+        var scopeLookup = await BuildPreparedMutationScopeLookupAsync(
+            _db,
+            request,
+            ownerSession,
+            ct);
+        var expectedBusinessDatabase = TenantScopeCatalog.GetDatabaseName(
+            businessDatabaseNameOverride ?? ownerSession.SelectedBusinessDatabaseName);
+        var expectedUserId = ownerSession.User?.UserId ?? Guid.Empty;
+        var receipts = new Dictionary<string, CurrentPushMutationReceipt>(
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (mutationId, outgoing) in outgoingByMutationId)
+        {
+            var key = new SyncEntityKey(
+                NormalizeSyncEntityName(outgoing.EntityName),
+                outgoing.Entity.Id);
+            if (!uniqueRows.TryGetValue(mutationId, out var row) ||
+                !preparedMutationSnapshots.TryGetValue(key, out var prepared) ||
+                prepared.ExpectedRevision != outgoing.Entity.ExpectedRevision)
+            {
+                continue;
+            }
+
+            var payloadHash = ComputePreparedMutationPayloadHash(
+                outgoing.EntityName,
+                outgoing.Entity);
+            if (!string.Equals(
+                    payloadHash,
+                    prepared.PayloadHash,
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var scope = ResolvePreparedMutationScope(
+                outgoing.Entity,
+                ownerSession,
+                scopeLookup);
+            var expectedTenantCode = outgoing.Entity is PriceGradeOptionDto
+                ? TenantScopeCatalog.NormalizeTenantCodeOrDefault(
+                    expectedBusinessDatabase,
+                    scope.TenantCode)
+                : scope.TenantCode;
+            if (string.Equals(row.Status, "Acknowledged", StringComparison.Ordinal) ||
+                !MatchesCurrentPushOutboxAnchor(
+                    row,
+                    outgoing,
+                    request.DeviceId,
+                    ownerSession,
+                    expectedBusinessDatabase,
+                    expectedUserId,
+                    expectedTenantCode,
+                    scope))
+            {
+                continue;
+            }
+
+            receipts[mutationId] = new CurrentPushMutationReceipt(
+                row.Id,
+                mutationId,
+                key,
+                outgoing.Entity.ExpectedRevision,
+                payloadHash,
+                row.DeviceId,
+                row.BusinessDatabaseName,
+                row.TenantCode,
+                row.OfficeCode,
+                row.ResponsibleOfficeCode,
+                row.SessionId,
+                row.UserId,
+                NormalizeMutationUtc(row.PreparedAtUtc),
+                IsDurable: true);
+        }
+
+        if (excludedKeys is not null && excludedKeys.Count > 0)
+        {
+            var dependencyOutgoing = EnumerateOutgoingMutations(
+                    request,
+                    excludedKeys: null)
+                .Where(entry => excludedKeys.Contains(new SyncEntityKey(
+                    NormalizeSyncEntityName(entry.EntityName),
+                    entry.Entity.Id)))
+                .Where(entry =>
+                    !string.IsNullOrWhiteSpace(entry.Entity.MutationId))
+                .GroupBy(
+                    entry => entry.Entity.MutationId,
+                    StringComparer.OrdinalIgnoreCase)
+                .Where(group => group.Count() == 1)
+                .Select(group => group.Single());
+            foreach (var outgoing in dependencyOutgoing)
+            {
+                var key = new SyncEntityKey(
+                    NormalizeSyncEntityName(outgoing.EntityName),
+                    outgoing.Entity.Id);
+                if (!preparedMutationSnapshots.TryGetValue(
+                        key,
+                        out var prepared) ||
+                    prepared.ExpectedRevision !=
+                        outgoing.Entity.ExpectedRevision)
+                {
+                    continue;
+                }
+
+                var payloadHash = ComputePreparedMutationPayloadHash(
+                    outgoing.EntityName,
+                    outgoing.Entity);
+                if (!string.Equals(
+                        payloadHash,
+                        prepared.PayloadHash,
+                        StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var scope = ResolvePreparedMutationScope(
+                    outgoing.Entity,
+                    ownerSession,
+                    scopeLookup);
+                var tenantCode = outgoing.Entity is PriceGradeOptionDto
+                    ? TenantScopeCatalog.NormalizeTenantCodeOrDefault(
+                        expectedBusinessDatabase,
+                        scope.TenantCode)
+                    : scope.TenantCode;
+                var mutationPreparedAtUtc =
+                    outgoing.Entity.MutationCreatedAtUtc is { } preparedAtUtc &&
+                    preparedAtUtc != default
+                        ? preparedAtUtc
+                        : outgoing.Entity.UpdatedAtUtc;
+                receipts[outgoing.Entity.MutationId] =
+                    new CurrentPushMutationReceipt(
+                        Guid.Empty,
+                        outgoing.Entity.MutationId,
+                        key,
+                        outgoing.Entity.ExpectedRevision,
+                        payloadHash,
+                        request.DeviceId,
+                        expectedBusinessDatabase,
+                        tenantCode,
+                        scope.OfficeCode,
+                        scope.ResponsibleOfficeCode,
+                        ownerSession.SessionId,
+                        expectedUserId,
+                        NormalizeMutationUtc(mutationPreparedAtUtc),
+                        IsDurable: false);
+            }
+        }
+
+        return receipts;
     }
 
     private sealed record PreparedMutationScope(string TenantCode, string OfficeCode, string ResponsibleOfficeCode);
@@ -8601,9 +17265,14 @@ public sealed class SyncService : IDisposable
         public Dictionary<Guid, PreparedMutationScope> ItemScopeById { get; } = new();
         public Dictionary<Guid, PreparedMutationScope> InvoiceScopeById { get; } = new();
         public Dictionary<Guid, PreparedMutationScope> TransactionScopeById { get; } = new();
+        public Dictionary<Guid, PreparedMutationScope> VerifiedCustomerScopeById { get; } = new();
+        public Dictionary<Guid, PreparedMutationScope> VerifiedItemScopeById { get; } = new();
+        public Dictionary<Guid, PreparedMutationScope> VerifiedInvoiceScopeById { get; } = new();
+        public Dictionary<Guid, PreparedMutationScope> VerifiedTransactionScopeById { get; } = new();
     }
 
     private async Task<PreparedMutationScopeLookup> BuildPreparedMutationScopeLookupAsync(
+        LocalDbContext db,
         SyncPushRequest request,
         SessionState session,
         CancellationToken ct)
@@ -8617,7 +17286,7 @@ public sealed class SyncService : IDisposable
             .ToList();
         if (customerIds.Count > 0)
         {
-            var customers = await _db.Customers.IgnoreQueryFilters()
+            var customers = await db.Customers.IgnoreQueryFilters()
                 .Where(customer => customerIds.Contains(customer.Id))
                 .Select(customer => new
                 {
@@ -8629,12 +17298,22 @@ public sealed class SyncService : IDisposable
                 .ToListAsync(ct);
 
             foreach (var customer in customers)
+            {
                 lookup.CustomerScopeById[customer.Id] = NormalizePreparedMutationScope(
                     customer.TenantCode,
                     customer.OfficeCode,
                     customer.ResponsibleOfficeCode,
                     session,
                     customer.OfficeCode);
+                if (TryNormalizeOutboxReconciliationEntityScope(
+                        customer.TenantCode,
+                        customer.OfficeCode,
+                        customer.ResponsibleOfficeCode,
+                        out var verifiedScope))
+                {
+                    lookup.VerifiedCustomerScopeById[customer.Id] = verifiedScope;
+                }
+            }
         }
 
         var itemIds = request.ItemPriceGrades
@@ -8644,7 +17323,7 @@ public sealed class SyncService : IDisposable
             .ToList();
         if (itemIds.Count > 0)
         {
-            var items = await _db.Items.IgnoreQueryFilters()
+            var items = await db.Items.IgnoreQueryFilters()
                 .Where(item => itemIds.Contains(item.Id))
                 .Select(item => new
                 {
@@ -8655,12 +17334,25 @@ public sealed class SyncService : IDisposable
                 .ToListAsync(ct);
 
             foreach (var item in items)
+            {
+                var itemResponsibleOfficeCode = OfficeCodeCatalog.IsSharedOfficeCode(item.OfficeCode)
+                    ? session.OfficeCode
+                    : item.OfficeCode;
                 lookup.ItemScopeById[item.Id] = NormalizePreparedMutationScope(
                     item.TenantCode,
                     item.OfficeCode,
-                    item.OfficeCode,
+                    itemResponsibleOfficeCode,
                     session,
                     item.OfficeCode);
+                if (TryNormalizeOutboxReconciliationEntityScope(
+                        item.TenantCode,
+                        item.OfficeCode,
+                        itemResponsibleOfficeCode,
+                        out var verifiedScope))
+                {
+                    lookup.VerifiedItemScopeById[item.Id] = verifiedScope;
+                }
+            }
         }
 
         var invoiceIds = request.Payments
@@ -8670,7 +17362,7 @@ public sealed class SyncService : IDisposable
             .ToList();
         if (invoiceIds.Count > 0)
         {
-            var invoices = await _db.Invoices.IgnoreQueryFilters()
+            var invoices = await db.Invoices.IgnoreQueryFilters()
                 .Where(invoice => invoiceIds.Contains(invoice.Id))
                 .Select(invoice => new
                 {
@@ -8682,12 +17374,22 @@ public sealed class SyncService : IDisposable
                 .ToListAsync(ct);
 
             foreach (var invoice in invoices)
+            {
                 lookup.InvoiceScopeById[invoice.Id] = NormalizePreparedMutationScope(
                     invoice.TenantCode,
                     invoice.OfficeCode,
                     invoice.ResponsibleOfficeCode,
                     session,
                     invoice.OfficeCode);
+                if (TryNormalizeOutboxReconciliationEntityScope(
+                        invoice.TenantCode,
+                        invoice.OfficeCode,
+                        invoice.ResponsibleOfficeCode,
+                        out var verifiedScope))
+                {
+                    lookup.VerifiedInvoiceScopeById[invoice.Id] = verifiedScope;
+                }
+            }
         }
 
         var transactionIds = request.TransactionAttachments
@@ -8697,7 +17399,7 @@ public sealed class SyncService : IDisposable
             .ToList();
         if (transactionIds.Count > 0)
         {
-            var transactions = await _db.Transactions.IgnoreQueryFilters()
+            var transactions = await db.Transactions.IgnoreQueryFilters()
                 .Where(transaction => transactionIds.Contains(transaction.Id))
                 .Select(transaction => new
                 {
@@ -8709,12 +17411,22 @@ public sealed class SyncService : IDisposable
                 .ToListAsync(ct);
 
             foreach (var transaction in transactions)
+            {
                 lookup.TransactionScopeById[transaction.Id] = NormalizePreparedMutationScope(
                     transaction.TenantCode,
                     transaction.OfficeCode,
                     transaction.ResponsibleOfficeCode,
                     session,
                     transaction.OfficeCode);
+                if (TryNormalizeOutboxReconciliationEntityScope(
+                        transaction.TenantCode,
+                        transaction.OfficeCode,
+                        transaction.ResponsibleOfficeCode,
+                        out var verifiedScope))
+                {
+                    lookup.VerifiedTransactionScopeById[transaction.Id] = verifiedScope;
+                }
+            }
         }
 
         return lookup;
@@ -8737,7 +17449,12 @@ public sealed class SyncService : IDisposable
             CustomerDto dto => NormalizePreparedMutationScope(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode, session, dto.OfficeCode),
             CustomerContractDto dto when lookup.CustomerScopeById.TryGetValue(dto.CustomerId, out var customerScope) => customerScope,
             CustomerContractDto => NormalizePreparedMutationScope(session.TenantCode, session.OfficeCode, session.OfficeCode, session, session.OfficeCode),
-            ItemDto dto => NormalizePreparedMutationScope(dto.TenantCode, dto.OfficeCode, dto.OfficeCode, session, dto.OfficeCode),
+            ItemDto dto => NormalizePreparedMutationScope(
+                dto.TenantCode,
+                dto.OfficeCode,
+                OfficeCodeCatalog.IsSharedOfficeCode(dto.OfficeCode) ? session.OfficeCode : dto.OfficeCode,
+                session,
+                dto.OfficeCode),
             ItemPriceGradeDto dto when lookup.ItemScopeById.TryGetValue(dto.ItemId, out var itemScope) => itemScope,
             ItemPriceGradeDto => NormalizePreparedMutationScope(session.TenantCode, session.OfficeCode, session.OfficeCode, session, session.OfficeCode),
             TransactionDto dto => NormalizePreparedMutationScope(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode, session, dto.OfficeCode),
@@ -8754,6 +17471,182 @@ public sealed class SyncService : IDisposable
             PaymentDto => NormalizePreparedMutationScope(session.TenantCode, session.OfficeCode, session.OfficeCode, session, session.OfficeCode),
             _ => NormalizePreparedMutationScope(session.TenantCode, session.OfficeCode, session.OfficeCode, session, session.OfficeCode)
         };
+    }
+
+    private static bool TryResolveOutboxReconciliationScope(
+        SyncEntityDto entity,
+        SessionState session,
+        PreparedMutationScopeLookup lookup,
+        out PreparedMutationScope scope)
+    {
+        scope = default!;
+        return entity switch
+        {
+            CompanyProfileDto dto => TryNormalizeOutboxReconciliationEntityScope(
+                session.TenantCode,
+                dto.OfficeCode,
+                dto.OfficeCode,
+                out scope),
+            UnitDto or CustomerCategoryDto or PriceGradeOptionDto or TradeTypeOptionDto or ItemCategoryOptionDto or RentalManagementCompanyDto
+                => TryBuildSharedOutboxReconciliationScope(session, out scope),
+            CustomerMasterDto dto => TryNormalizeOutboxReconciliationEntityScope(
+                dto.TenantCode,
+                dto.OfficeCode,
+                session.OfficeCode,
+                out scope),
+            CustomerDto dto => TryNormalizeOutboxReconciliationEntityScope(
+                dto.TenantCode,
+                dto.OfficeCode,
+                dto.ResponsibleOfficeCode,
+                out scope),
+            CustomerContractDto dto =>
+                TryGetVerifiedOutboxReconciliationScope(
+                    lookup.VerifiedCustomerScopeById,
+                    dto.CustomerId,
+                    out scope),
+            ItemDto dto => TryNormalizeOutboxReconciliationEntityScope(
+                dto.TenantCode,
+                dto.OfficeCode,
+                OfficeCodeCatalog.IsSharedOfficeCode(dto.OfficeCode) ? session.OfficeCode : dto.OfficeCode,
+                out scope),
+            ItemPriceGradeDto dto =>
+                TryGetVerifiedOutboxReconciliationScope(
+                    lookup.VerifiedItemScopeById,
+                    dto.ItemId,
+                    out scope),
+            TransactionDto dto => TryNormalizeOutboxReconciliationEntityScope(
+                dto.TenantCode,
+                dto.OfficeCode,
+                dto.ResponsibleOfficeCode,
+                out scope),
+            TransactionAttachmentDto dto =>
+                TryGetVerifiedOutboxReconciliationScope(
+                    lookup.VerifiedTransactionScopeById,
+                    dto.TransactionId,
+                    out scope),
+            InventoryTransferDto dto => TryNormalizeOutboxReconciliationEntityScope(
+                dto.TenantCode,
+                dto.SourceOfficeCode,
+                dto.TargetOfficeCode,
+                out scope),
+            RentalBillingProfileDto dto => TryNormalizeOutboxReconciliationEntityScope(
+                dto.TenantCode,
+                dto.OfficeCode,
+                dto.ResponsibleOfficeCode,
+                out scope),
+            RentalAssetDto dto => TryNormalizeOutboxReconciliationEntityScope(
+                dto.TenantCode,
+                dto.OfficeCode,
+                dto.ResponsibleOfficeCode,
+                out scope),
+            RentalAssetAssignmentHistoryDto dto => TryNormalizeOutboxReconciliationEntityScope(
+                dto.TenantCode,
+                dto.OfficeCode,
+                dto.ResponsibleOfficeCode,
+                out scope),
+            RentalBillingLogDto dto => TryNormalizeOutboxReconciliationEntityScope(
+                dto.TenantCode,
+                dto.OfficeCode,
+                dto.ResponsibleOfficeCode,
+                out scope),
+            InvoiceDto dto => TryNormalizeOutboxReconciliationEntityScope(
+                dto.TenantCode,
+                dto.OfficeCode,
+                dto.ResponsibleOfficeCode,
+                out scope),
+            PaymentDto dto =>
+                TryGetVerifiedOutboxReconciliationScope(
+                    lookup.VerifiedInvoiceScopeById,
+                    dto.InvoiceId,
+                    out scope),
+            _ => false
+        };
+    }
+
+    private static bool TryGetVerifiedOutboxReconciliationScope(
+        IReadOnlyDictionary<Guid, PreparedMutationScope> scopes,
+        Guid entityId,
+        out PreparedMutationScope scope)
+    {
+        if (entityId != Guid.Empty &&
+            scopes.TryGetValue(entityId, out var verifiedScope) &&
+            verifiedScope is not null)
+        {
+            scope = verifiedScope;
+            return true;
+        }
+
+        scope = default!;
+        return false;
+    }
+
+    private static bool TryBuildSharedOutboxReconciliationScope(
+        SessionState session,
+        out PreparedMutationScope scope)
+    {
+        scope = default!;
+        if (!TenantScopeCatalog.TryNormalizeTenantCode(session.TenantCode, out var tenantCode) ||
+            !OfficeCodeCatalog.TryNormalizeOfficeCode(session.OfficeCode, out var responsibleOfficeCode) ||
+            !TenantScopeCatalog.TenantContainsOffice(tenantCode, responsibleOfficeCode))
+        {
+            return false;
+        }
+
+        scope = new PreparedMutationScope(
+            tenantCode,
+            OfficeCodeCatalog.Shared,
+            responsibleOfficeCode);
+        return true;
+    }
+
+    private static bool TryNormalizeOutboxReconciliationEntityScope(
+        string? tenantCode,
+        string? officeCode,
+        string? responsibleOfficeCode,
+        out PreparedMutationScope scope)
+    {
+        scope = default!;
+        if (!TenantScopeCatalog.TryNormalizeTenantCode(tenantCode, out var normalizedTenant) ||
+            !OfficeCodeCatalog.TryNormalizeScope(officeCode, out var normalizedOffice))
+        {
+            return false;
+        }
+
+        string normalizedResponsibleOffice;
+        if (string.IsNullOrWhiteSpace(responsibleOfficeCode))
+        {
+            if (string.Equals(
+                    normalizedOffice,
+                    OfficeCodeCatalog.Shared,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            normalizedResponsibleOffice = normalizedOffice;
+        }
+        else if (!OfficeCodeCatalog.TryNormalizeOfficeCode(
+                     responsibleOfficeCode,
+                     out normalizedResponsibleOffice))
+        {
+            return false;
+        }
+
+        if ((!string.Equals(
+                 normalizedOffice,
+                 OfficeCodeCatalog.Shared,
+                 StringComparison.OrdinalIgnoreCase) &&
+             !TenantScopeCatalog.TenantContainsOffice(normalizedTenant, normalizedOffice)) ||
+            !TenantScopeCatalog.TenantContainsOffice(normalizedTenant, normalizedResponsibleOffice))
+        {
+            return false;
+        }
+
+        scope = new PreparedMutationScope(
+            normalizedTenant,
+            normalizedOffice,
+            normalizedResponsibleOffice);
+        return true;
     }
 
     private static PreparedMutationScope NormalizePreparedMutationScope(
@@ -8778,27 +17671,171 @@ public sealed class SyncService : IDisposable
         return new PreparedMutationScope(normalizedTenant, normalizedOffice, normalizedResponsibleOffice);
     }
 
-    private async Task MarkOutboxSentAsync(SyncPushRequest request, CancellationToken ct)
+    private static bool MatchesCurrentPushOutboxAnchor(
+        LocalSyncOutboxEntry row,
+        (string EntityName, SyncEntityDto Entity) outgoing,
+        string requestDeviceId,
+        SessionState ownerSession,
+        string expectedBusinessDatabase,
+        Guid expectedUserId,
+        string expectedTenantCode,
+        PreparedMutationScope scope)
+        => row.Id != Guid.Empty &&
+           !string.IsNullOrWhiteSpace(row.MutationId) &&
+           string.Equals(
+               row.MutationId,
+               outgoing.Entity.MutationId,
+               StringComparison.OrdinalIgnoreCase) &&
+           new SyncEntityKey(
+               NormalizeSyncEntityName(row.EntityName),
+               row.EntityId) == new SyncEntityKey(
+               NormalizeSyncEntityName(outgoing.EntityName),
+               outgoing.Entity.Id) &&
+           row.ExpectedRevision == outgoing.Entity.ExpectedRevision &&
+           string.Equals(
+               row.DeviceId,
+               requestDeviceId,
+               StringComparison.OrdinalIgnoreCase) &&
+           row.SessionId == ownerSession.SessionId &&
+           row.UserId == expectedUserId &&
+           string.Equals(
+               TenantScopeCatalog.GetDatabaseName(row.BusinessDatabaseName),
+               expectedBusinessDatabase,
+               StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(
+               TenantScopeCatalog.NormalizeTenantCodeOrDefault(
+                   row.TenantCode,
+                   row.TenantCode),
+               TenantScopeCatalog.NormalizeTenantCodeOrDefault(
+                   expectedTenantCode,
+                   expectedTenantCode),
+               StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(
+               OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
+                   row.OfficeCode,
+                   row.OfficeCode),
+               OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
+                   scope.OfficeCode,
+                   scope.OfficeCode),
+               StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(
+               OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
+                   row.ResponsibleOfficeCode,
+                   row.ResponsibleOfficeCode),
+               OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
+                   scope.ResponsibleOfficeCode,
+                   scope.ResponsibleOfficeCode),
+               StringComparison.OrdinalIgnoreCase);
+
+    private static bool MatchesCurrentPushReceipt(
+        LocalSyncOutboxEntry row,
+        CurrentPushMutationReceipt receipt)
+        => row.Id == receipt.OutboxRowId &&
+           string.Equals(
+               row.MutationId,
+               receipt.MutationId,
+               StringComparison.OrdinalIgnoreCase) &&
+           new SyncEntityKey(
+               NormalizeSyncEntityName(row.EntityName),
+               row.EntityId) == receipt.EntityKey &&
+           row.ExpectedRevision == receipt.ExpectedRevision &&
+           string.Equals(
+               row.DeviceId,
+               receipt.DeviceId,
+               StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(
+               TenantScopeCatalog.GetDatabaseName(row.BusinessDatabaseName),
+               TenantScopeCatalog.GetDatabaseName(receipt.BusinessDatabaseName),
+               StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(
+               NormalizeOutboxScopeText(row.TenantCode),
+               NormalizeOutboxScopeText(receipt.TenantCode),
+               StringComparison.Ordinal) &&
+           string.Equals(
+               NormalizeOutboxScopeText(row.OfficeCode),
+               NormalizeOutboxScopeText(receipt.OfficeCode),
+               StringComparison.Ordinal) &&
+           string.Equals(
+               NormalizeOutboxScopeText(row.ResponsibleOfficeCode),
+               NormalizeOutboxScopeText(receipt.ResponsibleOfficeCode),
+               StringComparison.Ordinal) &&
+           row.SessionId == receipt.SessionId &&
+           row.UserId == receipt.UserId &&
+           NormalizeMutationUtc(row.PreparedAtUtc) == receipt.PreparedAtUtc;
+
+    private async Task MarkOutboxSentAsync(
+        SyncPushRequest request,
+        IReadOnlySet<SyncEntityKey>? excludedKeys,
+        IReadOnlyDictionary<string, CurrentPushMutationReceipt>
+            currentPushReceipts,
+        CancellationToken ct)
     {
-        var mutationIds = EnumerateOutgoingMutations(request)
-            .Select(entry => entry.Entity.MutationId)
-            .Where(mutationId => !string.IsNullOrWhiteSpace(mutationId))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (mutationIds.Count == 0)
+        var outgoingByMutationId = EnumerateOutgoingMutations(request, excludedKeys)
+            .Where(entry => !string.IsNullOrWhiteSpace(entry.Entity.MutationId))
+            .GroupBy(entry => entry.Entity.MutationId, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() == 1)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Single(),
+                StringComparer.OrdinalIgnoreCase);
+        if (outgoingByMutationId.Count == 0)
             return;
 
         var now = DateTime.UtcNow;
-        var rows = await _db.SyncOutboxEntries
-            .Where(entry => mutationIds.Contains(entry.MutationId))
-            .ToListAsync(ct);
-        foreach (var row in rows)
+        var rowIds = new List<Guid>();
+        foreach (var (mutationId, outgoing) in outgoingByMutationId)
         {
-            row.Status = "Sent";
-            row.SentAtUtc = now;
+            if (!currentPushReceipts.TryGetValue(mutationId, out var receipt) ||
+                !receipt.IsDurable ||
+                receipt.EntityKey != new SyncEntityKey(
+                    NormalizeSyncEntityName(outgoing.EntityName),
+                    outgoing.Entity.Id) ||
+                receipt.ExpectedRevision != outgoing.Entity.ExpectedRevision ||
+                !string.Equals(
+                    receipt.PayloadHash,
+                    ComputePreparedMutationPayloadHash(
+                        outgoing.EntityName,
+                        outgoing.Entity),
+                    StringComparison.Ordinal))
+            {
+                throw new SyncPullBlockedException(
+                    "동기화 전송 영수증과 현재 변경 payload가 달라 응답 반영을 중단했습니다.");
+            }
+
+            var affected = await _db.SyncOutboxEntries
+                .Where(entry =>
+                    entry.Id == receipt.OutboxRowId &&
+                    entry.Status != "Acknowledged" &&
+                    entry.MutationId == receipt.MutationId &&
+                    entry.EntityName == outgoing.EntityName &&
+                    entry.EntityId == outgoing.Entity.Id &&
+                    entry.ExpectedRevision == receipt.ExpectedRevision &&
+                    entry.DeviceId == receipt.DeviceId &&
+                    entry.BusinessDatabaseName == receipt.BusinessDatabaseName &&
+                    entry.TenantCode == receipt.TenantCode &&
+                    entry.OfficeCode == receipt.OfficeCode &&
+                    entry.ResponsibleOfficeCode == receipt.ResponsibleOfficeCode &&
+                    entry.SessionId == receipt.SessionId &&
+                    entry.UserId == receipt.UserId &&
+                    entry.PreparedAtUtc == receipt.PreparedAtUtc)
+                .ExecuteUpdateAsync(
+                    setters => setters
+                        .SetProperty(entry => entry.Status, "Sent")
+                        .SetProperty(entry => entry.SentAtUtc, now)
+                        .SetProperty(entry => entry.AcknowledgedAtUtc, (DateTime?)null)
+                        .SetProperty(entry => entry.AcceptedRevision, 0L)
+                        .SetProperty(entry => entry.AcceptedUpdatedAtUtc, (DateTime?)null),
+                    ct);
+            if (affected != 1)
+            {
+                throw new SyncPullBlockedException(
+                    "동기화 전송 영수증의 outbox 행이 변경되어 응답 반영을 중단했습니다.");
+            }
+
+            rowIds.Add(receipt.OutboxRowId);
         }
 
-        await _db.SaveChangesAsync(ct);
+        DetachTrackedOutboxEntries(rowIds);
     }
 
     private async Task MarkOutboxAcknowledgedAsync(
@@ -8806,41 +17843,475 @@ public sealed class SyncService : IDisposable
         IReadOnlyCollection<SyncAcceptedRevisionDto> acceptedRevisions,
         CancellationToken ct)
     {
+        var preparedMutationSnapshots = BuildPreparedMutationSnapshots(
+            request,
+            excludedKeys: null);
+        var currentPushReceipts = await CaptureCurrentPushMutationReceiptsAsync(
+            request,
+            preparedMutationSnapshots,
+            _session,
+            businessDatabaseNameOverride: null,
+            excludedKeys: null,
+            ct);
+        await MarkOutboxAcknowledgedCoreAsync(
+            request,
+            acceptedRevisions,
+            excludedKeys: null,
+            _session,
+            businessDatabaseNameOverride: null,
+            currentPushReceipts,
+            ct);
+    }
+
+    private async Task MarkOutboxAcknowledgedCoreAsync(
+        SyncPushRequest request,
+        IReadOnlyCollection<SyncAcceptedRevisionDto> acceptedRevisions,
+        IReadOnlySet<SyncEntityKey>? excludedKeys,
+        SessionState ownerSession,
+        string? businessDatabaseNameOverride,
+        IReadOnlyDictionary<string, CurrentPushMutationReceipt>
+            currentPushReceipts,
+        CancellationToken ct)
+    {
         if (acceptedRevisions.Count == 0)
             return;
 
-        var acceptedKeys = acceptedRevisions
+        var acceptedRevisionByKey = acceptedRevisions
             .Where(revision => revision.EntityId != Guid.Empty)
-            .Select(revision => new SyncEntityKey(NormalizeSyncEntityName(revision.EntityName), revision.EntityId))
-            .ToHashSet();
+            .GroupBy(revision => new SyncEntityKey(
+                NormalizeSyncEntityName(revision.EntityName),
+                revision.EntityId))
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .OrderByDescending(revision => revision.Revision)
+                    .ThenByDescending(revision => revision.UpdatedAtUtc)
+                    .First());
+        var acceptedKeys = acceptedRevisionByKey.Keys.ToHashSet();
 
         if (acceptedKeys.Count == 0)
             return;
 
-        var mutationIds = EnumerateOutgoingMutations(request)
+        var acceptedMutations = EnumerateOutgoingMutations(request, excludedKeys)
             .Where(entry => acceptedKeys.Contains(new SyncEntityKey(NormalizeSyncEntityName(entry.EntityName), entry.Entity.Id)))
-            .Select(entry => entry.Entity.MutationId)
-            .Where(mutationId => !string.IsNullOrWhiteSpace(mutationId))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+            .Where(entry => !string.IsNullOrWhiteSpace(entry.Entity.MutationId))
+            .GroupBy(entry => entry.Entity.MutationId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Last(),
+                StringComparer.OrdinalIgnoreCase);
+        var mutationIds = acceptedMutations.Keys.ToList();
         if (mutationIds.Count == 0)
             return;
 
-        var now = DateTime.UtcNow;
-        var rows = await _db.SyncOutboxEntries
+        var expectedBusinessDatabase = TenantScopeCatalog.GetDatabaseName(
+            businessDatabaseNameOverride ?? ownerSession.SelectedBusinessDatabaseName);
+        var expectedUserId = ownerSession.User?.UserId ?? Guid.Empty;
+
+        var currentRows = await _db.SyncOutboxEntries
+            .AsNoTracking()
             .Where(entry => mutationIds.Contains(entry.MutationId))
             .ToListAsync(ct);
-        foreach (var row in rows)
+        var verifiedCurrentRows = currentRows
+            .GroupBy(row => row.MutationId, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() == 1)
+            .Select(group => group.Single())
+            .Where(row =>
+            {
+                if (!acceptedMutations.TryGetValue(row.MutationId, out var outgoing))
+                    return false;
+
+                var expectedKey = new SyncEntityKey(
+                    NormalizeSyncEntityName(outgoing.EntityName),
+                    outgoing.Entity.Id);
+                if (!currentPushReceipts.TryGetValue(
+                        row.MutationId,
+                        out var currentPushReceipt) ||
+                    !MatchesCurrentPushReceipt(row, currentPushReceipt) ||
+                    !currentPushReceipt.IsDurable ||
+                    currentPushReceipt.EntityKey != expectedKey ||
+                    currentPushReceipt.ExpectedRevision !=
+                        outgoing.Entity.ExpectedRevision ||
+                    !string.Equals(
+                        currentPushReceipt.PayloadHash,
+                        ComputePreparedMutationPayloadHash(
+                            outgoing.EntityName,
+                            outgoing.Entity),
+                        StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                return string.Equals(row.Status, "Sent", StringComparison.Ordinal) &&
+                       string.Equals(
+                           currentPushReceipt.DeviceId,
+                           request.DeviceId,
+                           StringComparison.OrdinalIgnoreCase) &&
+                       currentPushReceipt.SessionId == ownerSession.SessionId &&
+                       currentPushReceipt.UserId == expectedUserId &&
+                       string.Equals(
+                           TenantScopeCatalog.GetDatabaseName(
+                               currentPushReceipt.BusinessDatabaseName),
+                           expectedBusinessDatabase,
+                           StringComparison.OrdinalIgnoreCase);
+            })
+            .ToList();
+        var acknowledgedAnchors = verifiedCurrentRows
+            .GroupBy(row => new SyncEntityKey(NormalizeSyncEntityName(row.EntityName), row.EntityId))
+            .Where(group => group.Count() == 1)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Single());
+        if (acknowledgedAnchors.Count == 0)
+            return;
+
+        var now = DateTime.UtcNow;
+        var acknowledgedRows = acknowledgedAnchors.Values.ToList();
+        if (acknowledgedRows.Count == 0)
+            return;
+
+        var acknowledgedEntityIds = acknowledgedAnchors.Keys
+            .Select(key => key.EntityId)
+            .Distinct()
+            .ToList();
+        var supersedeCandidates = await _db.SyncOutboxEntries
+            .AsNoTracking()
+            .Where(entry =>
+                acknowledgedEntityIds.Contains(entry.EntityId) &&
+                entry.Status != "Acknowledged")
+            .ToListAsync(ct);
+
+        var acknowledgedRowIds = new List<Guid>();
+        foreach (var row in acknowledgedRows)
         {
-            row.Status = "Acknowledged";
-            row.AcknowledgedAtUtc = now;
-            row.ErrorMessage = string.Empty;
+            var key = new SyncEntityKey(
+                NormalizeSyncEntityName(row.EntityName),
+                row.EntityId);
+            var accepted = acceptedRevisionByKey[key];
+            var affected = await _db.SyncOutboxEntries
+                .Where(entry =>
+                    entry.Id == row.Id &&
+                    entry.Status == "Sent" &&
+                    entry.MutationId == row.MutationId &&
+                    entry.EntityName == row.EntityName &&
+                    entry.EntityId == row.EntityId &&
+                    entry.ExpectedRevision == row.ExpectedRevision &&
+                    entry.DeviceId == row.DeviceId &&
+                    entry.BusinessDatabaseName == row.BusinessDatabaseName &&
+                    entry.TenantCode == row.TenantCode &&
+                    entry.OfficeCode == row.OfficeCode &&
+                    entry.ResponsibleOfficeCode == row.ResponsibleOfficeCode &&
+                    entry.SessionId == row.SessionId &&
+                    entry.UserId == row.UserId &&
+                    entry.PreparedAtUtc == row.PreparedAtUtc)
+                .ExecuteUpdateAsync(
+                    setters => setters
+                        .SetProperty(entry => entry.Status, "Acknowledged")
+                        .SetProperty(entry => entry.AcknowledgedAtUtc, now)
+                        .SetProperty(entry => entry.AcceptedRevision, accepted.Revision)
+                        .SetProperty(
+                            entry => entry.AcceptedUpdatedAtUtc,
+                            (DateTime?)NormalizeMutationUtc(accepted.UpdatedAtUtc))
+                        .SetProperty(entry => entry.ErrorMessage, string.Empty),
+                    ct);
+            if (affected != 1)
+                continue;
+
+            acknowledgedRowIds.Add(row.Id);
+            var olderSameScopeRows = supersedeCandidates
+                .Where(candidate =>
+                    candidate.Id != row.Id &&
+                    new SyncEntityKey(
+                        NormalizeSyncEntityName(candidate.EntityName),
+                        candidate.EntityId) == key &&
+                    NormalizeMutationUtc(candidate.PreparedAtUtc) <
+                        NormalizeMutationUtc(row.PreparedAtUtc) &&
+                    HasProvablySameOutboxSupersedeScope(candidate, row))
+                .ToList();
+            foreach (var older in olderSameScopeRows)
+            {
+                var refreshedOlder = await _db.SyncOutboxEntries
+                    .AsNoTracking()
+                    .SingleOrDefaultAsync(entry => entry.Id == older.Id, ct);
+                if (refreshedOlder is null ||
+                    string.Equals(
+                        refreshedOlder.Status,
+                        "Acknowledged",
+                        StringComparison.Ordinal) ||
+                    NormalizeMutationUtc(refreshedOlder.PreparedAtUtc) >=
+                        NormalizeMutationUtc(row.PreparedAtUtc) ||
+                    !HasProvablySameOutboxSupersedeScope(
+                        refreshedOlder,
+                        row))
+                {
+                    continue;
+                }
+
+                if (BeforeOutboxSupersedeUpdateAsyncForTesting is not null)
+                {
+                    await BeforeOutboxSupersedeUpdateAsyncForTesting(
+                        refreshedOlder.Id,
+                        ct);
+                }
+
+                var superseded = await _db.SyncOutboxEntries
+                    .Where(entry =>
+                        entry.Id == refreshedOlder.Id &&
+                        entry.Status == refreshedOlder.Status &&
+                        entry.MutationId == refreshedOlder.MutationId &&
+                        entry.EntityName == refreshedOlder.EntityName &&
+                        entry.EntityId == refreshedOlder.EntityId &&
+                        entry.ExpectedRevision == refreshedOlder.ExpectedRevision &&
+                        entry.DeviceId == refreshedOlder.DeviceId &&
+                        entry.BusinessDatabaseName == refreshedOlder.BusinessDatabaseName &&
+                        entry.TenantCode == refreshedOlder.TenantCode &&
+                        entry.OfficeCode == refreshedOlder.OfficeCode &&
+                        entry.ResponsibleOfficeCode == refreshedOlder.ResponsibleOfficeCode &&
+                        entry.SessionId == refreshedOlder.SessionId &&
+                        entry.UserId == refreshedOlder.UserId &&
+                        entry.PreparedAtUtc == refreshedOlder.PreparedAtUtc)
+                    .ExecuteUpdateAsync(
+                        setters => setters
+                            .SetProperty(entry => entry.Status, "Acknowledged")
+                            .SetProperty(entry => entry.AcknowledgedAtUtc, now)
+                            .SetProperty(entry => entry.AcceptedRevision, accepted.Revision)
+                            .SetProperty(
+                                entry => entry.AcceptedUpdatedAtUtc,
+                                (DateTime?)NormalizeMutationUtc(accepted.UpdatedAtUtc))
+                            .SetProperty(entry => entry.ErrorMessage, string.Empty),
+                        ct);
+                if (superseded == 1)
+                    acknowledgedRowIds.Add(older.Id);
+            }
         }
 
-        await _db.SaveChangesAsync(ct);
+        DetachTrackedOutboxEntries(acknowledgedRowIds);
+    }
+
+    private void DetachTrackedOutboxEntries(IReadOnlyCollection<Guid> rowIds)
+    {
+        if (rowIds.Count == 0)
+            return;
+
+        foreach (var entry in _db.ChangeTracker.Entries<LocalSyncOutboxEntry>().ToList())
+        {
+            if (rowIds.Contains(entry.Entity.Id))
+                entry.State = EntityState.Detached;
+        }
     }
 
     private readonly record struct SyncEntityKey(string EntityName, Guid EntityId);
+
+    private sealed record InventoryTransferPurgePushAcknowledgement(
+        RecycleBinPurgeRecordDto PurgeRecord,
+        SyncAcceptedRevisionDto AcceptedRevision,
+        InventoryTransferDto? SubmittedTransfer = null);
+
+    private readonly record struct
+        RentalManagementCompanyDependencyIdentity(
+            Guid OriginalEntityId,
+            string TenantCode,
+            string CompanyCode);
+    private sealed class TrackedMutationPreservation(
+        ILocalSyncEntity entity,
+        IReadOnlyList<TrackedEntityPreservation> entries)
+    {
+        public ILocalSyncEntity Entity { get; } = entity;
+        public IReadOnlyList<TrackedEntityPreservation> Entries { get; } = entries;
+
+        public void RebaseAcceptedRevision(long acceptedRevision)
+        {
+            if (acceptedRevision <= 0 || acceptedRevision < Entity.Revision)
+                return;
+
+            Entity.Revision = acceptedRevision;
+            var root = Entries.FirstOrDefault(entry =>
+                ReferenceEquals(entry.Entity, Entity));
+            if (root is null)
+                return;
+
+            root.OriginalValues[nameof(ILocalSyncEntity.Revision)] = acceptedRevision;
+            root.ModifiedProperties.Remove(nameof(ILocalSyncEntity.Revision));
+        }
+    }
+
+    private sealed class TrackedEntityPreservation(
+        object entity,
+        EntityState originalState,
+        Dictionary<string, object?> originalValues,
+        HashSet<string> modifiedProperties,
+        Dictionary<string, object?> primaryKeyValues)
+    {
+        public object Entity { get; } = entity;
+        public EntityState OriginalState { get; } = originalState;
+        public Dictionary<string, object?> OriginalValues { get; } = originalValues;
+        public HashSet<string> ModifiedProperties { get; } = modifiedProperties;
+        public Dictionary<string, object?> PrimaryKeyValues { get; } = primaryKeyValues;
+
+        public static TrackedEntityPreservation Capture(
+            EntityEntry entry,
+            EntityState originalState)
+            => new(
+                entry.Entity,
+                originalState,
+                entry.Properties.ToDictionary(
+                    property => property.Metadata.Name,
+                    property => property.OriginalValue,
+                    StringComparer.Ordinal),
+                entry.Properties
+                    .Where(property =>
+                        property.IsModified ||
+                        !Equals(property.CurrentValue, property.OriginalValue))
+                    .Select(property => property.Metadata.Name)
+                    .ToHashSet(StringComparer.Ordinal),
+                entry.Metadata.FindPrimaryKey()?.Properties.ToDictionary(
+                    property => property.Name,
+                    property => entry.Property(property.Name).CurrentValue,
+                    StringComparer.Ordinal) ??
+                new Dictionary<string, object?>(StringComparer.Ordinal));
+    }
+
+    private sealed class TrackedEntryPushBaseline(
+        EntityState state,
+        Dictionary<string, object?> currentValues)
+    {
+        public EntityState State { get; } = state;
+        public Dictionary<string, object?> CurrentValues { get; } = currentValues;
+
+        public bool HasChanged(EntityEntry entry)
+        {
+            if (entry.State != State)
+                return true;
+
+            return entry.Properties.Any(property =>
+                !CurrentValues.TryGetValue(property.Metadata.Name, out var previousValue) ||
+                !Equals(previousValue, property.CurrentValue));
+        }
+
+        public static TrackedEntryPushBaseline Capture(EntityEntry entry)
+            => new(
+                entry.State,
+                entry.Properties.ToDictionary(
+                    property => property.Metadata.Name,
+                    property => property.CurrentValue,
+                    StringComparer.Ordinal));
+    }
+
+    private readonly record struct PreparedMutationSnapshot(
+        long ExpectedRevision,
+        DateTime UpdatedAtUtc,
+        bool IsDeleted,
+        string PayloadHash,
+        string? InvoiceNumber,
+        string? TaxInvoiceNumber);
+    private sealed record CurrentPushMutationReceipt(
+        Guid OutboxRowId,
+        string MutationId,
+        SyncEntityKey EntityKey,
+        long ExpectedRevision,
+        string PayloadHash,
+        string DeviceId,
+        string BusinessDatabaseName,
+        string TenantCode,
+        string OfficeCode,
+        string ResponsibleOfficeCode,
+        Guid SessionId,
+        Guid UserId,
+        DateTime PreparedAtUtc,
+        bool IsDurable);
+    private sealed record ServerNewerConflictResolution(
+        IReadOnlyList<ConflictLogDto> ResolvedConflicts,
+        IReadOnlyList<ConflictLogDto> PreservedConflicts);
+    private readonly record struct OutboxSupersedeScope(
+        string TenantCode,
+        string OfficeCode,
+        string ResponsibleOfficeCode,
+        string BusinessDatabaseName,
+        string DeviceId,
+        Guid SessionId,
+        Guid UserId);
+    private readonly record struct OutboxReconciliationOwnerScope(
+        string TenantCode,
+        string OfficeCode,
+        string ResponsibleOfficeCode,
+        string BusinessDatabaseName,
+        string DeviceId,
+        Guid UserId);
+    private readonly record struct DeferredPurgeOwnerScope(
+        string BusinessDatabaseName,
+        string TenantCode,
+        string OfficeCode,
+        string ResponsibleOfficeCode);
+
+    private static int CompareOutboxPreparedAt(LocalSyncOutboxEntry left, LocalSyncOutboxEntry right)
+        => NormalizeMutationUtc(left.PreparedAtUtc)
+            .CompareTo(NormalizeMutationUtc(right.PreparedAtUtc));
+
+    private static bool HasProvablySameOutboxSupersedeScope(
+        LocalSyncOutboxEntry candidate,
+        LocalSyncOutboxEntry acceptedCurrent)
+        => TryBuildOutboxSupersedeScope(candidate, out var candidateScope) &&
+           TryBuildOutboxSupersedeScope(acceptedCurrent, out var currentScope) &&
+           candidateScope == currentScope;
+
+    private static bool TryBuildOutboxSupersedeScope(
+        LocalSyncOutboxEntry entry,
+        out OutboxSupersedeScope scope)
+    {
+        scope = default;
+        if (string.IsNullOrWhiteSpace(entry.TenantCode) ||
+            string.IsNullOrWhiteSpace(entry.OfficeCode) ||
+            string.IsNullOrWhiteSpace(entry.ResponsibleOfficeCode) ||
+            string.IsNullOrWhiteSpace(entry.BusinessDatabaseName) ||
+            string.IsNullOrWhiteSpace(entry.DeviceId) ||
+            string.IsNullOrWhiteSpace(entry.MutationId) ||
+            entry.SessionId == Guid.Empty ||
+            entry.UserId == Guid.Empty)
+        {
+            return false;
+        }
+
+        scope = new OutboxSupersedeScope(
+            NormalizeOutboxScopeText(entry.TenantCode),
+            NormalizeOutboxScopeText(entry.OfficeCode),
+            NormalizeOutboxScopeText(entry.ResponsibleOfficeCode),
+            TenantScopeCatalog.GetDatabaseName(entry.BusinessDatabaseName).ToUpperInvariant(),
+            NormalizeOutboxScopeText(entry.DeviceId),
+            entry.SessionId,
+            entry.UserId);
+        return true;
+    }
+
+    private static bool TryBuildOutboxReconciliationOwnerScope(
+        LocalSyncOutboxEntry entry,
+        out OutboxReconciliationOwnerScope scope)
+    {
+        scope = default;
+        if (string.IsNullOrWhiteSpace(entry.TenantCode) ||
+            string.IsNullOrWhiteSpace(entry.OfficeCode) ||
+            string.IsNullOrWhiteSpace(entry.ResponsibleOfficeCode) ||
+            string.IsNullOrWhiteSpace(entry.BusinessDatabaseName) ||
+            string.IsNullOrWhiteSpace(entry.DeviceId) ||
+            string.IsNullOrWhiteSpace(entry.MutationId) ||
+            entry.SessionId == Guid.Empty ||
+            entry.UserId == Guid.Empty)
+        {
+            return false;
+        }
+
+        scope = new OutboxReconciliationOwnerScope(
+            NormalizeOutboxScopeText(entry.TenantCode),
+            NormalizeOutboxScopeText(entry.OfficeCode),
+            NormalizeOutboxScopeText(entry.ResponsibleOfficeCode),
+            TenantScopeCatalog.GetDatabaseName(entry.BusinessDatabaseName)
+                .ToUpperInvariant(),
+            NormalizeOutboxScopeText(entry.DeviceId),
+            entry.UserId);
+        return true;
+    }
+
+    private static string NormalizeOutboxScopeText(string value)
+        => value.Trim().ToUpperInvariant();
 
     private static string NormalizeSyncEntityName(string? entityName)
     {
@@ -8855,19 +18326,78 @@ public sealed class SyncService : IDisposable
         };
     }
 
-    private async Task TryMarkOutboxFailedAsync(SyncPushRequest request, string? errorMessage, CancellationToken ct)
+    private async Task TryMarkOutboxFailedAsync(
+        SyncPushRequest request,
+        string? errorMessage,
+        IReadOnlySet<SyncEntityKey>? excludedKeys,
+        IReadOnlyDictionary<string, CurrentPushMutationReceipt>
+            currentPushReceipts,
+        CancellationToken ct)
     {
         try
         {
-            var mutationIds = EnumerateOutgoingMutations(request)
-                .Select(entry => entry.Entity.MutationId)
-                .Where(mutationId => !string.IsNullOrWhiteSpace(mutationId))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            if (mutationIds.Count == 0)
-                return;
+            var outgoingByMutationId = EnumerateOutgoingMutations(
+                    request,
+                    excludedKeys)
+                .Where(entry =>
+                    !string.IsNullOrWhiteSpace(entry.Entity.MutationId))
+                .GroupBy(
+                    entry => entry.Entity.MutationId,
+                    StringComparer.OrdinalIgnoreCase)
+                .Where(group => group.Count() == 1)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Single(),
+                    StringComparer.OrdinalIgnoreCase);
+            var rowIds = new List<Guid>();
+            foreach (var (mutationId, outgoing) in outgoingByMutationId)
+            {
+                if (!currentPushReceipts.TryGetValue(
+                        mutationId,
+                        out var receipt) ||
+                    !receipt.IsDurable ||
+                    receipt.EntityKey != new SyncEntityKey(
+                        NormalizeSyncEntityName(outgoing.EntityName),
+                        outgoing.Entity.Id) ||
+                    receipt.ExpectedRevision != outgoing.Entity.ExpectedRevision ||
+                    !string.Equals(
+                        receipt.PayloadHash,
+                        ComputePreparedMutationPayloadHash(
+                            outgoing.EntityName,
+                            outgoing.Entity),
+                        StringComparison.Ordinal))
+                {
+                    continue;
+                }
 
-            await _local.MarkSyncOutboxFailedAsync(mutationIds!, errorMessage, ct);
+                var affected = await _db.SyncOutboxEntries
+                    .Where(entry =>
+                        entry.Id == receipt.OutboxRowId &&
+                        entry.Status != "Acknowledged" &&
+                        entry.MutationId == receipt.MutationId &&
+                        entry.EntityName == outgoing.EntityName &&
+                        entry.EntityId == outgoing.Entity.Id &&
+                        entry.ExpectedRevision == receipt.ExpectedRevision &&
+                        entry.DeviceId == receipt.DeviceId &&
+                        entry.BusinessDatabaseName == receipt.BusinessDatabaseName &&
+                        entry.TenantCode == receipt.TenantCode &&
+                        entry.OfficeCode == receipt.OfficeCode &&
+                        entry.ResponsibleOfficeCode == receipt.ResponsibleOfficeCode &&
+                        entry.SessionId == receipt.SessionId &&
+                        entry.UserId == receipt.UserId &&
+                        entry.PreparedAtUtc == receipt.PreparedAtUtc)
+                    .ExecuteUpdateAsync(
+                        setters => setters
+                            .SetProperty(entry => entry.Status, "Failed")
+                            .SetProperty(
+                                entry => entry.ErrorMessage,
+                                errorMessage ?? string.Empty),
+                        ct);
+                if (affected == 1)
+                    rowIds.Add(receipt.OutboxRowId);
+            }
+
+            DetachTrackedOutboxEntries(rowIds);
         }
         catch (Exception ex)
         {
@@ -8905,7 +18435,10 @@ public sealed class SyncService : IDisposable
                     ? current
                     : current + Environment.NewLine + normalizedSummary;
 
-            await _local.SetSettingAsync(LastConflictSummarySettingKey, merged, CancellationToken.None);
+            await _local.SetSyncMetadataSettingIndependentAsync(
+                LastConflictSummarySettingKey,
+                merged,
+                CancellationToken.None);
             SetStatus(normalizedSummary);
             await TryRecordDiagnosticAsync(
                 phase: "push-conflict",
@@ -8950,12 +18483,17 @@ public sealed class SyncService : IDisposable
         CancellationToken ct,
         bool allowRetry = true)
     {
+        var ownsDatabaseTransaction = _db.Database.CurrentTransaction is null;
         try
         {
+            await using var transaction = ownsDatabaseTransaction
+                ? await _db.BeginRuntimeMutationTransactionAsync(ct)
+                : null;
             var local = LocalMappings.ToLocal(dto);
             local.IsDirty = false;
 
             var existing = await _db.InventoryTransfers.IgnoreQueryFilters()
+                .Include(transfer => transfer.Lines)
                 .AsNoTracking()
                 .FirstOrDefaultAsync(transfer => transfer.Id == local.Id, ct);
 
@@ -8963,13 +18501,44 @@ public sealed class SyncService : IDisposable
             {
                 var incomingIsNewer = local.Revision > existing.Revision ||
                                       (local.Revision == existing.Revision && local.UpdatedAtUtc >= existing.UpdatedAtUtc);
-                if (existing.IsDirty || !incomingIsNewer)
+                if (existing.IsDirty)
+                {
+                    if (!existing.IsDeleted &&
+                        local.IsDeleted &&
+                        incomingIsNewer)
+                    {
+                        await PersistInventoryTransferTombstoneConflictAsync(
+                            existing,
+                            dto,
+                            ct);
+                    }
+                    else
+                    {
+                        return;
+                    }
+                }
+                else if (!incomingIsNewer)
+                {
                     return;
+                }
+            }
+
+            if (existing is null || !existing.IsDirty)
+            {
+                await _local
+                    .RecordInventoryTransferTombstoneConflictServerStateAsync(
+                        local.Id,
+                        TenantScopeCatalog.GetDatabaseName(
+                            _session.SelectedBusinessDatabaseName),
+                        local.Revision,
+                        NormalizeMutationUtc(local.UpdatedAtUtc),
+                        local.IsDeleted,
+                        JsonSerializer.Serialize(dto),
+                        ct);
             }
 
             _db.ChangeTracker.Clear();
 
-            await using var transaction = await _db.Database.BeginTransactionAsync(ct);
             await _db.InventoryTransferLines
                 .Where(line => line.TransferId == local.Id)
                 .ExecuteDeleteAsync(ct);
@@ -8979,13 +18548,200 @@ public sealed class SyncService : IDisposable
 
             _db.InventoryTransfers.Add(local);
             await _db.SaveChangesAsync(ct);
-            await transaction.CommitAsync(ct);
+            if (transaction is not null)
+                await transaction.CommitAsync(ct);
+
+            _local.RecordInventoryStateChanged();
         }
-        catch (DbUpdateConcurrencyException) when (allowRetry)
+        catch (DbUpdateConcurrencyException) when (allowRetry && ownsDatabaseTransaction)
         {
             _db.ChangeTracker.Clear();
             await UpsertPulledInventoryTransferAsync(dto, ct, allowRetry: false);
         }
+    }
+
+    private async Task PersistInventoryTransferTombstoneConflictAsync(
+        LocalInventoryTransfer existing,
+        InventoryTransferDto serverTombstone,
+        CancellationToken ct,
+        string? businessDatabaseNameOverride = null,
+        SessionState? ownerSessionOverride = null,
+        IReadOnlySet<Guid>? outboxRowsReservedForAcknowledgement = null)
+    {
+        var now = DateTime.UtcNow;
+        var localSnapshot = LocalMappings.ToDto(existing);
+        var ownerSession = ownerSessionOverride ?? _session;
+        var businessDatabaseName =
+            TenantScopeCatalog.GetDatabaseName(
+                string.IsNullOrWhiteSpace(businessDatabaseNameOverride)
+                    ? ownerSession.SelectedBusinessDatabaseName
+                    : businessDatabaseNameOverride);
+        var tenantCode =
+            TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                localSnapshot.TenantCode,
+                localSnapshot.SourceOfficeCode);
+        var sourceOfficeCode =
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+                localSnapshot.SourceOfficeCode,
+                serverTombstone.SourceOfficeCode);
+        var targetOfficeCode =
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+                localSnapshot.TargetOfficeCode,
+                serverTombstone.TargetOfficeCode);
+        var allowLegacyDefaultDatabaseName =
+            string.Equals(
+                businessDatabaseName,
+                TenantScopeCatalog.GetDatabaseName(
+                    ownerSession.AuthenticatedTenantCode),
+                StringComparison.OrdinalIgnoreCase);
+        var outboxEntityNames = new[]
+        {
+            nameof(LocalInventoryTransfer),
+            "InventoryTransfer"
+        };
+        var pendingOutboxRows = await _db.SyncOutboxEntries
+            .AsNoTracking()
+            .Where(entry =>
+                entry.EntityId == existing.Id &&
+                entry.Status != "Acknowledged" &&
+                outboxEntityNames.Contains(entry.EntityName) &&
+                (entry.BusinessDatabaseName == businessDatabaseName ||
+                 (allowLegacyDefaultDatabaseName &&
+                  entry.BusinessDatabaseName == string.Empty)) &&
+                (entry.TenantCode == tenantCode ||
+                 entry.TenantCode == string.Empty) &&
+                (entry.OfficeCode == sourceOfficeCode ||
+                 entry.OfficeCode == string.Empty) &&
+                (entry.ResponsibleOfficeCode == targetOfficeCode ||
+                 entry.ResponsibleOfficeCode == string.Empty))
+            .OrderBy(entry => entry.PreparedAtUtc)
+            .ToListAsync(ct);
+        var outboxMutationIds = pendingOutboxRows
+            .Select(entry => entry.MutationId)
+            .Where(mutationId => !string.IsNullOrWhiteSpace(mutationId))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var conflict = await _db.InventoryTransferTombstoneConflicts
+            .FirstOrDefaultAsync(
+                current =>
+                    current.TransferId == existing.Id &&
+                    current.BusinessDatabaseName ==
+                    businessDatabaseName,
+                ct);
+        if (conflict is null)
+        {
+            conflict = new LocalInventoryTransferTombstoneConflict
+            {
+                TransferId = existing.Id,
+                BusinessDatabaseName = businessDatabaseName
+            };
+            _db.InventoryTransferTombstoneConflicts.Add(conflict);
+        }
+
+        var archivedEvidencePath = string.Empty;
+        if (!string.IsNullOrWhiteSpace(existing.ReceiveEvidencePath))
+        {
+            try
+            {
+                archivedEvidencePath =
+                    Path.GetFullPath(existing.ReceiveEvidencePath);
+            }
+            catch (Exception ex) when (
+                ex is ArgumentException or NotSupportedException or
+                PathTooLongException)
+            {
+                throw new SyncPullBlockedException(
+                    "The inventory transfer conflict evidence path is invalid.");
+            }
+
+            if (!AppPaths.IsTransactionAttachmentPath(
+                    archivedEvidencePath) ||
+                !File.Exists(archivedEvidencePath))
+            {
+                throw new SyncPullBlockedException(
+                    "The inventory transfer conflict evidence file is missing or outside the managed attachment root.");
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(
+                conflict.ArchivedReceiveEvidencePath))
+        {
+            var existingArchivePath = Path.GetFullPath(
+                conflict.ArchivedReceiveEvidencePath);
+            if (!AppPaths.IsTransactionAttachmentPath(
+                    existingArchivePath) ||
+                !File.Exists(existingArchivePath) ||
+                !string.IsNullOrWhiteSpace(archivedEvidencePath) &&
+                !string.Equals(
+                    existingArchivePath,
+                    archivedEvidencePath,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new SyncPullBlockedException(
+                    "The inventory transfer conflict already owns a different or invalid evidence file.");
+            }
+
+            archivedEvidencePath = existingArchivePath;
+        }
+
+        conflict.ArchivedReceiveEvidencePath = archivedEvidencePath;
+        localSnapshot.ReceiveEvidencePath = archivedEvidencePath;
+        conflict.BusinessDatabaseName = businessDatabaseName;
+        conflict.TenantCode = tenantCode;
+        conflict.SourceOfficeCode = sourceOfficeCode;
+        conflict.TargetOfficeCode = targetOfficeCode;
+        conflict.LocalSnapshotJson =
+            JsonSerializer.Serialize(localSnapshot);
+        conflict.ServerTombstoneJson =
+            JsonSerializer.Serialize(serverTombstone);
+        conflict.OutboxMutationIdsJson =
+            JsonSerializer.Serialize(outboxMutationIds);
+        conflict.LocalRevision = existing.Revision;
+        conflict.ServerRevision = serverTombstone.Revision;
+        conflict.ServerUpdatedAtUtc =
+            NormalizeMutationUtc(serverTombstone.UpdatedAtUtc);
+        conflict.Status =
+            InventoryTransferTombstoneConflictPolicy.UnresolvedStatus;
+        conflict.DetectedAtUtc = now;
+        conflict.UpdatedAtUtc = now;
+        conflict.ResolvedAtUtc = null;
+        conflict.Resolution = string.Empty;
+        conflict.RecoveredTransferId = null;
+
+        if (pendingOutboxRows.Count > 0)
+        {
+            var pendingOutboxIds = pendingOutboxRows
+                .Select(entry => entry.Id)
+                .Where(id =>
+                    outboxRowsReservedForAcknowledgement?.Contains(id) != true)
+                .ToList();
+            var outboxError =
+                $"{InventoryTransferTombstoneConflictPolicy.OutboxErrorPrefix} " +
+                "서버에서 삭제된 재고이동 문서의 로컬 초안을 별도 보관했습니다. 재고이동 화면에서 초안을 복구하거나 폐기하세요.";
+            if (pendingOutboxIds.Count > 0)
+            {
+                await _db.SyncOutboxEntries
+                    .Where(entry => pendingOutboxIds.Contains(entry.Id))
+                    .ExecuteUpdateAsync(
+                        setters => setters
+                            .SetProperty(entry => entry.Status, "Failed")
+                            .SetProperty(entry => entry.ErrorMessage, outboxError)
+                            .SetProperty(
+                                entry => entry.AcknowledgedAtUtc,
+                                (DateTime?)null)
+                            .SetProperty(entry => entry.AcceptedRevision, 0L)
+                            .SetProperty(
+                                entry => entry.AcceptedUpdatedAtUtc,
+                                (DateTime?)null),
+                        ct);
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+        AppLogger.Warn(
+            "SYNC",
+            $"재고이동 원격삭제 충돌 초안을 보존하고 서버 tombstone을 적용합니다: transfer={existing.Id:D}, localRevision={existing.Revision}, serverRevision={serverTombstone.Revision}");
     }
 
     private static byte[] ReadTransactionAttachmentContent(LocalTransactionAttachment attachment)
@@ -9014,58 +18770,78 @@ public sealed class SyncService : IDisposable
         }
     }
 
-    private sealed record TransactionAttachmentFileWrite(string TemporaryPath, string StoredPath);
-
-    private static string PrepareTransactionAttachmentFile(
+    private static string ResolvePulledTransactionAttachmentPath(
         TransactionAttachmentDto dto,
-        ICollection<TransactionAttachmentFileWrite> filesToWriteAfterSave)
+        ReadOnlySpan<byte> verifiedContent)
     {
         if (dto.IsDeleted)
             return string.Empty;
 
         var attachmentDir = Path.Combine(AppPaths.TransactionAttachmentsDir, dto.TransactionId.ToString("N"));
-        var fileName = SanitizeAttachmentFileName(dto.FileName, dto.Id);
+        var originalFileName = SanitizeAttachmentFileName(dto.FileName, dto.Id);
+        var contentHash = Convert.ToHexString(SHA256.HashData(verifiedContent));
+        var fileName = $"{dto.Id:N}_{dto.Revision}_{contentHash[..16]}_{originalFileName}";
         var storedPath = Path.Combine(attachmentDir, fileName);
-        var content = dto.FileContent ?? [];
-
-        var tempDir = Path.Combine(AppPaths.TempDir, "transaction-attachments-sync", dto.TransactionId.ToString("N"));
-        Directory.CreateDirectory(tempDir);
-        var temporaryPath = Path.Combine(tempDir, $"{dto.Id:N}-{Guid.NewGuid():N}.tmp");
-        File.WriteAllBytes(temporaryPath, content);
-        filesToWriteAfterSave.Add(new TransactionAttachmentFileWrite(temporaryPath, storedPath));
-
         return storedPath;
     }
 
-    private static void CommitTransactionAttachmentFileWrites(IEnumerable<TransactionAttachmentFileWrite> filesToWrite)
+    private static byte[] ValidatePulledTransactionAttachmentContent(
+        TransactionAttachmentDto dto)
     {
-        foreach (var fileToWrite in filesToWrite)
+        var content = dto.FileContent ?? [];
+        if (content.Length == 0)
         {
-            var directory = Path.GetDirectoryName(fileToWrite.StoredPath);
-            if (!string.IsNullOrWhiteSpace(directory))
-                Directory.CreateDirectory(directory);
-
-            File.Copy(fileToWrite.TemporaryPath, fileToWrite.StoredPath, overwrite: true);
-            TryDeleteTransactionAttachmentFile(fileToWrite.TemporaryPath, deleteEmptyDirectory: true);
+            throw new InvalidDataException(
+                $"서버 첨부파일 내용이 비어 있어 기존 파일을 보존했습니다. attachmentId={dto.Id:D}");
         }
+
+        if (dto.FileSize > 0 && content.LongLength != dto.FileSize)
+        {
+            throw new InvalidDataException(
+                $"서버 첨부파일 크기가 메타데이터와 일치하지 않습니다. attachmentId={dto.Id:D}");
+        }
+
+        var expectedHash = dto.FileHash?.Trim() ?? string.Empty;
+        if (expectedHash.Length > 0)
+        {
+            if (expectedHash.Length != 64 || !expectedHash.All(Uri.IsHexDigit))
+            {
+                throw new InvalidDataException(
+                    $"서버 첨부파일 해시 형식이 올바르지 않습니다. attachmentId={dto.Id:D}");
+            }
+
+            var actualHash = Convert.ToHexString(SHA256.HashData(content));
+            if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    $"서버 첨부파일 해시가 메타데이터와 일치하지 않습니다. attachmentId={dto.Id:D}");
+            }
+        }
+
+        return content;
     }
 
-    private static void DeleteTemporaryTransactionAttachmentFiles(IEnumerable<TransactionAttachmentFileWrite> filesToWrite)
+    private static void TryStageTransactionAttachmentDelete(
+        AttachmentFileJournal fileJournal,
+        string? path)
     {
-        foreach (var fileToWrite in filesToWrite)
-            TryDeleteTransactionAttachmentFile(fileToWrite.TemporaryPath, deleteEmptyDirectory: true);
-    }
+        if (string.IsNullOrWhiteSpace(path))
+            return;
 
-    private static void DeleteTransactionAttachmentFiles(IEnumerable<string> paths)
-    {
-        foreach (var path in paths)
-            TryDeleteTransactionAttachmentFile(path, deleteEmptyDirectory: true);
-    }
-
-    private static void QueueTransactionAttachmentFileDelete(ISet<string> paths, string? path)
-    {
-        if (!string.IsNullOrWhiteSpace(path))
-            paths.Add(path);
+        try
+        {
+            fileJournal.StageDelete(path);
+        }
+        catch (AttachmentFileJournalContentionException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn(
+                "ATTACHMENT",
+                $"허용된 첨부파일 저장 경로 밖의 기존 파일은 삭제하지 않습니다. {ex.Message}");
+        }
     }
 
     private static void TryDeleteTransactionAttachmentFile(string? path, bool deleteEmptyDirectory)
@@ -9112,6 +18888,71 @@ public sealed class SyncService : IDisposable
 
     private static string NormalizeRentalManagementCompanyCode(string? value)
         => (value ?? string.Empty).Trim().ToUpperInvariant();
+
+    private async Task ThrowIfPendingCanonicalDeleteOutboxAsync(
+        IEnumerable<Guid> deleteTargetIds,
+        IReadOnlyCollection<string> allowedEntityNames,
+        string operationLabel,
+        CancellationToken ct)
+    {
+        var targetIds = deleteTargetIds
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (targetIds.Count == 0 || allowedEntityNames.Count == 0)
+            return;
+
+        if (await _db.SyncOutboxEntries
+                .AsNoTracking()
+                .AnyAsync(entry =>
+                    entry.Status != "Acknowledged" &&
+                    targetIds.Contains(entry.EntityId) &&
+                    allowedEntityNames.Contains(entry.EntityName),
+                    ct))
+        {
+            throw new SyncPullBlockedException(
+                $"{operationLabel} delete가 accepted 증거 없는 pending outbox payload를 잃게 할 수 있어 pull을 중단했습니다.");
+        }
+    }
+
+    private async Task ThrowIfDirtyRentalBillingProfileDependenciesAsync(
+        IReadOnlyCollection<Guid> staleProfileIds,
+        CancellationToken ct)
+    {
+        if (staleProfileIds.Count == 0)
+            return;
+
+        if (await _db.Transactions.IgnoreQueryFilters()
+                .AnyAsync(transaction =>
+                    transaction.LinkedRentalBillingProfileId.HasValue &&
+                    staleProfileIds.Contains(transaction.LinkedRentalBillingProfileId.Value),
+                    ct) ||
+            await _db.Invoices.IgnoreQueryFilters()
+                .AnyAsync(invoice =>
+                    invoice.LinkedRentalBillingProfileId.HasValue &&
+                    staleProfileIds.Contains(invoice.LinkedRentalBillingProfileId.Value),
+                    ct) ||
+            await _db.RentalAssets.IgnoreQueryFilters()
+                .AnyAsync(asset =>
+                    (asset.BillingProfileId.HasValue &&
+                     staleProfileIds.Contains(asset.BillingProfileId.Value) ||
+                     asset.LastBillingProfileId.HasValue &&
+                     staleProfileIds.Contains(asset.LastBillingProfileId.Value)),
+                    ct) ||
+            await _db.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+                .AnyAsync(history =>
+                    history.BillingProfileId.HasValue &&
+                    staleProfileIds.Contains(history.BillingProfileId.Value),
+                    ct) ||
+            await _db.RentalBillingLogs.IgnoreQueryFilters()
+                .AnyAsync(log =>
+                    staleProfileIds.Contains(log.BillingProfileId),
+                    ct))
+        {
+            throw new SyncPullBlockedException(
+                "렌탈 청구 프로필 canonical delete가 참조 payload를 orphan 처리할 수 있어 pull을 중단했습니다.");
+        }
+    }
 
     private static string NormalizeRentalAssetNaturalKey(string? value)
         => (value ?? string.Empty).Trim();
@@ -9167,7 +19008,7 @@ public sealed class SyncService : IDisposable
                     var exPay = existing.Payments.FirstOrDefault(p => p.Id == pay.Id);
                     if (exPay is null)
                         existing.Payments.Add(pay);
-                    else
+                    else if (!exPay.IsDirty)
                         _db.Entry(exPay).CurrentValues.SetValues(pay);
                 }
 
@@ -9180,7 +19021,11 @@ public sealed class SyncService : IDisposable
         await _local.NormalizeLatestInvoiceVersionGroupsAsync(touchedVersionGroupIds, ct: ct);
 
         await _local.ApplyPulledInvoiceDeleteSideEffectsAsync(deletedInvoiceSideEffects, ct);
-        await _local.RecalculateRentalSettlementsAsync(rentalSettlementTargets, ct, markDirty: false);
+        await _local.RecalculateRentalSettlementsAsync(
+            rentalSettlementTargets,
+            ct,
+            markDirty: false,
+            preserveDirtyProfiles: true);
     }
 
     private static void AddPulledInvoiceRentalTarget(
@@ -9191,65 +19036,474 @@ public sealed class SyncService : IDisposable
             targets.Add((profileId, invoice.LinkedRentalBillingRunId));
     }
 
-    private async Task ApplyPulledPurgeRecordsAsync(
-        IReadOnlyList<RecycleBinPurgeRecordDto> dtos,
+    private async Task RetryDeferredPurgeRecordsAsync(
         CancellationToken ct)
     {
-        if (dtos.Count == 0)
+        var operationOwner = CaptureSyncOperationOwnerBoundary();
+        var ownerScope = BuildDeferredPurgeOwnerScope(operationOwner);
+        if (!await HasDeferredPurgeRecordsAsync(ownerScope, ct))
             return;
 
-        foreach (var dto in dtos
-                     .Where(current => current.EntityId != Guid.Empty && !string.IsNullOrWhiteSpace(current.Kind))
-                     .GroupBy(current => (NormalizePurgeRecordKind(current.Kind), current.EntityId))
-                     .Select(group => group
-                         .OrderByDescending(current => current.PurgedAtUtc)
-                         .ThenByDescending(current => current.Revision)
-                         .First())
-                     .OrderBy(current => GetPurgeApplyOrder(NormalizePurgeRecordKind(current.Kind))))
-        {
-            var kind = NormalizePurgeRecordKind(dto.Kind);
-            if (!TryParseRecycleBinEntityKind(kind, out var entityKind))
-                continue;
+        await RecoverIncompleteAttachmentFileJournalsAsync(ct);
+        await using var transaction =
+            await _db.BeginRuntimeMutationTransactionAsync(ct);
+        using var attachmentFiles = new AttachmentFileJournal(
+            AppPaths.AttachmentFileJournalDir,
+            AppPaths.AttachmentsDir);
+        var commitAttempted = false;
+        using var inventoryStateChangeCapture =
+            _local.CaptureInventoryStateChanges();
+        var invoicePurgeApplied = false;
+        var committed = false;
 
-            if (await IsPurgeRecordSupersededByActiveLocalEntityAsync(entityKind, dto.EntityId, dto.Revision, ct))
+        try
+        {
+            invoicePurgeApplied =
+                await ApplyDeferredPurgeRecordsCoreAsync(
+                    ownerScope,
+                    ct,
+                    attachmentFiles);
+            committed =
+                await CommitAttachmentTransactionUnderOwnerLeaseAsync(
+                    transaction,
+                    attachmentFiles,
+                    operationOwner,
+                    () => commitAttempted = true,
+                    ct);
+            if (!committed)
             {
-                AppLogger.Info("SYNC", $"서버 영구삭제 기록 무시: 더 최신 활성 로컬 엔티티가 존재합니다. {kind} / {dto.EntityId:D}");
-                continue;
+                await transaction.RollbackAsync(
+                    CancellationToken.None);
+                attachmentFiles.Rollback();
+                _db.ChangeTracker.Clear();
+                return;
             }
 
-            var result = await _local.ApplyServerPurgeRecycleBinEntryAsync(entityKind, dto.EntityId, ct);
-            if (!result.Success && !result.NotFound)
-                AppLogger.Warn("SYNC", $"서버 영구삭제 반영 실패: {kind} / {dto.EntityId:D} / {result.Message}");
+            await transaction.DisposeAsync().ConfigureAwait(false);
+            await attachmentFiles.CompleteAfterDatabaseCommitAsync(
+                _db,
+                CancellationToken.None);
+        }
+        catch
+        {
+            var commitResolution =
+                AttachmentCommitResolution.RolledBack;
+            try
+            {
+                await transaction.RollbackAsync(
+                    CancellationToken.None);
+            }
+            catch (Exception rollbackException)
+            {
+                AppLogger.Error(
+                    "ATTACHMENT",
+                    "지연된 서버 영구삭제 재시도 실패 후 DB 롤백 결과를 확정하지 못했습니다.",
+                    rollbackException);
+            }
+
+            if (!commitAttempted)
+            {
+                attachmentFiles.Rollback();
+            }
+            else
+            {
+                commitResolution =
+                    await attachmentFiles
+                        .ResolveCommitAmbiguityAsync(
+                            _db,
+                            CancellationToken.None);
+            }
+
+            _db.ChangeTracker.Clear();
+            if (commitResolution !=
+                AttachmentCommitResolution.Committed)
+            {
+                throw;
+            }
+
+            await transaction.DisposeAsync().ConfigureAwait(false);
+            committed = true;
+        }
+
+        if (!committed)
+            return;
+
+        inventoryStateChangeCapture.Dispose();
+        PublishCommittedDeferredPurgeEvents(
+            operationOwner,
+            invoicePurgeApplied,
+            inventoryStateChangeCapture.HasChanges);
+    }
+
+    private void PublishCommittedDeferredPurgeEvents(
+        SyncOperationOwnerBoundary operationOwner,
+        bool invoicePurgeApplied,
+        bool hasInventoryChanges)
+    {
+        if (invoicePurgeApplied &&
+            IsSyncOperationOwnerCurrent(operationOwner))
+        {
+            try
+            {
+                _local.TryPublishItemInvoiceHistoryChanged();
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error(
+                    "SYNC",
+                    "커밋된 지연 전표 영구삭제의 품목별 전표이력 변경 알림 중 오류가 발생했습니다.",
+                    ex);
+            }
+        }
+
+        if (!hasInventoryChanges ||
+            !IsSyncOperationOwnerCurrent(operationOwner))
+        {
+            return;
+        }
+
+        try
+        {
+            _local.TryPublishInventoryStateChanged();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error(
+                "SYNC",
+                "커밋된 지연 서버 영구삭제의 재고 변경 알림 중 오류가 발생했습니다.",
+                ex);
         }
     }
 
-    private Task<bool> IsPurgeRecordSupersededByActiveLocalEntityAsync(
+    private async Task<bool> ApplyPulledPurgeRecordsAsync(
+        IReadOnlyList<RecycleBinPurgeRecordDto> dtos,
+        SyncOperationOwnerBoundary operationOwner,
+        CancellationToken ct,
+        AttachmentFileJournal? attachmentFileJournal)
+    {
+        var ownerScope = BuildDeferredPurgeOwnerScope(
+            operationOwner);
+        await UpsertDeferredPurgeRecordsAsync(
+            dtos,
+            ownerScope,
+            ct);
+        return await ApplyDeferredPurgeRecordsCoreAsync(
+            ownerScope,
+            ct,
+            attachmentFileJournal);
+    }
+
+    private async Task UpsertDeferredPurgeRecordsAsync(
+        IReadOnlyList<RecycleBinPurgeRecordDto> dtos,
+        DeferredPurgeOwnerScope ownerScope,
+        CancellationToken ct)
+    {
+        var validReceipts = dtos
+            .Where(current =>
+                current.Id != Guid.Empty &&
+                current.EntityId != Guid.Empty &&
+                !string.IsNullOrWhiteSpace(current.Kind))
+            .Select(current => new
+            {
+                Dto = current,
+                Kind = NormalizePurgeRecordKind(current.Kind)
+            })
+            .GroupBy(current => current.Dto.Id)
+            .Select(group => group
+                .OrderByDescending(current =>
+                    current.Dto.PurgedAtUtc)
+                .ThenByDescending(current =>
+                    current.Dto.Revision)
+                .First())
+            .ToList();
+        if (validReceipts.Count == 0)
+            return;
+
+        var receiptIds = validReceipts
+            .Select(current => current.Dto.Id)
+            .ToList();
+        var existingById = await _db
+            .DeferredRecycleBinPurgeRecords
+            .Where(current => receiptIds.Contains(current.Id))
+            .ToDictionaryAsync(current => current.Id, ct);
+        var now = DateTime.UtcNow;
+        foreach (var receipt in validReceipts)
+        {
+            if (existingById.TryGetValue(
+                    receipt.Dto.Id,
+                    out var existing))
+            {
+                if (!DeferredPurgeRecordBelongsToOwner(
+                        existing,
+                        ownerScope))
+                {
+                    AppLogger.Warn(
+                        "SYNC",
+                        $"서버 영구삭제 영수증 범위 충돌로 기존 지연 항목을 보존합니다: {receipt.Dto.Id:D}");
+                    continue;
+                }
+
+                if (receipt.Dto.Revision <
+                        existing.Revision &&
+                    receipt.Dto.PurgedAtUtc <=
+                        existing.PurgedAtUtc)
+                {
+                    continue;
+                }
+
+                existing.Kind = receipt.Kind;
+                existing.EntityId = receipt.Dto.EntityId;
+                existing.Revision = Math.Max(
+                    existing.Revision,
+                    receipt.Dto.Revision);
+                existing.PurgedAtUtc =
+                    NormalizeMutationUtc(
+                        receipt.Dto.PurgedAtUtc);
+                existing.UpdatedAtUtc = now;
+                existing.AppliedAtUtc = null;
+                existing.NextAttemptAtUtc = null;
+                continue;
+            }
+
+            _db.DeferredRecycleBinPurgeRecords.Add(
+                new LocalDeferredRecycleBinPurgeRecord
+                {
+                    Id = receipt.Dto.Id,
+                    BusinessDatabaseName =
+                        ownerScope.BusinessDatabaseName,
+                    TenantCode = ownerScope.TenantCode,
+                    OfficeCode = ownerScope.OfficeCode,
+                    ResponsibleOfficeCode =
+                        ownerScope.ResponsibleOfficeCode,
+                    Kind = receipt.Kind,
+                    EntityId = receipt.Dto.EntityId,
+                    Revision = receipt.Dto.Revision,
+                    PurgedAtUtc =
+                        NormalizeMutationUtc(
+                            receipt.Dto.PurgedAtUtc),
+                    AttemptCount = 0,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                });
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task<bool>
+        ApplyDeferredPurgeRecordsCoreAsync(
+            DeferredPurgeOwnerScope ownerScope,
+            CancellationToken ct,
+            AttachmentFileJournal? attachmentFileJournal)
+    {
+        var deferredRecords = await _db
+            .DeferredRecycleBinPurgeRecords
+            .Where(current =>
+                current.BusinessDatabaseName ==
+                    ownerScope.BusinessDatabaseName &&
+                current.TenantCode == ownerScope.TenantCode &&
+                current.OfficeCode == ownerScope.OfficeCode &&
+                current.ResponsibleOfficeCode ==
+                    ownerScope.ResponsibleOfficeCode &&
+                current.AppliedAtUtc == null)
+            .ToListAsync(ct);
+        if (deferredRecords.Count == 0)
+            return false;
+
+        var latestRecords = deferredRecords
+            .GroupBy(current =>
+                (current.Kind, current.EntityId))
+            .Select(group => group
+                .OrderByDescending(current =>
+                    current.PurgedAtUtc)
+                .ThenByDescending(current =>
+                    current.Revision)
+                .ThenByDescending(current =>
+                    current.UpdatedAtUtc)
+                .First())
+            .OrderBy(current =>
+                GetPurgeApplyOrder(current.Kind))
+            .ToList();
+        var latestRecordIds = latestRecords
+            .Select(current => current.Id)
+            .ToHashSet();
+        _db.DeferredRecycleBinPurgeRecords.RemoveRange(
+            deferredRecords.Where(current =>
+                !latestRecordIds.Contains(current.Id)));
+
+        var invoicePurgeApplied = false;
+        foreach (var record in latestRecords)
+        {
+            ct.ThrowIfCancellationRequested();
+            var attemptedAtUtc = DateTime.UtcNow;
+            record.AttemptCount++;
+            record.LastAttemptedAtUtc = attemptedAtUtc;
+            record.UpdatedAtUtc = attemptedAtUtc;
+            record.NextAttemptAtUtc = null;
+            record.LastErrorMessage = string.Empty;
+
+            if (!TryParseRecycleBinEntityKind(
+                    record.Kind,
+                    out var entityKind))
+            {
+                record.LastErrorMessage =
+                    "현재 클라이언트가 지원하지 않는 서버 영구삭제 항목 종류입니다.";
+                AppLogger.Warn(
+                    "SYNC",
+                    $"서버 영구삭제 영수증 반영 보류: {record.Kind} / {record.EntityId:D} / {record.LastErrorMessage}");
+                continue;
+            }
+
+            if (await IsPurgeReceiptSupersededByNewerLocalEntityAsync(
+                    entityKind,
+                    record.EntityId,
+                    record.Revision,
+                    ct))
+            {
+                AppLogger.Warn(
+                    "SYNC",
+                    $"서버 영구삭제 영수증 폐기: 더 최신인 로컬 엔터티가 확인되었습니다. {record.Kind} / {record.EntityId:D} / receipt={record.Revision}");
+                _db.DeferredRecycleBinPurgeRecords.Remove(record);
+                continue;
+            }
+
+            if (await IsPurgeTargetDirtyAsync(
+                    entityKind,
+                    record.EntityId,
+                    ct) ||
+                await HasPendingPurgeTargetOutboxAsync(
+                    entityKind,
+                    record.EntityId,
+                    ownerScope,
+                    ct))
+            {
+                record.LastErrorMessage =
+                    "서버로 전송되지 않은 로컬 변경 또는 처리 중인 동기화 작업이 있어 서버 영구삭제 영수증 반영을 보류했습니다.";
+                AppLogger.Warn(
+                    "SYNC",
+                    $"서버 영구삭제 영수증 반영 보류: {record.Kind} / {record.EntityId:D} / {record.LastErrorMessage}");
+                continue;
+            }
+
+            var result = attachmentFileJournal is null
+                ? await _local
+                    .ApplyServerPurgeRecycleBinEntryAsync(
+                        entityKind,
+                        record.EntityId,
+                        record.Revision,
+                        ownerScope.BusinessDatabaseName,
+                        ct)
+                : await _local
+                    .ApplyServerPurgeRecycleBinEntryAsync(
+                        entityKind,
+                        record.EntityId,
+                        record.Revision,
+                        ownerScope.BusinessDatabaseName,
+                        attachmentFileJournal,
+                        ct);
+            if (result.Success || result.NotFound)
+            {
+                if (IsInvoicePurgeRecordKind(record.Kind))
+                    invoicePurgeApplied = true;
+                _db.DeferredRecycleBinPurgeRecords.Remove(
+                    record);
+                continue;
+            }
+
+            record.LastErrorMessage =
+                string.IsNullOrWhiteSpace(result.Message)
+                    ? "로컬 영구삭제 반영이 보류되었습니다."
+                    : result.Message;
+            AppLogger.Warn(
+                "SYNC",
+                $"서버 영구삭제 영수증 반영 보류: {record.Kind} / {record.EntityId:D} / {record.LastErrorMessage}");
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return invoicePurgeApplied;
+    }
+
+    private Task<bool> HasDeferredPurgeRecordsAsync(
+        DeferredPurgeOwnerScope ownerScope,
+        CancellationToken ct)
+        => _db.DeferredRecycleBinPurgeRecords
+            .AsNoTracking()
+            .AnyAsync(current =>
+                current.BusinessDatabaseName ==
+                    ownerScope.BusinessDatabaseName &&
+                current.TenantCode == ownerScope.TenantCode &&
+                current.OfficeCode == ownerScope.OfficeCode &&
+                current.ResponsibleOfficeCode ==
+                    ownerScope.ResponsibleOfficeCode &&
+                current.AppliedAtUtc == null,
+                ct);
+
+    private static DeferredPurgeOwnerScope
+        BuildDeferredPurgeOwnerScope(
+            SyncOperationOwnerBoundary owner)
+        => new(
+            TenantScopeCatalog
+                .GetDatabaseName(owner.BusinessDatabaseName)
+                .ToUpperInvariant(),
+            TenantScopeCatalog
+                .NormalizeTenantCodeOrDefault(owner.TenantCode)
+                .ToUpperInvariant(),
+            OfficeCodeCatalog
+                .NormalizeOfficeCodeOrDefault(owner.OfficeCode)
+                .ToUpperInvariant(),
+            OfficeCodeCatalog
+                .NormalizeOfficeCodeOrDefault(
+                    owner.BusinessOfficeCode,
+                    owner.OfficeCode)
+                .ToUpperInvariant());
+
+    private static bool DeferredPurgeRecordBelongsToOwner(
+        LocalDeferredRecycleBinPurgeRecord record,
+        DeferredPurgeOwnerScope ownerScope)
+        => string.Equals(
+               record.BusinessDatabaseName,
+               ownerScope.BusinessDatabaseName,
+               StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(
+               record.TenantCode,
+               ownerScope.TenantCode,
+               StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(
+               record.OfficeCode,
+               ownerScope.OfficeCode,
+               StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(
+               record.ResponsibleOfficeCode,
+               ownerScope.ResponsibleOfficeCode,
+               StringComparison.OrdinalIgnoreCase);
+
+    private Task<bool> IsPurgeReceiptSupersededByNewerLocalEntityAsync(
         RecycleBinEntityKind kind,
         Guid entityId,
         long purgeRevision,
         CancellationToken ct)
         => kind switch
         {
-            RecycleBinEntityKind.Customer => HasActiveLocalEntityNewerThanPurgeAsync(_db.Customers, entityId, purgeRevision, ct),
-            RecycleBinEntityKind.CustomerContract => HasActiveLocalEntityNewerThanPurgeAsync(_db.CustomerContracts, entityId, purgeRevision, ct),
-            RecycleBinEntityKind.Item => HasActiveLocalEntityNewerThanPurgeAsync(_db.Items, entityId, purgeRevision, ct),
-            RecycleBinEntityKind.CompanyProfile => HasActiveLocalEntityNewerThanPurgeAsync(_db.CompanyProfiles, entityId, purgeRevision, ct),
-            RecycleBinEntityKind.CustomerCategory => HasActiveLocalEntityNewerThanPurgeAsync(_db.CustomerCategories, entityId, purgeRevision, ct),
-            RecycleBinEntityKind.PriceGradeOption => HasActiveLocalEntityNewerThanPurgeAsync(_db.PriceGradeOptions, entityId, purgeRevision, ct),
-            RecycleBinEntityKind.TradeTypeOption => HasActiveLocalEntityNewerThanPurgeAsync(_db.TradeTypeOptions, entityId, purgeRevision, ct),
-            RecycleBinEntityKind.ItemCategoryOption => HasActiveLocalEntityNewerThanPurgeAsync(_db.ItemCategoryOptions, entityId, purgeRevision, ct),
-            RecycleBinEntityKind.Invoice => HasActiveLocalEntityNewerThanPurgeAsync(_db.Invoices, entityId, purgeRevision, ct),
-            RecycleBinEntityKind.Payment => HasActiveLocalEntityNewerThanPurgeAsync(_db.Payments, entityId, purgeRevision, ct),
-            RecycleBinEntityKind.Transaction => HasActiveLocalEntityNewerThanPurgeAsync(_db.Transactions, entityId, purgeRevision, ct),
-            RecycleBinEntityKind.InventoryTransfer => HasActiveLocalEntityNewerThanPurgeAsync(_db.InventoryTransfers, entityId, purgeRevision, ct),
-            RecycleBinEntityKind.RentalManagementCompany => HasActiveLocalEntityNewerThanPurgeAsync(_db.RentalManagementCompanies, entityId, purgeRevision, ct),
-            RecycleBinEntityKind.RentalBillingProfile => HasActiveLocalEntityNewerThanPurgeAsync(_db.RentalBillingProfiles, entityId, purgeRevision, ct),
-            RecycleBinEntityKind.RentalAsset => HasActiveLocalEntityNewerThanPurgeAsync(_db.RentalAssets, entityId, purgeRevision, ct),
-            RecycleBinEntityKind.RentalBillingLog => HasActiveLocalEntityNewerThanPurgeAsync(_db.RentalBillingLogs, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.Customer => HasLocalEntityNewerThanPurgeAsync(_db.Customers, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.CustomerContract => HasLocalEntityNewerThanPurgeAsync(_db.CustomerContracts, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.Item => HasLocalEntityNewerThanPurgeAsync(_db.Items, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.CompanyProfile => HasLocalEntityNewerThanPurgeAsync(_db.CompanyProfiles, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.CustomerCategory => HasLocalEntityNewerThanPurgeAsync(_db.CustomerCategories, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.PriceGradeOption => HasLocalEntityNewerThanPurgeAsync(_db.PriceGradeOptions, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.TradeTypeOption => HasLocalEntityNewerThanPurgeAsync(_db.TradeTypeOptions, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.ItemCategoryOption => HasLocalEntityNewerThanPurgeAsync(_db.ItemCategoryOptions, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.Invoice => HasLocalEntityNewerThanPurgeAsync(_db.Invoices, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.Payment => HasLocalEntityNewerThanPurgeAsync(_db.Payments, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.Transaction => HasLocalEntityNewerThanPurgeAsync(_db.Transactions, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.InventoryTransfer => HasLocalEntityNewerThanPurgeAsync(_db.InventoryTransfers, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.RentalManagementCompany => HasLocalEntityNewerThanPurgeAsync(_db.RentalManagementCompanies, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.RentalBillingProfile => HasLocalEntityNewerThanPurgeAsync(_db.RentalBillingProfiles, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.RentalAsset => HasLocalEntityNewerThanPurgeAsync(_db.RentalAssets, entityId, purgeRevision, ct),
+            RecycleBinEntityKind.RentalBillingLog => HasLocalEntityNewerThanPurgeAsync(_db.RentalBillingLogs, entityId, purgeRevision, ct),
             _ => Task.FromResult(false)
         };
 
-    private static Task<bool> HasActiveLocalEntityNewerThanPurgeAsync<TEntity>(
+    private static Task<bool> HasLocalEntityNewerThanPurgeAsync<TEntity>(
         DbSet<TEntity> set,
         Guid entityId,
         long purgeRevision,
@@ -9257,12 +19511,126 @@ public sealed class SyncService : IDisposable
         where TEntity : class, ILocalSyncEntity
         => set.IgnoreQueryFilters().AnyAsync(entity =>
             entity.Id == entityId &&
-            !entity.IsDeleted &&
             entity.Revision > purgeRevision,
             ct);
 
+    private Task<bool> IsPurgeTargetDirtyAsync(
+        RecycleBinEntityKind kind,
+        Guid entityId,
+        CancellationToken ct)
+        => kind switch
+        {
+            RecycleBinEntityKind.Customer => HasDirtyLocalEntityAsync(_db.Customers, entityId, ct),
+            RecycleBinEntityKind.CustomerContract => HasDirtyLocalEntityAsync(_db.CustomerContracts, entityId, ct),
+            RecycleBinEntityKind.Item => HasDirtyLocalEntityAsync(_db.Items, entityId, ct),
+            RecycleBinEntityKind.CompanyProfile => HasDirtyLocalEntityAsync(_db.CompanyProfiles, entityId, ct),
+            RecycleBinEntityKind.CustomerCategory => HasDirtyLocalEntityAsync(_db.CustomerCategories, entityId, ct),
+            RecycleBinEntityKind.PriceGradeOption => HasDirtyLocalEntityAsync(_db.PriceGradeOptions, entityId, ct),
+            RecycleBinEntityKind.TradeTypeOption => HasDirtyLocalEntityAsync(_db.TradeTypeOptions, entityId, ct),
+            RecycleBinEntityKind.ItemCategoryOption => HasDirtyLocalEntityAsync(_db.ItemCategoryOptions, entityId, ct),
+            RecycleBinEntityKind.Invoice => HasDirtyLocalEntityAsync(_db.Invoices, entityId, ct),
+            RecycleBinEntityKind.Payment => HasDirtyLocalEntityAsync(_db.Payments, entityId, ct),
+            RecycleBinEntityKind.Transaction => HasDirtyLocalEntityAsync(_db.Transactions, entityId, ct),
+            RecycleBinEntityKind.InventoryTransfer => HasDirtyLocalEntityAsync(_db.InventoryTransfers, entityId, ct),
+            RecycleBinEntityKind.RentalManagementCompany => HasDirtyLocalEntityAsync(_db.RentalManagementCompanies, entityId, ct),
+            RecycleBinEntityKind.RentalBillingProfile => HasDirtyLocalEntityAsync(_db.RentalBillingProfiles, entityId, ct),
+            RecycleBinEntityKind.RentalAsset => HasDirtyLocalEntityAsync(_db.RentalAssets, entityId, ct),
+            RecycleBinEntityKind.RentalBillingLog => HasDirtyLocalEntityAsync(_db.RentalBillingLogs, entityId, ct),
+            _ => Task.FromResult(false)
+        };
+
+    private static Task<bool> HasDirtyLocalEntityAsync<TEntity>(
+        DbSet<TEntity> set,
+        Guid entityId,
+        CancellationToken ct)
+        where TEntity : class, ILocalSyncEntity
+        => set.IgnoreQueryFilters().AnyAsync(entity =>
+            entity.Id == entityId &&
+            entity.IsDirty,
+            ct);
+
+    private async Task<bool> HasPendingPurgeTargetOutboxAsync(
+        RecycleBinEntityKind kind,
+        Guid entityId,
+        DeferredPurgeOwnerScope ownerScope,
+        CancellationToken ct)
+    {
+        var allowedEntityNames = GetPurgeOutboxEntityNames(kind);
+        if (allowedEntityNames.Count == 0)
+            return false;
+
+        var candidates = await _db.SyncOutboxEntries
+            .AsNoTracking()
+            .Where(current =>
+                current.EntityId == entityId &&
+                current.Status != "Acknowledged")
+            .ToListAsync(ct);
+        return candidates.Any(current =>
+            allowedEntityNames.Contains(
+                current.EntityName,
+                StringComparer.OrdinalIgnoreCase) &&
+            PurgeOutboxBelongsToOwner(current, ownerScope));
+    }
+
+    private static bool PurgeOutboxBelongsToOwner(
+        LocalSyncOutboxEntry entry,
+        DeferredPurgeOwnerScope ownerScope)
+    {
+        if (!string.IsNullOrWhiteSpace(entry.BusinessDatabaseName))
+        {
+            return string.Equals(
+                TenantScopeCatalog.GetDatabaseName(
+                    entry.BusinessDatabaseName),
+                ownerScope.BusinessDatabaseName,
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        return string.Equals(
+                   NormalizeOutboxScopeText(entry.TenantCode),
+                   ownerScope.TenantCode,
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(
+                   NormalizeOutboxScopeText(entry.OfficeCode),
+                   ownerScope.OfficeCode,
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(
+                   NormalizeOutboxScopeText(
+                       entry.ResponsibleOfficeCode),
+                   ownerScope.ResponsibleOfficeCode,
+                   StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static IReadOnlyList<string> GetPurgeOutboxEntityNames(
+        RecycleBinEntityKind kind)
+        => kind switch
+        {
+            RecycleBinEntityKind.Customer => [nameof(LocalCustomer), "Customer"],
+            RecycleBinEntityKind.CustomerContract => [nameof(LocalCustomerContract), "CustomerContract"],
+            RecycleBinEntityKind.Item => [nameof(LocalItem), "Item"],
+            RecycleBinEntityKind.CompanyProfile => [nameof(LocalCompanyProfile), "CompanyProfile"],
+            RecycleBinEntityKind.CustomerCategory => [nameof(LocalCustomerCategory), "CustomerCategory"],
+            RecycleBinEntityKind.PriceGradeOption => [nameof(LocalPriceGradeOption), "PriceGradeOption"],
+            RecycleBinEntityKind.TradeTypeOption => [nameof(LocalTradeTypeOption), "TradeTypeOption"],
+            RecycleBinEntityKind.ItemCategoryOption => [nameof(LocalItemCategoryOption), "ItemCategoryOption"],
+            RecycleBinEntityKind.Invoice => [nameof(LocalInvoice), "Invoice"],
+            RecycleBinEntityKind.Payment => [nameof(LocalPayment), "Payment"],
+            RecycleBinEntityKind.Transaction => [nameof(LocalTransaction), "TransactionRecord", "Transaction"],
+            RecycleBinEntityKind.InventoryTransfer => [nameof(LocalInventoryTransfer), "InventoryTransfer"],
+            RecycleBinEntityKind.RentalManagementCompany => [nameof(LocalRentalManagementCompany), "RentalManagementCompany"],
+            RecycleBinEntityKind.RentalBillingProfile => [nameof(LocalRentalBillingProfile), "RentalBillingProfile"],
+            RecycleBinEntityKind.RentalAsset => [nameof(LocalRentalAsset), "RentalAsset"],
+            RecycleBinEntityKind.RentalBillingLog => [nameof(LocalRentalBillingLog), "RentalBillingLog"],
+            _ => []
+        };
+
     private static string NormalizePurgeRecordKind(string? value)
         => (value ?? string.Empty).Trim().ToLowerInvariant();
+
+    internal static bool IsInvoicePurgeRecordKind(string? kind)
+        => TryParseRecycleBinEntityKind(
+               NormalizePurgeRecordKind(kind),
+               out var entityKind) &&
+           entityKind == RecycleBinEntityKind.Invoice;
 
     private static int GetPurgeApplyOrder(string normalizedKind)
         => normalizedKind switch
@@ -9375,32 +19743,238 @@ public sealed class SyncService : IDisposable
                || string.Equals(raw, "yes", StringComparison.OrdinalIgnoreCase);
     }
 
-    public void Dispose()
+    public Task StopAndDrainAsync()
     {
-        if (_disposed)
-            return;
-
-        _disposed = true;
-        _administrativeBusinessCacheRefreshLock.Dispose();
-        if (_dispatcherSubscribed)
-        {
-            _dispatcher.SyncRequested -= HandleSyncRequested;
-            _dispatcherSubscribed = false;
-        }
-        _timer?.Dispose();
-
         lock (_immediateSyncGate)
         {
-            _immediateSyncCts?.Cancel();
+            if (_stopAndDrainTask is not null)
+                return _stopAndDrainTask;
+
+            var completion = new TaskCompletionSource(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _stopAndDrainTask = completion.Task;
+            _stopping = true;
+            _resyncRequested = false;
+            _flushRequested = false;
+
+            var stopErrors = new List<Exception>();
+
+            if (_compatibilityRuntime is not null)
+            {
+                _compatibilityRuntime.MutationAvailabilityChanged -=
+                    HandleMutationAvailabilityChanged;
+            }
+
+            CancelForStop(_immediateSyncCts, stopErrors);
+            CancelForStop(_transientFailureRetryCts, stopErrors);
+            CancelForStop(_compatibilityBlockCts, stopErrors);
+            CancelForStop(_runtimeStopCts, stopErrors);
+
+            if (_dispatcherSubscribed)
+            {
+                _dispatcher.SyncRequested -= HandleSyncRequested;
+                _dispatcherSubscribed = false;
+            }
+
+            var timer = _timer;
+            _timer = null;
+            _ = CompleteStopAndDrainAsync(timer, stopErrors, completion);
+            return _stopAndDrainTask;
+        }
+    }
+
+    private static void CancelForStop(
+        CancellationTokenSource? cancellation,
+        ICollection<Exception> errors)
+    {
+        if (cancellation is null)
+            return;
+
+        try
+        {
+            cancellation.Cancel();
+        }
+        catch (Exception ex)
+        {
+            // Cancel() invokes every registered callback before reporting an
+            // aggregate failure. Preserve that failure while continuing the
+            // remaining stop steps and background-task drain.
+            errors.Add(ex);
+        }
+    }
+
+    private async Task CompleteStopAndDrainAsync(
+        Timer? timer,
+        IReadOnlyCollection<Exception> stopErrors,
+        TaskCompletionSource completion)
+    {
+        try
+        {
+            await StopAndDrainCoreAsync(timer).ConfigureAwait(false);
+            if (stopErrors.Count > 0)
+            {
+                AppLogger.Error(
+                    "SYNC",
+                    "One or more synchronization stop callbacks failed after cancellation was requested. All registered background work was still drained.",
+                    new AggregateException(stopErrors));
+            }
+
+            completion.TrySetResult();
+        }
+        catch (Exception ex)
+        {
+            completion.TrySetException(ex);
+        }
+    }
+
+    private async Task StopAndDrainCoreAsync(Timer? timer)
+    {
+        if (timer is not null)
+            await timer.DisposeAsync().ConfigureAwait(false);
+
+        while (true)
+        {
+            Task[] pendingTasks;
+            lock (_immediateSyncGate)
+            {
+                _observedBackgroundTasks.RemoveWhere(
+                    static task => task.IsCompleted);
+                if (_observedBackgroundTasks.Count == 0)
+                    return;
+
+                pendingTasks = [.. _observedBackgroundTasks];
+            }
+
+            try
+            {
+                await Task.WhenAll(pendingTasks).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // Observation tasks own detailed error reporting. A faulted generation is
+                // still complete, so keep looping until no later generation remains.
+                AppLogger.Warn(
+                    "SYNC",
+                    $"동기화 백그라운드 작업 오류를 관찰하고 drain을 계속합니다: {ex.Message}");
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        Task drainTask;
+        lock (_immediateSyncGate)
+        {
+            if (_disposeRequested)
+                return;
+
+            _disposeRequested = true;
+            drainTask = StopAndDrainAsync();
+        }
+
+        if (drainTask.IsCompletedSuccessfully)
+        {
+            ReleaseResourcesAfterDrain();
+            return;
+        }
+
+        _ = drainTask.ContinueWith(
+            static (_, state) =>
+                ((SyncService)state!).ReleaseResourcesAfterDrain(),
+            this,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously |
+            TaskContinuationOptions.OnlyOnRanToCompletion,
+            TaskScheduler.Default);
+    }
+
+    private void ReleaseResourcesAfterDrain()
+    {
+        lock (_immediateSyncGate)
+        {
+            if (_disposed)
+                return;
+
+            _disposed = true;
             _immediateSyncCts?.Dispose();
             _immediateSyncCts = null;
-            _transientFailureRetryCts?.Cancel();
             _transientFailureRetryCts?.Dispose();
             _transientFailureRetryCts = null;
             _currentSyncTask = null;
+            _compatibilityBlockCts.Dispose();
+            _runtimeStopCts.Dispose();
+            _administrativeBusinessCacheRefreshLock.Dispose();
+        }
+    }
+
+    private bool CanRunServerMutation()
+        => _compatibilityRuntime?.CanMutate != false;
+
+    private CancellationTokenSource?
+        CreateCompatibilityLinkedTokenSource(
+            CancellationToken callerToken)
+    {
+        lock (_immediateSyncGate)
+        {
+            if (_disposed || _stopping)
+                return null;
+
+            return CancellationTokenSource
+                .CreateLinkedTokenSource(
+                    callerToken,
+                    _compatibilityBlockCts.Token,
+                    _runtimeStopCts.Token);
+        }
+    }
+
+    private void HandleMutationAvailabilityChanged(
+        bool canMutate)
+    {
+        if (!canMutate)
+        {
+            CancelForCompatibilityBlock();
+            return;
+        }
+
+        lock (_immediateSyncGate)
+        {
+            if (_disposed || _stopping)
+                return;
+
+            if (_compatibilityBlockCts
+                .IsCancellationRequested)
+            {
+                _compatibilityBlockCts.Dispose();
+                _compatibilityBlockCts =
+                    new CancellationTokenSource();
+            }
+        }
+    }
+
+    public void CancelForCompatibilityBlock()
+    {
+        lock (_immediateSyncGate)
+        {
+            if (_disposed || _stopping)
+                return;
+
+            if (_timer is not null)
+            {
+                ObserveBackgroundTask(
+                    _timer.DisposeAsync().AsTask(),
+                    "호환성 차단 타이머 종료");
+                _timer = null;
+            }
+
+            _compatibilityBlockCts.Cancel();
+            _immediateSyncCts?.Cancel();
+            _transientFailureRetryCts?.Cancel();
             _resyncRequested = false;
             _flushRequested = false;
         }
+
+        SetStatus(
+            "필수 PC 업데이트가 확인되어 동기화가 차단되었습니다. 미동기화 변경은 보존됩니다.");
     }
 
     private async Task TryRecordDiagnosticAsync(

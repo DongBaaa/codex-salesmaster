@@ -10,6 +10,7 @@ public sealed class TenantDatabaseRoutingOptions
     public string SqliteDbPath { get; init; } = string.Empty;
     public string DefaultConnectionString { get; init; } = string.Empty;
     public IReadOnlyDictionary<string, string> DedicatedBusinessConnections { get; init; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    public IReadOnlyCollection<string> RequiredDedicatedTenantCodes { get; init; } = [];
 }
 
 public sealed class TenantDatabaseConnectionResolver : ITenantDatabaseConnectionResolver
@@ -69,7 +70,7 @@ public sealed class TenantDatabaseConnectionResolver : ITenantDatabaseConnection
         var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(tenantCode);
         if (_routingOptions.DedicatedBusinessConnections.TryGetValue(normalizedTenantCode, out var dedicatedConnectionString) &&
             !string.IsNullOrWhiteSpace(dedicatedConnectionString) &&
-            !string.Equals(dedicatedConnectionString, _routingOptions.DefaultConnectionString, StringComparison.OrdinalIgnoreCase))
+            !UsesCentralPhysicalDatabase(dedicatedConnectionString))
         {
             return new TenantDatabaseConnectionInfo
             {
@@ -79,6 +80,16 @@ public sealed class TenantDatabaseConnectionResolver : ITenantDatabaseConnection
                 IsControlPlane = false,
                 IsDedicatedBusinessDatabase = true
             };
+        }
+
+        if (_routingOptions.RequiredDedicatedTenantCodes.Any(
+                requiredTenantCode => string.Equals(
+                    TenantScopeCatalog.NormalizeTenantCodeOrDefault(requiredTenantCode),
+                    normalizedTenantCode,
+                    StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException(
+                $"Tenant '{normalizedTenantCode}' requires a dedicated business database connection.");
         }
 
         return new TenantDatabaseConnectionInfo
@@ -92,19 +103,68 @@ public sealed class TenantDatabaseConnectionResolver : ITenantDatabaseConnection
     }
 
     public IReadOnlyList<TenantDatabaseConnectionInfo> GetDedicatedBusinessConnections()
-        => _routingOptions.UseSqlite
-            ? []
-            : _routingOptions.DedicatedBusinessConnections
-                .Where(pair => !string.IsNullOrWhiteSpace(pair.Value) && !string.Equals(pair.Value, _routingOptions.DefaultConnectionString, StringComparison.OrdinalIgnoreCase))
-                .Select(pair => new TenantDatabaseConnectionInfo
-                {
-                    UseSqlite = false,
-                    ConnectionString = pair.Value,
-                    TenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(pair.Key),
-                    IsControlPlane = false,
-                    IsDedicatedBusinessDatabase = true
-                })
-                .ToList();
+    {
+        if (_routingOptions.UseSqlite)
+            return [];
+
+        var connections = new List<TenantDatabaseConnectionInfo>();
+        foreach (var pair in _routingOptions.DedicatedBusinessConnections)
+        {
+            if (string.IsNullOrWhiteSpace(pair.Value))
+            {
+                throw new InvalidOperationException(
+                    $"Dedicated business database connection is empty for tenant '{pair.Key}'.");
+            }
+
+            if (UsesCentralPhysicalDatabase(pair.Value))
+            {
+                continue;
+            }
+
+            connections.Add(new TenantDatabaseConnectionInfo
+            {
+                UseSqlite = false,
+                ConnectionString = pair.Value,
+                TenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(pair.Key),
+                IsControlPlane = false,
+                IsDedicatedBusinessDatabase = true
+            });
+        }
+
+        foreach (var requiredTenantCode in _routingOptions.RequiredDedicatedTenantCodes)
+        {
+            var normalizedRequiredTenantCode =
+                TenantScopeCatalog.NormalizeTenantCodeOrDefault(requiredTenantCode);
+            if (!connections.Any(connection => string.Equals(
+                    connection.TenantCode,
+                    normalizedRequiredTenantCode,
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException(
+                    $"Tenant '{normalizedRequiredTenantCode}' requires a dedicated business database connection.");
+            }
+        }
+
+        return connections;
+    }
+
+    private bool UsesCentralPhysicalDatabase(string candidateConnectionString)
+    {
+        if (string.IsNullOrWhiteSpace(_routingOptions.DefaultConnectionString))
+            throw new InvalidOperationException("Central database connection is empty.");
+
+        var centralIdentity = PhysicalDatabaseIdentity.FromConnectionInfo(new TenantDatabaseConnectionInfo
+        {
+            UseSqlite = false,
+            ConnectionString = _routingOptions.DefaultConnectionString
+        });
+        var candidateIdentity = PhysicalDatabaseIdentity.FromConnectionInfo(new TenantDatabaseConnectionInfo
+        {
+            UseSqlite = false,
+            ConnectionString = candidateConnectionString
+        });
+        return string.Equals(centralIdentity, candidateIdentity, StringComparison.Ordinal);
+    }
 
     private TenantDatabaseConnectionInfo ResolveSqlite()
         => new()

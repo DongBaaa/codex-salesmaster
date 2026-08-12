@@ -7,7 +7,9 @@
         Title="첨부서류 선택"
         Width="760"
         Height="560"
-        ResizeMode="NoResize"
+        MinWidth="640"
+        MinHeight="400"
+        ResizeMode="CanResize"
         WindowStartupLocation="CenterOwner"
         Background="#151F2E">
     <Window.Resources>
@@ -36,7 +38,13 @@
         <Border Grid.Row="0" Background="#1A2B4A" Padding="16,14" CornerRadius="6">
             <StackPanel>
                 <TextBlock Text="대금청구서 첨부서류 선택" Foreground="#EAF2FF" FontFamily="맑은 고딕" FontSize="20" FontWeight="Bold"/>
-                <TextBlock Text="{Binding StatusMessage}" Foreground="#A7D1FF" FontFamily="맑은 고딕" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                <TextBlock Text="{Binding StatusMessage}"
+                           Foreground="#A7D1FF"
+                           FontFamily="맑은 고딕"
+                           Margin="0,6,0,0"
+                           TextWrapping="NoWrap"
+                           TextTrimming="CharacterEllipsis"
+                           ToolTip="{Binding StatusMessage}"/>
             </StackPanel>
         </Border>
 
@@ -47,8 +55,13 @@
                 BorderThickness="1"
                 Background="#1A2B4A"
                 CornerRadius="6">
-            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                <ItemsControl ItemsSource="{Binding Items}">
+            <ScrollViewer x:Name="AttachmentSelectionItemsScrollViewer"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Auto">
+                <ItemsControl x:Name="AttachmentSelectionItemsContent"
+                              MinWidth="520"
+                              Width="{Binding ViewportWidth, ElementName=AttachmentSelectionItemsScrollViewer}"
+                              ItemsSource="{Binding Items}">
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>
                             <UniformGrid Columns="2"/>
@@ -84,7 +97,8 @@
             </ScrollViewer>
         </Border>
 
-        <Border Grid.Row="2"
+        <Border x:Name="AttachmentSelectionFooter"
+                Grid.Row="2"
                 Background="#122038"
                 BorderBrush="#2E4060"
                 BorderThickness="1"
@@ -101,7 +115,11 @@
                            Foreground="#90CAF9"
                            FontFamily="맑은 고딕"
                            FontSize="13"
-                           VerticalAlignment="Center"/>
+                           Margin="0,0,10,0"
+                           VerticalAlignment="Center"
+                           TextWrapping="NoWrap"
+                           TextTrimming="CharacterEllipsis"
+                           ToolTip="체크한 순서가 인쇄 순서로 반영됩니다."/>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                     <Button Content="순서 초기화"
                             Style="{StaticResource TradePlanSecondaryButtonStyle}"

@@ -21,6 +21,7 @@ public partial class CustomerEditWindow : Window
     public CustomerEditWindow(CustomerEditViewModel vm)
     {
         InitializeComponent();
+        ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(this);
         _vm = vm;
         DataContext = vm;
         Closing += Window_Closing;

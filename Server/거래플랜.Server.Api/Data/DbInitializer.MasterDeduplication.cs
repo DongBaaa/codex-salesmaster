@@ -61,7 +61,27 @@ public static partial class DbInitializer
         var rentalAssets = await dbContext.RentalAssets.IgnoreQueryFilters().ToListAsync(cancellationToken);
         var rentalBillingProfiles = await dbContext.RentalBillingProfiles.IgnoreQueryFilters().ToListAsync(cancellationToken);
         var itemWarehouseStocks = await dbContext.ItemWarehouseStocks.ToListAsync(cancellationToken);
+        var nonDeletedItemPriceGradeItemIds = (await dbContext.ItemPriceGrades.IgnoreQueryFilters()
+                .Where(current => !current.IsDeleted)
+                .Select(current => current.ItemId)
+                .Distinct()
+                .ToListAsync(cancellationToken))
+            .ToHashSet();
         var inventoryTransferLines = await dbContext.InventoryTransferLines.IgnoreQueryFilters().ToListAsync(cancellationToken);
+        var inventoryLedgerItemIds = (await dbContext.InventoryLedgerEntries
+                .Select(current => current.ItemId)
+                .Distinct()
+                .ToListAsync(cancellationToken))
+            .ToHashSet();
+        var activeEditItemIdTexts = await dbContext.ActiveEditSessions
+            .Where(current => current.EntityType == nameof(Item) && current.ExpiresAtUtc > DateTime.UtcNow)
+            .Select(current => current.EntityId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        var activelyEditedItemIds = activeEditItemIdTexts
+            .Select(current => Guid.TryParse(current, out var itemId) ? itemId : Guid.Empty)
+            .Where(current => current != Guid.Empty)
+            .ToHashSet();
 
         var invoiceLineCounts = invoiceLines.Where(current => current.ItemId.HasValue && current.ItemId.Value != Guid.Empty)
             .GroupBy(current => current.ItemId!.Value)
@@ -75,10 +95,19 @@ public static partial class DbInitializer
             .GroupBy(current => current.ItemId!.Value)
             .ToDictionary(group => group.Key, group => group.Count());
         var rentalBillingTemplateCounts = CountRentalBillingTemplateItemReferences(rentalBillingProfiles);
+        var itemIdsWithAnyWarehouseStock = itemWarehouseStocks
+            .Select(current => current.ItemId)
+            .ToHashSet();
 
         var groups = items
             .GroupBy(BuildItemDuplicateKey, StringComparer.Ordinal)
             .Where(group => !string.IsNullOrWhiteSpace(group.Key) && group.Count() > 1)
+            .Where(group => CanAutoMergeItemGroup(
+                group.ToList(),
+                itemIdsWithAnyWarehouseStock,
+                nonDeletedItemPriceGradeItemIds,
+                inventoryLedgerItemIds,
+                activelyEditedItemIds))
             .ToList();
         if (groups.Count == 0)
             return;
@@ -97,6 +126,16 @@ public static partial class DbInitializer
                 .ThenByDescending(current => current.UpdatedAtUtc)
                 .ThenBy(current => current.Id)
                 .First();
+
+            var duplicateIds = group
+                .Where(current => current.Id != canonical.Id)
+                .Select(current => current.Id)
+                .ToList();
+            if (duplicateIds.Any(current => invoiceLineCounts.GetValueOrDefault(current) > 0 ||
+                                            inventoryTransferLineCounts.GetValueOrDefault(current) > 0))
+            {
+                continue;
+            }
 
             var warehouseLookup = itemWarehouseStocks
                 .Where(current => current.ItemId == canonical.Id)
@@ -144,7 +183,11 @@ public static partial class DbInitializer
                     dbContext.ItemWarehouseStocks.Remove(stock);
                 }
 
-                dbContext.Items.Remove(duplicate);
+                // Startup maintenance must remain visible to clients that already pulled
+                // the duplicate. A physical delete has no row/revision for incremental
+                // sync, so publish a normal item tombstone instead.
+                duplicate.IsDeleted = true;
+                TouchTrackedEntity(duplicate, now);
             }
         }
     }
@@ -272,6 +315,8 @@ public static partial class DbInitializer
             BuildStrictTextKey(current.ItemKind),
             BuildStrictTextKey(current.TrackingType),
             BuildStrictTextKey(current.Unit),
+            BuildDecimalKey(current.BoxQuantity),
+            BuildStrictTextKey(current.StorageLocation),
             BuildDecimalKey(current.CurrentStock),
             BuildDecimalKey(current.SafetyStock),
             BuildDecimalKey(current.PurchasePrice),
@@ -280,6 +325,8 @@ public static partial class DbInitializer
             BuildDecimalKey(current.PriceGradeA),
             BuildDecimalKey(current.PriceGradeB),
             BuildDecimalKey(current.PriceGradeC),
+            BuildDateKey(current.LastPurchaseDate),
+            BuildDateKey(current.LastSaleDate),
             BuildStrictTextKey(current.SimpleMemo),
             BuildBooleanKey(current.IsRental),
             BuildBooleanKey(current.IsSale),
@@ -291,6 +338,68 @@ public static partial class DbInitializer
             string.Equals(current.SimpleMemo, AutoCreatedRentalItemMemo, StringComparison.Ordinal)
                 ? string.Empty
                 : BuildStrictTextKey(current.Notes));
+
+    private static bool CanAutoMergeItemGroup(
+        IReadOnlyCollection<Item> group,
+        IReadOnlySet<Guid> itemIdsWithAnyWarehouseStock,
+        IReadOnlySet<Guid> nonDeletedItemPriceGradeItemIds,
+        IReadOnlySet<Guid> inventoryLedgerItemIds,
+        IReadOnlySet<Guid> activelyEditedItemIds)
+    {
+        if (group.Count <= 1)
+            return false;
+
+        if (group.Any(current => current.CurrentStock != 0m ||
+                                 itemIdsWithAnyWarehouseStock.Contains(current.Id) ||
+                                 nonDeletedItemPriceGradeItemIds.Contains(current.Id) ||
+                                 inventoryLedgerItemIds.Contains(current.Id) ||
+                                 activelyEditedItemIds.Contains(current.Id)))
+        {
+            return false;
+        }
+
+        var first = group.First();
+        return group.Skip(1).All(current => HaveEquivalentItemMergeSemantics(first, current));
+    }
+
+    private static bool HaveEquivalentItemMergeSemantics(Item left, Item right)
+        => TextEquals(left.TenantCode, right.TenantCode)
+           && TextEquals(left.OfficeCode, right.OfficeCode)
+           && TextEquals(left.NameOriginal, right.NameOriginal)
+           && TextEquals(left.NameMatchKey, right.NameMatchKey)
+           && TextEquals(left.SpecificationOriginal, right.SpecificationOriginal)
+           && TextEquals(left.SpecificationMatchKey, right.SpecificationMatchKey)
+           && TextEquals(left.CategoryName, right.CategoryName)
+           && TextEquals(left.ItemKind, right.ItemKind)
+           && TextEquals(left.TrackingType, right.TrackingType)
+           && TextEquals(left.Unit, right.Unit)
+           && left.BoxQuantity == right.BoxQuantity
+           && TextEquals(left.StorageLocation, right.StorageLocation)
+           && left.CurrentStock == right.CurrentStock
+           && left.SafetyStock == right.SafetyStock
+           && left.PurchasePrice == right.PurchasePrice
+           && left.SalePrice == right.SalePrice
+           && left.RetailPrice == right.RetailPrice
+           && left.PriceGradeA == right.PriceGradeA
+           && left.PriceGradeB == right.PriceGradeB
+           && left.PriceGradeC == right.PriceGradeC
+           && left.LastPurchaseDate == right.LastPurchaseDate
+           && left.LastSaleDate == right.LastSaleDate
+           && TextEquals(left.SimpleMemo, right.SimpleMemo)
+           && left.IsRental == right.IsRental
+           && left.IsSale == right.IsSale
+           && TextEquals(left.SerialNumber, right.SerialNumber)
+           && TextEquals(left.MaterialNumber, right.MaterialNumber)
+           && TextEquals(left.InstallLocation, right.InstallLocation)
+           && left.RentalStartDate == right.RentalStartDate
+           && left.RentalEndDate == right.RentalEndDate
+           && TextEquals(left.Notes, right.Notes);
+
+    private static bool TextEquals(string? left, string? right)
+        => string.Equals(
+            (left ?? string.Empty).Trim(),
+            (right ?? string.Empty).Trim(),
+            StringComparison.OrdinalIgnoreCase);
 
     private static string BuildBusinessDuplicateCustomerKey(Customer current)
     {

@@ -1,5 +1,7 @@
 using System.ComponentModel;
 
+using System.IO;
+
 using System.Threading;
 
 using System.Windows;
@@ -17,6 +19,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 using Microsoft.EntityFrameworkCore;
+using 거래플랜.Shared.Contracts;
 
 using 거래플랜.Desktop.App.Configuration;
 
@@ -48,9 +51,14 @@ public partial class App : Application
 
     private ServiceProvider? _services;
 
+    private SingleInstanceGuard? _singleInstanceGuard;
+
+    private InstallRootUpdateGate? _installRootUpdateGate;
+
     private bool _shutdownInProgress;
 
     private readonly SemaphoreSlim _saveCycleLock = new(1, 1);
+    private readonly SemaphoreSlim _mainWindowShutdownCoordinatorLock = new(1, 1);
 
     public static T? TryGetService<T>() where T : class
     {
@@ -67,12 +75,33 @@ public partial class App : Application
     private bool _restartToLoginRequested;
 
     private bool _updateShutdownRequested;
+    private int _compatibilityWindowOpen;
+    private CancellationTokenSource? _mainScopeLifetimeCts;
+    private Task _postLoginCompletionTask = Task.CompletedTask;
+    private bool _postLoginDrainCompleted = true;
+    private bool _postLoginWorkNeedsResumeAfterCanceledShutdown;
+    private bool _postLoginDrainCloseQueued;
+    private IServiceProvider? _activeMainScopeServiceProvider;
+    private MainViewModel? _activeMainViewModel;
+    private bool _coordinatedMainWindowCloseReady;
+    private bool _fatalStartupShutdownRequested;
+    private bool _runtimeCompatibilityShutdownRequested;
+    private int _requestedShutdownExitCode;
 
 
 
     internal void RequestRestartToLogin()
 
-        => _restartToLoginRequested = true;
+    {
+
+        _restartToLoginRequested = true;
+
+        _coordinatedMainWindowCloseReady = false;
+        _requestedShutdownExitCode = 0;
+
+        CancelMainScopeBackgroundWork();
+
+    }
 
 
 
@@ -122,9 +151,14 @@ public partial class App : Application
 
         _updateShutdownRequested = true;
 
+        _coordinatedMainWindowCloseReady = false;
+        _requestedShutdownExitCode = 0;
+
         _shutdownInProgress = true;
 
         _autoSaveTimer?.Stop();
+
+        CancelMainScopeBackgroundWork();
 
         AppLogger.Info("UPDATE", "업데이트 적용을 위해 앱 종료를 시작합니다. 업데이트 준비 단계에서 dirty 동기화는 이미 완료되었습니다.");
 
@@ -134,26 +168,13 @@ public partial class App : Application
 
         {
 
-            if (MainWindow is Window mainWindow)
+            if (TryQueueActiveMainWindowShutdown())
+                return;
 
+            if (MainWindow is Window mainWindow && mainWindow.IsLoaded)
             {
-
-                if (mainWindow is MainWindow appWindow)
-
-                    appWindow.BeginShutdownProtection();
-
-
-
-                if (mainWindow.IsLoaded)
-
-                {
-
-                    mainWindow.Close();
-
-                    return;
-
-                }
-
+                mainWindow.Close();
+                return;
             }
 
         }
@@ -164,6 +185,9 @@ public partial class App : Application
 
             AppLogger.Warn("UPDATE", $"업데이트 종료 중 메인 창 닫기 실패: {ex.Message}");
 
+            if (TryRecoverActiveMainWindowAfterCanceledShutdown())
+                return;
+
         }
 
 
@@ -172,17 +196,456 @@ public partial class App : Application
 
     }
 
+    internal static IReadOnlyList<string> GetInstallRecoveryStartupRoots(
+        string appBaseDirectory,
+        string? canonicalInstallRootOverride = null,
+        string? legacyInstallRootOverride = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(appBaseDirectory);
+
+        var appRoot = NormalizeInstallRoot(appBaseDirectory);
+        var canonicalRoot = NormalizeInstallRoot(
+            canonicalInstallRootOverride ??
+            DesktopAppUpdateService.GetCanonicalInstallRoot());
+        var legacyRoot = NormalizeInstallRoot(
+            legacyInstallRootOverride ??
+            GetLegacyInstallRoot());
+
+        if (!string.Equals(appRoot, canonicalRoot, StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(appRoot, legacyRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            return [appRoot];
+        }
+
+        return new[] { canonicalRoot, legacyRoot }
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    internal static string GetLegacyInstallRoot()
+    {
+        var localAppData =
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrWhiteSpace(localAppData))
+        {
+            throw new InvalidOperationException(
+                "Local AppData 경로를 확인하지 못했습니다.");
+        }
+
+        return Path.Combine(localAppData, "Programs", "거래플랜");
+    }
+
+    private static string NormalizeInstallRoot(string installRoot)
+        => InstallRootPathIdentity.Resolve(installRoot);
+
+    internal static string? GetInstallRecoveryStartupBlockMessage(
+        string installRoot,
+        InstallRecoveryStateProbeResult? probeOverride = null)
+    {
+        if (probeOverride is null)
+        {
+            try
+            {
+                var canonicalInstallRoot =
+                    DesktopAppUpdateService.GetCanonicalInstallRoot();
+                var legacyInstallRoot = GetLegacyInstallRoot();
+                var startupRoots = GetInstallRecoveryStartupRoots(
+                    installRoot,
+                    canonicalInstallRoot,
+                    legacyInstallRoot);
+                var legacyInstallRootCandidates =
+                    GetLegacyRollbackInstallRootCandidates(
+                        startupRoots,
+                        [
+                            installRoot,
+                            canonicalInstallRoot,
+                            legacyInstallRoot
+                        ]);
+                legacyInstallRootCandidates =
+                    legacyInstallRootCandidates
+                        .Where(
+                            static pair =>
+                                CanRecoverLegacyInstallRollbackState(
+                                    pair.Key))
+                        .ToDictionary(
+                            static pair => pair.Key,
+                            static pair => pair.Value,
+                            StringComparer.OrdinalIgnoreCase);
+                return GetInstallRecoveryStartupBlockMessage(
+                    startupRoots,
+                    GetLegacyRollbackArtifactRoots(),
+                    legacyInstallRootCandidates,
+                    InstallRecoveryStateProbe.Probe,
+                    LegacyInstallRollbackStateProbe.Probe);
+            }
+            catch (Exception ex)
+            {
+                return GetInstallRecoveryStartupBlockMessage(
+                    new InstallRecoveryStateProbeResult(
+                        InstallRecoveryStateStatus.AccessError,
+                        string.Empty,
+                        ex));
+            }
+        }
+
+        return GetInstallRecoveryStartupBlockMessage(probeOverride);
+    }
+
+    internal static string? GetInstallRecoveryStartupBlockMessage(
+        IReadOnlyList<string> installRoots,
+        Func<string, InstallRecoveryStateProbeResult> probe)
+    {
+        ArgumentNullException.ThrowIfNull(installRoots);
+        ArgumentNullException.ThrowIfNull(probe);
+
+        if (installRoots.Count == 0)
+            throw new ArgumentException("At least one install root is required.", nameof(installRoots));
+
+        foreach (var installRoot in installRoots)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(installRoot);
+
+            InstallRecoveryStateProbeResult result;
+            try
+            {
+                result = probe(installRoot);
+            }
+            catch (Exception ex)
+            {
+                result = new InstallRecoveryStateProbeResult(
+                    InstallRecoveryStateStatus.AccessError,
+                    InstallRecoveryStateProbe.GetStatePath(installRoot),
+                    ex);
+            }
+
+            var blockMessage = GetInstallRecoveryStartupBlockMessage(result);
+            if (!string.IsNullOrWhiteSpace(blockMessage))
+                return blockMessage;
+        }
+
+        return null;
+    }
+
+    internal static string? GetInstallRecoveryStartupBlockMessage(
+        IReadOnlyList<string> installRoots,
+        string legacyRollbackArtifactRoot,
+        Func<string, InstallRecoveryStateProbeResult> generatedStateProbe,
+        Func<string, string, InstallRecoveryStateProbeResult> legacyStateProbe)
+        => GetInstallRecoveryStartupBlockMessage(
+            installRoots,
+            [legacyRollbackArtifactRoot],
+            generatedStateProbe,
+            legacyStateProbe);
+
+    internal static string? GetInstallRecoveryStartupBlockMessage(
+        IReadOnlyList<string> installRoots,
+        IReadOnlyList<string> legacyRollbackArtifactRoots,
+        Func<string, InstallRecoveryStateProbeResult> generatedStateProbe,
+        Func<string, string, InstallRecoveryStateProbeResult> legacyStateProbe)
+        => GetInstallRecoveryStartupBlockMessage(
+            installRoots,
+            legacyRollbackArtifactRoots,
+            installRoots.ToDictionary(
+                static installRoot => installRoot,
+                static installRoot =>
+                    (IReadOnlyList<string>)[installRoot],
+                StringComparer.OrdinalIgnoreCase),
+            generatedStateProbe,
+            legacyStateProbe);
+
+    internal static string? GetInstallRecoveryStartupBlockMessage(
+        IReadOnlyList<string> installRoots,
+        IReadOnlyList<string> legacyRollbackArtifactRoots,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>
+            legacyInstallRootCandidates,
+        Func<string, InstallRecoveryStateProbeResult> generatedStateProbe,
+        Func<string, string, InstallRecoveryStateProbeResult> legacyStateProbe)
+    {
+        ArgumentNullException.ThrowIfNull(installRoots);
+        ArgumentNullException.ThrowIfNull(legacyRollbackArtifactRoots);
+        ArgumentNullException.ThrowIfNull(legacyInstallRootCandidates);
+        ArgumentNullException.ThrowIfNull(generatedStateProbe);
+        ArgumentNullException.ThrowIfNull(legacyStateProbe);
+
+        if (installRoots.Count == 0)
+            throw new ArgumentException("At least one install root is required.", nameof(installRoots));
+        if (legacyRollbackArtifactRoots.Count == 0)
+        {
+            throw new ArgumentException(
+                "At least one legacy rollback artifact root is required.",
+                nameof(legacyRollbackArtifactRoots));
+        }
+
+        foreach (var installRoot in installRoots)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(installRoot);
+
+            var generatedBlockMessage =
+                GetInstallRecoveryStartupBlockMessage(
+                    InvokeInstallRecoveryProbe(
+                        installRoot,
+                        generatedStateProbe));
+            if (!string.IsNullOrWhiteSpace(generatedBlockMessage))
+                return generatedBlockMessage;
+
+            foreach (var legacyRollbackArtifactRoot in
+                     legacyRollbackArtifactRoots)
+            {
+                ArgumentException.ThrowIfNullOrWhiteSpace(
+                    legacyRollbackArtifactRoot);
+
+                if (!legacyInstallRootCandidates.TryGetValue(
+                        installRoot,
+                        out var candidateInstallRoots) ||
+                    candidateInstallRoots.Count == 0)
+                {
+                    continue;
+                }
+
+                foreach (var candidateInstallRoot in
+                         candidateInstallRoots)
+                {
+                    ArgumentException.ThrowIfNullOrWhiteSpace(
+                        candidateInstallRoot);
+
+                    InstallRecoveryStateProbeResult legacyResult;
+                    try
+                    {
+                        legacyResult = legacyStateProbe(
+                            legacyRollbackArtifactRoot,
+                            candidateInstallRoot);
+                    }
+                    catch (Exception ex)
+                    {
+                        legacyResult = new InstallRecoveryStateProbeResult(
+                            InstallRecoveryStateStatus.AccessError,
+                            string.Empty,
+                            ex);
+                    }
+
+                    var legacyBlockMessage =
+                        GetInstallRecoveryStartupBlockMessage(legacyResult);
+                    if (!string.IsNullOrWhiteSpace(legacyBlockMessage))
+                        return legacyBlockMessage;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static InstallRecoveryStateProbeResult InvokeInstallRecoveryProbe(
+        string installRoot,
+        Func<string, InstallRecoveryStateProbeResult> probe)
+    {
+        try
+        {
+            return probe(installRoot);
+        }
+        catch (Exception ex)
+        {
+            string statePath;
+            try
+            {
+                statePath = InstallRecoveryStateProbe.GetStatePath(installRoot);
+            }
+            catch
+            {
+                statePath = string.Empty;
+            }
+
+            return new InstallRecoveryStateProbeResult(
+                InstallRecoveryStateStatus.AccessError,
+                statePath,
+                ex);
+        }
+    }
+
+    internal static IReadOnlyList<string> GetLegacyRollbackArtifactRoots()
+        => LegacyInstallRollbackStateProbe.GetDefaultArtifactRoots();
+
+    internal static IReadOnlyDictionary<string, IReadOnlyList<string>>
+        GetLegacyRollbackInstallRootCandidates(
+            IReadOnlyList<string> physicalInstallRoots,
+            IEnumerable<string> rawInstallRoots)
+    {
+        ArgumentNullException.ThrowIfNull(physicalInstallRoots);
+        ArgumentNullException.ThrowIfNull(rawInstallRoots);
+        if (physicalInstallRoots.Count == 0)
+        {
+            throw new ArgumentException(
+                "At least one physical install root is required.",
+                nameof(physicalInstallRoots));
+        }
+
+        var candidatesByPhysicalRoot =
+            physicalInstallRoots.ToDictionary(
+                static root => NormalizeInstallRoot(root),
+                static root =>
+                    new HashSet<string>(
+                        [NormalizeLegacyInstallRoot(root)],
+                        StringComparer.OrdinalIgnoreCase),
+                StringComparer.OrdinalIgnoreCase);
+        foreach (var rawInstallRoot in rawInstallRoots)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(rawInstallRoot);
+            var legacyInstallRoot =
+                NormalizeLegacyInstallRoot(rawInstallRoot);
+            var physicalInstallRoot =
+                NormalizeInstallRoot(legacyInstallRoot);
+            if (candidatesByPhysicalRoot.TryGetValue(
+                    physicalInstallRoot,
+                    out var candidates))
+            {
+                candidates.Add(legacyInstallRoot);
+            }
+        }
+
+        return candidatesByPhysicalRoot.ToDictionary(
+            static pair => pair.Key,
+            static pair =>
+                (IReadOnlyList<string>)pair.Value.ToArray(),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeLegacyInstallRoot(string installRoot)
+        => Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(installRoot));
+
+    internal static bool CanRecoverLegacyInstallRollbackState(
+        string installRoot)
+    {
+        var physicalInstallRoot = NormalizeInstallRoot(installRoot);
+        var protectedRoots = new[]
+            {
+                Environment.GetFolderPath(
+                    Environment.SpecialFolder.ProgramFiles),
+                Environment.GetFolderPath(
+                    Environment.SpecialFolder.ProgramFilesX86),
+                Environment.GetFolderPath(
+                    Environment.SpecialFolder.Windows)
+            }
+            .Where(static root => !string.IsNullOrWhiteSpace(root))
+            .Select(NormalizeInstallRoot);
+        return !protectedRoots.Any(
+            protectedRoot =>
+                string.Equals(
+                    physicalInstallRoot,
+                    protectedRoot,
+                    StringComparison.OrdinalIgnoreCase) ||
+                physicalInstallRoot.StartsWith(
+                    protectedRoot + Path.DirectorySeparatorChar,
+                    StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string? GetInstallRecoveryStartupBlockMessage(
+        InstallRecoveryStateProbeResult probe)
+    {
+        return probe.Status switch
+        {
+            InstallRecoveryStateStatus.Absent => null,
+            InstallRecoveryStateStatus.Present =>
+                "중단된 거래플랜 업데이트 복구 상태가 남아 있어 앱 시작을 차단했습니다." +
+                Environment.NewLine +
+                "원본 데이터에는 손대지 않았습니다." +
+                Environment.NewLine +
+                "검증된 업데이트 패키지로 업데이트를 다시 실행해 주세요.",
+            _ =>
+                "중단된 거래플랜 업데이트 복구 상태를 안전하게 확인할 수 없어 앱 시작을 차단했습니다." +
+                Environment.NewLine +
+                "원본 데이터에는 손대지 않았습니다." +
+                Environment.NewLine +
+                "업데이트를 다시 실행해 복구를 완료해 주세요."
+        };
+    }
+
 
 
     protected override async void OnStartup(StartupEventArgs e)
 
     {
+        var testAutoLogin =
+            IsolatedTestAutoLogin.TakeFromCurrentProcess();
+        if (testAutoLogin.Requested &&
+            testAutoLogin.Request is null)
+        {
+            ShutdownMode =
+                ShutdownMode.OnExplicitShutdown;
+            AppLogger.Error(
+                "AUTH",
+                "Rejected isolated test auto-login request. " +
+                $"reason={testAutoLogin.FailureReason}");
+            Shutdown(1);
+            return;
+        }
+
+        var testSoftwareRenderingEnabled =
+            DesktopRenderModePolicy.ApplyForCurrentRuntime();
 
         base.OnStartup(e);
+
+        if (testSoftwareRenderingEnabled)
+        {
+            AppLogger.Info(
+                "APP",
+                "Isolated test runtime software rendering enabled.");
+        }
 
 
 
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+        var startupInstallRoots =
+            GetInstallRecoveryStartupRoots(AppContext.BaseDirectory);
+        if (!InstallRootUpdateGate.TryAcquire(AppContext.BaseDirectory, out var installRootUpdateGate, startupInstallRoots))
+        {
+            MessageBox.Show(
+                "거래플랜 업데이트가 진행 중입니다. 업데이트가 끝난 뒤 다시 실행해 주세요.",
+                "거래플랜",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            Shutdown(0);
+            return;
+        }
+
+        _installRootUpdateGate = installRootUpdateGate;
+
+        var installRecoveryBlockMessage =
+            GetInstallRecoveryStartupBlockMessage(AppContext.BaseDirectory);
+        if (!string.IsNullOrWhiteSpace(installRecoveryBlockMessage))
+        {
+            _installRootUpdateGate?.Dispose();
+            _installRootUpdateGate = null;
+            MessageBox.Show(
+                installRecoveryBlockMessage,
+                "거래플랜 업데이트 복구 필요",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            Shutdown(1);
+            return;
+        }
+
+        var singleInstanceAcquired =
+            SingleInstanceGuard.TryAcquireForCurrentAppRoot(
+                out var singleInstanceGuard,
+                out var appRootIdentity);
+        AppLogger.Info(
+            "APP",
+            $"Single-instance acquisition {(singleInstanceAcquired ? "succeeded" : "rejected")}. appRootIdentity={appRootIdentity}");
+        if (!singleInstanceAcquired)
+        {
+            _installRootUpdateGate?.Dispose();
+            _installRootUpdateGate = null;
+            MessageBox.Show(
+                "거래플랜이 이미 실행 중입니다.",
+                "거래플랜",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            Shutdown(0);
+            return;
+        }
+
+        _singleInstanceGuard = singleInstanceGuard;
 
         DispatcherUnhandledException += HandleDispatcherUnhandledException;
 
@@ -249,7 +712,9 @@ public partial class App : Application
 #if DEBUG
             AppLogger.Info("UPDATE", "Debug build skips canonical install relaunch for local verification.");
 #else
-            if (DesktopAppUpdateService.TryRelaunchCanonicalInstallIfNeeded(out var relaunchMessage))
+            if (DesktopAppUpdateService.TryRelaunchCanonicalInstallIfNeeded(
+                    out var relaunchMessage,
+                    ReleaseRuntimeGatesForHandoff))
 
             {
 
@@ -265,34 +730,6 @@ public partial class App : Application
 
             }
 #endif
-
-
-
-            var restoreNotice = BackupService.TryApplyPendingRestoreOnStartup();
-
-            if (!string.IsNullOrWhiteSpace(restoreNotice))
-
-            {
-
-                AppLogger.Info("BACKUP", restoreNotice);
-
-                var restoreMessageImage = restoreNotice.Contains("오류", StringComparison.OrdinalIgnoreCase) || restoreNotice.Contains("건너", StringComparison.OrdinalIgnoreCase)
-
-                    ? MessageBoxImage.Warning
-
-                    : MessageBoxImage.Information;
-
-                MessageBox.Show(
-
-                    restoreNotice,
-
-                    "백업 복원",
-
-                    MessageBoxButton.OK,
-
-                    restoreMessageImage);
-
-            }
 
 
 
@@ -318,6 +755,23 @@ public partial class App : Application
 
 
 
+            services.AddSingleton<DesktopClientIdentityProvider>();
+            services.AddSingleton<DesktopCompatibilityEvidenceStore>();
+            services.AddSingleton<DesktopCompatibilityLatch>();
+            services.AddSingleton<IDesktopCompatibilityRuntime>(
+                serviceProvider =>
+                    serviceProvider.GetRequiredService<
+                        DesktopCompatibilityLatch>());
+            services.AddSingleton<DesktopUpgradeRequiredSignal>();
+            services.AddSingleton<DesktopUpgradeRequiredObserver>();
+            services.AddSingleton<IDesktopUpgradeRequiredObserver>(
+                serviceProvider =>
+                    serviceProvider.GetRequiredService<
+                        DesktopUpgradeRequiredObserver>());
+            services.AddTransient<DesktopUpgradeRequiredHandler>();
+            services.AddTransient<DesktopCompatibilityGateService>();
+            services.AddTransient<DesktopAppUpdateService>();
+
             services.AddHttpClient<ErpApiClient>(client =>
 
             {
@@ -326,7 +780,18 @@ public partial class App : Application
 
                 client.Timeout = TimeSpan.FromSeconds(30);
 
-            });
+            })
+                .AddHttpMessageHandler<DesktopUpgradeRequiredHandler>();
+
+            services.AddHttpClient(
+                    SyncService.OfficeSessionHttpClientName,
+                    client =>
+                    {
+                        client.BaseAddress =
+                            new Uri(apiOptions.BaseUrl.TrimEnd('/') + '/');
+                        client.Timeout = TimeSpan.FromSeconds(100);
+                    })
+                .AddHttpMessageHandler<DesktopUpgradeRequiredHandler>();
 
 
 
@@ -335,6 +800,8 @@ public partial class App : Application
             services.AddSingleton<OfficeAccessService>();
 
             services.AddSingleton<SyncRequestDispatcher>();
+
+            services.AddSingleton<DesktopDataChangeNotifier>();
 
             services.AddScoped<SyncDiagnosticsService>();
 
@@ -366,6 +833,18 @@ public partial class App : Application
 
             _services = services.BuildServiceProvider();
 
+            _services
+                .GetRequiredService<DesktopUpgradeRequiredSignal>()
+                .UpgradeRequired +=
+                    HandleDesktopUpgradeRequiredSignal;
+
+            if (!await EnsureDesktopCompatibilityBeforeLoginAsync())
+            {
+                Shutdown();
+                return;
+            }
+
+            ApplyPendingRestoreAfterCompatibilityGate();
 
 
             await RunPreLoginInitializationAsync();
@@ -390,17 +869,35 @@ public partial class App : Application
 
                     warningThreshold: TimeSpan.FromSeconds(2));
 
-                var loginWin = new LoginWindow(loginVm);
+                if (testAutoLogin.Requested)
+                {
+                    // Explicit test auto-login is an unattended contract:
+                    // fail closed instead of waiting on a manual login dialog.
+                    AppLogger.Info(
+                        "AUTH",
+                        "격리 테스트 프로세스 자동 로그인을 시작합니다.");
+                    loggedIn =
+                        await loginVm
+                            .TryIsolatedTestAutoLoginAsync(
+                                testAutoLogin.Request!);
+                    if (loggedIn != true)
+                    {
+                        throw new InvalidOperationException(
+                            "격리 테스트 자동 로그인에 실패했습니다. " +
+                            "서버 준비 상태와 테스트 계정 구성을 확인하세요.");
+                    }
 
-                loggedIn = OperationTiming.Measure(
-
-                    "AUTH",
-
-                    "로그인 창 표시",
-
-                    () => loginWin.ShowDialog(),
-
-                    warningThreshold: TimeSpan.FromSeconds(10));
+                    AppLogger.Info(
+                        "AUTH",
+                        "격리 테스트 프로세스 자동 로그인이 완료되었습니다.");
+                }
+                else
+                {
+                    var loginWin = new LoginWindow(loginVm);
+                    loggedIn =
+                        ShowLoginDialogWithFirstRenderTiming(
+                            loginWin);
+                }
 
             }
 
@@ -409,38 +906,16 @@ public partial class App : Application
             if (loggedIn != true)
 
             {
+                var loginExitReason = loggedIn is false
+                    ? "dialog-result-false"
+                    : "dialog-result-null";
+                AppLogger.Info(
+                    "AUTH",
+                    $"Login dialog closed before authentication. reason={loginExitReason}");
 
                 Shutdown();
 
                 return;
-
-            }
-
-
-
-            using (var startupSafetyScope = _services.CreateScope())
-
-            {
-
-                var canContinue = await OperationTiming.MeasureAsync(
-
-                    "APP",
-
-                    "로그인 후 안전 점검",
-
-                    () => RunPostLoginSafetyChecksAsync(startupSafetyScope.ServiceProvider),
-
-                    warningThreshold: TimeSpan.FromSeconds(4));
-
-                if (!canContinue)
-
-                {
-
-                    Shutdown();
-
-                    return;
-
-                }
 
             }
 
@@ -459,6 +934,13 @@ public partial class App : Application
 
 
             var mainScope = _services.CreateScope();
+
+            _mainScopeLifetimeCts?.Dispose();
+            _mainScopeLifetimeCts = new CancellationTokenSource();
+            _postLoginCompletionTask = Task.CompletedTask;
+            _postLoginDrainCompleted = false;
+            _postLoginWorkNeedsResumeAfterCanceledShutdown = false;
+            _postLoginDrainCloseQueued = false;
 
             var sp = mainScope.ServiceProvider;
 
@@ -495,6 +977,10 @@ public partial class App : Application
 
 
             MainWindow = mainWin;
+
+            _activeMainScopeServiceProvider = sp;
+            _activeMainViewModel = mainVm;
+            _coordinatedMainWindowCloseReady = false;
 
 
 
@@ -544,7 +1030,30 @@ public partial class App : Application
 
                 {
 
-                    if (!mainScopeDisposed)
+                    _activeMainScopeServiceProvider = null;
+                    _activeMainViewModel = null;
+                    _coordinatedMainWindowCloseReady = false;
+
+                    _mainScopeLifetimeCts?.Cancel();
+
+                    var mainScopeBackgroundWorkCompleted =
+                        _postLoginCompletionTask.IsCompleted &&
+                        mainWin.IsShutdownBackgroundWorkCompleted &&
+                        mainWin.IsMainScopeSyncDrainCompleted;
+
+                    if (!mainScopeBackgroundWorkCompleted)
+
+                    {
+
+                        AppLogger.Warn(
+
+                            "APP",
+
+                            "메인 창이 닫혔지만 메인 스코프 백그라운드 작업이 아직 종료되지 않아 메인 스코프 해제를 프로세스 종료 시점으로 미룹니다.");
+
+                    }
+
+                    if (!mainScopeDisposed && mainScopeBackgroundWorkCompleted)
 
                     {
 
@@ -554,11 +1063,31 @@ public partial class App : Application
 
                     }
 
+                    if (mainScopeBackgroundWorkCompleted)
+
+                    {
+
+                        _mainScopeLifetimeCts?.Dispose();
+
+                        _mainScopeLifetimeCts = null;
+
+                    }
 
 
-                    RestartToLoginIfRequested();
 
-                    Shutdown();
+                    if (mainScopeBackgroundWorkCompleted)
+                    {
+                        RestartToLoginIfRequested();
+                    }
+                    else if (_restartToLoginRequested)
+                    {
+                        _restartToLoginRequested = false;
+                        AppLogger.Warn(
+                            "AUTH",
+                            "Main-scope sync drain was not confirmed, so login process restart was skipped.");
+                    }
+
+                    Shutdown(_requestedShutdownExitCode);
 
                 }
 
@@ -582,13 +1111,31 @@ public partial class App : Application
 
 
 
+            var mainScopeLifetimeToken =
+
+                (_mainScopeLifetimeCts ??
+
+                 throw new InvalidOperationException("메인 작업 수명 토큰이 준비되지 않았습니다."))
+
+                .Token;
+
+
+
             var initSucceeded = await OperationTiming.MeasureAsync(
 
                 "UI",
 
                 "메인 윈도우 초기화",
 
-                () => TryInitializeMainWindowAsync(mainWin, mainVm, deferStartupNotifications: showStartupSyncPopupImmediately),
+                () => TryInitializeMainWindowAsync(
+
+                    mainWin,
+
+                    mainVm,
+
+                    deferStartupNotifications: showStartupSyncPopupImmediately,
+
+                    mainScopeLifetimeToken: mainScopeLifetimeToken),
 
                 warningThreshold: TimeSpan.FromSeconds(4));
 
@@ -600,8 +1147,7 @@ public partial class App : Application
 
                 startupSyncPopup = null;
 
-                UiTaskHelper.Forget(
-
+                _postLoginCompletionTask =
                     RunPostLoginSyncThenStartupNotificationsAsync(
 
                         mainWin,
@@ -616,7 +1162,13 @@ public partial class App : Application
 
                         showDeferredStartupNotifications: showStartupSyncPopupImmediately,
 
-                        initialDashboardLoadTask: mainWin.InitialDashboardLoadTask),
+                        initialDashboardLoadTask: mainWin.InitialDashboardLoadTask,
+
+                        mainScopeLifetimeToken: mainScopeLifetimeToken);
+
+                UiTaskHelper.Forget(
+
+                    _postLoginCompletionTask,
 
                     "APP",
 
@@ -646,6 +1198,20 @@ public partial class App : Application
 
                 AppLogger.Info("UPDATE", $"앱 종료 진행 중 시작 후속 처리를 건너뜁니다: {ex.Message}");
 
+                if (_updateShutdownRequested &&
+                    TryQueueActiveMainWindowShutdown())
+                    return;
+
+                if (_shutdownInProgress &&
+                    MainWindow is global::거래플랜.Desktop.App.MainWindow &&
+                    _activeMainScopeServiceProvider is not null &&
+                    _activeMainViewModel is not null)
+                {
+                    // A normal-close or runtime-compatibility coordinator already owns
+                    // the active main scope. Explicit Shutdown would bypass its drain.
+                    return;
+                }
+
                 Shutdown(0);
 
                 return;
@@ -658,20 +1224,266 @@ public partial class App : Application
 
             await TryRecordStartupDiagnosticAsync(ex);
 
-            MessageBox.Show(
+            if (TryQueueActiveMainWindowShutdown(
+                    fatalStartup: true,
+                    waitForCompletionWithoutDeadline: true))
+            {
+                return;
+            }
 
-                $"시작 오류:\n{ex.Message}\n\n{ex.InnerException?.Message}",
+            if (!testAutoLogin.Requested)
+            {
+                MessageBox.Show(
 
-                "거래플랜 오류",
+                    $"시작 오류:\n{ex.Message}\n\n{ex.InnerException?.Message}",
 
-                MessageBoxButton.OK,
+                    "거래플랜 오류",
 
-                MessageBoxImage.Error);
+                    MessageBoxButton.OK,
+
+                    MessageBoxImage.Error);
+            }
 
             Shutdown(1);
 
         }
 
+    }
+
+
+
+    private static bool? ShowLoginDialogWithFirstRenderTiming(LoginWindow loginWindow)
+    {
+        ArgumentNullException.ThrowIfNull(loginWindow);
+
+        var firstRenderStopwatch = Stopwatch.StartNew();
+        EventHandler? contentRenderedHandler = null;
+        contentRenderedHandler = (_, _) =>
+        {
+            loginWindow.ContentRendered -= contentRenderedHandler;
+            firstRenderStopwatch.Stop();
+            OperationTiming.LogIfSlow(
+                "AUTH",
+                "로그인 창 최초 표시",
+                firstRenderStopwatch.Elapsed,
+                warningThreshold: TimeSpan.FromSeconds(10));
+        };
+        loginWindow.ContentRendered += contentRenderedHandler;
+
+        try
+        {
+            return DialogWindowCloseHelper.ShowDialog(loginWindow);
+        }
+        finally
+        {
+            loginWindow.ContentRendered -= contentRenderedHandler;
+            if (firstRenderStopwatch.IsRunning)
+                firstRenderStopwatch.Stop();
+        }
+    }
+
+
+
+    private async Task<bool> EnsureDesktopCompatibilityBeforeLoginAsync()
+    {
+        if (_services is null)
+        {
+            throw new InvalidOperationException(
+                "서비스 초기화가 완료되지 않았습니다.");
+        }
+
+        using var scope = _services.CreateScope();
+        var decision = await scope.ServiceProvider
+            .GetRequiredService<DesktopCompatibilityGateService>()
+            .CheckAsync(CancellationToken.None);
+        if (decision.CanStart)
+            return true;
+
+        AppLogger.Warn(
+            "UPDATE",
+            $"Desktop compatibility startup gate blocked login. diagnostic={decision.DiagnosticCode}");
+        var recoveryWindow = new DesktopUpdateRequiredWindow(
+            scope.ServiceProvider
+                .GetRequiredService<DesktopCompatibilityGateService>(),
+            scope.ServiceProvider
+                .GetRequiredService<DesktopAppUpdateService>(),
+            decision);
+        return DialogWindowCloseHelper.ShowDialog(recoveryWindow) == true;
+    }
+
+    private static void ApplyPendingRestoreAfterCompatibilityGate()
+    {
+        var restoreNotice =
+            BackupService.TryApplyPendingRestoreOnStartup();
+        if (string.IsNullOrWhiteSpace(restoreNotice))
+            return;
+
+        AppLogger.Info("BACKUP", restoreNotice);
+        var image =
+            restoreNotice.Contains(
+                "오류",
+                StringComparison.OrdinalIgnoreCase) ||
+            restoreNotice.Contains(
+                "건너",
+                StringComparison.OrdinalIgnoreCase)
+                ? MessageBoxImage.Warning
+                : MessageBoxImage.Information;
+        MessageBox.Show(
+            restoreNotice,
+            "백업 복원",
+            MessageBoxButton.OK,
+            image);
+    }
+
+    private void HandleDesktopUpgradeRequiredSignal(
+        DesktopCompatibilityLatchSnapshot snapshot)
+    {
+        if (!snapshot.IsBlocked ||
+            Interlocked.Exchange(
+                ref _compatibilityWindowOpen,
+                1) != 0)
+        {
+            return;
+        }
+
+        Dispatcher.BeginInvoke(
+            new Action(
+                () => UiTaskHelper.Forget(
+                    () => ShowRuntimeCompatibilityRecoveryAsync(
+                        snapshot),
+                    "UPDATE",
+                    "런타임 호환성 차단 복구 창",
+                    ex => AppLogger.Error(
+                        "UPDATE",
+                        "Runtime compatibility recovery coordinator failed without a proven safe exit.",
+                        ex),
+                    trackForWindowLifetime: false)),
+            DispatcherPriority.Send);
+    }
+
+    private async Task ShowRuntimeCompatibilityRecoveryAsync(
+        DesktopCompatibilityLatchSnapshot snapshot)
+    {
+        var safeToExit = false;
+
+        try
+        {
+            _shutdownInProgress = true;
+            _runtimeCompatibilityShutdownRequested = true;
+            _requestedShutdownExitCode = 1;
+            _autoSaveTimer?.Stop();
+            CancelMainScopeBackgroundWork();
+
+            if (MainWindow is MainWindow appWindow)
+            {
+                appWindow.BeginShutdownProtection(
+                    waitForCompletionWithoutDeadline: true);
+                appWindow.IsEnabled = false;
+                await PrepareActiveMainScopeForCompatibilityExitAsync(appWindow);
+                safeToExit = true;
+            }
+            else
+            {
+                safeToExit = true;
+            }
+
+            foreach (Window window in Windows)
+            {
+                if (window is not DesktopUpdateRequiredWindow)
+                    window.IsEnabled = false;
+            }
+
+            if (_services is null)
+                return;
+
+            using var scope = _services.CreateScope();
+            var decision = new DesktopCompatibilityGateDecision(
+                true,
+                snapshot.DiagnosticCode,
+                snapshot.Evidence,
+                null);
+            var recoveryWindow =
+                new DesktopUpdateRequiredWindow(
+                    scope.ServiceProvider.GetRequiredService<
+                        DesktopCompatibilityGateService>(),
+                    scope.ServiceProvider.GetRequiredService<
+                        DesktopAppUpdateService>(),
+                    decision);
+            DialogWindowCloseHelper.ShowDialog(
+                recoveryWindow,
+                allowDuringShutdown: true);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error(
+                "UPDATE",
+                "Runtime compatibility recovery could not prove that active work was drained. The blocked process will remain open instead of forcing an unsafe exit.",
+                ex);
+            if (!safeToExit)
+            {
+                MessageBox.Show(
+                    "필수 PC 업데이트가 감지되었지만 실행 중인 작업의 안전 종료를 확인하지 못했습니다.\n\n서버 변경은 계속 차단됩니다. 열려 있는 파일 선택창이나 작업 창을 닫은 뒤 거래플랜을 다시 종료해 주세요.",
+                    "거래플랜 안전 종료 대기",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+        }
+        finally
+        {
+            // A safely drained runtime 426 ends the current process. If drain
+            // cannot be proven, mutation remains blocked and forced exit is avoided.
+            if (safeToExit)
+            {
+                _coordinatedMainWindowCloseReady = true;
+                Shutdown(1);
+            }
+        }
+    }
+
+    private async Task PrepareActiveMainScopeForCompatibilityExitAsync(
+        MainWindow appWindow)
+    {
+        await _mainWindowShutdownCoordinatorLock.WaitAsync();
+        try
+        {
+            if (_activeMainScopeServiceProvider is null ||
+                _activeMainViewModel is null)
+            {
+                return;
+            }
+
+            await DrainPostLoginWorkAsync();
+            await appWindow.DrainPendingBackgroundWorkForShutdownAsync();
+            await DrainPeriodicSaveCycleAsync(
+                waitForCompletionWithoutDeadline: true);
+
+            try
+            {
+                var result = await RunSaveCycleAsync(
+                    _activeMainScopeServiceProvider,
+                    _activeMainViewModel,
+                    isShutdown: true);
+                if (result.RemainingDirtyCount > 0)
+                {
+                    AppLogger.Warn(
+                        "UPDATE",
+                        $"Runtime compatibility exit preserved {result.RemainingDirtyCount:N0} pending item(s) locally because server mutation is blocked until the desktop is upgraded.");
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error(
+                    "UPDATE",
+                    "Runtime compatibility exit final save/backup failed; the process must still exit because server mutation is blocked.",
+                    ex);
+            }
+
+            await StopMainScopeSyncServiceForShutdownAsync(appWindow);
+        }
+        finally
+        {
+            _mainWindowShutdownCoordinatorLock.Release();
+        }
     }
 
 
@@ -698,11 +1510,15 @@ public partial class App : Application
                 "로컬 DB 초기화 및 버전 정비",
                 () => Task.Run(async () =>
                 {
-                    await using var scope = _services.CreateAsyncScope();
-                    var db = scope.ServiceProvider.GetRequiredService<LocalDbContext>();
-                    await LocalDbInitializer.InitializeAsync(db);
-                    await RunVersionChangeMaintenanceAsync(scope.ServiceProvider);
-                }),
+                     await using var scope = _services.CreateAsyncScope();
+                     var db = scope.ServiceProvider.GetRequiredService<LocalDbContext>();
+                     await LocalDbInitializer.InitializeAsync(db);
+                     await AttachmentFileJournal.RecoverIncompleteJournalsAsync(
+                         db,
+                         AppPaths.AttachmentFileJournalDir,
+                         AppPaths.AttachmentsDir);
+                     await RunVersionChangeMaintenanceAsync(scope.ServiceProvider);
+                 }),
                 warningThreshold: TimeSpan.FromSeconds(4));
         }
         finally
@@ -871,7 +1687,7 @@ public partial class App : Application
 
 
 
-            return true;
+            return false;
 
         }
 
@@ -885,7 +1701,9 @@ public partial class App : Application
 
         bool showUserAlert = true,
 
-        Action<string>? updateStatus = null)
+        Action<string>? updateStatus = null,
+
+        CancellationToken ct = default)
 
     {
 
@@ -899,7 +1717,7 @@ public partial class App : Application
 
             var startupIntegrity = serviceProvider.GetRequiredService<StartupIntegrityService>();
 
-            var result = await startupIntegrity.RunAsync(CancellationToken.None);
+            var result = await startupIntegrity.RunAsync(ct);
 
             if (string.IsNullOrWhiteSpace(result.Message))
 
@@ -923,7 +1741,9 @@ public partial class App : Application
 
                     recoveryAttempted: result.RefreshAttempted,
 
-                    recoverySucceeded: result.RefreshSucceeded);
+                    recoverySucceeded: result.RefreshSucceeded,
+
+                    ct: ct);
 
             }
 
@@ -967,6 +1787,16 @@ public partial class App : Application
 
         }
 
+        catch (OperationCanceledException)
+
+            when (ct.IsCancellationRequested)
+
+        {
+
+            throw;
+
+        }
+
         catch (Exception ex)
 
         {
@@ -985,7 +1815,9 @@ public partial class App : Application
 
                     exception: ex,
 
-                    severity: "Warning");
+                    severity: "Warning",
+
+                    ct: ct);
 
             }
 
@@ -1057,7 +1889,24 @@ public partial class App : Application
 
         _saveCycleLock.Dispose();
 
+        if (_services is not null)
+        {
+            var upgradeRequiredSignal =
+                _services.GetService<DesktopUpgradeRequiredSignal>();
+            if (upgradeRequiredSignal is not null)
+            {
+                upgradeRequiredSignal.UpgradeRequired -=
+                    HandleDesktopUpgradeRequiredSignal;
+            }
+        }
+
         _services?.Dispose();
+
+        _installRootUpdateGate?.Dispose();
+        _installRootUpdateGate = null;
+
+        _singleInstanceGuard?.Dispose();
+        _singleInstanceGuard = null;
 
         base.OnExit(e);
 
@@ -1201,20 +2050,24 @@ public partial class App : Application
 
 
 
-        _autoSaveTimer.Tick += (_, _) => UiTaskHelper.Forget(
-
-            RunPeriodicSaveCycleAsync(sp, mainVm),
-
-            "APP",
-
-            "주기 저장",
-
-            ex => AppLogger.Error("APP", "Periodic save cycle failure", ex));
+        _autoSaveTimer.Tick += (_, _) => HandleAutoSaveTimerTick(sp, mainVm);
 
 
 
         _autoSaveTimer.Start();
 
+    }
+
+    private void HandleAutoSaveTimerTick(IServiceProvider sp, MainViewModel mainVm)
+    {
+        if (_shutdownInProgress || _updateShutdownRequested || _restartToLoginRequested)
+            return;
+
+        UiTaskHelper.Forget(
+            () => RunPeriodicSaveCycleAsync(sp, mainVm),
+            "APP",
+            "주기 저장",
+            ex => AppLogger.Error("APP", "Periodic save cycle failure", ex));
     }
 
 
@@ -1229,31 +2082,29 @@ public partial class App : Application
 
     {
 
-        if (_updateShutdownRequested)
+        if (_updateShutdownRequested ||
+            _restartToLoginRequested ||
+            _fatalStartupShutdownRequested ||
+            _runtimeCompatibilityShutdownRequested)
 
         {
+            if (_coordinatedMainWindowCloseReady)
+                return;
+
+            args.Cancel = true;
 
             _autoSaveTimer?.Stop();
 
-            mainWin.BeginShutdownProtection();
+            mainWin.BeginShutdownProtection(
+                waitForCompletionWithoutDeadline:
+                    _fatalStartupShutdownRequested ||
+                    _runtimeCompatibilityShutdownRequested);
 
             _shutdownInProgress = true;
 
-            return;
+            CancelMainScopeBackgroundWork();
 
-        }
-
-
-
-        if (_restartToLoginRequested)
-
-        {
-
-            _autoSaveTimer?.Stop();
-
-            mainWin.BeginShutdownProtection();
-
-            _shutdownInProgress = true;
+            QueueCloseAfterPostLoginDrain(mainWin, sp, mainVm);
 
             return;
 
@@ -1262,8 +2113,12 @@ public partial class App : Application
 
 
         if (_shutdownInProgress)
+        {
+            if (!_coordinatedMainWindowCloseReady)
+                args.Cancel = true;
 
             return;
+        }
 
 
 
@@ -1273,51 +2128,46 @@ public partial class App : Application
 
         _autoSaveTimer?.Stop();
 
+        MarkPostLoginWorkInterruptedIfIncomplete();
         mainWin.BeginShutdownProtection();
+
+        CancelMainScopeBackgroundWork();
 
 
 
         UiTaskHelper.Forget(
-
-            HandleMainWindowClosingAsync(mainWin, sp, mainVm),
+            () => HandleMainWindowClosingAsync(mainWin, sp, mainVm),
 
             "APP",
 
             "앱 종료 처리",
 
-            ex => AppLogger.Error("APP", "Shutdown sync/backup failure", ex));
+            ex => AppLogger.Error("APP", "Shutdown sync/backup failure", ex),
+            trackForWindowLifetime: false);
 
     }
 
 
 
-    private async Task HandleMainWindowClosingAsync(MainWindow mainWin, IServiceProvider sp, MainViewModel mainVm)
+    private void CancelMainScopeBackgroundWork()
 
     {
 
-        mainVm.SyncStatus = "종료 전 서버와 동기화하고 데이터를 저장합니다.";
-
-        var savingPopup = ShowShutdownSavingPopup(mainWin);
-
-        mainWin.IsEnabled = false;
-
-        await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
-
-
-
-        var shouldClose = true;
+        MarkPostLoginWorkInterruptedIfIncomplete();
 
         try
 
         {
 
-            var result = await RunSaveCycleAsync(sp, mainVm, isShutdown: true);
+            _mainScopeLifetimeCts?.Cancel();
 
-            if (!result.SyncSucceeded && result.RemainingDirtyCount > 0)
-            {
-                AppLogger.Warn("APP", $"Shutdown continues with {result.RemainingDirtyCount:N0} pending sync item(s). They remain saved locally and will sync on the next run.");
-                mainVm.SyncStatus = $"로컬 저장 완료. 미동기화 {result.RemainingDirtyCount:N0}건은 다음 실행 시 다시 동기화됩니다.";
-            }
+        }
+
+        catch (ObjectDisposedException)
+
+        {
+
+            // 이미 완료된 메인 스코프 수명 토큰은 다시 취소할 필요가 없습니다.
 
         }
 
@@ -1325,29 +2175,286 @@ public partial class App : Application
 
         {
 
-            shouldClose = false;
+            // CancellationTokenSource.Cancel invokes user callbacks synchronously.
+            // Run every callback, record the failure, and let the shutdown drains
+            // prove safety instead of allowing a callback exception to bypass them.
+            AppLogger.Error(
+                "APP",
+                "Main-scope background cancellation callback failure",
+                ex);
 
-            _shutdownInProgress = false;
+        }
 
-            mainWin.IsEnabled = true;
+    }
 
+    private void MarkPostLoginWorkInterruptedIfIncomplete()
+    {
+        if (!_postLoginCompletionTask.IsCompleted)
+            _postLoginWorkNeedsResumeAfterCanceledShutdown = true;
+    }
+
+    private void ResumePostLoginWorkAfterCanceledShutdown(
+        MainWindow mainWin,
+        IServiceProvider sp,
+        MainViewModel mainVm)
+    {
+        if (!_postLoginWorkNeedsResumeAfterCanceledShutdown ||
+            !mainWin.IsLoaded)
+        {
+            return;
+        }
+
+        _mainScopeLifetimeCts?.Dispose();
+        _mainScopeLifetimeCts = new CancellationTokenSource();
+        var mainScopeLifetimeToken = _mainScopeLifetimeCts.Token;
+
+        _postLoginWorkNeedsResumeAfterCanceledShutdown = false;
+        _postLoginDrainCompleted = false;
+        _postLoginCompletionTask =
+            RunPostLoginSyncThenStartupNotificationsAsync(
+                mainWin,
+                mainVm,
+                sp,
+                sp.GetRequiredService<SessionState>(),
+                startupSyncPopup: null,
+                showDeferredStartupNotifications: false,
+                initialDashboardLoadTask: null,
+                mainScopeLifetimeToken: mainScopeLifetimeToken);
+
+        UiTaskHelper.Forget(
+            _postLoginCompletionTask,
+            "APP",
+            "종료 취소 후 로그인 후속 작업 재개",
+            ex => AppLogger.Error(
+                "APP",
+                "Post-login work restart after canceled shutdown failed",
+                ex));
+    }
+
+    private bool TryRecoverActiveMainWindowAfterCanceledShutdown()
+    {
+        if (MainWindow is not MainWindow mainWin ||
+            _activeMainScopeServiceProvider is null ||
+            _activeMainViewModel is null)
+        {
+            return false;
+        }
+
+        var sp = _activeMainScopeServiceProvider;
+        var mainVm = _activeMainViewModel;
+        _coordinatedMainWindowCloseReady = false;
+        _shutdownInProgress = false;
+        _updateShutdownRequested = false;
+        _restartToLoginRequested = false;
+        _requestedShutdownExitCode = 0;
+
+        try
+        {
             mainWin.EndShutdownProtection();
-
+            mainWin.IsEnabled = true;
+            ResumePostLoginWorkAfterCanceledShutdown(mainWin, sp, mainVm);
             StartAutoSaveTimer(sp, mainVm);
+        }
+        catch (Exception recoveryException)
+        {
+            // The active main scope still exists. Remain fail-closed rather than
+            // bypassing its final save and background drains with Shutdown().
+            AppLogger.Error(
+                "UPDATE",
+                "Canceled update shutdown could not restore the active main window safely.",
+                recoveryException);
+        }
 
-            mainVm.SyncStatus = "종료 전 서버 동기화 확인이 필요합니다.";
+        return true;
+    }
 
-            MessageBox.Show(
 
-                $"종료 전 동기화 확인이 필요합니다.{Environment.NewLine}{ex.Message}",
 
-                "거래플랜 오류",
+    private void QueueCloseAfterPostLoginDrain(
+        MainWindow mainWin,
+        IServiceProvider sp,
+        MainViewModel mainVm)
 
-                MessageBoxButton.OK,
+    {
 
-                MessageBoxImage.Error);
+        if (_postLoginDrainCloseQueued)
 
+            return;
+
+        _postLoginDrainCloseQueued = true;
+
+        UiTaskHelper.Forget(
+            () => CloseAfterPostLoginDrainAsync(mainWin, sp, mainVm),
+
+            "APP",
+
+            "로그인 후 백그라운드 작업 종료 대기",
+
+            ex => AppLogger.Error(
+
+                "APP",
+
+                "Post-login background drain failure",
+
+                ex),
+            trackForWindowLifetime: false);
+
+    }
+
+    private bool TryQueueActiveMainWindowShutdown(
+        bool fatalStartup = false,
+        bool waitForCompletionWithoutDeadline = false)
+    {
+        if (MainWindow is not MainWindow mainWin ||
+            _activeMainScopeServiceProvider is null ||
+            _activeMainViewModel is null)
+        {
+            return false;
+        }
+
+        if (fatalStartup)
+        {
+            _fatalStartupShutdownRequested = true;
+            _requestedShutdownExitCode = 1;
+        }
+
+        _shutdownInProgress = true;
+        _autoSaveTimer?.Stop();
+        CancelMainScopeBackgroundWork();
+        mainWin.BeginShutdownProtection(
+            waitForCompletionWithoutDeadline);
+        QueueCloseAfterPostLoginDrain(
+            mainWin,
+            _activeMainScopeServiceProvider,
+            _activeMainViewModel);
+        return true;
+    }
+
+
+
+    private async Task CloseAfterPostLoginDrainAsync(
+        MainWindow mainWin,
+        IServiceProvider sp,
+        MainViewModel mainVm)
+
+    {
+        await _mainWindowShutdownCoordinatorLock.WaitAsync();
+        var mainSyncStopAttempted = false;
+        try
+        {
+            if (!ReferenceEquals(_activeMainScopeServiceProvider, sp) ||
+                !ReferenceEquals(_activeMainViewModel, mainVm))
+            {
+                return;
+            }
+
+            await DrainPostLoginWorkAsync();
+            await mainWin.DrainPendingBackgroundWorkForShutdownAsync();
+            await DrainPeriodicSaveCycleAsync(
+                waitForCompletionWithoutDeadline:
+                    _fatalStartupShutdownRequested ||
+                    _runtimeCompatibilityShutdownRequested);
+
+            var result = await RunSaveCycleAsync(sp, mainVm, isShutdown: true);
+            if (result.RemainingDirtyCount > 0 &&
+                !_fatalStartupShutdownRequested &&
+                !_runtimeCompatibilityShutdownRequested)
+            {
+                throw new InvalidOperationException(
+                    $"Final shutdown synchronization left {result.RemainingDirtyCount:N0} pending item(s). Update/login restart was canceled.");
+            }
+
+            if (result.RemainingDirtyCount > 0)
+            {
+                AppLogger.Warn(
+                    "APP",
+                    $"Mandatory safe shutdown preserved {result.RemainingDirtyCount:N0} pending item(s) locally for the next run.");
+            }
+
+            mainSyncStopAttempted = true;
+            await StopMainScopeSyncServiceForShutdownAsync(mainWin);
+
+            _coordinatedMainWindowCloseReady = true;
+
+            if (mainWin.IsLoaded)
+                mainWin.Close();
+            else
+                Shutdown(_requestedShutdownExitCode);
+        }
+        catch
+        {
+            if (_fatalStartupShutdownRequested ||
+                _runtimeCompatibilityShutdownRequested ||
+                mainSyncStopAttempted)
+            {
+                throw;
+            }
+
+            _coordinatedMainWindowCloseReady = false;
+            _shutdownInProgress = false;
+            _updateShutdownRequested = false;
+            _restartToLoginRequested = false;
+            _requestedShutdownExitCode = 0;
+            mainWin.EndShutdownProtection();
+            mainWin.IsEnabled = true;
+            ResumePostLoginWorkAfterCanceledShutdown(mainWin, sp, mainVm);
+            StartAutoSaveTimer(sp, mainVm);
+            if (DialogWindowCloseHelper.ActiveNativeDialogCount > 0)
+            {
+                mainVm.SyncStatus =
+                    "파일 선택/저장 창을 닫은 뒤 업데이트 또는 로그아웃을 다시 시도해 주세요.";
+            }
             throw;
+        }
+        finally
+        {
+            _postLoginDrainCloseQueued = false;
+            _mainWindowShutdownCoordinatorLock.Release();
+        }
+
+    }
+
+
+
+    private async Task DrainPostLoginWorkAsync()
+
+    {
+
+        if (_postLoginDrainCompleted)
+
+            return;
+
+        try
+
+        {
+
+            await _postLoginCompletionTask;
+
+        }
+
+        catch (OperationCanceledException)
+
+            when (_mainScopeLifetimeCts?.IsCancellationRequested == true)
+
+        {
+
+            AppLogger.Info(
+
+                "APP",
+
+                "메인 창 종료에 맞춰 로그인 후 백그라운드 작업을 취소했습니다.");
+
+        }
+
+        catch (Exception ex)
+
+        {
+
+            AppLogger.Warn(
+
+                "APP",
+
+                $"로그인 후 백그라운드 작업 종료 확인 중 오류를 기록하고 종료 절차를 계속합니다: {ex.Message}");
 
         }
 
@@ -1355,35 +2462,159 @@ public partial class App : Application
 
         {
 
-            try
-
-            {
-
-                savingPopup.Close();
-
-            }
-
-            catch
-
-            {
-
-                // ignored
-
-            }
-
-
-
-            if (shouldClose)
-
-                mainWin.Close();
+            _postLoginDrainCompleted = true;
 
         }
 
     }
 
+    private async Task DrainPeriodicSaveCycleAsync(
+        bool waitForCompletionWithoutDeadline = false)
+    {
+        if (waitForCompletionWithoutDeadline)
+        {
+            await _saveCycleLock.WaitAsync();
+            _saveCycleLock.Release();
+            return;
+        }
+
+        if (!await _saveCycleLock.WaitAsync(TimeSpan.FromMinutes(2)))
+        {
+            throw new TimeoutException(
+                "The active save cycle did not finish before the shutdown deadline.");
+        }
+
+        _saveCycleLock.Release();
+    }
+
+    private static async Task StopMainScopeSyncServiceForShutdownAsync(MainWindow mainWin)
+    {
+        await mainWin.StopAndDrainMainScopeSyncServiceAsync();
+    }
 
 
-    private async Task<bool> TryInitializeMainWindowAsync(MainWindow mainWin, MainViewModel mainVm, bool deferStartupNotifications = false)
+
+    private async Task HandleMainWindowClosingAsync(MainWindow mainWin, IServiceProvider sp, MainViewModel mainVm)
+
+    {
+        await _mainWindowShutdownCoordinatorLock.WaitAsync();
+        Window? savingPopup = null;
+        var shouldClose = false;
+        var mainSyncStopAttempted = false;
+        try
+        {
+            if (!ReferenceEquals(_activeMainScopeServiceProvider, sp) ||
+                !ReferenceEquals(_activeMainViewModel, mainVm))
+            {
+                return;
+            }
+
+            await DrainPostLoginWorkAsync();
+            await mainWin.DrainPendingBackgroundWorkForShutdownAsync();
+
+            mainVm.SyncStatus = "종료 전 서버와 동기화하고 데이터를 저장합니다.";
+            savingPopup = ShowShutdownSavingPopup(mainWin);
+            mainWin.IsEnabled = false;
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
+
+            var result = await RunSaveCycleAsync(sp, mainVm, isShutdown: true);
+
+            if (result.RemainingDirtyCount > 0 &&
+                (_updateShutdownRequested || _restartToLoginRequested) &&
+                !_fatalStartupShutdownRequested &&
+                !_runtimeCompatibilityShutdownRequested)
+            {
+                throw new InvalidOperationException(
+                    $"Final shutdown synchronization left {result.RemainingDirtyCount:N0} pending item(s). Update/login restart was canceled.");
+            }
+
+            mainSyncStopAttempted = true;
+            await StopMainScopeSyncServiceForShutdownAsync(mainWin);
+
+            if (!result.SyncSucceeded && result.RemainingDirtyCount > 0)
+            {
+                AppLogger.Warn("APP", $"Shutdown continues with {result.RemainingDirtyCount:N0} pending sync item(s). They remain saved locally and will sync on the next run.");
+                mainVm.SyncStatus = $"로컬 저장 완료. 미동기화 {result.RemainingDirtyCount:N0}건은 다음 실행 시 다시 동기화됩니다.";
+            }
+
+            _coordinatedMainWindowCloseReady = true;
+            shouldClose = true;
+        }
+        catch (Exception ex)
+        {
+            shouldClose = false;
+
+            if (_fatalStartupShutdownRequested ||
+                _runtimeCompatibilityShutdownRequested ||
+                mainSyncStopAttempted)
+            {
+                throw;
+            }
+
+            _coordinatedMainWindowCloseReady = false;
+            _shutdownInProgress = false;
+            _updateShutdownRequested = false;
+            _restartToLoginRequested = false;
+            _requestedShutdownExitCode = 0;
+            mainWin.IsEnabled = true;
+            mainWin.EndShutdownProtection();
+            ResumePostLoginWorkAfterCanceledShutdown(mainWin, sp, mainVm);
+            StartAutoSaveTimer(sp, mainVm);
+            mainVm.SyncStatus = "종료 전 서버 동기화 확인이 필요합니다.";
+
+            if (DialogWindowCloseHelper.ActiveNativeDialogCount == 0)
+            {
+                MessageBox.Show(
+
+                    $"종료 전 동기화 확인이 필요합니다.{Environment.NewLine}{ex.Message}",
+
+                    "거래플랜 오류",
+
+                    MessageBoxButton.OK,
+
+                    MessageBoxImage.Error);
+            }
+            else
+            {
+                mainVm.SyncStatus =
+                    "파일 선택/저장 창을 닫은 뒤 종료를 다시 시도해 주세요.";
+            }
+
+            throw;
+        }
+        finally
+        {
+            try
+            {
+                savingPopup?.Close();
+            }
+            catch
+            {
+                // ignored
+            }
+            try
+            {
+                if (shouldClose)
+                    mainWin.Close();
+            }
+            finally
+            {
+                _mainWindowShutdownCoordinatorLock.Release();
+            }
+        }
+    }
+
+
+
+    private async Task<bool> TryInitializeMainWindowAsync(
+
+        MainWindow mainWin,
+
+        MainViewModel mainVm,
+
+        bool deferStartupNotifications = false,
+
+        CancellationToken mainScopeLifetimeToken = default)
 
     {
 
@@ -1391,11 +2622,23 @@ public partial class App : Application
 
         {
 
-            await mainWin.InitAsync(deferStartupNotifications);
+            await mainWin.InitAsync(
+
+                deferStartupNotifications,
+
+                mainScopeLifetimeToken);
 
             mainWin.QueueDesktopUiSmokeSelfTestIfRequested();
 
             return true;
+
+        }
+
+        catch (OperationCanceledException) when (mainScopeLifetimeToken.IsCancellationRequested)
+
+        {
+
+            throw;
 
         }
 
@@ -1453,7 +2696,9 @@ public partial class App : Application
 
         bool showDeferredStartupNotifications,
 
-        Task? initialDashboardLoadTask = null)
+        Task? initialDashboardLoadTask = null,
+
+        CancellationToken mainScopeLifetimeToken = default)
 
     {
 
@@ -1477,6 +2722,14 @@ public partial class App : Application
 
                 }
 
+                catch (OperationCanceledException) when (mainScopeLifetimeToken.IsCancellationRequested)
+
+                {
+
+                    throw;
+
+                }
+
                 catch (Exception ex)
 
                 {
@@ -1489,13 +2742,27 @@ public partial class App : Application
 
 
 
+            mainScopeLifetimeToken.ThrowIfCancellationRequested();
+
+
+
             if (!mainWin.IsLoaded)
 
                 return;
 
 
 
-            syncTask = await StartPostLoginSyncWithPopupAsync(mainWin, mainVm, session, startupSyncPopup);
+            syncTask = await StartPostLoginSyncWithPopupAsync(
+
+                mainWin,
+
+                mainVm,
+
+                session,
+
+                startupSyncPopup,
+
+                mainScopeLifetimeToken);
 
         }
 
@@ -1503,7 +2770,15 @@ public partial class App : Application
 
         {
 
-            if (showDeferredStartupNotifications && mainWin.IsLoaded)
+            if (mainScopeLifetimeToken.IsCancellationRequested)
+
+            {
+
+                CloseStartupSyncPopup(mainWin, startupSyncPopup);
+
+            }
+
+            else if (showDeferredStartupNotifications && mainWin.IsLoaded)
 
             {
 
@@ -1521,17 +2796,41 @@ public partial class App : Application
 
         if (syncTask is not null)
 
-            QueuePostLoginSyncContinuation(mainWin, mainVm, serviceProvider, syncTask, integrityPromptReason);
+            await CompletePostLoginSyncAndIntegrityAsync(
+
+                mainWin,
+
+                mainVm,
+
+                serviceProvider,
+
+                syncTask,
+
+                integrityPromptReason,
+
+                mainScopeLifetimeToken);
 
     }
 
 
 
-    private async Task<Task?> StartPostLoginSyncWithPopupAsync(MainWindow mainWin, MainViewModel mainVm, SessionState session, Window? existingPopup = null)
+    private async Task<Task?> StartPostLoginSyncWithPopupAsync(
+
+        MainWindow mainWin,
+
+        MainViewModel mainVm,
+
+        SessionState session,
+
+        Window? existingPopup = null,
+
+        CancellationToken mainScopeLifetimeToken = default)
 
     {
 
         CloseStartupSyncPopup(mainWin, existingPopup);
+
+        mainScopeLifetimeToken.ThrowIfCancellationRequested();
 
 
 
@@ -1541,7 +2840,7 @@ public partial class App : Application
 
             mainVm.SyncStatus = "오프라인 모드입니다. 로컬 점검은 백그라운드에서 진행합니다.";
 
-            return mainVm.RunPostLoginSyncAsync();
+            return mainVm.RunPostLoginSyncAsync(mainScopeLifetimeToken);
 
         }
 
@@ -1551,7 +2850,15 @@ public partial class App : Application
 
         {
 
-            _ = await mainVm.ShouldShowPostLoginSyncPopupAsync();
+            _ = await mainVm.ShouldShowPostLoginSyncPopupAsync(mainScopeLifetimeToken);
+
+        }
+
+        catch (OperationCanceledException) when (mainScopeLifetimeToken.IsCancellationRequested)
+
+        {
+
+            throw;
 
         }
 
@@ -1567,35 +2874,9 @@ public partial class App : Application
 
         mainVm.SyncStatus = "로그인 완료. 시작 동기화는 백그라운드에서 진행하므로 바로 작업할 수 있습니다.";
 
-        return mainVm.RunPostLoginSyncAsync();
+        mainScopeLifetimeToken.ThrowIfCancellationRequested();
 
-    }
-
-
-
-    private static void QueuePostLoginSyncContinuation(
-
-        MainWindow mainWin,
-
-        MainViewModel mainVm,
-
-        IServiceProvider serviceProvider,
-
-        Task syncTask,
-
-        string integrityPromptReason)
-
-    {
-
-        UiTaskHelper.Forget(
-
-            CompletePostLoginSyncAndIntegrityAsync(mainWin, mainVm, serviceProvider, syncTask, integrityPromptReason),
-
-            "APP",
-
-            "로그인 후 자동 동기화 후속 점검",
-
-            ex => AppLogger.Error("APP", "Post-login sync continuation failure", ex));
+        return mainVm.RunPostLoginSyncAsync(mainScopeLifetimeToken);
 
     }
 
@@ -1611,28 +2892,157 @@ public partial class App : Application
 
         Task syncTask,
 
-        string integrityPromptReason)
+        string integrityPromptReason,
+
+        CancellationToken mainScopeLifetimeToken)
 
     {
 
         await syncTask;
 
+        mainScopeLifetimeToken.ThrowIfCancellationRequested();
 
 
-        if (mainWin.IsLoaded)
+
+        if (!mainWin.IsLoaded)
+
+            return;
+
+
+
+        await PrewarmAdministrativeBusinessCachesOnDispatcherAsync(
+
+            mainWin,
+
+            serviceProvider,
+
+            mainScopeLifetimeToken);
+
+        mainScopeLifetimeToken.ThrowIfCancellationRequested();
+
+        if (!mainWin.IsLoaded)
+
+            return;
+
+        var integrityStatus = await RunPostLoginIntegrityChecksInBackgroundAsync(
+
+            serviceProvider,
+
+            integrityPromptReason,
+
+            mainScopeLifetimeToken);
+
+        if (string.IsNullOrWhiteSpace(integrityStatus) ||
+
+            !mainWin.IsLoaded ||
+
+            mainScopeLifetimeToken.IsCancellationRequested)
+
+            return;
+
+        await mainWin.Dispatcher.InvokeAsync(
+
+            () =>
+
+            {
+
+                if (mainWin.IsLoaded &&
+
+                    !mainScopeLifetimeToken.IsCancellationRequested)
+
+                    mainVm.SyncStatus = integrityStatus;
+
+            },
+
+            DispatcherPriority.Background);
+
+    }
+
+
+
+    private static async Task PrewarmAdministrativeBusinessCachesOnDispatcherAsync(
+
+        MainWindow mainWin,
+
+        IServiceProvider serviceProvider,
+
+        CancellationToken mainScopeLifetimeToken)
+
+    {
+
+        if (!mainWin.Dispatcher.CheckAccess())
 
         {
 
-            var integrityStatus = await RunPostLoginIntegrityChecksInBackgroundAsync(
-                serviceProvider,
-                integrityPromptReason);
+            await mainWin.Dispatcher.InvokeAsync(
 
-            if (!string.IsNullOrWhiteSpace(integrityStatus) && mainWin.IsLoaded)
-            {
-                await mainWin.Dispatcher.InvokeAsync(
-                    () => mainVm.SyncStatus = integrityStatus,
-                    DispatcherPriority.Background);
-            }
+                    () => PrewarmAdministrativeBusinessCachesOnDispatcherAsync(
+
+                        mainWin,
+
+                        serviceProvider,
+
+                        mainScopeLifetimeToken),
+
+                    DispatcherPriority.Background)
+
+                .Task
+
+                .Unwrap();
+
+            return;
+
+        }
+
+
+
+        mainScopeLifetimeToken.ThrowIfCancellationRequested();
+
+        if (!mainWin.IsLoaded)
+
+            return;
+
+        var mainScopeSyncService =
+
+            serviceProvider.GetRequiredService<SyncService>();
+
+        try
+
+        {
+
+            _ = await OperationTiming.MeasureAsync(
+
+                "SYNC",
+
+                "로그인 후 관리자 렌탈 캐시 사전 예열",
+
+                () => mainScopeSyncService.EnsureAdministrativeBusinessCachesAsync(
+
+                    mainScopeLifetimeToken),
+
+                warningThreshold: TimeSpan.FromSeconds(3));
+
+        }
+
+        catch (OperationCanceledException)
+
+            when (mainScopeLifetimeToken.IsCancellationRequested)
+
+        {
+
+            throw;
+
+        }
+
+        catch (Exception ex)
+
+        {
+
+            AppLogger.Warn(
+
+                "SYNC",
+
+                $"로그인 후 관리자 렌탈 캐시 사전 예열 실패: {ex.Message}");
 
         }
 
@@ -1642,11 +3052,13 @@ public partial class App : Application
 
     private static Task<string?> RunPostLoginIntegrityChecksInBackgroundAsync(
         IServiceProvider serviceProvider,
-        string integrityPromptReason)
+        string integrityPromptReason,
+        CancellationToken mainScopeLifetimeToken)
     {
         var scopeFactory = serviceProvider.GetRequiredService<IServiceScopeFactory>();
         return Task.Run(async () =>
         {
+            mainScopeLifetimeToken.ThrowIfCancellationRequested();
             await using var integrityScope = scopeFactory.CreateAsyncScope();
             var scopedProvider = integrityScope.ServiceProvider;
             string? statusMessage = null;
@@ -1654,25 +3066,36 @@ public partial class App : Application
             await RunStartupIntegrityCheckAsync(
                 scopedProvider,
                 showUserAlert: false,
-                updateStatus: message => statusMessage = message);
+                updateStatus: message => statusMessage = message,
+                ct: mainScopeLifetimeToken);
 
             try
             {
+                mainScopeLifetimeToken.ThrowIfCancellationRequested();
                 var session = scopedProvider.GetRequiredService<SessionState>();
                 var dataIntegrity = scopedProvider.GetRequiredService<DataIntegrityIssueService>();
                 var result = await OperationTiming.MeasureAsync(
                     "INTEGRITY",
                     $"{integrityPromptReason} 운영 점검",
-                    () => dataIntegrity.ScanAsync(session),
+                    () => dataIntegrity.ScanAsync(
+                        session,
+                        mainScopeLifetimeToken),
                     warningThreshold: TimeSpan.FromSeconds(3));
 
                 if (result.HasIssues && result.HasPassiveStartupNoticeIssues)
                 {
-                    statusMessage = "운영 점검 알림: 확인할 항목이 있습니다. 목록 조회와 업무는 계속 가능하며, 상세 내용은 동기화 진단에서 확인하세요.";
+                    statusMessage = result.BuildPassiveStartupStatusMessage();
                     AppLogger.Warn(
                         "INTEGRITY",
-                        $"{integrityPromptReason} 운영 점검 알림을 상태바로 전환했습니다. issues={result.Issues.Count:N0}");
+                        $"{integrityPromptReason} 운영 점검 알림을 상태바로 전환했습니다. " +
+                        $"notices={result.PassiveStartupNoticeIssueCount:N0}, total={result.TotalIssueCount:N0}, " +
+                        $"errors={result.ErrorIssueCount:N0}, warnings={result.WarningIssueCount:N0}, info={result.InformationalIssueCount:N0}");
                 }
+            }
+            catch (OperationCanceledException)
+                when (mainScopeLifetimeToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -1680,7 +3103,7 @@ public partial class App : Application
             }
 
             return statusMessage;
-        });
+        }, mainScopeLifetimeToken);
     }
 
 
@@ -2048,6 +3471,8 @@ public partial class App : Application
 
                 return;
 
+            ReleaseRuntimeGatesForHandoff();
+
 
 
             Process.Start(new ProcessStartInfo
@@ -2072,6 +3497,15 @@ public partial class App : Application
 
         }
 
+    }
+
+    private void ReleaseRuntimeGatesForHandoff()
+    {
+        _installRootUpdateGate?.Dispose();
+        _installRootUpdateGate = null;
+
+        _singleInstanceGuard?.Dispose();
+        _singleInstanceGuard = null;
     }
 
 }

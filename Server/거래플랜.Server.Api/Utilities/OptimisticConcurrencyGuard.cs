@@ -10,7 +10,7 @@ public static class OptimisticConcurrencyGuard
     public static ActionResult? Check(ControllerBase controller, TrackedEntity entity, SyncEntityDto dto, string entityName)
     {
         if (!TryResolveExpectedRevision(dto.ExpectedRevision, dto.Revision, controller.HttpContext?.Request, out var expectedRevision))
-            return null;
+            return BuildExpectedRevisionRequiredResult(controller, entity, entityName);
 
         return Check(controller, entity, expectedRevision, entityName);
     }
@@ -18,7 +18,7 @@ public static class OptimisticConcurrencyGuard
     public static ActionResult? Check(ControllerBase controller, TrackedEntity entity, long? expectedRevision, string entityName)
     {
         if (!TryResolveExpectedRevision(expectedRevision, null, controller.HttpContext?.Request, out var normalizedExpectedRevision))
-            return null;
+            return BuildExpectedRevisionRequiredResult(controller, entity, entityName);
 
         if (entity.Revision == normalizedExpectedRevision)
             return null;
@@ -35,6 +35,22 @@ public static class OptimisticConcurrencyGuard
 
     public static string BuildExpectedRevisionConflictReason(long expectedRevision, long currentRevision)
         => $"Expected revision mismatch. client={expectedRevision}, server={currentRevision}";
+
+    public static string BuildExpectedRevisionRequiredReason()
+        => "Expected revision is required. Send ExpectedRevision, Revision, or If-Match.";
+
+    private static ActionResult BuildExpectedRevisionRequiredResult(
+        ControllerBase controller,
+        TrackedEntity entity,
+        string entityName)
+        => controller.StatusCode(
+            StatusCodes.Status428PreconditionRequired,
+            new ExpectedRevisionRequiredResponse
+            {
+                EntityName = entityName,
+                EntityId = entity.Id,
+                CurrentRevision = entity.Revision
+            });
 
     private static bool TryResolveExpectedRevision(
         long? preferredRevision,
@@ -102,4 +118,14 @@ public sealed class ExpectedRevisionConflictResponse
     public long ExpectedRevision { get; set; }
     public long CurrentRevision { get; set; }
     public string Reason { get; set; } = string.Empty;
+}
+
+public sealed class ExpectedRevisionRequiredResponse
+{
+    public string Error { get; set; } = "expected_revision_required";
+    public string Message { get; set; } =
+        "최신 데이터를 다시 불러온 뒤 리비전을 포함해 다시 시도하세요.";
+    public string EntityName { get; set; } = string.Empty;
+    public Guid EntityId { get; set; }
+    public long CurrentRevision { get; set; }
 }

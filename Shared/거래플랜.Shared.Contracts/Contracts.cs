@@ -299,6 +299,10 @@ public sealed class ItemDto : SyncEntityDto
     public string ItemKind { get; set; } = ItemKinds.Product;
     public string TrackingType { get; set; } = ItemTrackingTypes.Stock;
     public string Unit { get; set; } = string.Empty;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public decimal? BoxQuantity { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? StorageLocation { get; set; }
     public decimal CurrentStock { get; set; }
     public decimal SafetyStock { get; set; }
     public decimal PurchasePrice { get; set; }
@@ -307,6 +311,14 @@ public sealed class ItemDto : SyncEntityDto
     public decimal PriceGradeA { get; set; }
     public decimal PriceGradeB { get; set; }
     public decimal PriceGradeC { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateOnly? LastPurchaseDate { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? LastPurchaseDateSpecified { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateOnly? LastSaleDate { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? LastSaleDateSpecified { get; set; }
     public string SimpleMemo { get; set; } = string.Empty;
     public bool IsRental { get; set; }
     public bool IsSale { get; set; }
@@ -316,6 +328,63 @@ public sealed class ItemDto : SyncEntityDto
     public DateOnly? RentalStartDate { get; set; }
     public DateOnly? RentalEndDate { get; set; }
     public string Notes { get; set; } = string.Empty;
+}
+
+public sealed class ItemDuplicateMergePreviewRequestDto
+{
+    public List<Guid> CandidateItemIds { get; set; } = [];
+    public Guid CanonicalItemId { get; set; }
+}
+
+public sealed class ItemDuplicateMergeRequestDto
+{
+    public List<Guid> CandidateItemIds { get; set; } = [];
+    public Guid CanonicalItemId { get; set; }
+    public string ExpectedServerSnapshotToken { get; set; } = string.Empty;
+    public string MutationId { get; set; } = string.Empty;
+}
+
+public sealed class ItemDuplicateMergeCandidateDto
+{
+    public Guid ItemId { get; set; }
+    public string TenantCode { get; set; } = string.Empty;
+    public string OfficeCode { get; set; } = string.Empty;
+    public long Revision { get; set; }
+    public string NameOriginal { get; set; } = string.Empty;
+    public string SpecificationOriginal { get; set; } = string.Empty;
+    public decimal CurrentStock { get; set; }
+    public decimal WarehouseStock { get; set; }
+    public int InvoiceLineCount { get; set; }
+    public int RentalAssetCount { get; set; }
+    public int RentalAssignmentHistoryCount { get; set; }
+    public int RentalBillingTemplateCount { get; set; }
+    public int InventoryTransferLineCount { get; set; }
+    public int ItemWarehouseStockRowCount { get; set; }
+    public int ItemPriceGradeCount { get; set; }
+    public int InventoryLedgerEntryCount { get; set; }
+    public int TotalReferenceCount { get; set; }
+}
+
+public sealed class ItemDuplicateMergePreviewDto
+{
+    public List<ItemDuplicateMergeCandidateDto> Candidates { get; set; } = [];
+    public Guid CanonicalItemId { get; set; }
+    public string ServerSnapshotToken { get; set; } = string.Empty;
+    public bool CanMerge { get; set; }
+    public List<string> BlockingReasons { get; set; } = [];
+}
+
+public sealed class ItemDuplicateMergeResultDto
+{
+    public Guid CanonicalItemId { get; set; }
+    public List<Guid> TombstonedItemIds { get; set; } = [];
+    public string ServerSnapshotToken { get; set; } = string.Empty;
+    public int MovedInvoiceLineCount { get; set; }
+    public int MovedRentalAssetCount { get; set; }
+    public int UpdatedRentalBillingProfileCount { get; set; }
+    public int MovedInventoryTransferLineCount { get; set; }
+    public int MergedWarehouseStockRowCount { get; set; }
+    public bool IsReplay { get; set; }
 }
 
 public sealed class ItemPriceGradeDto : SyncEntityDto
@@ -641,9 +710,21 @@ public sealed class ItemWarehouseStockDto
     public Guid ItemId { get; set; }
     public string WarehouseCode { get; set; } = string.Empty;
     public decimal Quantity { get; set; }
-    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAtUtc { get; set; } = DateTime.UnixEpoch;
     public long Revision { get; set; }
     public long ExpectedRevision { get; set; }
+    /// <summary>
+    /// True only for a conflict snapshot that explicitly represents an absent server row.
+    /// A tombstone uses Revision = 0 because no durable server row/revision exists.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool IsDeleted { get; set; }
+}
+
+public sealed class ItemWarehouseStockSnapshotMarkerDto
+{
+    public Guid ItemId { get; set; }
+    public long MaxKnownRevision { get; set; }
 }
 
 public sealed class CustomerDetailDto
@@ -711,8 +792,12 @@ public sealed class ConflictLogDto
 
 public sealed class SyncPullResponse
 {
+    /// <summary>
+    /// Advances the client pull cursor only after this response payload has been applied successfully.
+    /// </summary>
     public long CurrentServerRevision { get; set; }
     public long LatestRevision => CurrentServerRevision;
+    public int ItemCatalogExtensionVersion { get; set; }
     public List<CompanyProfileDto> CompanyProfiles { get; set; } = new();
     public List<UnitDto> Units { get; set; } = new();
     public List<CustomerCategoryDto> CustomerCategories { get; set; } = new();
@@ -753,6 +838,8 @@ public sealed class SyncPushRequest
     public List<ItemDto> Items { get; set; } = new();
     public List<ItemPriceGradeDto> ItemPriceGrades { get; set; } = new();
     public List<ItemWarehouseStockDto> ItemWarehouseStocks { get; set; } = new();
+    public List<ItemWarehouseStockSnapshotMarkerDto>
+        ItemWarehouseStockSnapshotMarkers { get; set; } = new();
     public List<TransactionDto> Transactions { get; set; } = new();
     public List<TransactionAttachmentDto> TransactionAttachments { get; set; } = new();
     public List<InventoryTransferDto> InventoryTransfers { get; set; } = new();
@@ -770,10 +857,16 @@ public sealed class SyncPushResult
     public int AcceptedCount { get; set; }
     public int ConflictCount { get; set; }
     public int DuplicateMutationCount { get; set; }
+    /// <summary>
+    /// Informational committed server watermark. This is not a pull cursor: the push request has no
+    /// client since-revision, so clients must not advance their pull cursor from this value.
+    /// </summary>
     public long CurrentServerRevision { get; set; }
     public List<ConflictLogDto> Conflicts { get; set; } = new();
     public List<SyncNoticeDto> Notices { get; set; } = new();
     public List<SyncAcceptedRevisionDto> AcceptedRevisions { get; set; } = new();
+    public List<RecycleBinPurgeRecordDto> PurgeRecords { get; set; } = new();
+    public List<SyncAcceptedItemWarehouseStockKeyDto> AcceptedItemWarehouseStockKeys { get; set; } = new();
     /// <summary>Key = local invoice Id, Value = assigned server InvoiceNumber.</summary>
     public Dictionary<Guid, string> AssignedInvoiceNumbers { get; set; } = new();
     /// <summary>Key = local invoice Id, Value = assigned server TaxInvoiceNumber.</summary>
@@ -786,6 +879,18 @@ public sealed class SyncAcceptedRevisionDto
     public Guid EntityId { get; set; }
     public long Revision { get; set; }
     public DateTime UpdatedAtUtc { get; set; }
+    /// <summary>
+    /// Canonical deletion state accepted by the server. Null means the field was
+    /// not supplied by an older server or a legacy test response.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? IsDeleted { get; set; }
+}
+
+public sealed class SyncAcceptedItemWarehouseStockKeyDto
+{
+    public Guid ItemId { get; set; }
+    public string WarehouseCode { get; set; } = string.Empty;
 }
 
 public sealed class SyncNoticeDto
@@ -1045,8 +1150,13 @@ public sealed class UpdateTenantOfficeDefinitionRequest
 
 public sealed class AppUpdateManifestDto
 {
-    public string Channel { get; set; } = "stable";
+    public string Channel { get; set; } = string.Empty;
+    public string GenerationId { get; set; } = string.Empty;
     public DateTime GeneratedAtUtc { get; set; } = DateTime.UtcNow;
+    public int? ProtocolVersion { get; set; }
+    public int? PolicyVersion { get; set; }
+    public bool? RequiresUserAction { get; set; }
+    public string CompatibilityPolicy { get; set; } = string.Empty;
     public AppUpdatePackageDto? Desktop { get; set; }
     public AppUpdatePackageDto? Android { get; set; }
 }
@@ -1055,8 +1165,15 @@ public sealed class AppUpdatePackageDto
 {
     public string Platform { get; set; } = string.Empty;
     public string Version { get; set; } = string.Empty;
+    public int? Build { get; set; }
+    public int? ProtocolVersion { get; set; }
     public bool Mandatory { get; set; }
     public string MinimumSupportedVersion { get; set; } = string.Empty;
+    public int? MinimumSupportedBuild { get; set; }
+    public int? MinimumSupportedProtocolVersion { get; set; }
+    public int? PolicyVersion { get; set; }
+    public bool? RequiresUserAction { get; set; }
+    public string CompatibilityPolicy { get; set; } = string.Empty;
     public string PackageUrl { get; set; } = string.Empty;
     public string FileName { get; set; } = string.Empty;
     public string Sha256 { get; set; } = string.Empty;
@@ -1075,4 +1192,44 @@ public sealed class AppUpdateInstallerDto
     public string FileName { get; set; } = string.Empty;
     public string Sha256 { get; set; } = string.Empty;
     public long FileSize { get; set; }
+}
+
+public static class ClientCompatibilityHeaders
+{
+    public const string AppId = "X-GeoraePlan-Client-AppId";
+    public const string Platform = "X-GeoraePlan-Client-Platform";
+    public const string Version = "X-GeoraePlan-Client-Version";
+    public const string Build = "X-GeoraePlan-Client-Build";
+    public const string Protocol = "X-GeoraePlan-Client-Protocol";
+    public const int CurrentProtocolVersion = 1;
+}
+
+public sealed class ClientUpgradeRequiredResponse
+{
+    public string Error { get; set; } = "client_upgrade_required";
+    public string Message { get; set; } = string.Empty;
+    public string Upgrade { get; set; } = string.Empty;
+    public ClientCompatibilityIdentityDto Client { get; set; } = new();
+    public ClientCompatibilityPolicyDto Required { get; set; } = new();
+}
+
+public sealed class ClientCompatibilityIdentityDto
+{
+    public string AppId { get; set; } = string.Empty;
+    public string Platform { get; set; } = string.Empty;
+    public string Version { get; set; } = string.Empty;
+    public int Build { get; set; }
+    public int ProtocolVersion { get; set; }
+}
+
+public sealed class ClientCompatibilityPolicyDto
+{
+    public int PolicyVersion { get; set; }
+    public bool RequiresUserAction { get; set; }
+    public string MinimumVersion { get; set; } = string.Empty;
+    public int? MinimumBuild { get; set; }
+    public int? MinimumProtocolVersion { get; set; }
+    public string LatestVersion { get; set; } = string.Empty;
+    public int? LatestBuild { get; set; }
+    public string UpdateUrl { get; set; } = string.Empty;
 }

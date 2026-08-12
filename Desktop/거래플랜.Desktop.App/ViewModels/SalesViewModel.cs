@@ -318,12 +318,27 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
     private void LocalInventoryStateChanged(object? sender, EventArgs e)
     {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null)
+            return;
+
+        if (!dispatcher.CheckAccess())
+        {
+            _ = dispatcher.InvokeAsync(QueueInventoryReloadOnDispatcher);
+            return;
+        }
+
+        QueueInventoryReloadOnDispatcher();
+    }
+
+    private void QueueInventoryReloadOnDispatcher()
+    {
         if (_disposed)
             return;
 
         var version = Interlocked.Increment(ref _inventoryReloadVersion);
         UiTaskHelper.Forget(
-            RefreshItemsAfterInventoryChangedAsync(version),
+            () => RefreshItemsAfterInventoryChangedAsync(version),
             "SALES",
             "열린 전표창 품목/재고 최신화",
             ex =>
@@ -471,8 +486,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
     private async Task LoadInvoiceVersionsAsync(LocalInvoice invoice, int version)
     {
-        var versionGroupId = invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId;
-        var versions = await _local.GetInvoiceVersionsAsync(versionGroupId, _session);
+        var versions = await _local.GetInvoiceVersionsAsync(invoice.Id, _session);
         if (!IsCurrentInvoiceVersionLoad(version))
             return;
 
@@ -485,7 +499,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     {
         var version = Interlocked.Increment(ref _invoiceVersionLoadVersion);
         UiTaskHelper.Forget(
-            LoadInvoiceVersionsAsync(invoice, version),
+            () => LoadInvoiceVersionsAsync(invoice, version),
             "SALES",
             "전표 버전 조회",
             ex =>
@@ -575,7 +589,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     {
         var version = Interlocked.Increment(ref _customerPurchasePriceLoadVersion);
         UiTaskHelper.Forget(
-            RefreshCustomerPurchasePriceCacheAsync(customerId, version),
+            () => RefreshCustomerPurchasePriceCacheAsync(customerId, version),
             "SALES",
             "매입처별 최근 구매단가 조회",
             ex =>
@@ -728,7 +742,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     {
         var version = Interlocked.Increment(ref _paymentSummaryLoadVersion);
         UiTaskHelper.Forget(
-            RefreshPaymentSummaryAsync(version),
+            () => RefreshPaymentSummaryAsync(version),
             "SALES",
             "전표 수금/지급 요약 갱신",
             ex =>
@@ -2350,7 +2364,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             Owner = GetActiveWindow()
         };
 
-        var dialogResult = window.ShowDialog();
+        var dialogResult = DialogWindowCloseHelper.ShowDialog(window);
         if (dialogResult != true || !dialogViewModel.WasConfirmed)
             return null;
 

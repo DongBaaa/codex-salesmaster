@@ -41,7 +41,17 @@ public static class CustomerContractContentService
         var content = await api.DownloadCustomerContractContentAsync(contract.Id, ct);
         ValidateDownloadedContent(contract, content);
 
-        var cached = await local.CacheCustomerContractContentAsync(contract.Id, content, session, ct);
+        bool cached;
+        await local.OwnerScopeDataGate.WaitAsync(ct);
+        try
+        {
+            cached = await local.CacheCustomerContractContentAsync(contract.Id, content, session, ct);
+        }
+        finally
+        {
+            local.OwnerScopeDataGate.Release();
+        }
+
         if (!cached)
             throw new InvalidOperationException("계약서 PDF를 내려받았지만 로컬 저장값에 반영하지 못했습니다. 권한 범위와 동기화 상태를 확인하세요.");
 

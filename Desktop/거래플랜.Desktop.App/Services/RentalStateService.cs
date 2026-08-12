@@ -2,10 +2,12 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Text.Json;
 using ExcelDataReader;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.Extensions.DependencyInjection;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Infrastructure;
@@ -26,6 +28,22 @@ public sealed partial class RentalStateService
     public const int EquipmentDetailAssetLimit = 300;
     private const int BillingAssetCandidateResultLimit = 300;
     private const int LocalQueryContainsBatchSize = 500;
+    private const string RequestedBillingAssetUnavailableMessage =
+        "선택한 렌탈 자산 중 삭제되었거나 더 이상 존재하지 않는 자산이 있어 저장을 중단했습니다. 목록을 새로고침한 뒤 다시 선택하세요.";
+    private const string DuplicateBillingAssetReferenceMessage =
+        "같은 렌탈 자산이 청구 프로필의 표시 품목에 중복 포함되어 있어 저장을 중단했습니다. 자산은 한 표시 품목에 한 번만 포함하세요.";
+    private const string InvalidBillingTemplateAssetConfigurationMessage =
+        "청구 프로필의 자산 구성 JSON이 올바르지 않아 저장을 중단했습니다. 청구관리에서 구성을 확인한 뒤 다시 저장하세요.";
+    private const string ReferencedBillingAssetDeleteBlockedMessage =
+        "활성 렌탈 청구 프로필의 표시 품목에서 참조 중인 자산은 삭제할 수 없습니다. 청구관리에서 해당 자산을 먼저 제거한 뒤 다시 삭제하세요.";
+    private const string PendingLocalChangesMessage =
+        "같은 로컬 작업 공간에 아직 저장되지 않은 변경이 있어 렌탈 청구 저장을 시작할 수 없습니다. 진행 중인 변경을 먼저 저장하거나 취소한 뒤 다시 시도하세요.";
+    private const string ConflictingBillingRunIdentityMessage =
+        "렌탈 청구 실행 이력의 normalized RunKey와 RunId 연결이 서로 충돌하여 작업을 중단했습니다. 자동 병합이나 ID 교체 없이 데이터 무결성 점검에서 확인하세요.";
+    private const string MalformedBillingRunsJsonMessage =
+        "렌탈 청구 실행 이력 BillingRunsJson이 올바른 JSON 배열이 아니어서 작업을 중단했습니다. 원문을 덮어쓰지 않고 데이터 무결성 점검에서 확인하세요.";
+    private const string TombstonedBillingRunMessage =
+        "삭제 표시된 렌탈 청구 실행 이력은 다시 생성하거나 변경할 수 없습니다. 다른 청구 기간을 선택하세요.";
     private const int BillingRunReferenceBatchSize = 500;
     private const int AssetSearchCustomerMatchLimit = 600;
     private const string AlertDaysSettingKey = "Rental.AlertDaysBefore";
@@ -53,6 +71,12 @@ public sealed partial class RentalStateService
         string? CustomerName,
         string? ProfileKey,
         string? InstallSiteName);
+
+    private sealed record BillingAssetMutationValidation(
+        bool Success,
+        string Message,
+        HashSet<Guid> AssetIds,
+        HashSet<Guid> PreviousBillingProfileIds);
 
     private sealed record RentalCustomerCandidateLookup(Guid Id, string? NameOriginal, string? BusinessNumber);
 
@@ -153,6 +177,13 @@ public sealed partial class RentalStateService
     private bool _legacyAssignedUsernameCleanupCompleted;
     private IReadOnlyDictionary<string, string>? _officeMapCache;
 
+    public event EventHandler<RentalStateChangedEventArgs>? StateChanged;
+
+    internal Func<Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction, ValueTask>?
+        TombstoneTransactionDisposeAsyncForTesting { get; set; }
+
+    internal Func<ValueTask>? BeforeTombstoneCommitVerificationAsyncForTesting { get; set; }
+
     public RentalStateService(LocalDbContext db)
         : this(db, null, null)
     {
@@ -169,6 +200,58 @@ public sealed partial class RentalStateService
         _local = local;
         _serviceProvider = serviceProvider;
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+    }
+
+    internal void PublishSynchronizedStateChanges(
+        IEnumerable<Guid>? assetIds,
+        IEnumerable<Guid>? billingProfileIds)
+        => PublishStateChanged(assetIds, billingProfileIds, "동기화 수신");
+
+    internal bool TryPublishSynchronizedStateChanges(
+        IEnumerable<Guid>? assetIds,
+        IEnumerable<Guid>? billingProfileIds,
+        Func<bool> canContinue,
+        Func<IDisposable> enterSynchronousCallback)
+    {
+        ArgumentNullException.ThrowIfNull(canContinue);
+        ArgumentNullException.ThrowIfNull(enterSynchronousCallback);
+        return PublishStateChanged(
+            assetIds,
+            billingProfileIds,
+            "동기화 수신",
+            canContinue: canContinue,
+            enterSynchronousCallback: enterSynchronousCallback);
+    }
+
+    private bool PublishStateChanged(
+        IEnumerable<Guid>? assetIds,
+        IEnumerable<Guid>? billingProfileIds,
+        string reason,
+        object? origin = null,
+        Func<bool>? canContinue = null,
+        Func<IDisposable>? enterSynchronousCallback = null)
+    {
+        var args = new RentalStateChangedEventArgs(assetIds, billingProfileIds, reason, origin);
+        if (!args.HasRentalChanges || StateChanged is not { } handlers)
+            return canContinue?.Invoke() ?? true;
+
+        foreach (EventHandler<RentalStateChangedEventArgs> handler in handlers.GetInvocationList())
+        {
+            if (canContinue is not null && !canContinue())
+                return false;
+
+            using var callbackScope = enterSynchronousCallback?.Invoke();
+            try
+            {
+                handler(this, args);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Warn("RENTAL", $"렌탈 화면 변경 알림 처리 실패: reason={reason}, error={ex.Message}");
+            }
+        }
+
+        return canContinue?.Invoke() ?? true;
     }
 
     private async Task<LocalRentalBillingProfile?> ReloadRentalBillingProfileForMutationAsync(
@@ -2717,7 +2800,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (profileById.Count == 0)
             return;
 
-        var existingRunIdsByProfile = runsByProfile.ToDictionary(
+        var existingRunsByProfile = profileById.ToDictionary(
+            pair => pair.Key,
+            pair => GetAllBillingRuns(pair.Value));
+        var existingRunIdsByProfile = existingRunsByProfile.ToDictionary(
             pair => pair.Key,
             pair => pair.Value
                 .Where(run => run.RunId != Guid.Empty)
@@ -2870,10 +2956,17 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 runsByProfile[accumulator.ProfileId] = runs;
             }
 
-            if (runs.Any(run => run.RunId == accumulator.RunId))
+            var supplementalRun = BuildSupplementalFinancialBillingRun(profile, accumulator);
+            if (existingRunsByProfile.TryGetValue(accumulator.ProfileId, out var existingRuns) &&
+                existingRuns.Any(run => RentalBillingRunIdentityPolicy.SharesIdentity(run, supplementalRun)))
+            {
+                continue;
+            }
+
+            if (runs.Any(run => RentalBillingRunIdentityPolicy.SharesIdentity(run, supplementalRun)))
                 continue;
 
-            runs.Add(BuildSupplementalFinancialBillingRun(profile, accumulator));
+            runs.Add(supplementalRun);
         }
     }
 
@@ -4416,6 +4509,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
         await EnsureAdministrativeBusinessCachesAsync(session, ct);
         LogRentalLoadStep("Rental asset admin cache", stepStopwatch, BuildAssetFilterTimingDetail(filter));
 
+        await AssetSaveLock.WaitAsync(ct);
+        try
+        {
         stepStopwatch.Restart();
         var offices = await GetOfficeMapAsync(ct);
         var referenceDate = DateOnly.FromDateTime(DateTime.Today);
@@ -4491,6 +4587,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
             infoThreshold: TimeSpan.FromMilliseconds(600),
             warningThreshold: TimeSpan.FromSeconds(2));
         return result;
+        }
+        finally
+        {
+            AssetSaveLock.Release();
+        }
     }
 
     public async Task<RentalAssetViewRow?> GetAssetRowAsync(
@@ -4502,7 +4603,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return null;
 
         await EnsureAdministrativeBusinessCachesAsync(session, ct);
-
+        await AssetSaveLock.WaitAsync(ct);
+        try
+        {
         var offices = await GetOfficeMapAsync(ct);
         var referenceDate = DateOnly.FromDateTime(DateTime.Today);
         var asset = await ApplySharedAssetViewScope(_db.RentalAssets.AsNoTracking(), session)
@@ -4512,6 +4615,37 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         await NormalizeAssetCustomerDisplayNamesAsync([asset], ct);
         return CreateAssetViewRow(asset, offices, referenceDate);
+        }
+        finally
+        {
+            AssetSaveLock.Release();
+        }
+    }
+
+    public async Task<bool?> GetAssetDeletionStateAsync(
+        Guid assetId,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        if (assetId == Guid.Empty)
+            return null;
+
+        await AssetSaveLock.WaitAsync(ct);
+        try
+        {
+            return await ApplySharedAssetViewScope(
+                    _db.RentalAssets
+                        .IgnoreQueryFilters()
+                        .AsNoTracking(),
+                    session)
+                .Where(asset => asset.Id == assetId)
+                .Select(asset => (bool?)asset.IsDeleted)
+                .SingleOrDefaultAsync(ct);
+        }
+        finally
+        {
+            AssetSaveLock.Release();
+        }
     }
 
     private List<RentalAssetViewRow> BuildAssetViewRowsForDisplay(
@@ -5079,10 +5213,35 @@ WHERE ""AssignedUsername"" <> '';", ct);
         LocalRentalBillingProfile profile,
         SessionState session,
         IReadOnlyList<RentalBillingAssetLinkEdit>? assetLinkEdits = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        object? changeOrigin = null)
+    {
+        await AssetSaveLock.WaitAsync(ct);
+        try
+        {
+            return await SaveBillingProfileCoreAsync(profile, session, assetLinkEdits, ct, changeOrigin);
+        }
+        finally
+        {
+            AssetSaveLock.Release();
+        }
+    }
+
+    private async Task<LocalMutationResult> SaveBillingProfileCoreAsync(
+        LocalRentalBillingProfile profile,
+        SessionState session,
+        IReadOnlyList<RentalBillingAssetLinkEdit>? assetLinkEdits,
+        CancellationToken ct,
+        object? changeOrigin)
     {
         if (profile is null)
             throw new ArgumentNullException(nameof(profile));
+        if (HasPendingTrackedChanges())
+            return LocalMutationResult.Conflict(PendingLocalChangesMessage);
+        var templateValidationMessage = GetBillingTemplateAssetReferenceValidationMessage(
+            profile.BillingTemplateJson);
+        if (templateValidationMessage is not null)
+            return LocalMutationResult.Denied(templateValidationMessage);
 
         var existing = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == profile.Id, ct);
@@ -5265,12 +5424,15 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 profile.BillingTemplateJson = SerializeBillingTemplateItems(templateItems);
                 profile.MonthlyAmount = templateItems.Sum(item => ResolveTemplateMonthlyAmount(item));
                 profile.ItemName = BuildProfileItemName(profile, templateItems);
-                PreserveDuplicateBillingProfileOperationalState(profile, existing);
                 incomingTemplateHasExplicitAssetCoverage = HasExplicitIncludedAssetIds(templateItems);
             }
         }
         else if (existing is not null && duplicate is not null && duplicate.Id != existing.Id)
             return LocalMutationResult.Denied("같은 청구 프로필이 이미 존재합니다.");
+        templateValidationMessage = GetBillingTemplateAssetReferenceValidationMessage(
+            profile.BillingTemplateJson);
+        if (templateValidationMessage is not null)
+            return LocalMutationResult.Denied(templateValidationMessage);
 
         var now = DateTime.UtcNow;
         existing = await ReloadRentalBillingProfileForMutationAsync(existing, ct);
@@ -5283,6 +5445,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Where(id => id != Guid.Empty)
             .Distinct()
             .ToHashSet();
+        var instructedAssetIds = incomingAssetIds
+            .Concat((assetLinkEdits ?? Array.Empty<RentalBillingAssetLinkEdit>())
+                .Where(edit => edit is not null && edit.AssetId != Guid.Empty)
+                .Select(edit => edit.AssetId))
+            .Distinct()
+            .ToHashSet();
         var existingAssetIds = existing is null
             ? new HashSet<Guid>()
             : GetBillingTemplateItems(existing, Array.Empty<LocalRentalAsset>())
@@ -5290,7 +5458,20 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .Where(id => id != Guid.Empty)
                 .Distinct()
                 .ToHashSet();
+        var availableIncomingAssetIds = (await LoadRentalAssetsByIdsAsync(
+                incomingAssetIds,
+                ignoreQueryFilters: true,
+                asNoTracking: true,
+                excludeDeleted: true,
+                ct))
+            .Select(asset => asset.Id)
+            .ToHashSet();
+        if (!availableIncomingAssetIds.SetEquals(incomingAssetIds))
+            return LocalMutationResult.Denied(RequestedBillingAssetUnavailableMessage);
+
         var canEditLinkedAssets = CanEditRentalAssets(session);
+        var affectedAssetIds = new HashSet<Guid>();
+        var affectedBillingProfileIds = new HashSet<Guid>();
         if (!canEditLinkedAssets && !incomingAssetIds.SetEquals(existingAssetIds))
         {
             return LocalMutationResult.Denied(
@@ -5298,17 +5479,29 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
 
         if (canEditLinkedAssets &&
-            (incomingAssetIds.Count > 0 || profile.Id != Guid.Empty))
+            (instructedAssetIds.Count > 0 || profile.Id != Guid.Empty))
         {
             var affectedAssets = await _db.RentalAssets
                 .IgnoreQueryFilters()
+                .AsNoTracking()
                 .Where(asset => !asset.IsDeleted &&
-                                (incomingAssetIds.Contains(asset.Id) || asset.BillingProfileId == profile.Id))
+                                (instructedAssetIds.Contains(asset.Id) || asset.BillingProfileId == profile.Id))
                 .ToListAsync(ct);
+            var availableInstructedAssetIds = affectedAssets
+                .Where(asset => instructedAssetIds.Contains(asset.Id))
+                .Select(asset => asset.Id)
+                .ToHashSet();
+            if (!availableInstructedAssetIds.SetEquals(instructedAssetIds))
+                return LocalMutationResult.Denied(RequestedBillingAssetUnavailableMessage);
+
+            affectedAssetIds.UnionWith(affectedAssets.Select(asset => asset.Id));
             var mutableAssets = affectedAssets
                 .Where(asset => RentalAssetCanTransferToBillingProfileScope(asset, profile.TenantCode))
                 .ToList();
-            if (mutableAssets.Any(asset => !CanEditRentalAssetEntityScope(asset, session)))
+            var assetsRequiringEditPermission = affectedAssets
+                .Where(asset => mutableAssets.Contains(asset) || asset.BillingProfileId == profile.Id)
+                .ToList();
+            if (assetsRequiringEditPermission.Any(asset => !CanEditRentalAssetEntityScope(asset, session)))
             {
                 return LocalMutationResult.Denied(
                     "권한이 없는 업체 또는 지점의 렌탈 자산이 포함되어 있어 청구 연결을 저장할 수 없습니다.");
@@ -5320,10 +5513,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 .Select(id => id!.Value)
                 .Distinct()
                 .ToList();
+            affectedBillingProfileIds.UnionWith(previousProfileIds);
             if (previousProfileIds.Count > 0)
             {
                 var previousProfiles = await _db.RentalBillingProfiles
                     .IgnoreQueryFilters()
+                    .AsNoTracking()
                     .Where(current => previousProfileIds.Contains(current.Id) && !current.IsDeleted)
                     .ToListAsync(ct);
                 if (previousProfiles.Any(current => !CanEditRentalProfileEntityScope(current, session)))
@@ -5334,11 +5529,15 @@ WHERE ""AssignedUsername"" <> '';", ct);
             }
         }
 
+        if (existing is not null)
+            PreserveBillingProfileOperationalState(profile, existing);
+
         await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, profile, existing, ct);
         if (!LocalEntityConcurrencyGuard.TryPrepareForSave(profile, existing, "렌탈 청구", now, out var conflictMessage))
             return LocalMutationResult.Conflict(conflictMessage);
 
-        if (existing is null)
+        var profileWasNew = existing is null;
+        if (profileWasNew)
         {
             var deterministicProfileId = SyncIdentityGenerator.CreateRentalBillingProfileId(profile.ProfileKey);
             profile.Id = profile.Id == Guid.Empty
@@ -5348,15 +5547,64 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
         else
         {
-            _db.Entry(existing).CurrentValues.SetValues(profile);
+            _db.Entry(existing!).CurrentValues.SetValues(profile);
         }
 
-        await using var transaction = await _db.Database.BeginTransactionAsync(ct);
+        if (!TryDetachUnchangedBillingAssetMutationTargets(
+            affectedAssetIds,
+            affectedBillingProfileIds,
+            profile.Id))
+        {
+            RestoreOperationOwnedProfileBeforeTransaction(profileWasNew, profile, existing);
+            return LocalMutationResult.Conflict(PendingLocalChangesMessage);
+        }
+
+        if (HasUnexpectedPendingChangesBeforeProfileWrite(profile.Id))
+        {
+            RestoreOperationOwnedProfileBeforeTransaction(profileWasNew, profile, existing);
+            return LocalMutationResult.Conflict(PendingLocalChangesMessage);
+        }
+
+        await using var transaction = await _db.BeginRuntimeMutationTransactionAsync(ct);
         try
         {
             await _db.SaveChangesAsync(ct);
             if (canEditLinkedAssets)
             {
+                var validation = await ValidateBillingAssetMutationInTransactionAsync(
+                    profile,
+                    instructedAssetIds,
+                    session,
+                    ct);
+                affectedAssetIds.UnionWith(validation.AssetIds);
+                affectedBillingProfileIds.UnionWith(validation.PreviousBillingProfileIds);
+                if (!validation.Success)
+                {
+                    await RollbackAndRestoreBillingAssetMutationAsync(
+                        transaction,
+                        profileWasNew,
+                        profile.Id,
+                        affectedAssetIds.Concat(instructedAssetIds),
+                        affectedBillingProfileIds.Append(profile.Id),
+                        CancellationToken.None);
+                    return LocalMutationResult.Denied(validation.Message);
+                }
+
+                if (!TryDetachUnchangedBillingAssetMutationTargets(
+                    validation.AssetIds,
+                    validation.PreviousBillingProfileIds,
+                    profile.Id))
+                {
+                    await RollbackAndRestoreBillingAssetMutationAsync(
+                        transaction,
+                        profileWasNew,
+                        profile.Id,
+                        affectedAssetIds.Concat(instructedAssetIds),
+                        affectedBillingProfileIds.Append(profile.Id),
+                        CancellationToken.None);
+                    return LocalMutationResult.Conflict(PendingLocalChangesMessage);
+                }
+
                 await SyncBillingProfileAssetsAsync(
                     profile,
                     templateItems,
@@ -5368,17 +5616,340 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
             await transaction.CommitAsync(ct);
         }
-        catch
+        catch (InvalidOperationException ex)
+            when (string.Equals(ex.Message, RequestedBillingAssetUnavailableMessage, StringComparison.Ordinal))
         {
-            await transaction.RollbackAsync(ct);
+            await RollbackAndRestoreBillingAssetMutationAsync(
+                transaction,
+                profileWasNew,
+                profile.Id,
+                affectedAssetIds.Concat(instructedAssetIds),
+                affectedBillingProfileIds.Append(profile.Id),
+                CancellationToken.None);
+            return LocalMutationResult.Denied(ex.Message);
+        }
+        catch (OperationCanceledException)
+        {
+            try
+            {
+                await RollbackAndRestoreBillingAssetMutationAsync(
+                    transaction,
+                    profileWasNew,
+                    profile.Id,
+                    affectedAssetIds.Concat(instructedAssetIds),
+                    affectedBillingProfileIds.Append(profile.Id),
+                    CancellationToken.None);
+            }
+            catch (Exception cleanupException)
+            {
+                AppLogger.Warn(
+                    "RENTAL",
+                    $"렌탈 청구 저장 취소 후 rollback/추적 복구 실패: {cleanupException.Message}");
+            }
+
             throw;
         }
+        catch
+        {
+            await RollbackAndRestoreBillingAssetMutationAsync(
+                transaction,
+                profileWasNew,
+                profile.Id,
+                affectedAssetIds.Concat(instructedAssetIds),
+                affectedBillingProfileIds.Append(profile.Id),
+                CancellationToken.None);
+            throw;
+        }
+
+        affectedBillingProfileIds.Add(profile.Id);
+        PublishStateChanged(
+            affectedAssetIds,
+            affectedBillingProfileIds,
+            "렌탈 청구 프로필 및 연결 자산 저장",
+            changeOrigin);
 
         return LocalMutationResult.Ok(
             profile.Id,
             canEditLinkedAssets
                 ? "렌탈 청구 프로필과 연결 자산을 저장했습니다."
                 : "렌탈 청구 프로필을 저장했습니다. 자산 원본은 권한에 따라 변경하지 않았습니다.");
+    }
+
+    private async Task<BillingAssetMutationValidation> ValidateBillingAssetMutationInTransactionAsync(
+        LocalRentalBillingProfile profile,
+        IReadOnlyCollection<Guid> instructedAssetIds,
+        SessionState session,
+        CancellationToken ct)
+    {
+        var freshProfile = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current => current.Id == profile.Id, ct);
+        if (freshProfile is null || !CanEditRentalProfileEntityScope(freshProfile, session))
+        {
+            return new BillingAssetMutationValidation(
+                false,
+                "권한이 없어 최신 렌탈 청구 프로필 범위를 저장할 수 없습니다.",
+                [],
+                []);
+        }
+
+        var affectedAssets = await _db.RentalAssets
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(asset => !asset.IsDeleted &&
+                            (instructedAssetIds.Contains(asset.Id) || asset.BillingProfileId == profile.Id))
+            .ToListAsync(ct);
+        var affectedAssetIds = affectedAssets.Select(asset => asset.Id).ToHashSet();
+        var availableInstructedAssetIds = affectedAssets
+            .Where(asset => instructedAssetIds.Contains(asset.Id))
+            .Select(asset => asset.Id)
+            .ToHashSet();
+        if (!availableInstructedAssetIds.SetEquals(instructedAssetIds))
+        {
+            return new BillingAssetMutationValidation(
+                false,
+                RequestedBillingAssetUnavailableMessage,
+                affectedAssetIds,
+                []);
+        }
+
+        var mutableAssets = affectedAssets
+            .Where(asset => RentalAssetCanTransferToBillingProfileScope(asset, freshProfile.TenantCode))
+            .ToList();
+        var assetsRequiringEditPermission = affectedAssets
+            .Where(asset => mutableAssets.Contains(asset) || asset.BillingProfileId == profile.Id)
+            .ToList();
+        if (assetsRequiringEditPermission.Any(asset => !CanEditRentalAssetEntityScope(asset, session)))
+        {
+            return new BillingAssetMutationValidation(
+                false,
+                "권한이 없는 업체 또는 지점의 렌탈 자산이 포함되어 있어 청구 연결을 저장할 수 없습니다.",
+                affectedAssetIds,
+                []);
+        }
+
+        var previousProfileIds = mutableAssets
+            .Select(asset => asset.BillingProfileId)
+            .Where(id => id.HasValue && id.Value != Guid.Empty && id.Value != profile.Id)
+            .Select(id => id!.Value)
+            .ToHashSet();
+        if (previousProfileIds.Count == 0)
+        {
+            return new BillingAssetMutationValidation(
+                true,
+                string.Empty,
+                affectedAssetIds,
+                previousProfileIds);
+        }
+
+        var previousProfiles = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => previousProfileIds.Contains(current.Id) && !current.IsDeleted)
+            .ToListAsync(ct);
+        // 삭제되었거나 이미 정리된 이전 프로필을 가리키는 자산은 현재 자산 범위 권한으로
+        // 복구할 수 있어야 한다. 실제 활성 이전 프로필이 남아 있을 때만 그 프로필의
+        // 편집 범위를 추가로 확인한다.
+        if (previousProfiles.Any(current => !CanEditRentalProfileEntityScope(current, session)))
+        {
+            return new BillingAssetMutationValidation(
+                false,
+                "다른 청구 프로필에 연결된 자산을 이동할 권한이 없습니다. 기존 청구 담당자에게 연결 해제를 요청하세요.",
+                affectedAssetIds,
+                previousProfileIds);
+        }
+
+        return new BillingAssetMutationValidation(
+            true,
+            string.Empty,
+            affectedAssetIds,
+            previousProfileIds);
+    }
+
+    private bool HasPendingTrackedChanges()
+    {
+        _db.ChangeTracker.DetectChanges();
+        return _db.ChangeTracker.Entries().Any(entry =>
+            entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted);
+    }
+
+    private bool HasUnexpectedPendingChangesBeforeProfileWrite(Guid currentProfileId)
+    {
+        _db.ChangeTracker.DetectChanges();
+        return _db.ChangeTracker.Entries().Any(entry =>
+        {
+            if (entry.State is not (EntityState.Added or EntityState.Modified or EntityState.Deleted))
+                return false;
+
+            return entry.Entity is not LocalRentalBillingProfile profile ||
+                   profile.Id != currentProfileId ||
+                   entry.State is not (EntityState.Added or EntityState.Modified);
+        });
+    }
+
+    private bool TryDetachUnchangedBillingAssetMutationTargets(
+        IEnumerable<Guid> assetIds,
+        IEnumerable<Guid> billingProfileIds,
+        Guid currentProfileId)
+    {
+        var targetAssetIds = assetIds.Where(id => id != Guid.Empty).ToHashSet();
+        var assetEntries = _db.ChangeTracker.Entries<LocalRentalAsset>()
+            .Where(entry => targetAssetIds.Contains(entry.Entity.Id))
+            .ToList();
+        var targetProfileIds = billingProfileIds
+            .Where(id => id != Guid.Empty && id != currentProfileId)
+            .ToHashSet();
+        var profileEntries = _db.ChangeTracker.Entries<LocalRentalBillingProfile>()
+            .Where(entry => targetProfileIds.Contains(entry.Entity.Id))
+            .ToList();
+        if (assetEntries.Any(entry => entry.State != EntityState.Unchanged) ||
+            profileEntries.Any(entry => entry.State != EntityState.Unchanged))
+            return false;
+
+        foreach (var entry in assetEntries)
+            entry.State = EntityState.Detached;
+        foreach (var entry in profileEntries)
+            entry.State = EntityState.Detached;
+
+        return true;
+    }
+
+    private void RestoreOperationOwnedProfileBeforeTransaction(
+        bool profileWasNew,
+        LocalRentalBillingProfile profile,
+        LocalRentalBillingProfile? existing)
+    {
+        if (profileWasNew)
+        {
+            var profileEntry = _db.Entry(profile);
+            if (profileEntry.State != EntityState.Detached)
+                profileEntry.State = EntityState.Detached;
+            return;
+        }
+
+        if (existing is null)
+            return;
+
+        var existingEntry = _db.Entry(existing);
+        existingEntry.CurrentValues.SetValues(existingEntry.OriginalValues);
+        existingEntry.State = EntityState.Unchanged;
+    }
+
+    private async Task RollbackAndRestoreBillingAssetMutationAsync(
+        Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction,
+        bool profileWasNew,
+        Guid profileId,
+        IEnumerable<Guid> assetIds,
+        IEnumerable<Guid> billingProfileIds,
+        CancellationToken cleanupToken)
+    {
+        var targetAssetIds = assetIds.Where(id => id != Guid.Empty).ToHashSet();
+        var targetProfileIds = billingProfileIds.Where(id => id != Guid.Empty).ToHashSet();
+        targetProfileIds.Add(profileId);
+        DetachOperationOwnedBillingMutationEntries(targetAssetIds, targetProfileIds);
+
+        try
+        {
+            await transaction.RollbackAsync(cleanupToken);
+        }
+        finally
+        {
+            await RestoreBillingAssetMutationTrackerAsync(
+                profileWasNew,
+                profileId,
+                targetAssetIds,
+                targetProfileIds,
+                cleanupToken);
+        }
+    }
+
+    private void DetachOperationOwnedBillingMutationEntries(
+        IReadOnlySet<Guid> assetIds,
+        IReadOnlySet<Guid> billingProfileIds)
+    {
+        foreach (var entry in _db.ChangeTracker.Entries<LocalRentalAsset>()
+                     .Where(entry => assetIds.Contains(entry.Entity.Id))
+                     .ToList())
+        {
+            entry.State = EntityState.Detached;
+        }
+
+        foreach (var entry in _db.ChangeTracker.Entries<LocalRentalBillingProfile>()
+                     .Where(entry => billingProfileIds.Contains(entry.Entity.Id))
+                     .ToList())
+        {
+            entry.State = EntityState.Detached;
+        }
+
+        foreach (var entry in _db.ChangeTracker.Entries<LocalRentalAssetAssignmentHistory>()
+                     .Where(entry => assetIds.Contains(entry.Entity.AssetId))
+                     .ToList())
+        {
+            entry.State = EntityState.Detached;
+        }
+    }
+
+    private async Task RestoreBillingAssetMutationTrackerAsync(
+        bool profileWasNew,
+        Guid profileId,
+        IEnumerable<Guid> assetIds,
+        IEnumerable<Guid> billingProfileIds,
+        CancellationToken ct)
+    {
+        var targetAssetIds = assetIds.Where(id => id != Guid.Empty).ToHashSet();
+        foreach (var entry in _db.ChangeTracker.Entries<LocalRentalAsset>()
+                     .Where(entry => targetAssetIds.Contains(entry.Entity.Id))
+                     .ToList())
+        {
+            entry.State = EntityState.Detached;
+        }
+
+        var targetProfileIds = billingProfileIds.Where(id => id != Guid.Empty).ToHashSet();
+        targetProfileIds.Add(profileId);
+        foreach (var entry in _db.ChangeTracker.Entries<LocalRentalBillingProfile>()
+                     .Where(entry => targetProfileIds.Contains(entry.Entity.Id))
+                     .ToList())
+        {
+            entry.State = EntityState.Detached;
+        }
+
+        foreach (var entry in _db.ChangeTracker.Entries<LocalRentalAssetAssignmentHistory>()
+                     .Where(entry => targetAssetIds.Contains(entry.Entity.AssetId))
+                     .ToList())
+        {
+            entry.State = EntityState.Detached;
+        }
+
+        if (targetAssetIds.Count > 0)
+        {
+            await _db.RentalAssets
+                .IgnoreQueryFilters()
+                .Where(asset => targetAssetIds.Contains(asset.Id))
+                .LoadAsync(ct);
+            await _db.RentalAssetAssignmentHistories
+                .IgnoreQueryFilters()
+                .Where(history => targetAssetIds.Contains(history.AssetId))
+                .LoadAsync(ct);
+        }
+
+        if (targetProfileIds.Count > 0)
+        {
+            await _db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .Where(current => targetProfileIds.Contains(current.Id))
+                .LoadAsync(ct);
+        }
+
+        if (profileWasNew)
+        {
+            foreach (var entry in _db.ChangeTracker.Entries<LocalRentalBillingProfile>()
+                         .Where(entry => entry.Entity.Id == profileId && entry.State == EntityState.Added)
+                         .ToList())
+            {
+                entry.State = EntityState.Detached;
+            }
+        }
     }
 
     public async Task<LocalMutationResult> UpdateBillingProfileCyclesAsync(
@@ -5398,7 +5969,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return LocalMutationResult.Missing("청구주기를 통일할 렌탈 청구 프로필을 찾을 수 없습니다.");
 
         var normalizedCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(billingCycleMonths);
-        await using var transaction = await _db.Database.BeginTransactionAsync(ct);
+        await using var transaction = await _db.BeginRuntimeMutationTransactionAsync(ct);
         var profiles = await _db.RentalBillingProfiles
             .IgnoreQueryFilters()
             .Where(profile => profileIds.Contains(profile.Id) && !profile.IsDeleted)
@@ -5656,6 +6227,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return null;
         }
 
+        using var mutationLease = await RentalBillingProfileMutationGate.EnterAsync(_db, profileId, ct);
+        invoice = await _local.GetInvoiceAsync(invoiceId, ct);
+        if (invoice is null ||
+            invoice.LinkedRentalBillingProfileId != profileId ||
+            invoice.LinkedRentalBillingRunId is not Guid reloadedRunId ||
+            reloadedRunId == Guid.Empty)
+        {
+            result.SkippedCount++;
+            return null;
+        }
+        currentRunId = reloadedRunId;
+
         if (!TryInferSingleBillingMonthFromInvoice(invoice, out var billingMonth))
             return null;
 
@@ -5668,12 +6251,35 @@ WHERE ""AssignedUsername"" <> '';", ct);
             result.SkippedCount++;
             return null;
         }
+        var runIdentityConflict = GetBillingRunIdentityConflictResult(profile);
+        if (runIdentityConflict is not null)
+        {
+            result.SkippedCount++;
+            result.Notes.Add(runIdentityConflict.Message);
+            return null;
+        }
+        if (FindBillingRunById(profile, currentRunId)?.IsTombstoned == true)
+        {
+            result.SkippedCount++;
+            result.Notes.Add(TombstonedBillingRunMessage);
+            return null;
+        }
 
         var targetScheduledDate = BuildBillingDate(
             ResolveBillingMonthYear(invoice.InvoiceDate, billingMonth),
             billingMonth,
             profile.BillingDay);
-        var targetRun = BuildReferenceRepairRun(profile, targetScheduledDate, invoice.TotalAmount);
+        if (!TryBuildReferenceRepairRun(
+                profile,
+                targetScheduledDate,
+                invoice.TotalAmount,
+                out var targetRun,
+                out var targetRunConflictMessage))
+        {
+            result.SkippedCount++;
+            result.Notes.Add(targetRunConflictMessage);
+            return null;
+        }
         if (targetRun.RunId == Guid.Empty || targetRun.RunId == currentRunId)
             return null;
 
@@ -5719,12 +6325,20 @@ WHERE ""AssignedUsername"" <> '';", ct);
         RentalBillingReferenceRepairResult result,
         CancellationToken ct)
     {
+        using var mutationLease = await RentalBillingProfileMutationGate.EnterAsync(_db, profileId, ct);
         var profile = await _db.RentalBillingProfiles
             .IgnoreQueryFilters()
             .AsNoTracking()
             .FirstOrDefaultAsync(current => current.Id == profileId, ct);
         if (profile is null || !CanEditRentalProfileEntityScope(profile, session))
             return false;
+        var runIdentityConflict = GetBillingRunIdentityConflictResult(profile);
+        if (runIdentityConflict is not null)
+        {
+            result.SkippedCount++;
+            result.Notes.Add(runIdentityConflict.Message);
+            return false;
+        }
 
         var runs = GetBillingRuns(profile);
         var lastCompletedDate = runs
@@ -5745,7 +6359,17 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (!expectedScheduledDate.HasValue || expectedScheduledDate.Value > referenceDate)
             return false;
 
-        var expectedRun = BuildReferenceRepairRun(profile, expectedScheduledDate.Value, Math.Max(0m, profile.MonthlyAmount));
+        if (!TryBuildReferenceRepairRun(
+                profile,
+                expectedScheduledDate.Value,
+                Math.Max(0m, profile.MonthlyAmount),
+                out var expectedRun,
+                out var expectedRunConflictMessage))
+        {
+            result.SkippedCount++;
+            result.Notes.Add(expectedRunConflictMessage);
+            return false;
+        }
         if (expectedRun.RunId == Guid.Empty)
             return false;
 
@@ -5801,10 +6425,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 return false;
             }
 
+            expectedRun.BilledAmount = savedInvoiceResult.Invoice.TotalAmount;
             await RefreshBillingProfileAfterReferenceRepairAsync(
                 profileId,
                 previousRunId,
-                BuildReferenceRepairRun(profile, expectedScheduledDate.Value, savedInvoiceResult.Invoice.TotalAmount),
+                expectedRun,
                 removePreviousRunWhenUnreferenced: true,
                 ct);
 
@@ -5845,19 +6470,42 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (profile is null)
             return;
 
-        var runs = GetBillingRuns(profile);
+        var runs = GetAllBillingRuns(profile);
         if (removePreviousRunWhenUnreferenced &&
             previousRunId != Guid.Empty &&
             previousRunId != targetRun.RunId &&
+            runs.All(run => run.RunId != previousRunId || !run.IsTombstoned) &&
             !await HasActiveBillingRunReferencesAsync(profileId, previousRunId, ct))
         {
             runs.RemoveAll(run => run.RunId == previousRunId);
         }
 
+        if (RentalBillingRunIdentityPolicy.IsSuppressedByTombstone(runs, targetRun))
+            return;
+
         var existingIndex = runs.FindIndex(run => run.RunId == targetRun.RunId);
+
+        if (existingIndex < 0)
+        {
+            var normalizedTargetRunKey = SyncIdentityGenerator.NormalizeKey(targetRun.RunKey);
+            if (!string.IsNullOrWhiteSpace(normalizedTargetRunKey))
+            {
+                var normalizedMatches = runs
+                    .Select((run, index) => new { Run = run, Index = index })
+                    .Where(entry =>
+                        string.Equals(
+                            SyncIdentityGenerator.NormalizeKey(entry.Run.RunKey),
+                            normalizedTargetRunKey,
+                            StringComparison.Ordinal))
+                    .ToList();
+                existingIndex = normalizedMatches.Select(entry => entry.Index).FirstOrDefault(-1);
+            }
+        }
         if (existingIndex >= 0)
         {
             var existing = runs[existingIndex];
+            if (existing.RunId == Guid.Empty && targetRun.RunId != Guid.Empty)
+                existing.RunId = targetRun.RunId;
             existing.RunKey = targetRun.RunKey;
             existing.ScheduledDate = targetRun.ScheduledDate;
             existing.PeriodStartDate = targetRun.PeriodStartDate;
@@ -5880,17 +6528,51 @@ WHERE ""AssignedUsername"" <> '';", ct);
         await _db.SaveChangesAsync(ct);
     }
 
-    private RentalBillingRunModel BuildReferenceRepairRun(
+    private bool TryBuildReferenceRepairRun(
         LocalRentalBillingProfile profile,
         DateOnly scheduledDate,
-        decimal billedAmount)
+        decimal billedAmount,
+        out RentalBillingRunModel targetRun,
+        out string conflictMessage)
     {
+        targetRun = null!;
+        conflictMessage = string.Empty;
         var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths);
         var period = ResolveBillingPeriod(profile, scheduledDate, cycleMonths);
         var runKey = $"{period.StartDate:yyyyMMdd}-{period.EndDate:yyyyMMdd}";
-        var runId = SyncIdentityGenerator.CreateRentalBillingRunId(profile.Id, runKey);
+        var normalizedRunKey = SyncIdentityGenerator.NormalizeKey(runKey);
+        var matchingRuns = GetAllBillingRuns(profile)
+            .Where(run =>
+                string.Equals(
+                    SyncIdentityGenerator.NormalizeKey(run.RunKey),
+                    normalizedRunKey,
+                    StringComparison.Ordinal))
+            .ToList();
+        if (matchingRuns.Any(run => run.IsTombstoned))
+        {
+            conflictMessage = TombstonedBillingRunMessage;
+            return false;
+        }
+        var keyOnlyMatchCount = matchingRuns.Count(run => run.RunId == Guid.Empty);
+        var existingRunIds = matchingRuns
+            .Where(run =>
+                run.RunId != Guid.Empty)
+            .Select(run => run.RunId)
+            .Distinct()
+            .Take(2)
+            .ToArray();
+        if (keyOnlyMatchCount > 1 || existingRunIds.Length > 1)
+        {
+            conflictMessage =
+                $"프로필 {profile.Id:D}의 normalized RunKey {normalizedRunKey}에 RunId 없는 대상 행 {keyOnlyMatchCount:N0}건 또는 서로 다른 RunId가 여러 건 있어 자동 전표 연결 보정을 건너뛰었습니다.";
+            return false;
+        }
+
+        var runId = existingRunIds.Length == 1
+            ? existingRunIds[0]
+            : SyncIdentityGenerator.CreateRentalBillingRunId(profile.Id, runKey);
         var templateItems = GetBillingTemplateItems(profile);
-        return new RentalBillingRunModel
+        targetRun = new RentalBillingRunModel
         {
             RunId = runId == Guid.Empty ? Guid.NewGuid() : runId,
             RunKey = runKey,
@@ -5904,6 +6586,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             SettlementStatus = PaymentFlowConstants.SettlementStatusPending,
             Items = CloneTemplateItemsForRun(templateItems, cycleMonths)
         };
+        return true;
     }
 
     private async Task<int> RelinkRentalBillingTransactionsAsync(
@@ -6049,6 +6732,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         CancellationToken ct = default,
         long? expectedRevision = null)
     {
+        using var mutationLease = await RentalBillingProfileMutationGate.EnterAsync(_db, billingProfileId, ct);
         var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
         profile = await ReloadRentalBillingProfileForMutationAsync(profile, ct);
@@ -6061,6 +6745,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var operationAllowed = await TryEnsureRentalBillingProfileOperationAllowedAsync(profile, expectedRevision, ct);
         if (!operationAllowed.Success)
             return LocalMutationResult.Conflict(operationAllowed.ConflictMessage);
+        var runIdentityConflict = GetBillingRunIdentityConflictResult(profile);
+        if (runIdentityConflict is not null)
+            return runIdentityConflict;
         if (_local is null)
             return LocalMutationResult.Denied("렌탈 청구 전표 저장 서비스를 사용할 수 없습니다.");
         NormalizeBillingSchedule(profile, referenceDate);
@@ -6202,7 +6889,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
         UpsertBillingRun(profile, currentRun);
         profile.IsDirty = true;
         profile.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
+        var saveConflict = await TrySaveBillingProfileMutationAsync(billingProfileId, ct);
+        if (saveConflict is not null)
+            return saveConflict;
         return LocalMutationResult.Ok(
             billingProfileId,
             reusedExistingInvoice ? "이미 생성된 렌탈 청구 전표를 열었습니다." : "렌탈 청구를 시작했습니다.",
@@ -6226,7 +6915,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
             ForceOverride = true,
             ResetDocumentNumbers = resetDocumentNumbers
         };
-        var saveResult = await _local.SaveInvoiceAsync(invoice, saveContext, session, ct);
+        var saveResult = await _local.SaveInvoiceAsync(
+            invoice,
+            saveContext,
+            session,
+            ct,
+            skipRentalSettlementRecalculation: true);
         if (!saveResult.Success)
         {
             var message = string.IsNullOrWhiteSpace(saveResult.Message)
@@ -6406,6 +7100,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         CancellationToken ct = default,
         long? expectedRevision = null)
     {
+        using var mutationLease = await RentalBillingProfileMutationGate.EnterAsync(_db, billingProfileId, ct);
         var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
         profile = await ReloadRentalBillingProfileForMutationAsync(profile, ct);
@@ -6415,13 +7110,19 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구를 보류할 수 없습니다.");
         if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
             return LocalMutationResult.Conflict(conflictMessage);
+        var runIdentityConflict = GetBillingRunIdentityConflictResult(profile);
+        if (runIdentityConflict is not null)
+            return runIdentityConflict;
 
         NormalizeBillingSchedule(profile, referenceDate);
+        var normalizedNote = (note ?? string.Empty).Trim();
+        var currentRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: true);
+        if (currentRun is null || currentRun.IsTombstoned)
+            return LocalMutationResult.Denied(TombstonedBillingRunMessage);
+
         profile.BillingStatus = PaymentFlowConstants.BillingStatusOnHold;
         profile.CompletionStatus = PaymentFlowConstants.CompletionPending;
         profile.RequiresFollowUp = true;
-        var normalizedNote = (note ?? string.Empty).Trim();
-        var currentRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: true);
         if (currentRun is not null)
         {
             currentRun.Status = PaymentFlowConstants.BillingStatusOnHold;
@@ -6430,8 +7131,69 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
         profile.IsDirty = true;
         profile.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
+        var saveConflict = await TrySaveBillingProfileMutationAsync(billingProfileId, ct);
+        if (saveConflict is not null)
+            return saveConflict;
         return LocalMutationResult.Ok(billingProfileId, "렌탈 청구를 보류했습니다.");
+    }
+
+    public async Task<LocalMutationResult> CancelBillingAsync(
+        Guid billingProfileId,
+        string note,
+        SessionState session,
+        CancellationToken ct = default,
+        long? expectedRevision = null)
+        => await CancelBillingAsync(
+            billingProfileId,
+            DateOnly.FromDateTime(DateTime.Today),
+            note,
+            session,
+            ct,
+            expectedRevision);
+
+    public async Task<LocalMutationResult> CancelBillingAsync(
+        Guid billingProfileId,
+        DateOnly referenceDate,
+        string note,
+        SessionState session,
+        CancellationToken ct = default,
+        long? expectedRevision = null)
+    {
+        using var mutationLease = await RentalBillingProfileMutationGate.EnterAsync(_db, billingProfileId, ct);
+        var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
+        profile = await ReloadRentalBillingProfileForMutationAsync(profile, ct);
+        if (profile is null)
+            return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
+        if (!CanEditRentalProfileEntityScope(profile, session))
+            return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구를 취소할 수 없습니다.");
+        if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
+            return LocalMutationResult.Conflict(conflictMessage);
+        var runIdentityConflict = GetBillingRunIdentityConflictResult(profile);
+        if (runIdentityConflict is not null)
+            return runIdentityConflict;
+
+        NormalizeBillingSchedule(profile, referenceDate);
+        var normalizedNote = (note ?? string.Empty).Trim();
+        var currentRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: true);
+        if (currentRun is null || currentRun.IsTombstoned)
+            return LocalMutationResult.Denied(TombstonedBillingRunMessage);
+
+        profile.BillingStatus = PaymentFlowConstants.BillingStatusCancelled;
+        profile.CompletionStatus = PaymentFlowConstants.CompletionPending;
+        if (currentRun is not null)
+        {
+            currentRun.Status = PaymentFlowConstants.BillingStatusCancelled;
+            if (!string.IsNullOrWhiteSpace(normalizedNote))
+                currentRun.Note = normalizedNote;
+            UpsertBillingRun(profile, currentRun);
+        }
+        profile.IsDirty = true;
+        profile.UpdatedAtUtc = DateTime.UtcNow;
+        var saveConflict = await TrySaveBillingProfileMutationAsync(billingProfileId, ct);
+        if (saveConflict is not null)
+            return saveConflict;
+        return LocalMutationResult.Ok(billingProfileId, "렌탈 청구를 취소했습니다. 청구 프로필과 기존 전표·입금 내역은 유지됩니다.");
     }
 
     public async Task<LocalMutationResult> RegisterBillingSettlementAsync(
@@ -6444,6 +7206,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         long? expectedRevision = null,
         Guid? billingRunId = null)
     {
+        using var mutationLease = await RentalBillingProfileMutationGate.EnterAsync(_db, billingProfileId, ct);
         var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
         profile = await ReloadRentalBillingProfileForMutationAsync(profile, ct);
@@ -6455,13 +7218,21 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return LocalMutationResult.Denied("권한이 없어 렌탈 수금을 등록할 수 없습니다. 수금/지급 편집 권한이 필요합니다.");
         if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
             return LocalMutationResult.Conflict(conflictMessage);
+        var runIdentityConflict = GetBillingRunIdentityConflictResult(profile);
+        if (runIdentityConflict is not null)
+            return runIdentityConflict;
 
         NormalizeBillingSchedule(profile, referenceDate);
         var currentRun = FindBillingRunById(profile, billingRunId);
+        if (currentRun?.IsTombstoned == true)
+            return LocalMutationResult.Denied(TombstonedBillingRunMessage);
         if (billingRunId.HasValue && billingRunId.Value != Guid.Empty && currentRun is null)
             return LocalMutationResult.Denied("선택한 조회/작성 기준일의 청구 정보를 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도하세요.");
 
         currentRun ??= GetOrCreateBillingRun(profile, referenceDate, persistChanges: true);
+        if (currentRun is null || currentRun.IsTombstoned)
+            return LocalMutationResult.Denied(TombstonedBillingRunMessage);
+
         var billedAmount = currentRun?.BilledAmount ?? profile.MonthlyAmount;
         var amount = settledAmount.GetValueOrDefault(billedAmount);
         if (amount < 0m)
@@ -6522,7 +7293,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
             };
             ApplyRentalBillingMethodReceiptAmount(transaction, profile.BillingMethod, settlementDelta);
 
-            var saveTransactionResult = await _local.SaveTransactionAsync(transaction, session, ct);
+            var saveTransactionResult = await _local.SaveTransactionAsync(
+                transaction,
+                session,
+                ct,
+                skipRentalSettlementRecalculation: true);
             if (!saveTransactionResult.Success)
                 return ConvertOfficeMutationResult(saveTransactionResult, "렌탈 수금을 저장할 수 없습니다.");
 
@@ -6613,7 +7388,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         profile.IsDirty = true;
         profile.UpdatedAtUtc = now;
-        await _db.SaveChangesAsync(ct);
+        var saveConflict = await TrySaveBillingProfileMutationAsync(billingProfileId, ct);
+        if (saveConflict is not null)
+            return saveConflict;
         return LocalMutationResult.Ok(billingProfileId, "수금을 등록했습니다.");
     }
 
@@ -6628,6 +7405,16 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (billingProfileId == Guid.Empty || billingRunId == Guid.Empty)
             return LocalMutationResult.Missing("삭제할 청구/입금 내역을 찾을 수 없습니다.");
 
+        using var mutationLease = await RentalBillingProfileMutationGate.EnterAsync(_db, billingProfileId, ct);
+        _db.ChangeTracker.DetectChanges();
+        if (_db.ChangeTracker.Entries<LocalRentalBillingProfile>().Any(entry =>
+                entry.Entity.Id == billingProfileId &&
+                entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted))
+        {
+            return LocalMutationResult.Conflict(
+                "삭제 대상 렌탈 청구 프로필에 아직 저장되지 않은 변경이 있어 삭제를 중단했습니다. 변경을 먼저 저장하거나 취소한 뒤 다시 시도하세요.");
+        }
+
         var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
         profile = await ReloadRentalBillingProfileForMutationAsync(profile, ct);
@@ -6637,8 +7424,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구/입금 내역을 삭제할 수 없습니다.");
         if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
             return LocalMutationResult.Conflict(conflictMessage);
+        var runIdentityConflict = GetBillingRunIdentityConflictResult(profile);
+        if (runIdentityConflict is not null)
+            return runIdentityConflict;
 
         var run = FindBillingRunById(profile, billingRunId);
+        if (run?.IsTombstoned == true)
+            return LocalMutationResult.Denied(TombstonedBillingRunMessage);
         if (run is null)
         {
             var supplementalRunsByProfile = BuildBillingRunsByProfile([profile]);
@@ -6648,6 +7440,23 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
             if (run is null)
                 return LocalMutationResult.Missing("선택한 조회/작성 기준일의 청구 정보를 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도하세요.");
+        }
+
+        var isHoldOrCancelledRun = IsHoldOrCancelledBillingRun(run);
+        var hasFinancialEvidenceForExistingHistoryDelete = isHoldOrCancelledRun &&
+            await HasActiveBillingRunFinancialEvidenceForTombstoneAsync(
+                billingProfileId,
+                billingRunId,
+                ct);
+        if (CanTombstoneBillingRunWithoutEvidence(run) &&
+            !hasFinancialEvidenceForExistingHistoryDelete)
+        {
+            return await TombstonePlannedBillingRunAsync(
+                billingProfileId,
+                billingRunId,
+                session,
+                expectedRevision,
+                ct);
         }
 
         var linkedInvoices = await _db.Invoices.IgnoreQueryFilters()
@@ -6671,6 +7480,21 @@ WHERE ""AssignedUsername"" <> '';", ct);
             .Select(invoice => invoice.Id)
             .Distinct()
             .ToList();
+        var linkedInvoiceVersionGroupIds = linkedInvoices
+            .Select(invoice => invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+        var invoiceAggregateIds = linkedInvoiceIds.ToHashSet();
+        foreach (var batchIds in linkedInvoiceVersionGroupIds.Chunk(LocalQueryContainsBatchSize))
+        {
+            var scopedBatchIds = batchIds;
+            invoiceAggregateIds.UnionWith(await _db.Invoices.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(invoice => scopedBatchIds.Contains(invoice.VersionGroupId))
+                .Select(invoice => invoice.Id)
+                .ToListAsync(ct));
+        }
         var invoiceDeleteTargets = linkedInvoices
             .GroupBy(invoice => invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId)
             .Select(group => group
@@ -6711,11 +7535,37 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         int removedRunCount;
         int deletedLogCount;
-        await using (var deleteScope = await _db.Database.BeginTransactionAsync(ct))
+        var trackerSnapshot = CaptureTrackedEntrySnapshot();
+        var pendingTrackerSnapshot = trackerSnapshot
+            .Where(snapshot => snapshot.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+            .ToList();
+        var billingYearMonth = $"{run.ScheduledDate.Year:0000}-{run.ScheduledDate.Month:00}";
+        if (HasPendingBillingHistoryDeleteTargetConflict(
+                pendingTrackerSnapshot,
+                billingProfileId,
+                billingRunId,
+                invoiceAggregateIds,
+                linkedTransactions.Select(transaction => transaction.Id),
+                linkedPaymentIds,
+                billingYearMonth))
         {
+            return LocalMutationResult.Conflict(
+                "삭제 대상 청구/입금 내역에 아직 저장되지 않은 변경이 있어 삭제를 중단했습니다. 변경을 먼저 저장하거나 취소한 뒤 다시 시도하세요.");
+        }
+
+        var deleteScope = await _db.BeginRuntimeMutationTransactionAsync(ct);
+        var deleteCommitted = false;
+        try
+        {
+            SuspendTrackedEntries(pendingTrackerSnapshot);
             foreach (var transaction in linkedTransactions)
             {
-                var deleteTransactionResult = await _local!.DeleteTransactionAsync(transaction.Id, session, transaction.Revision, ct);
+                var deleteTransactionResult = await _local!.DeleteTransactionAsync(
+                    transaction.Id,
+                    session,
+                    transaction.Revision,
+                    ct,
+                    skipRentalSettlementRecalculation: true);
                 if (!deleteTransactionResult.Success)
                     return ConvertOfficeMutationResult(deleteTransactionResult, "연결된 입금 내역을 삭제할 수 없습니다.");
             }
@@ -6726,7 +7576,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     invoiceTarget.Id,
                     session,
                     expectedRevision: expectedInvoiceRevision ?? invoiceTarget.Revision,
-                    ct: ct);
+                    ct: ct,
+                    skipRentalSettlementRecalculation: true);
                 if (!deleteInvoiceResult.Success)
                     return ConvertOfficeMutationResult(deleteInvoiceResult, "연결된 판매전표를 삭제할 수 없습니다.");
             }
@@ -6737,11 +7588,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
 
             var now = DateTime.UtcNow;
-            var runs = GetBillingRuns(profile);
-            removedRunCount = runs.RemoveAll(current => current.RunId == billingRunId);
+            var runs = GetAllBillingRuns(profile);
+            var identityGroup = RentalBillingRunIdentityPolicy.GetIdentityGroup(runs, run)
+                .ToHashSet(ReferenceEqualityComparer.Instance);
+            removedRunCount = runs.RemoveAll(identityGroup.Contains);
             await RefreshBillingProfileAfterHistoryDeleteAsync(profile, runs, ct);
 
-            var billingYearMonth = $"{run.ScheduledDate.Year:0000}-{run.ScheduledDate.Month:00}";
             var logs = await _db.RentalBillingLogs.IgnoreQueryFilters()
                 .Where(log => log.BillingProfileId == billingProfileId && log.BillingYearMonth == billingYearMonth)
                 .ToListAsync(ct);
@@ -6759,8 +7611,54 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
             profile.IsDirty = true;
             profile.UpdatedAtUtc = now;
-            await _db.SaveChangesAsync(ct);
-            await deleteScope.CommitAsync(ct);
+            var deleteSaveConflict = await TrySaveBillingProfileMutationAsync(billingProfileId, ct);
+            if (deleteSaveConflict is not null)
+                return deleteSaveConflict;
+            _db.ChangeTracker.Clear();
+            RestoreTrackedEntrySnapshot(
+                pendingTrackerSnapshot,
+                detachEntriesNotInSnapshots: false,
+                throwOnFailure: true);
+            await deleteScope.CommitAsync(CancellationToken.None);
+            deleteCommitted = true;
+        }
+        finally
+        {
+            if (!deleteCommitted)
+            {
+                try
+                {
+                    await deleteScope.RollbackAsync(CancellationToken.None);
+                }
+                catch
+                {
+                    // Preserve the original delete failure, cancellation, or early result.
+                }
+
+                try
+                {
+                    await deleteScope.DisposeAsync();
+                }
+                catch
+                {
+                    // Uncommitted cleanup is best effort and must not replace the original outcome.
+                }
+
+                RestoreTrackedEntrySnapshot(trackerSnapshot);
+            }
+            else
+            {
+                try
+                {
+                    await deleteScope.DisposeAsync();
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.Warn(
+                        "RENTAL",
+                        $"청구/입금 내역 삭제 commit 후 transaction 정리 실패: {ex.Message}");
+                }
+            }
         }
 
         if (removedRunCount == 0 &&
@@ -6781,6 +7679,604 @@ WHERE ""AssignedUsername"" <> '';", ct);
             deletedParts.Add("청구월 기록");
         var deletedSummary = deletedParts.Count == 0 ? "선택 내역" : string.Join(", ", deletedParts);
         return LocalMutationResult.Ok(billingProfileId, $"{deletedSummary}을 삭제했습니다.");
+    }
+
+    private sealed record RentalBillingTrackedEntrySnapshot(
+        object Entity,
+        EntityState State,
+        PropertyValues CurrentValues,
+        PropertyValues OriginalValues,
+        IReadOnlySet<string> ModifiedPropertyNames);
+
+    private List<RentalBillingTrackedEntrySnapshot> CaptureTrackedEntrySnapshot()
+    {
+        _db.ChangeTracker.DetectChanges();
+        return _db.ChangeTracker.Entries()
+            .Select(entry => new RentalBillingTrackedEntrySnapshot(
+                entry.Entity,
+                entry.State,
+                entry.CurrentValues.Clone(),
+                entry.OriginalValues.Clone(),
+                entry.Properties
+                    .Where(property => property.IsModified)
+                    .Select(property => property.Metadata.Name)
+                    .ToHashSet(StringComparer.Ordinal)))
+            .ToList();
+    }
+
+    private static bool HasPendingBillingHistoryDeleteTargetConflict(
+        IReadOnlyCollection<RentalBillingTrackedEntrySnapshot> pendingSnapshots,
+        Guid billingProfileId,
+        Guid billingRunId,
+        IEnumerable<Guid> linkedInvoiceIds,
+        IEnumerable<Guid> linkedTransactionIds,
+        IEnumerable<Guid> linkedPaymentIds,
+        string billingYearMonth)
+    {
+        var invoiceIds = linkedInvoiceIds.ToHashSet();
+        var transactionIds = linkedTransactionIds.ToHashSet();
+        var paymentIds = linkedPaymentIds.ToHashSet();
+        return pendingSnapshots.Any(snapshot => snapshot.Entity switch
+        {
+            LocalRentalBillingProfile profile => profile.Id == billingProfileId,
+            LocalInvoice invoice =>
+                invoiceIds.Contains(invoice.Id) ||
+                invoice.LinkedRentalBillingProfileId == billingProfileId &&
+                invoice.LinkedRentalBillingRunId == billingRunId,
+            LocalInvoiceLine line => invoiceIds.Contains(line.InvoiceId),
+            LocalTransaction transaction =>
+                transactionIds.Contains(transaction.Id) ||
+                transaction.LinkedRentalBillingProfileId == billingProfileId &&
+                transaction.LinkedRentalBillingRunId == billingRunId ||
+                transaction.LinkedInvoiceId.HasValue && invoiceIds.Contains(transaction.LinkedInvoiceId.Value),
+            LocalPayment payment =>
+                paymentIds.Contains(payment.Id) ||
+                transactionIds.Contains(payment.Id) ||
+                invoiceIds.Contains(payment.InvoiceId),
+            LocalTransactionAttachment attachment => transactionIds.Contains(attachment.TransactionId),
+            LocalRentalBillingLog log =>
+                log.BillingProfileId == billingProfileId &&
+                string.Equals(log.BillingYearMonth, billingYearMonth, StringComparison.Ordinal),
+            LocalInventoryMovement or
+                LocalStockLayer or
+                LocalCostAllocation or
+                LocalItemWarehouseStock or
+                LocalSerialLedger or
+                LocalInvoiceLineSerial or
+                LocalItem => true,
+            _ => false
+        });
+    }
+
+    private async Task<bool> HasPendingPlannedTombstoneTargetConflictAsync(
+        IReadOnlyCollection<RentalBillingTrackedEntrySnapshot> pendingSnapshots,
+        Guid billingProfileId,
+        Guid billingRunId,
+        CancellationToken ct)
+    {
+        if (pendingSnapshots.Any(snapshot =>
+                snapshot.Entity is LocalRentalBillingProfile profile &&
+                profile.Id == billingProfileId))
+        {
+            return true;
+        }
+
+        var targetInvoiceIds = (await _db.Invoices.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(invoice =>
+                    !invoice.IsDeleted &&
+                    invoice.IsLatestVersion &&
+                    invoice.LinkedRentalBillingProfileId == billingProfileId &&
+                    invoice.LinkedRentalBillingRunId == billingRunId)
+                .Select(invoice => invoice.Id)
+                .ToListAsync(ct))
+            .ToHashSet();
+        foreach (var pendingInvoice in pendingSnapshots
+                     .Select(snapshot => snapshot.Entity)
+                     .OfType<LocalInvoice>()
+                     .Where(invoice =>
+                         invoice.LinkedRentalBillingProfileId == billingProfileId &&
+                         invoice.LinkedRentalBillingRunId == billingRunId))
+        {
+            targetInvoiceIds.Add(pendingInvoice.Id);
+        }
+
+        return pendingSnapshots.Any(snapshot => snapshot.Entity switch
+        {
+            LocalInvoice invoice =>
+                invoice.LinkedRentalBillingProfileId == billingProfileId &&
+                invoice.LinkedRentalBillingRunId == billingRunId,
+            LocalTransaction transaction =>
+                transaction.LinkedRentalBillingProfileId == billingProfileId &&
+                transaction.LinkedRentalBillingRunId == billingRunId ||
+                transaction.LinkedInvoiceId.HasValue && targetInvoiceIds.Contains(transaction.LinkedInvoiceId.Value),
+            LocalPayment payment => targetInvoiceIds.Contains(payment.InvoiceId),
+            LocalInvoiceLine line => targetInvoiceIds.Contains(line.InvoiceId),
+            LocalInvoiceLineSerial serial => targetInvoiceIds.Contains(serial.InvoiceId),
+            _ => false
+        });
+    }
+
+    private void SuspendTrackedEntries(
+        IReadOnlyCollection<RentalBillingTrackedEntrySnapshot> snapshots)
+    {
+        foreach (var snapshot in snapshots)
+            _db.Entry(snapshot.Entity).State = EntityState.Detached;
+    }
+
+    private void RestoreTrackedEntrySnapshot(
+        IReadOnlyCollection<RentalBillingTrackedEntrySnapshot> snapshots,
+        bool detachEntriesNotInSnapshots = true,
+        bool throwOnFailure = false)
+    {
+        var originalEntities = snapshots
+            .Select(snapshot => snapshot.Entity)
+            .ToHashSet(ReferenceEqualityComparer.Instance);
+        if (detachEntriesNotInSnapshots)
+        {
+            foreach (var entry in _db.ChangeTracker.Entries().ToList())
+            {
+                if (originalEntities.Contains(entry.Entity))
+                    continue;
+
+                try
+                {
+                    entry.State = EntityState.Detached;
+                }
+                catch
+                {
+                    if (throwOnFailure)
+                        throw;
+                    // Best-effort cleanup must not replace the original delete failure.
+                }
+            }
+        }
+
+        foreach (var snapshot in snapshots)
+        {
+            try
+            {
+                var entry = _db.Entry(snapshot.Entity);
+                if (entry.State == EntityState.Detached)
+                {
+                    entry.State = snapshot.State == EntityState.Added
+                        ? EntityState.Added
+                        : EntityState.Unchanged;
+                }
+                else if (snapshot.State is EntityState.Unchanged or EntityState.Modified)
+                {
+                    entry.State = EntityState.Unchanged;
+                }
+
+                entry.CurrentValues.SetValues(snapshot.CurrentValues);
+                entry.OriginalValues.SetValues(snapshot.OriginalValues);
+                switch (snapshot.State)
+                {
+                    case EntityState.Modified:
+                        foreach (var property in entry.Properties)
+                        {
+                            property.IsModified = snapshot.ModifiedPropertyNames.Contains(property.Metadata.Name);
+                        }
+                        break;
+                    case EntityState.Added:
+                        entry.State = EntityState.Added;
+                        break;
+                    case EntityState.Deleted:
+                        entry.State = EntityState.Deleted;
+                        break;
+                    default:
+                        entry.State = snapshot.State;
+                        break;
+                }
+            }
+            catch
+            {
+                if (throwOnFailure)
+                    throw;
+                // Continue restoring independent tracked entries without hiding the original failure.
+            }
+        }
+    }
+
+    private async Task<LocalMutationResult> TombstonePlannedBillingRunAsync(
+        Guid billingProfileId,
+        Guid billingRunId,
+        SessionState session,
+        long? expectedRevision,
+        CancellationToken ct)
+    {
+        var trackerSnapshot = CaptureTrackedEntrySnapshot();
+        var pendingTrackerSnapshot = trackerSnapshot
+            .Where(snapshot => snapshot.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+            .ToList();
+        var successfulTrackerSnapshot = trackerSnapshot
+            .Where(snapshot => snapshot.Entity is not LocalRentalBillingProfile profile
+                               || profile.Id != billingProfileId)
+            .ToList();
+        if (await HasPendingPlannedTombstoneTargetConflictAsync(
+                pendingTrackerSnapshot,
+                billingProfileId,
+                billingRunId,
+                ct))
+        {
+            return LocalMutationResult.Conflict(
+                "삭제 표시 대상 예정 청구 또는 연결 근거에 아직 저장되지 않은 변경이 있어 작업을 중단했습니다. 변경을 먼저 저장하거나 취소한 뒤 다시 시도하세요.");
+        }
+
+        var tombstoneScope = await _db.BeginRuntimeMutationTransactionAsync(ct);
+        var tombstoneCommitted = false;
+        var tombstoneCommitOutcomeUnknown = false;
+        var tombstoneScopeDisposed = false;
+        try
+        {
+            var uncommittedProfileSnapshot = await _db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(profile => profile.Id == billingProfileId)
+                .Select(profile => new { profile.BillingRunsJson })
+                .SingleOrDefaultAsync(ct);
+            SuspendTrackedEntries(pendingTrackerSnapshot);
+            var result = await TombstonePlannedBillingRunCoreAsync(
+                billingProfileId,
+                billingRunId,
+                session,
+                expectedRevision,
+                ct);
+            if (!result.Success)
+                return result;
+
+            var expectedCommittedBillingRunsJson = _db.ChangeTracker
+                .Entries<LocalRentalBillingProfile>()
+                .Where(entry => entry.Entity.Id == billingProfileId)
+                .Select(entry => entry.Entity.BillingRunsJson)
+                .Single();
+
+            _db.ChangeTracker.Clear();
+            RestoreTrackedEntrySnapshot(
+                successfulTrackerSnapshot,
+                detachEntriesNotInSnapshots: false,
+                throwOnFailure: true);
+            try
+            {
+                await tombstoneScope.CommitAsync(CancellationToken.None);
+            }
+            catch (Exception commitException)
+            {
+                tombstoneScopeDisposed =
+                    await RollbackAndDisposeTombstoneTransactionBestEffortAsync(tombstoneScope);
+                var commitVerification = await VerifyBillingRunTombstoneCommitAsync(
+                    billingProfileId,
+                    billingRunId,
+                    expectedCommittedBillingRunsJson,
+                    uncommittedProfileSnapshot?.BillingRunsJson);
+                if (commitVerification == TombstoneCommitVerificationResult.Committed)
+                {
+                    tombstoneCommitted = true;
+                    AppLogger.Warn(
+                        "RENTAL",
+                        $"예정 청구 삭제 표시 commit 완료 후 provider 예외를 저장 상태 재조회로 확인했습니다: {commitException.Message}");
+                    return result;
+                }
+
+                if (commitVerification == TombstoneCommitVerificationResult.Unknown)
+                {
+                    tombstoneCommitOutcomeUnknown = true;
+                    AppLogger.Warn(
+                        "RENTAL",
+                        "예정 청구 삭제 표시 commit 결과가 불명확하여 대상 프로필 추적을 해제하고 다음 조회에서 저장 상태를 다시 확인합니다.");
+                }
+
+                ExceptionDispatchInfo.Capture(commitException).Throw();
+                throw;
+            }
+
+            tombstoneCommitted = true;
+            return result;
+        }
+        finally
+        {
+            if (!tombstoneCommitted)
+            {
+                if (!tombstoneScopeDisposed)
+                {
+                    tombstoneScopeDisposed =
+                        await RollbackAndDisposeTombstoneTransactionBestEffortAsync(tombstoneScope);
+                }
+
+                RestoreTrackedEntrySnapshot(
+                    tombstoneCommitOutcomeUnknown
+                        ? successfulTrackerSnapshot
+                        : trackerSnapshot);
+            }
+            else if (!tombstoneScopeDisposed)
+            {
+                tombstoneScopeDisposed =
+                    await DisposeTombstoneTransactionBestEffortAsync(tombstoneScope);
+            }
+        }
+    }
+
+    private async Task<bool> RollbackAndDisposeTombstoneTransactionBestEffortAsync(
+        Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction)
+    {
+        try
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            // Preserve the original tombstone failure, cancellation, or early result.
+            AppLogger.Warn(
+                "RENTAL",
+                $"예정 청구 삭제 표시 rollback 실패: {ex.Message}");
+        }
+
+        return await DisposeTombstoneTransactionBestEffortAsync(transaction);
+    }
+
+    private async Task<bool> DisposeTombstoneTransactionBestEffortAsync(
+        Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction)
+    {
+        try
+        {
+            await DisposeTombstoneTransactionAsync(transaction);
+            return true;
+        }
+        catch (Exception firstException)
+        {
+            AppLogger.Warn(
+                "RENTAL",
+                $"예정 청구 삭제 표시 transaction 정리 실패, 직접 재시도합니다: {firstException.Message}");
+        }
+
+        try
+        {
+            await transaction.DisposeAsync();
+            return true;
+        }
+        catch (Exception retryException)
+        {
+            AppLogger.Warn(
+                "RENTAL",
+                $"예정 청구 삭제 표시 transaction 직접 정리 재시도 실패: {retryException.Message}");
+            return false;
+        }
+    }
+
+    private ValueTask DisposeTombstoneTransactionAsync(
+        Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction)
+        => TombstoneTransactionDisposeAsyncForTesting is null
+            ? transaction.DisposeAsync()
+            : TombstoneTransactionDisposeAsyncForTesting(transaction);
+
+    private enum TombstoneCommitVerificationResult
+    {
+        Committed,
+        NotCommitted,
+        Unknown
+    }
+
+    private async Task<TombstoneCommitVerificationResult> VerifyBillingRunTombstoneCommitAsync(
+        Guid billingProfileId,
+        Guid billingRunId,
+        string? expectedCommittedBillingRunsJson,
+        string? expectedUncommittedBillingRunsJson)
+    {
+        try
+        {
+            if (BeforeTombstoneCommitVerificationAsyncForTesting is not null)
+                await BeforeTombstoneCommitVerificationAsyncForTesting();
+
+            var connectionString = _db.Database.GetConnectionString();
+            if (string.IsNullOrWhiteSpace(connectionString))
+                return TombstoneCommitVerificationResult.Unknown;
+
+            var verificationOptions = new DbContextOptionsBuilder<LocalDbContext>()
+                .UseSqlite(connectionString)
+                .Options;
+            await using var verificationDb = new LocalDbContext(verificationOptions);
+            var storedProfile = await verificationDb.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(profile => profile.Id == billingProfileId)
+                .Select(profile => new { profile.BillingRunsJson })
+                .SingleOrDefaultAsync(CancellationToken.None);
+            if (storedProfile is null)
+                return TombstoneCommitVerificationResult.Unknown;
+
+            var storedBillingRunsJson = storedProfile.BillingRunsJson;
+            if (!string.Equals(
+                    storedBillingRunsJson,
+                    expectedCommittedBillingRunsJson,
+                    StringComparison.Ordinal))
+            {
+                return string.Equals(
+                    storedBillingRunsJson,
+                    expectedUncommittedBillingRunsJson,
+                    StringComparison.Ordinal)
+                    ? TombstoneCommitVerificationResult.NotCommitted
+                    : TombstoneCommitVerificationResult.Unknown;
+            }
+
+            return RentalBillingRunTombstonePolicy
+                .Lookup(storedBillingRunsJson, billingRunId)
+                .IsTombstoned
+                ? TombstoneCommitVerificationResult.Committed
+                : TombstoneCommitVerificationResult.Unknown;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn(
+                "RENTAL",
+                $"예정 청구 삭제 표시 commit 결과 재조회 실패: {ex.Message}");
+            return TombstoneCommitVerificationResult.Unknown;
+        }
+    }
+
+    private async Task<LocalMutationResult> TombstonePlannedBillingRunCoreAsync(
+        Guid billingProfileId,
+        Guid billingRunId,
+        SessionState session,
+        long? expectedRevision,
+        CancellationToken ct)
+    {
+        var profile = await _db.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
+        if (profile is null)
+            return LocalMutationResult.Missing("렌탈 청구 프로필을 찾을 수 없습니다.");
+
+        await _db.Entry(profile).ReloadAsync(ct);
+        if (!CanEditRentalProfileEntityScope(profile, session))
+            return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구/입금 내역을 삭제할 수 없습니다.");
+        if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(
+                profile,
+                expectedRevision,
+                "렌탈 청구",
+                out var conflictMessage))
+        {
+            return LocalMutationResult.Conflict(conflictMessage);
+        }
+        var runIdentityConflict = GetBillingRunIdentityConflictResult(profile);
+        if (runIdentityConflict is not null)
+            return runIdentityConflict;
+
+        var runs = GetAllBillingRuns(profile);
+        var run = runs.FirstOrDefault(current => current.RunId == billingRunId);
+        if (run is null)
+            return LocalMutationResult.Missing("삭제할 청구/입금 내역을 찾을 수 없습니다.");
+        var identityGroup = RentalBillingRunIdentityPolicy.GetIdentityGroup(runs, run);
+        if (identityGroup.Any(current => current.IsTombstoned))
+            return LocalMutationResult.Denied(TombstonedBillingRunMessage);
+        if (identityGroup.Any(current => !CanTombstoneBillingRunWithoutEvidence(current)))
+            return LocalMutationResult.Conflict("청구 상태가 다른 작업에서 먼저 변경되었습니다. 목록을 새로고침한 뒤 다시 시도하세요.");
+
+        var identityRunIds = identityGroup
+            .Select(current => current.RunId)
+            .Where(runId => runId != Guid.Empty)
+            .Distinct()
+            .ToArray();
+        foreach (var identityRunId in identityRunIds)
+        {
+            if (await HasActiveBillingRunFinancialEvidenceForTombstoneAsync(billingProfileId, identityRunId, ct))
+            {
+                return LocalMutationResult.Denied(
+                    "활성 판매전표 또는 입금 근거가 연결된 예정 청구는 삭제 표시할 수 없습니다. 전표·수금 내역을 먼저 확인하세요.");
+            }
+        }
+
+        var now = DateTime.UtcNow;
+        var tombstonedByUsername = session.User?.Username?.Trim();
+        var canonicalUsername = string.IsNullOrWhiteSpace(tombstonedByUsername)
+            ? "desktop-local"
+            : tombstonedByUsername;
+        foreach (var identityRun in identityGroup)
+        {
+            identityRun.RunId = billingRunId;
+            identityRun.IsTombstoned = true;
+            identityRun.TombstonedAtUtc = now;
+            identityRun.TombstonedByUsername = canonicalUsername;
+            identityRun.Status = PaymentFlowConstants.BillingStatusCancelled;
+            identityRun.BilledAmount = 0m;
+            identityRun.SettledAmount = 0m;
+            identityRun.SettlementStatus = PaymentFlowConstants.SettlementStatusUnpaid;
+            identityRun.SettledDate = null;
+        }
+
+        await RefreshBillingProfileAfterHistoryDeleteAsync(profile, runs, ct);
+        profile.IsDirty = true;
+        profile.UpdatedAtUtc = now;
+        var saveConflict = await TrySaveBillingProfileMutationAsync(billingProfileId, ct);
+        if (saveConflict is not null)
+            return saveConflict;
+        return LocalMutationResult.Ok(billingProfileId, "예정 청구를 삭제 표시했습니다.");
+    }
+
+    private async Task<LocalMutationResult?> TrySaveBillingProfileMutationAsync(
+        Guid billingProfileId,
+        CancellationToken ct)
+    {
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+            return null;
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            _db.ChangeTracker.Clear();
+            return LocalMutationResult.Conflict(
+                $"렌탈 청구 프로필 {billingProfileId:D}이 다른 작업에서 먼저 변경되었습니다. 최신 목록을 다시 불러온 뒤 다시 시도하세요.");
+        }
+    }
+
+    private async Task<bool> HasActiveBillingRunFinancialEvidenceForTombstoneAsync(
+        Guid billingProfileId,
+        Guid billingRunId,
+        CancellationToken ct)
+    {
+        var hasActiveLatestInvoice = await _db.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .AnyAsync(invoice =>
+                !invoice.IsDeleted &&
+                invoice.IsLatestVersion &&
+                invoice.LinkedRentalBillingProfileId == billingProfileId &&
+                invoice.LinkedRentalBillingRunId == billingRunId, ct);
+        if (hasActiveLatestInvoice)
+            return true;
+
+        var hasLinkedSettlementTransaction = await _db.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .AnyAsync(transaction =>
+                !transaction.IsDeleted &&
+                transaction.LinkedRentalBillingProfileId == billingProfileId &&
+                transaction.LinkedRentalBillingRunId == billingRunId, ct);
+        if (hasLinkedSettlementTransaction)
+            return true;
+
+        return await (
+                from payment in _db.Payments.IgnoreQueryFilters().AsNoTracking()
+            join invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking()
+                on payment.InvoiceId equals invoice.Id
+            where !payment.IsDeleted &&
+                  !invoice.IsDeleted &&
+                  invoice.IsLatestVersion &&
+                      invoice.LinkedRentalBillingProfileId == billingProfileId &&
+                      invoice.LinkedRentalBillingRunId == billingRunId &&
+                      !_db.Transactions.IgnoreQueryFilters().AsNoTracking().Any(transaction =>
+                          !transaction.IsDeleted &&
+                          transaction.Id == payment.Id &&
+                          transaction.LinkedRentalBillingProfileId == billingProfileId &&
+                          transaction.LinkedRentalBillingRunId == billingRunId)
+                select payment.Id)
+            .AnyAsync(ct);
+    }
+
+    private static bool IsPlannedBillingRun(RentalBillingRunModel run)
+    {
+        var status = (run.Status ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(status) ||
+               string.Equals(status, PaymentFlowConstants.BillingStatusPlanned, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(status, "예정", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool CanTombstoneBillingRunWithoutEvidence(RentalBillingRunModel run)
+    {
+        if (run.IsTombstoned)
+            return false;
+
+        var status = (run.Status ?? string.Empty).Trim();
+        return IsPlannedBillingRun(run) ||
+               string.Equals(status, PaymentFlowConstants.BillingStatusOnHold, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(status, PaymentFlowConstants.BillingStatusCancelled, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsHoldOrCancelledBillingRun(RentalBillingRunModel run)
+    {
+        var status = (run.Status ?? string.Empty).Trim();
+        return string.Equals(status, PaymentFlowConstants.BillingStatusOnHold, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(status, PaymentFlowConstants.BillingStatusCancelled, StringComparison.OrdinalIgnoreCase);
     }
 
     private readonly record struct RentalBillingHistoryDeleteInvoiceTarget(Guid Id, long Revision);
@@ -6968,13 +8464,13 @@ WHERE ""AssignedUsername"" <> '';", ct);
         CancellationToken ct)
     {
         var activeRuns = remainingRuns
-            .Where(run => run.RunId != Guid.Empty)
+            .Where(run => run.RunId != Guid.Empty && !run.IsTombstoned)
             .OrderByDescending(run => run.ScheduledDate)
             .ThenByDescending(run => run.PeriodEndDate)
             .ToList();
         if (activeRuns.Count == 0)
         {
-            profile.BillingRunsJson = JsonSerializer.Serialize(activeRuns, RentalJsonOptions);
+            profile.BillingRunsJson = JsonSerializer.Serialize(remainingRuns, RentalJsonOptions);
             profile.BillingStatus = PaymentFlowConstants.BillingStatusPlanned;
             profile.SettlementStatus = PaymentFlowConstants.SettlementStatusUnpaid;
             profile.CompletionStatus = PaymentFlowConstants.CompletionPending;
@@ -7017,7 +8513,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var representativeBilledAmount = Math.Max(0m, representativeRun.BilledAmount);
         var representativeSettledAmount = Math.Max(0m, representativeRun.SettledAmount);
         var representativeOutstandingAmount = Math.Max(0m, representativeBilledAmount - representativeSettledAmount);
-        profile.BillingRunsJson = JsonSerializer.Serialize(activeRuns, RentalJsonOptions);
+        profile.BillingRunsJson = JsonSerializer.Serialize(remainingRuns, RentalJsonOptions);
         profile.BillingStatus = representativeRun.Status;
         profile.SettlementStatus = representativeRun.SettlementStatus;
         profile.CompletionStatus = representativeOutstandingAmount <= 0m && representativeBilledAmount > 0m
@@ -7401,6 +8897,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     ManagementCompanyName = managementCompanyName,
                     AssetScopeDisplay = BuildAssetScopeDisplay(responsibleOfficeName, managementCompanyName),
                     IsOutsideCurrentOffice = isOutsideCurrentOffice,
+                    IsReferenceOnly = !RentalAssetCanTransferToBillingProfileScope(asset, normalizedTenantCode),
                     BillingProfileId = asset.BillingProfileId,
                     CurrentBillingProfileDisplay = currentProfileDisplay
                 };
@@ -7540,6 +9037,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (assetId == Guid.Empty || !CanViewAllAssetScope(session))
             return [];
 
+        await AssetSaveLock.WaitAsync(ct);
+        try
+        {
         var asset = await SelectAssignmentHistoryFallbackAssetProjection(_db.RentalAssets
             .AsNoTracking()
             .Where(current => current.Id == assetId))
@@ -7585,6 +9085,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return displayHistories
             .Select(history => BuildAssignmentHistoryViewItem(history, asset, profileDisplayLookup))
             .ToList();
+        }
+        finally
+        {
+            AssetSaveLock.Release();
+        }
     }
 
     private static IQueryable<LocalRentalAssetAssignmentHistory> SelectAssignmentHistoryViewProjection(
@@ -7678,6 +9183,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (assetId == Guid.Empty)
             return null;
 
+        await AssetSaveLock.WaitAsync(ct);
+        try
+        {
         var asset = await _db.RentalAssets
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -7737,6 +9245,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
             MonthlyFee = Math.Max(0m, asset.MonthlyFee),
             ChangeReason = "수동 추가"
         };
+        }
+        finally
+        {
+            AssetSaveLock.Release();
+        }
     }
 
     public async Task<LocalMutationResult> SaveAssetAssignmentHistoryAsync(
@@ -7749,6 +9262,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (request.AssetId == Guid.Empty)
             return LocalMutationResult.Missing("렌탈 자산을 찾을 수 없습니다.");
 
+        await AssetSaveLock.WaitAsync(ct);
+        try
+        {
         var asset = await _db.RentalAssets
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == request.AssetId, ct);
@@ -7812,6 +9328,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         await _db.SaveChangesAsync(ct);
         return LocalMutationResult.Ok(history.Id, "임대이력을 저장했습니다.");
+        }
+        finally
+        {
+            AssetSaveLock.Release();
+        }
     }
 
     public async Task<LocalMutationResult> DeleteAssetAssignmentHistoryAsync(
@@ -7822,6 +9343,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (historyId == Guid.Empty)
             return LocalMutationResult.Missing("임대이력을 찾을 수 없습니다.");
 
+        await AssetSaveLock.WaitAsync(ct);
+        try
+        {
         var history = await _db.RentalAssetAssignmentHistories
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == historyId, ct);
@@ -7847,6 +9371,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
         history.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
         return LocalMutationResult.Ok(history.Id, "임대이력을 삭제했습니다.");
+        }
+        finally
+        {
+            AssetSaveLock.Release();
+        }
     }
 
     public async Task<LocalMutationResult> SaveAssetAsync(
@@ -7854,7 +9383,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         SessionState session,
         CancellationToken ct = default,
         bool allowWorkbookNameVariants = true,
-        bool allowCategoryRecovery = false)
+        bool allowCategoryRecovery = false,
+        object? changeOrigin = null)
     {
         if (asset is null)
             throw new ArgumentNullException(nameof(asset));
@@ -7865,8 +9395,58 @@ WHERE ""AssignedUsername"" <> '';", ct);
             var existing = await _db.RentalAssets.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(current => current.Id == asset.Id, ct);
             existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
+            if (GetAssetSaveLifecycleConflict(asset, existing) is { } initialLifecycleConflict)
+                return initialLifecycleConflict;
+
+            var relatedBillingProfileIds = new HashSet<Guid>();
+            if (existing?.BillingProfileId is Guid previousBillingProfileId && previousBillingProfileId != Guid.Empty)
+                relatedBillingProfileIds.Add(previousBillingProfileId);
             if (existing is not null && !CanEditRentalAssetEntityScope(existing, session))
                 return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 수정할 수 없습니다.");
+
+            var previousProfileId = existing?.BillingProfileId is Guid persistedProfileId && persistedProfileId != Guid.Empty
+                ? persistedProfileId
+                : (Guid?)null;
+            var nextProfileId = asset.BillingProfileId is Guid candidateProfileId && candidateProfileId != Guid.Empty
+                ? candidateProfileId
+                : (Guid?)null;
+            if (previousProfileId.HasValue && previousProfileId != nextProfileId)
+            {
+                var previousBillingProfile = await _db.RentalBillingProfiles
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(
+                        profile => profile.Id == previousProfileId.Value && !profile.IsDeleted,
+                        ct);
+                var previousCoverage = RentalBillingTemplateAssetCoverageRules.Evaluate(
+                    previousBillingProfile?.BillingTemplateJson,
+                    asset.Id);
+                if (previousCoverage is RentalBillingTemplateAssetCoverage.UniqueReference or
+                    RentalBillingTemplateAssetCoverage.AmbiguousReference or
+                    RentalBillingTemplateAssetCoverage.MalformedTemplate)
+                {
+                    return LocalMutationResult.Denied(
+                        "기존 청구 프로필의 명시적 자산 구성에서 먼저 이 렌탈 자산을 제외해야 합니다. 청구관리에서 자산 포함 항목을 변경한 뒤 다시 저장하세요.");
+                }
+            }
+
+            if (asset.BillingProfileId is Guid requestedBillingProfileId && requestedBillingProfileId != Guid.Empty)
+            {
+                var requestedBillingProfile = await _db.RentalBillingProfiles
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(
+                        profile => profile.Id == requestedBillingProfileId && !profile.IsDeleted,
+                        ct);
+                if (requestedBillingProfile is not null &&
+                    !RentalBillingTemplateAssetCoverageRules.AllowsLink(
+                        requestedBillingProfile.BillingTemplateJson,
+                        asset.Id))
+                {
+                    return LocalMutationResult.Denied(
+                        RentalBillingTemplateAssetCoverageRules.ExplicitCoverageConflictMessage);
+                }
+            }
 
             var officeCode = await ResolveRentalOfficeCodeAsync(asset.ResponsibleOfficeCode, asset.ManagementCompanyCode, session.OfficeCode, ct);
             if (string.IsNullOrWhiteSpace(officeCode))
@@ -7960,7 +9540,10 @@ WHERE ""AssignedUsername"" <> '';", ct);
                     return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 저장할 수 없습니다.");
             }
 
-            if (!asset.BillingProfileId.HasValue && asset.CustomerId.HasValue && asset.CustomerId.Value != Guid.Empty)
+            if (!asset.BillingProfileId.HasValue &&
+                asset.CustomerId.HasValue &&
+                asset.CustomerId.Value != Guid.Empty &&
+                (existing?.BillingProfileId is not Guid existingBillingProfileId || existingBillingProfileId == Guid.Empty))
                 asset.BillingProfileId = await FindMatchingBillingProfileIdAsync(asset, ct);
 
             var baseAssetKey = BuildAssetKey(asset.ManagementCompanyCode, asset.ManagementNumber, asset.ManagementId, asset.MachineNumber, asset.CustomerName, asset.ItemName);
@@ -7981,6 +9564,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
             var now = DateTime.UtcNow;
             existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
+            if (GetAssetSaveLifecycleConflict(asset, existing) is { } finalLifecycleConflict)
+                return finalLifecycleConflict;
+
             if (existing is not null && !CanEditRentalAssetEntityScope(existing, session))
                 return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 수정할 수 없습니다.");
             await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, asset, existing, ct);
@@ -8000,12 +9586,38 @@ WHERE ""AssignedUsername"" <> '';", ct);
             await _db.SaveChangesAsync(ct);
             await SyncLinkedBillingProfileMonthlyFeeFromAssetAsync(asset.Id, session, ct);
             await RefreshLocalRentalAssetAssignmentHistoriesAsync([asset.Id], DateTime.UtcNow, "자산 저장", session, ct);
+            if (asset.BillingProfileId is Guid billingProfileId && billingProfileId != Guid.Empty)
+                relatedBillingProfileIds.Add(billingProfileId);
+            PublishStateChanged(
+                [asset.Id],
+                relatedBillingProfileIds,
+                "렌탈 자산 저장",
+                changeOrigin);
             return LocalMutationResult.Ok(asset.Id, "렌탈 자산을 저장했습니다.");
         }
         finally
         {
             AssetSaveLock.Release();
         }
+    }
+
+    private static LocalMutationResult? GetAssetSaveLifecycleConflict(
+        LocalRentalAsset candidate,
+        LocalRentalAsset? existing)
+    {
+        if (existing?.IsDeleted == true)
+        {
+            return LocalMutationResult.Conflict(
+                "삭제된 렌탈 자산은 일반 저장으로 다시 활성화할 수 없습니다. 휴지통의 복원 기능을 사용하세요.");
+        }
+
+        if (existing is null && candidate.Revision > 0)
+        {
+            return LocalMutationResult.Conflict(
+                "렌탈 자산이 이미 영구삭제되었거나 현재 저장 범위에서 제거되어 이전 편집 내용으로 재생성하지 않았습니다.");
+        }
+
+        return null;
     }
 
     public async Task<IReadOnlyList<LocalRentalAsset>> GetRentalEquipmentReplacementCandidatesAsync(
@@ -8046,7 +9658,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         await AssetSaveLock.WaitAsync(ct);
         try
         {
-            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            await using var tx = await _db.BeginRuntimeMutationTransactionAsync(ct);
             var original = await _db.RentalAssets
                 .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(asset => asset.Id == request.OriginalAssetId && !asset.IsDeleted, ct);
@@ -8922,23 +10534,46 @@ WHERE ""AssignedUsername"" <> '';", ct);
         long? expectedRevision = null,
         CancellationToken ct = default)
     {
-        var asset = await _db.RentalAssets.IgnoreQueryFilters()
-            .FirstOrDefaultAsync(current => current.Id == assetId, ct);
-        asset = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, asset, ct);
-        if (asset is null)
-            return LocalMutationResult.Missing("렌탈 자산을 찾을 수 없습니다.");
-        if (!CanEditRentalAssetEntityScope(asset, session))
-            return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 삭제할 수 없습니다.");
+        await AssetSaveLock.WaitAsync(ct);
+        try
+        {
+            var asset = await _db.RentalAssets.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == assetId, ct);
+            asset = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, asset, ct);
+            if (asset is null)
+                return LocalMutationResult.Missing("렌탈 자산을 찾을 수 없습니다.");
+            if (!CanEditRentalAssetEntityScope(asset, session))
+                return LocalMutationResult.Denied("권한이 없어 해당 렌탈 자산을 삭제할 수 없습니다.");
 
-        if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(asset, expectedRevision, "렌탈 자산", out var conflictMessage))
-            return LocalMutationResult.Conflict(conflictMessage);
+            if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(asset, expectedRevision, "렌탈 자산", out var conflictMessage))
+                return LocalMutationResult.Conflict(conflictMessage);
 
-        asset.IsDeleted = true;
-        asset.IsDirty = true;
-        asset.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
-        await RefreshLocalRentalAssetAssignmentHistoriesAsync([assetId], DateTime.UtcNow, "자산 삭제", session, ct);
-        return LocalMutationResult.Ok(assetId, "렌탈 자산을 삭제했습니다.");
+            var activeBillingProfiles = await _db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(profile =>
+                    !profile.IsDeleted &&
+                    profile.IsActive &&
+                    !string.IsNullOrWhiteSpace(profile.BillingTemplateJson))
+                .Select(profile => profile.BillingTemplateJson)
+                .ToListAsync(ct);
+            if (activeBillingProfiles.Any(templateJson =>
+                    BillingTemplateBlocksAssetDeletion(templateJson, assetId)))
+            {
+                return LocalMutationResult.Denied(ReferencedBillingAssetDeleteBlockedMessage);
+            }
+
+            asset.IsDeleted = true;
+            asset.IsDirty = true;
+            asset.UpdatedAtUtc = DateTime.UtcNow;
+            await _db.SaveChangesAsync(ct);
+            await RefreshLocalRentalAssetAssignmentHistoriesAsync([assetId], DateTime.UtcNow, "자산 삭제", session, ct);
+            return LocalMutationResult.Ok(assetId, "렌탈 자산을 삭제했습니다.");
+        }
+        finally
+        {
+            AssetSaveLock.Release();
+        }
     }
 
     public Task<RentalCatalogRepairResult> RepairRentalCatalogLinksAsync(CancellationToken ct = default)
@@ -9112,6 +10747,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         long? expectedRevision = null,
         Guid? billingRunId = null)
     {
+        using var mutationLease = await RentalBillingProfileMutationGate.EnterAsync(_db, billingProfileId, ct);
         var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
         profile = await ReloadRentalBillingProfileForMutationAsync(profile, ct);
@@ -9121,15 +10757,23 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return LocalMutationResult.Denied("권한이 없어 해당 렌탈 청구를 처리할 수 없습니다.");
         if (!LocalEntityConcurrencyGuard.TryEnsureOperationAllowed(profile, expectedRevision, "렌탈 청구", out var conflictMessage))
             return LocalMutationResult.Conflict(conflictMessage);
+        var runIdentityConflict = GetBillingRunIdentityConflictResult(profile);
+        if (runIdentityConflict is not null)
+            return runIdentityConflict;
 
         NormalizeBillingSchedule(profile, referenceDate);
 
         var normalizedStatus = string.IsNullOrWhiteSpace(status) ? "완료" : status.Trim();
         var currentRun = FindBillingRunById(profile, billingRunId);
+        if (currentRun?.IsTombstoned == true)
+            return LocalMutationResult.Denied(TombstonedBillingRunMessage);
         if (billingRunId.HasValue && billingRunId.Value != Guid.Empty && currentRun is null)
             return LocalMutationResult.Denied("선택한 조회/작성 기준일의 청구 정보를 찾을 수 없습니다. 목록을 새로고침한 뒤 다시 시도하세요.");
 
         currentRun ??= GetOrCreateBillingRun(profile, referenceDate, persistChanges: false);
+        if (currentRun is null || currentRun.IsTombstoned)
+            return LocalMutationResult.Denied(TombstonedBillingRunMessage);
+
         var scheduledDate = currentRun?.ScheduledDate
             ?? GetNextBillingDate(profile, referenceDate)
             ?? RentalBillingScheduleRules.BuildBillingDate(referenceDate.Year, referenceDate.Month, profile.BillingDay, profile.BillingDayMode);
@@ -9207,7 +10851,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
         }
         profile.UpdatedAtUtc = now;
         profile.IsDirty = true;
-        await _db.SaveChangesAsync(ct);
+        var saveConflict = await TrySaveBillingProfileMutationAsync(billingProfileId, ct);
+        if (saveConflict is not null)
+            return saveConflict;
         return LocalMutationResult.Ok(billingProfileId, "렌탈 청구 처리 이력을 저장했습니다.");
     }
 
@@ -9456,7 +11102,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return result;
         }
 
-        await using var transaction = await _db.Database.BeginTransactionAsync(ct);
+        await using var transaction = await _db.BeginRuntimeMutationTransactionAsync(ct);
         for (var rowIndex = headerRowIndex + 1; rowIndex < table.Rows.Count; rowIndex++)
         {
             var row = table.Rows[rowIndex];
@@ -11132,17 +12778,155 @@ WHERE ""AssignedUsername"" <> '';", ct);
     public List<RentalBillingRunModel> GetBillingRuns(LocalRentalBillingProfile profile)
     {
         ArgumentNullException.ThrowIfNull(profile);
-        if (string.IsNullOrWhiteSpace(profile.BillingRunsJson))
-            return new List<RentalBillingRunModel>();
+        var runs = GetAllBillingRuns(profile);
+        return runs
+            .Where(run => !RentalBillingRunIdentityPolicy.IsSuppressedByTombstone(runs, run))
+            .ToList();
+    }
+
+    private static List<RentalBillingRunModel> GetAllBillingRuns(LocalRentalBillingProfile profile)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        return TryParseBillingRunsJson(profile.BillingRunsJson, out var runs)
+            ? runs
+            : [];
+    }
+
+    private static LocalMutationResult? GetBillingRunIdentityConflictResult(
+        LocalRentalBillingProfile profile)
+    {
+        if (!TryParseBillingRunsJson(profile.BillingRunsJson, out var runs) &&
+            !RentalBillingRunDiagnosticParser.TryParseIdentityConflictPayload(
+                profile.BillingRunsJson,
+                RentalJsonOptions,
+                out runs))
+        {
+            return LocalMutationResult.Conflict(
+                $"{MalformedBillingRunsJsonMessage} ProfileId {profile.Id:D}");
+        }
+
+        if (!TryGetConflictingBillingRunIdentityFromRuns(
+                runs,
+                out var normalizedRunKey,
+                out var conflictingRunIds))
+        {
+            return null;
+        }
+
+        return LocalMutationResult.Conflict(
+            $"{ConflictingBillingRunIdentityMessage} ProfileId {profile.Id:D} / RunKey {normalizedRunKey} / RunIds {string.Join(" / ", conflictingRunIds!.Select(id => id.ToString("D")))}");
+    }
+
+    private static bool TryGetConflictingBillingRunIdentity(
+        LocalRentalBillingProfile profile,
+        out string? normalizedRunKey,
+        out IReadOnlyList<Guid>? conflictingRunIds)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        normalizedRunKey = null;
+        conflictingRunIds = null;
+        return TryParseBillingRunsJson(profile.BillingRunsJson, out var runs) &&
+               TryGetConflictingBillingRunIdentityFromRuns(
+                   runs,
+                   out normalizedRunKey,
+                   out conflictingRunIds);
+    }
+
+    private static bool TryGetConflictingBillingRunIdentityFromRuns(
+        IReadOnlyCollection<RentalBillingRunModel> runs,
+        out string? normalizedRunKey,
+        out IReadOnlyList<Guid>? conflictingRunIds)
+    {
+        ArgumentNullException.ThrowIfNull(runs);
+        normalizedRunKey = null;
+        conflictingRunIds = null;
+
+        foreach (var group in runs
+                     .Where(run =>
+                         run.RunId != Guid.Empty &&
+                         !string.IsNullOrWhiteSpace(SyncIdentityGenerator.NormalizeKey(run.RunKey)))
+                     .GroupBy(
+                         run => SyncIdentityGenerator.NormalizeKey(run.RunKey),
+                         StringComparer.Ordinal)
+                     .OrderBy(group => group.Key, StringComparer.Ordinal))
+        {
+            var runIds = group.Select(run => run.RunId).Distinct().OrderBy(id => id).ToArray();
+            if (runIds.Length <= 1)
+                continue;
+
+            normalizedRunKey = group.Key;
+            conflictingRunIds = runIds;
+            return true;
+        }
+
+        foreach (var group in runs.Where(run => run.RunId != Guid.Empty).GroupBy(run => run.RunId))
+        {
+            var runKeys = group
+                .Select(run => SyncIdentityGenerator.NormalizeKey(run.RunKey))
+                .Where(runKey => !string.IsNullOrWhiteSpace(runKey))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(runKey => runKey, StringComparer.Ordinal)
+                .ToArray();
+            if (runKeys.Length <= 1)
+                continue;
+
+            normalizedRunKey = string.Join(" / ", runKeys);
+            conflictingRunIds = new[] { group.Key };
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryParseBillingRunsJson(
+        string? billingRunsJson,
+        out List<RentalBillingRunModel> runs)
+    {
+        runs = [];
+        if (string.IsNullOrWhiteSpace(billingRunsJson))
+            return true;
+
+        if (!RentalBillingRunTombstonePolicy.Validate(billingRunsJson).IsValid)
+            return false;
 
         try
         {
-            return JsonSerializer.Deserialize<List<RentalBillingRunModel>>(profile.BillingRunsJson, RentalJsonOptions) ?? new List<RentalBillingRunModel>();
+            var parsed = JsonSerializer.Deserialize<List<RentalBillingRunModel>>(
+                billingRunsJson,
+                RentalJsonOptions);
+            if (parsed is null)
+                return true;
+            if (parsed.Any(run => run is null))
+                return false;
+
+            runs = parsed;
+            return true;
         }
         catch
         {
-            return new List<RentalBillingRunModel>();
+            return false;
         }
+    }
+
+    private static RentalBillingRunModel? FindBillingRunByNormalizedKey(
+        IEnumerable<RentalBillingRunModel> runs,
+        string? runKey)
+    {
+        var normalizedRunKey = SyncIdentityGenerator.NormalizeKey(runKey);
+        if (string.IsNullOrWhiteSpace(normalizedRunKey))
+            return null;
+
+        var allRuns = runs.ToList();
+        var matching = allRuns.Where(run =>
+            string.Equals(
+                SyncIdentityGenerator.NormalizeKey(run.RunKey),
+                normalizedRunKey,
+                StringComparison.Ordinal)).ToList();
+        var seed = matching.FirstOrDefault();
+        return seed is null
+            ? null
+            : RentalBillingRunIdentityPolicy.GetIdentityGroup(allRuns, seed)
+                  .FirstOrDefault(run => run.IsTombstoned) ?? seed;
     }
 
     public RentalBillingRunModel? GetOrCreateBillingRun(
@@ -11174,10 +12958,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         var templateItems = templateItemsOverride?.ToList() ?? GetBillingTemplateItems(profile);
         var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths);
-        var runs = runsOverride ?? GetBillingRuns(profile);
+        var allRuns = GetAllBillingRuns(profile);
+        var runs = runsOverride ?? allRuns;
         var configuredPeriod = ResolveBillingPeriod(profile, configuredScheduledDate, cycleMonths);
         var configuredRunKey = $"{configuredPeriod.StartDate:yyyyMMdd}-{configuredPeriod.EndDate:yyyyMMdd}";
-        var configuredExisting = runs.FirstOrDefault(run => string.Equals(run.RunKey, configuredRunKey, StringComparison.OrdinalIgnoreCase));
+        var configuredExisting = FindBillingRunByNormalizedKey(runs, configuredRunKey)
+                                 ?? FindBillingRunByNormalizedKey(allRuns, configuredRunKey);
         var applicableScheduledDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
             profile.BillingDay,
             profile.BillingDayMode,
@@ -11189,17 +12975,25 @@ WHERE ""AssignedUsername"" <> '';", ct);
             cycleAnchorDate);
         var applicablePeriod = ResolveBillingPeriod(profile, applicableScheduledDate, cycleMonths);
         var applicableRunKey = $"{applicablePeriod.StartDate:yyyyMMdd}-{applicablePeriod.EndDate:yyyyMMdd}";
-        var applicableExisting = runs.FirstOrDefault(run => string.Equals(run.RunKey, applicableRunKey, StringComparison.OrdinalIgnoreCase));
-        var useApplicableSchedule = !string.Equals(configuredRunKey, applicableRunKey, StringComparison.OrdinalIgnoreCase) &&
+        var applicableExisting = FindBillingRunByNormalizedKey(runs, applicableRunKey)
+                                ?? FindBillingRunByNormalizedKey(allRuns, applicableRunKey);
+        var useApplicableSchedule = !string.Equals(
+                                        SyncIdentityGenerator.NormalizeKey(configuredRunKey),
+                                        SyncIdentityGenerator.NormalizeKey(applicableRunKey),
+                                        StringComparison.Ordinal) &&
                                     (applicableExisting is not null ||
                                      configuredExisting is not null && IsCompletedBillingRun(configuredExisting) ||
                                      configuredExisting is null && runs.Count == 0);
         var scheduledDate = useApplicableSchedule ? applicableScheduledDate : configuredScheduledDate;
         var period = useApplicableSchedule ? applicablePeriod : configuredPeriod;
         var runKey = useApplicableSchedule ? applicableRunKey : configuredRunKey;
-        var existing = runs.FirstOrDefault(run => string.Equals(run.RunKey, runKey, StringComparison.OrdinalIgnoreCase));
-        var billedAmount = templateItems.Sum(item => ResolveTemplateMonthlyAmount(item)) * cycleMonths;
         var deterministicRunId = SyncIdentityGenerator.CreateRentalBillingRunId(profile.Id, runKey);
+        var identitySeed = new RentalBillingRunModel { RunId = deterministicRunId, RunKey = runKey };
+        if (RentalBillingRunIdentityPolicy.IsSuppressedByTombstone(allRuns, identitySeed))
+            return null;
+
+        var existing = FindBillingRunByNormalizedKey(runs, runKey);
+        var billedAmount = templateItems.Sum(item => ResolveTemplateMonthlyAmount(item)) * cycleMonths;
         if (existing is null)
         {
             existing = new RentalBillingRunModel
@@ -11254,12 +13048,20 @@ WHERE ""AssignedUsername"" <> '';", ct);
         if (!billingRunId.HasValue || billingRunId.Value == Guid.Empty)
             return null;
 
-        return GetBillingRuns(profile)
-            .FirstOrDefault(run => run.RunId == billingRunId.Value);
+        var runs = GetAllBillingRuns(profile);
+        var matching = runs.Where(run => run.RunId == billingRunId.Value).ToList();
+        var seed = matching.FirstOrDefault();
+        return seed is null
+            ? null
+            : RentalBillingRunIdentityPolicy.GetIdentityGroup(runs, seed)
+                  .FirstOrDefault(run => run.IsTombstoned) ?? seed;
     }
 
     private static bool IsMutableBillingRun(RentalBillingRunModel run)
     {
+        if (run.IsTombstoned)
+            return false;
+
         var status = (run.Status ?? string.Empty).Trim();
         return string.IsNullOrWhiteSpace(status) ||
                string.Equals(status, PaymentFlowConstants.BillingStatusPlanned, StringComparison.OrdinalIgnoreCase) ||
@@ -12623,6 +14425,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return string.Equals(assetTenantCode, normalizedProfileTenantCode, StringComparison.OrdinalIgnoreCase);
     }
 
+    internal static bool CanTransferAssetToBillingProfileTenant(
+        LocalRentalAsset asset,
+        string? profileTenantCode)
+        => RentalAssetCanTransferToBillingProfileScope(asset, profileTenantCode);
+
     private static string ResolveLinkedAssetManagementCompanyCode(LocalRentalAsset asset, string? fallbackOfficeCode)
     {
         var normalizedResponsibleOfficeCode = NormalizeOfficeCode(asset.ResponsibleOfficeCode, fallbackOfficeCode);
@@ -12899,6 +14706,335 @@ WHERE ""AssignedUsername"" <> '';", ct);
         => templateItems.Any(item =>
             (item.IncludedAssetIds ?? new List<Guid>()).Any(id => id != Guid.Empty));
 
+    private static string? GetBillingTemplateAssetReferenceValidationMessage(string? billingTemplateJson)
+    {
+        if (!RentalBillingTemplateAssetCoverageRules.TryGetExplicitIncludedAssetIds(
+                billingTemplateJson,
+                out _,
+                out var hasDuplicateReferences))
+        {
+            return InvalidBillingTemplateAssetConfigurationMessage;
+        }
+
+        if (!string.IsNullOrWhiteSpace(billingTemplateJson))
+        {
+            try
+            {
+                _ = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(
+                    billingTemplateJson,
+                    RentalJsonOptions);
+            }
+            catch (Exception ex) when (ex is JsonException or NotSupportedException)
+            {
+                return InvalidBillingTemplateAssetConfigurationMessage;
+            }
+        }
+
+        return hasDuplicateReferences
+            ? DuplicateBillingAssetReferenceMessage
+            : null;
+    }
+
+    private static bool BillingTemplateBlocksAssetDeletion(string? billingTemplateJson, Guid assetId)
+    {
+        var coverage = RentalBillingTemplateAssetCoverageRules.Evaluate(billingTemplateJson, assetId);
+        if (coverage is RentalBillingTemplateAssetCoverage.UniqueReference or
+            RentalBillingTemplateAssetCoverage.AmbiguousReference)
+        {
+            return true;
+        }
+
+        if (coverage != RentalBillingTemplateAssetCoverage.MalformedTemplate ||
+            assetId == Guid.Empty ||
+            string.IsNullOrWhiteSpace(billingTemplateJson))
+        {
+            return false;
+        }
+
+        if (TryParseBillingTemplateForIncludedAssetReference(
+                billingTemplateJson,
+                assetId,
+                out var containsAssetReference))
+        {
+            return containsAssetReference;
+        }
+
+        return ContainsIncludedAssetReferenceInMalformedJson(
+            billingTemplateJson,
+            assetId);
+    }
+
+    private static bool TryParseBillingTemplateForIncludedAssetReference(
+        string billingTemplateJson,
+        Guid assetId,
+        out bool containsAssetReference)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(billingTemplateJson);
+            containsAssetReference = ContainsIncludedAssetReference(document.RootElement, assetId);
+            return true;
+        }
+        catch (JsonException)
+        {
+            containsAssetReference = false;
+            return false;
+        }
+
+        static bool ContainsIncludedAssetReference(JsonElement element, Guid targetAssetId)
+        {
+            if (element.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (string.Equals(
+                            property.Name,
+                            "IncludedAssetIds",
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (ContainsGuidValue(property.Value, targetAssetId))
+                            return true;
+                    }
+                    else if (ContainsIncludedAssetReference(property.Value, targetAssetId))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            if (element.ValueKind != JsonValueKind.Array)
+                return false;
+
+            foreach (var item in element.EnumerateArray())
+            {
+                if (ContainsIncludedAssetReference(item, targetAssetId))
+                    return true;
+            }
+
+            return false;
+        }
+
+        static bool ContainsGuidValue(JsonElement element, Guid targetAssetId)
+        {
+            if (element.ValueKind == JsonValueKind.String)
+                return Guid.TryParse(element.GetString(), out var candidate) && candidate == targetAssetId;
+
+            if (element.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (ContainsGuidValue(property.Value, targetAssetId))
+                        return true;
+                }
+
+                return false;
+            }
+
+            if (element.ValueKind != JsonValueKind.Array)
+                return false;
+
+            foreach (var item in element.EnumerateArray())
+            {
+                if (ContainsGuidValue(item, targetAssetId))
+                    return true;
+            }
+
+            return false;
+        }
+    }
+
+    private static bool ContainsIncludedAssetReferenceInMalformedJson(string value, Guid assetId)
+    {
+        const string propertyName = "IncludedAssetIds";
+        var searchIndex = 0;
+        while (searchIndex < value.Length)
+        {
+            var propertyQuoteStart = FindNextUnescapedQuote(value, searchIndex);
+            if (propertyQuoteStart < 0)
+                return false;
+
+            var propertyQuoteEnd = FindNextUnescapedQuote(value, propertyQuoteStart + 1);
+            if (propertyQuoteEnd < 0)
+                return false;
+
+            searchIndex = propertyQuoteEnd + 1;
+            var decodedPropertyName = DecodeJsonUnicodeEscapes(
+                value[(propertyQuoteStart + 1)..propertyQuoteEnd]);
+            if (!string.Equals(decodedPropertyName, propertyName, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var colonIndex = propertyQuoteEnd + 1;
+            while (colonIndex < value.Length && char.IsWhiteSpace(value[colonIndex]))
+                colonIndex++;
+            if (colonIndex >= value.Length || value[colonIndex] != ':')
+                continue;
+
+            var valueStart = colonIndex + 1;
+            while (valueStart < value.Length && char.IsWhiteSpace(value[valueStart]))
+                valueStart++;
+            if (valueStart >= value.Length)
+                continue;
+
+            var valueEnd = FindMalformedJsonValueEnd(value, valueStart);
+            var decodedCandidateValue = DecodeJsonUnicodeEscapes(
+                value[valueStart..valueEnd]);
+            if (ContainsAssetGuidToken(decodedCandidateValue, assetId))
+                return true;
+
+            searchIndex = Math.Max(searchIndex, valueEnd);
+        }
+
+        return false;
+    }
+
+    private static int FindNextUnescapedQuote(string value, int startIndex)
+    {
+        for (var index = Math.Max(0, startIndex); index < value.Length; index++)
+        {
+            if (value[index] == '"' && !IsEscapedCharacter(value, index))
+                return index;
+        }
+
+        return -1;
+    }
+
+    private static int FindMalformedJsonValueEnd(string value, int valueStart)
+    {
+        var opening = value[valueStart];
+        if (opening == '"')
+        {
+            for (var index = valueStart + 1; index < value.Length; index++)
+            {
+                if (value[index] == '"' && !IsEscapedCharacter(value, index))
+                    return index + 1;
+            }
+
+            return value.Length;
+        }
+
+        if (opening is not ('[' or '{'))
+        {
+            var scalarEnd = valueStart;
+            while (scalarEnd < value.Length && value[scalarEnd] is not (',' or '}' or ']'))
+                scalarEnd++;
+            return scalarEnd;
+        }
+
+        var stack = new Stack<char>();
+        var insideString = false;
+        for (var index = valueStart; index < value.Length; index++)
+        {
+            var current = value[index];
+            if (current == '"' && !IsEscapedCharacter(value, index))
+            {
+                insideString = !insideString;
+                continue;
+            }
+
+            if (insideString)
+                continue;
+
+            if (current is '[' or '{')
+            {
+                stack.Push(current);
+                continue;
+            }
+
+            if (current is not (']' or '}'))
+                continue;
+
+            if (stack.Count == 0)
+                return index;
+
+            var expectedOpening = current == ']' ? '[' : '{';
+            if (stack.Peek() != expectedOpening)
+                return index;
+
+            stack.Pop();
+            if (stack.Count == 0)
+                return index + 1;
+        }
+
+        return value.Length;
+    }
+
+    private static bool ContainsAssetGuidToken(string value, Guid assetId)
+    {
+        foreach (var candidate in new[]
+                 {
+                     assetId.ToString("D"),
+                     assetId.ToString("N"),
+                     assetId.ToString("B"),
+                     assetId.ToString("P")
+                 })
+        {
+            var searchIndex = 0;
+            while (searchIndex < value.Length)
+            {
+                var candidateIndex = value.IndexOf(
+                    candidate,
+                    searchIndex,
+                    StringComparison.OrdinalIgnoreCase);
+                if (candidateIndex < 0)
+                    break;
+
+                var candidateEnd = candidateIndex + candidate.Length;
+                var hasValidStartBoundary = candidateIndex == 0 ||
+                    !IsGuidTokenContinuation(value[candidateIndex - 1]);
+                var hasValidEndBoundary = candidateEnd == value.Length ||
+                    !IsGuidTokenContinuation(value[candidateEnd]);
+                if (hasValidStartBoundary && hasValidEndBoundary)
+                    return true;
+
+                searchIndex = candidateIndex + 1;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsGuidTokenContinuation(char value)
+        => char.IsLetterOrDigit(value) || value is '-' or '_' or '{' or '}' or '(' or ')';
+
+    private static bool IsEscapedCharacter(string value, int index)
+    {
+        var precedingBackslashes = 0;
+        for (var current = index - 1; current >= 0 && value[current] == '\\'; current--)
+            precedingBackslashes++;
+        return precedingBackslashes % 2 != 0;
+    }
+
+    private static string DecodeJsonUnicodeEscapes(string value)
+    {
+        if (value.IndexOf("\\u", StringComparison.OrdinalIgnoreCase) < 0)
+            return value;
+
+        var decoded = new StringBuilder(value.Length);
+        for (var index = 0; index < value.Length; index++)
+        {
+            if (value[index] == '\\' &&
+                index + 5 < value.Length &&
+                (value[index + 1] == 'u' || value[index + 1] == 'U') &&
+                !IsEscapedCharacter(value, index) &&
+                ushort.TryParse(
+                    value.AsSpan(index + 2, 4),
+                    NumberStyles.AllowHexSpecifier,
+                    CultureInfo.InvariantCulture,
+                    out var unicodeValue))
+            {
+                decoded.Append((char)unicodeValue);
+                index += 5;
+                continue;
+            }
+
+            decoded.Append(value[index]);
+        }
+
+        return decoded.ToString();
+    }
+
     private async Task<List<RentalBillingTemplateItemModel>> LoadBillingTemplateItemsForDuplicateMergeAsync(
         LocalRentalBillingProfile existing,
         CancellationToken ct)
@@ -13031,17 +15167,18 @@ WHERE ""AssignedUsername"" <> '';", ct);
             (item.Unit ?? string.Empty).Trim(),
             (item.Note ?? string.Empty).Trim());
 
-    private static void PreserveDuplicateBillingProfileOperationalState(
+    private static void PreserveBillingProfileOperationalState(
         LocalRentalBillingProfile profile,
         LocalRentalBillingProfile existing)
     {
-        profile.BillingRunsJson = string.IsNullOrWhiteSpace(existing.BillingRunsJson) ? "[]" : existing.BillingRunsJson;
+        profile.BillingRunsJson = existing.BillingRunsJson;
         profile.LastBilledDate = existing.LastBilledDate;
         profile.LastSettledDate = existing.LastSettledDate;
         profile.SettledAmount = existing.SettledAmount;
         profile.OutstandingAmount = existing.OutstandingAmount;
         profile.SettlementStatus = existing.SettlementStatus;
         profile.CompletionStatus = existing.CompletionStatus;
+        profile.RequiresFollowUp = existing.RequiresFollowUp;
         profile.BillingStatus = existing.BillingStatus;
     }
 
@@ -13098,7 +15235,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var linkedAssetsById = new Dictionary<Guid, LocalRentalAsset>();
         var profileLinkedAssets = await _db.RentalAssets
             .IgnoreQueryFilters()
-            .Where(asset => asset.BillingProfileId == profile.Id)
+            .Where(asset => !asset.IsDeleted && asset.BillingProfileId == profile.Id)
             .ToListAsync(ct);
         foreach (var asset in profileLinkedAssets)
             linkedAssetsById[asset.Id] = asset;
@@ -13107,8 +15244,11 @@ WHERE ""AssignedUsername"" <> '';", ct);
             instructedAssetIds,
             ignoreQueryFilters: true,
             asNoTracking: false,
-            excludeDeleted: false,
+            excludeDeleted: true,
             ct);
+        if (includedAssets.Count != instructedAssetIds.Count)
+            throw new InvalidOperationException(RequestedBillingAssetUnavailableMessage);
+
         foreach (var asset in includedAssets)
             linkedAssetsById[asset.Id] = asset;
 
@@ -13397,8 +15537,12 @@ WHERE ""AssignedUsername"" <> '';", ct);
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentNullException.ThrowIfNull(run);
 
-        var runs = GetBillingRuns(profile);
+        var runs = GetAllBillingRuns(profile);
+        if (RentalBillingRunIdentityPolicy.IsSuppressedByTombstone(runs, run))
+            return;
+
         var existingIndex = runs.FindIndex(current => current.RunId == run.RunId);
+
         if (existingIndex >= 0)
             runs[existingIndex] = run;
         else
@@ -14754,16 +16898,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
     }
 
     private bool CanAutoLinkAssetToBillingProfileTemplate(LocalRentalBillingProfile profile, Guid assetId)
-    {
-        var explicitTemplateAssetIds = GetBillingTemplateItems(profile, Array.Empty<LocalRentalAsset>())
-            .SelectMany(item => item.IncludedAssetIds ?? Enumerable.Empty<Guid>())
-            .Where(id => id != Guid.Empty)
-            .Distinct()
-            .ToHashSet();
-
-        return explicitTemplateAssetIds.Count == 0 ||
-               (assetId != Guid.Empty && explicitTemplateAssetIds.Contains(assetId));
-    }
+        => RentalBillingTemplateAssetCoverageRules.AllowsLink(profile.BillingTemplateJson, assetId);
 
     private static bool MatchesBillingProfileAutoLinkScope(
         LocalRentalBillingProfile profile,
@@ -15136,6 +17271,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var billingStatus = PaymentFlowConstants.NormalizeBillingStatus(profile.BillingStatus);
         if (string.Equals(billingStatus, PaymentFlowConstants.BillingStatusOnHold, StringComparison.OrdinalIgnoreCase))
             return "보류";
+        if (string.Equals(billingStatus, PaymentFlowConstants.BillingStatusCancelled, StringComparison.OrdinalIgnoreCase))
+            return "취소";
         var settlementStatus = PaymentFlowConstants.NormalizeSettlementStatus(profile.SettlementStatus);
         if (string.Equals(settlementStatus, PaymentFlowConstants.SettlementStatusPartial, StringComparison.OrdinalIgnoreCase))
             return "부분수금";

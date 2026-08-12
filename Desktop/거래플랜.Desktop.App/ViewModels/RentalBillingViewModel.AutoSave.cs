@@ -98,10 +98,10 @@ public sealed partial class RentalBillingViewModel
         return true;
     }
 
-    public async Task FlushAutoSaveAsync(CancellationToken ct = default)
+    public async Task<bool> FlushAutoSaveAsync(CancellationToken ct = default)
     {
         _autoSaveCts?.Cancel();
-        await PersistAutoSaveDraftAsync(ct);
+        return await PersistAutoSaveDraftAsync(ct);
     }
 
     public async Task FlushAutoSaveForCloseAsync(CancellationToken ct = default)
@@ -231,23 +231,26 @@ public sealed partial class RentalBillingViewModel
         }
     }
 
-    private async Task PersistAutoSaveDraftAsync(CancellationToken ct)
+    private async Task<bool> PersistAutoSaveDraftAsync(CancellationToken ct)
     {
         if (IsAutoSaveSuppressed)
-            return;
+            return false;
 
         await _autoSaveGate.WaitAsync(ct);
         try
         {
+            if (IsAutoSaveSuppressed)
+                return false;
+
             if (HasMeaningfulDraftState() &&
                 (string.IsNullOrWhiteSpace(_selectedRowBaselineSignature) || HasUnsavedEditorChangesAgainstBaseline()))
             {
                 await _rental.SaveBillingEditorDraftAsync(BuildBillingEditorDraft(), _session, ct);
+                return true;
             }
-            else
-            {
-                await _rental.ClearBillingEditorDraftAsync(_session, ct);
-            }
+
+            await _rental.ClearBillingEditorDraftAsync(_session, ct);
+            return false;
         }
         finally
         {
@@ -301,9 +304,15 @@ public sealed partial class RentalBillingViewModel
             AssetLinkEdits = BuildPendingAssetLinkEdits().ToList()
         };
 
-    private void ApplyBillingEditorDraft(RentalBillingEditorDraftModel draft)
+    private void ApplyBillingEditorDraft(
+        RentalBillingEditorDraftModel draft,
+        bool preserveSelectedRow = false)
     {
-        SelectedRow = null;
+        if (!preserveSelectedRow)
+        {
+            _hasOrphanedEditorDraft = false;
+            SelectedRow = null;
+        }
         EditId = draft.EditId == Guid.Empty ? Guid.NewGuid() : draft.EditId;
         _editRevision = draft.Revision;
         EditCustomerId = draft.CustomerId;

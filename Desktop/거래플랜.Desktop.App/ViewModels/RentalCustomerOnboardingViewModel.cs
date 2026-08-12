@@ -79,7 +79,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         1 => "2. 렌탈 기본정보",
         2 => "3. 임대료 청구 설정",
         3 => "4. 장비 연결",
-        4 => "5. 청구항목 구성",
+        4 => "5. 표시품목/거래처 임대 자산 구성",
         _ => "6. 최종 확인"
     };
     public bool CanGoPrevious => CurrentStepIndex > 0 && !IsBusy;
@@ -758,7 +758,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         var cts = new CancellationTokenSource();
         _contractDateRefreshCts = cts;
         UiTaskHelper.Forget(
-            RefreshContractDateFromSourcesAsync(preserveCurrentValue, cts.Token),
+            () => RefreshContractDateFromSourcesAsync(preserveCurrentValue, cts.Token),
             "RENTAL",
             "신규 렌탈 계약 체결일 조회",
             ex =>

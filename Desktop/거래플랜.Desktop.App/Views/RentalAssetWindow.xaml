@@ -5,8 +5,8 @@
         Title="렌탈 자산/설치현황"
         Height="940"
         Width="1640"
-        MinWidth="1360"
-        MinHeight="820"
+        MinWidth="640"
+        MinHeight="400"
         WindowStartupLocation="CenterOwner"
         Background="#151F2E"
         KeyDown="Window_KeyDown">
@@ -182,33 +182,50 @@
 
     <Grid Margin="14">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
+            <RowDefinition Height="2*" MinHeight="120" MaxHeight="300"/>
+            <RowDefinition Height="3*" MinHeight="140"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Style="{StaticResource TradePlanHeaderPanelStyle}">
+        <ScrollViewer x:Name="RentalAssetCommandScrollViewer"
+                      Grid.Row="0"
+                      HorizontalScrollBarVisibility="Disabled"
+                      VerticalScrollBarVisibility="Auto">
+        <StackPanel>
+        <Border Style="{StaticResource TradePlanHeaderPanelStyle}">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <DockPanel Grid.Row="0" LastChildFill="True">
-                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button Content="새로고침" Style="{StaticResource HeaderSecondaryActionButtonStyle}" Margin="0,0,8,0" Command="{Binding ReloadCommand}"/>
+                <Grid Grid.Row="0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <WrapPanel Grid.Row="1"
+                               Margin="0,8,0,0"
+                               HorizontalAlignment="Right">
+                        <Button Content="새로고침" Style="{StaticResource HeaderSecondaryActionButtonStyle}" Margin="0,0,8,0" Command="{Binding ReloadCommand}" IsEnabled="{Binding CanQueryAssets}"/>
                         <Button Content="+ 신규 자산" Style="{StaticResource TradePlanEditButtonStyle}" Margin="0,0,8,0" Command="{Binding NewAssetCommand}" IsEnabled="{Binding CanCreateAsset}"/>
                         <Button Content="자산 저장" Style="{StaticResource TradePlanPrimaryButtonStyle}" Margin="0,0,8,0" Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}"/>
                         <Button Content="닫기 (F12)" Style="{StaticResource HeaderSecondaryActionButtonStyle}" Click="CloseButton_Click"/>
-                    </StackPanel>
-                    <StackPanel>
+                    </WrapPanel>
+                    <StackPanel Grid.Row="0">
                         <TextBlock Text="렌탈 자산 / 설치현황" Style="{StaticResource TradePlanWindowTitleStyle}"/>
                         <TextBlock Text="장비 상태와 청구 연결 상태를 함께 관리해 청구 누락과 소속 오류를 줄입니다." Style="{StaticResource TradePlanWindowSubtitleStyle}"/>
                     </StackPanel>
-                </DockPanel>
+                </Grid>
 
-                <Border Grid.Row="1" Margin="0,10,0,0" Padding="10,8" Background="#162943" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="4">
+                <Border Grid.Row="1" Style="{StaticResource TradePlanSubToolbarStyle}" Margin="0,10,0,0">
+                    <TextBlock Text="{Binding RentalScopeGuidanceText}"
+                               Foreground="{StaticResource TradePlanMutedTextBrush}"
+                               TextWrapping="Wrap"/>
+                </Border>
+
+                <Border Grid.Row="2" Margin="0,10,0,0" Padding="10,8" Background="#162943" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="4">
                     <WrapPanel VerticalAlignment="Center">
                         <TextBlock Text="선택 자산 작업" Foreground="#9FB3C8" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,10,0"/>
                         <Button Content="렌탈 장비 교체" Style="{StaticResource HeaderSecondaryActionButtonStyle}" Margin="0,0,8,0" Command="{Binding ReplaceRentalEquipmentCommand}" IsEnabled="{Binding CanReplaceSelected}"/>
@@ -224,7 +241,7 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="1" Margin="0,10,0,0" Background="#1A2B4A" Padding="12" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
+        <Border Margin="0,10,0,0" Background="#1A2B4A" Padding="12" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" IsEnabled="{Binding CanQueryAssets}">
             <WrapPanel VerticalAlignment="Center">
                 <TextBlock Text="검색어" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <TextBox Width="240" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,12,0"/>
@@ -299,8 +316,10 @@
                 </Grid>
             </WrapPanel>
         </Border>
+        </StackPanel>
+        </ScrollViewer>
 
-        <Grid Grid.Row="2" Margin="0,10,0,0">
+        <Grid Grid.Row="1" Margin="0,10,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="2.35*"/>
                 <ColumnDefinition Width="10"/>
@@ -309,7 +328,8 @@
 
             <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
                 <Grid>
-                    <DataGrid x:Name="RentalAssetDataGrid" ItemsSource="{Binding Rows}" SelectedItem="{Binding SelectedRow}" BorderThickness="0" IsReadOnly="False"
+                    <DataGrid x:Name="RentalAssetDataGrid" ItemsSource="{Binding Rows}" SelectedItem="{Binding SelectedRow}" BorderThickness="0" IsReadOnly="True"
+                              IsEnabled="{Binding CanQueryAssets}"
                               SelectionMode="Single" SelectionUnit="FullRow"
                               RowStyle="{StaticResource RentalAssetSingleSelectionRowStyle}"
                               CellStyle="{StaticResource RentalAssetSingleSelectionCellStyle}">
@@ -320,7 +340,10 @@
                                 </DataGridTemplateColumn.HeaderTemplate>
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
-                                        <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                  IsEnabled="{Binding DataContext.CanSelectAssetsForMutation, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                  HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center"/>
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
@@ -370,8 +393,12 @@
             </Border>
 
             <Border Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <Grid>
+                <ScrollViewer x:Name="RentalAssetDetailScrollViewer"
+                              HorizontalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Auto">
+                    <Grid IsEnabled="{Binding CanEditAssetDetails}">
+                    <Grid x:Name="RentalAssetDetailContent"
+                          MinWidth="620">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="104"/>
                             <ColumnDefinition Width="*"/>
@@ -591,11 +618,12 @@
                             </StackPanel>
                         </Border>
                     </Grid>
+                    </Grid>
                 </ScrollViewer>
             </Border>
         </Grid>
 
-        <Border Grid.Row="3" Margin="0,10,0,0" Background="#122038" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="10">
+        <Border Grid.Row="2" Margin="0,10,0,0" Background="#122038" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="10">
             <DockPanel LastChildFill="False">
                 <ProgressBar Width="220"
                              Height="12"

@@ -114,6 +114,16 @@ public sealed class RecycleBinMutationIsolationTests : IDisposable
         }
 
         await using var scopedDb = CreateDbContext(user);
+        var transactionRevision = await scopedDb.Transactions
+            .IgnoreQueryFilters()
+            .Where(transaction => transaction.Id == transactionAndPaymentId)
+            .Select(transaction => transaction.Revision)
+            .SingleAsync();
+        var itemRevision = await scopedDb.Items
+            .IgnoreQueryFilters()
+            .Where(item => item.Id == itemId)
+            .Select(item => item.Revision)
+            .SingleAsync();
         var controller = CreateRecycleBinController(scopedDb, user);
 
         var response = await controller.Restore(new RecycleBinMutationRequest
@@ -123,12 +133,14 @@ public sealed class RecycleBinMutationIsolationTests : IDisposable
                 new RecycleBinMutationTargetDto
                 {
                     EntityId = transactionAndPaymentId,
-                    Kind = "transaction"
+                    Kind = "transaction",
+                    ExpectedRevision = transactionRevision
                 },
                 new RecycleBinMutationTargetDto
                 {
                     EntityId = itemId,
-                    Kind = "item"
+                    Kind = "item",
+                    ExpectedRevision = itemRevision
                 }
             ]
         }, CancellationToken.None);
@@ -225,6 +237,16 @@ public sealed class RecycleBinMutationIsolationTests : IDisposable
         }
 
         await using var scopedDb = CreateDbContext(user);
+        var profileRevision = await scopedDb.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .Where(profile => profile.Id == profileId)
+            .Select(profile => profile.Revision)
+            .SingleAsync();
+        var customerRevision = await scopedDb.Customers
+            .IgnoreQueryFilters()
+            .Where(customer => customer.Id == customerId)
+            .Select(customer => customer.Revision)
+            .SingleAsync();
         var controller = CreateRecycleBinController(scopedDb, user);
 
         var response = await controller.Purge(new RecycleBinMutationRequest
@@ -234,12 +256,14 @@ public sealed class RecycleBinMutationIsolationTests : IDisposable
                 new RecycleBinMutationTargetDto
                 {
                     EntityId = profileId,
-                    Kind = "rental-billing-profile"
+                    Kind = "rental-billing-profile",
+                    ExpectedRevision = profileRevision
                 },
                 new RecycleBinMutationTargetDto
                 {
                     EntityId = customerId,
-                    Kind = "customer"
+                    Kind = "customer",
+                    ExpectedRevision = customerRevision
                 }
             ]
         }, CancellationToken.None);
@@ -296,6 +320,11 @@ public sealed class RecycleBinMutationIsolationTests : IDisposable
         }
 
         await using var scopedDb = CreateDbContext(user);
+        var expectedRevision = await scopedDb.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .Where(profile => profile.Id == profileId)
+            .Select(profile => profile.Revision)
+            .SingleAsync();
         var controller = CreateRecycleBinController(scopedDb, user);
 
         var response = await controller.Restore(new RecycleBinMutationRequest
@@ -305,7 +334,8 @@ public sealed class RecycleBinMutationIsolationTests : IDisposable
                 new RecycleBinMutationTargetDto
                 {
                     EntityId = profileId,
-                    Kind = "rental-billing-profile"
+                    Kind = "rental-billing-profile",
+                    ExpectedRevision = expectedRevision
                 }
             ]
         }, CancellationToken.None);
@@ -363,6 +393,11 @@ public sealed class RecycleBinMutationIsolationTests : IDisposable
         }
 
         await using var scopedDb = CreateDbContext(user);
+        var expectedRevision = await scopedDb.RentalAssets
+            .IgnoreQueryFilters()
+            .Where(asset => asset.Id == assetId)
+            .Select(asset => asset.Revision)
+            .SingleAsync();
         var controller = CreateRecycleBinController(scopedDb, user);
 
         var response = await controller.Restore(new RecycleBinMutationRequest
@@ -372,7 +407,8 @@ public sealed class RecycleBinMutationIsolationTests : IDisposable
                 new RecycleBinMutationTargetDto
                 {
                     EntityId = assetId,
-                    Kind = "rental-asset"
+                    Kind = "rental-asset",
+                    ExpectedRevision = expectedRevision
                 }
             ]
         }, CancellationToken.None);
@@ -413,10 +449,11 @@ public sealed class RecycleBinMutationIsolationTests : IDisposable
         return new RecycleBinController(
             dbContext,
             new OfficeScopeService(currentUser, dbContext),
-            new StubCentralFileStorage(),
+            NoOpStoredFileReferenceReconciler.Instance,
             new InventoryLedgerService(dbContext),
             new InvoiceStockSnapshotService(dbContext, revisionClock),
-            new RentalSettlementRecalculationService(dbContext));
+            new RentalSettlementRecalculationService(dbContext),
+            NoOpStoredFileDeferredDeletionQueue.Instance);
     }
 
     private static TestCurrentUserContext CreateAdminUser() => new()

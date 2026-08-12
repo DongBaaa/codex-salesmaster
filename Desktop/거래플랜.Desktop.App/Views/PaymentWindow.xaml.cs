@@ -9,13 +9,111 @@ namespace 거래플랜.Desktop.App.Views;
 
 public partial class PaymentWindow : Window
 {
+    private const double CompactWorkspaceHeightThreshold = 620d;
+
     private readonly PaymentViewModel _vm;
+    private bool? _isCompactWorkspaceLayout;
+    private bool _showCompactCommandSection = true;
+    private GridLength _normalCommandRowHeight = new(3d, GridUnitType.Star);
+    private GridLength _normalWorkspaceRowHeight = new(2d, GridUnitType.Star);
+    private double _normalCommandRowMinHeight = 100d;
+    private double _normalCommandRowMaxHeight = 440d;
+    private double _normalWorkspaceRowMinHeight = 112d;
+    private double _normalWorkspaceRowMaxHeight = double.PositiveInfinity;
 
     public PaymentWindow(PaymentViewModel vm)
     {
         InitializeComponent();
+        ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(this);
         _vm = vm;
         DataContext = vm;
+        Loaded += (_, _) => ApplyResponsiveWorkspaceLayout();
+        SizeChanged += (_, _) => ApplyResponsiveWorkspaceLayout();
+    }
+
+    private void ApplyResponsiveWorkspaceLayout()
+    {
+        if (ActualHeight <= 0d)
+            return;
+
+        var useCompactLayout = ActualHeight < CompactWorkspaceHeightThreshold;
+        if (_isCompactWorkspaceLayout == useCompactLayout)
+            return;
+
+        if (useCompactLayout)
+        {
+            _normalCommandRowHeight = PaymentCommandRow.Height;
+            _normalWorkspaceRowHeight = PaymentWorkspaceRow.Height;
+            _normalCommandRowMinHeight = PaymentCommandRow.MinHeight;
+            _normalCommandRowMaxHeight = PaymentCommandRow.MaxHeight;
+            _normalWorkspaceRowMinHeight = PaymentWorkspaceRow.MinHeight;
+            _normalWorkspaceRowMaxHeight = PaymentWorkspaceRow.MaxHeight;
+            _showCompactCommandSection = true;
+        }
+
+        _isCompactWorkspaceLayout = useCompactLayout;
+        PaymentCompactSectionSwitcher.Visibility = useCompactLayout
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        ApplyCompactSectionVisibility();
+    }
+
+    private void ApplyCompactSectionVisibility()
+    {
+        var useCompactLayout = _isCompactWorkspaceLayout == true;
+        if (!useCompactLayout)
+        {
+            PaymentCommandRow.Height = _normalCommandRowHeight;
+            PaymentCommandRow.MinHeight = _normalCommandRowMinHeight;
+            PaymentCommandRow.MaxHeight = _normalCommandRowMaxHeight;
+            PaymentWorkspaceRow.Height = _normalWorkspaceRowHeight;
+            PaymentWorkspaceRow.MinHeight = _normalWorkspaceRowMinHeight;
+            PaymentWorkspaceRow.MaxHeight = _normalWorkspaceRowMaxHeight;
+            PaymentCommandScrollViewer.Visibility = Visibility.Visible;
+            PaymentWorkspaceTabs.Visibility = Visibility.Visible;
+            PaymentCommandWorkspaceSplitter.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            PaymentCommandRow.MinHeight = 0d;
+            PaymentCommandRow.MaxHeight = double.PositiveInfinity;
+            PaymentWorkspaceRow.MinHeight = 0d;
+            PaymentWorkspaceRow.MaxHeight = double.PositiveInfinity;
+            PaymentCommandRow.Height = _showCompactCommandSection
+                ? new GridLength(1d, GridUnitType.Star)
+                : new GridLength(0d);
+            PaymentWorkspaceRow.Height = _showCompactCommandSection
+                ? new GridLength(0d)
+                : new GridLength(1d, GridUnitType.Star);
+            PaymentCommandScrollViewer.Visibility = _showCompactCommandSection
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+            PaymentWorkspaceTabs.Visibility = _showCompactCommandSection
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+            PaymentCommandWorkspaceSplitter.Visibility = Visibility.Collapsed;
+        }
+
+        ShowCompactPaymentCommandButton.IsEnabled =
+            !useCompactLayout || !_showCompactCommandSection;
+        ShowCompactPaymentWorkspaceButton.IsEnabled =
+            !useCompactLayout || _showCompactCommandSection;
+    }
+
+    private void ShowCompactPaymentCommandButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        _showCompactCommandSection = true;
+        ApplyCompactSectionVisibility();
+    }
+
+    private void ShowCompactPaymentWorkspaceButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        _showCompactCommandSection = false;
+        ApplyCompactSectionVisibility();
     }
 
     private void Window_KeyDown(object sender, KeyEventArgs e)
@@ -55,14 +153,14 @@ public partial class PaymentWindow : Window
                 var customerVm = new CustomerEditViewModel(_vm.LocalStateService, _vm.SessionState);
                 await customerVm.LoadAsync();
                 var customerWindow = new CustomerEditWindow(customerVm) { Owner = this };
-                customerWindow.ShowDialog();
+                DialogWindowCloseHelper.ShowDialog(customerWindow);
 
                 await _vm.ReloadCustomersAsync();
                 return BuildCustomerRows();
             })
         { Owner = this };
 
-        if (dlg.ShowDialog() == true && dlg.SelectedRow?.Tag is LocalCustomer selected)
+        if (DialogWindowCloseHelper.ShowDialog(dlg) == true && dlg.SelectedRow?.Tag is LocalCustomer selected)
         {
             _vm.SetCustomer(selected);
         }

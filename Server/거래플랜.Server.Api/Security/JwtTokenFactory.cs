@@ -1,4 +1,5 @@
 ﻿using System.IdentityModel.Tokens.Jwt;
+using System.Globalization;
 using System.Security.Claims;
 using System.Text;
 using 거래플랜.Server.Api.Domain;
@@ -7,6 +8,11 @@ using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
 namespace 거래플랜.Server.Api.Security;
+
+public static class JwtClaimTypes
+{
+    public const string UserRevision = "user_revision";
+}
 
 public interface IJwtTokenFactory
 {
@@ -39,9 +45,9 @@ public sealed class JwtTokenFactory : IJwtTokenFactory
             new(ClaimTypes.Name, user.Username),
             new(ClaimTypes.Role, user.Role),
             new("tenant", tenantCode),
-            new("office", officeCode)
-            ,
-            new("scope", scopeType)
+            new("office", officeCode),
+            new("scope", scopeType),
+            new(JwtClaimTypes.UserRevision, user.Revision.ToString(CultureInfo.InvariantCulture))
         };
 
         claims.AddRange(user.Permissions.Select(permission => new Claim("perm", permission.Permission)));

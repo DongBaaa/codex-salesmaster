@@ -268,9 +268,7 @@ $desktopArgs = @(
 if (-not [string]::IsNullOrWhiteSpace($WindowsSigningConfigPath)) {
     $desktopArgs += @('-WindowsSigningConfigPath', $WindowsSigningConfigPath)
 }
-if ($RequireWindowsAuthenticode) {
-    $desktopArgs += '-RequireWindowsAuthenticode'
-}
+$desktopArgs += '-RequireWindowsAuthenticode'
 & powershell @desktopArgs
 if ($LASTEXITCODE -ne 0) {
     throw 'desktop installer build failed.'
@@ -283,10 +281,8 @@ $windowsSigningCheckArgs = @(
     '-File', $windowsSigningCheckScript,
     '-ProjectRoot', $ProjectRoot
 )
-if ($RequireWindowsAuthenticode) {
-    $windowsSigningCheckArgs += '-RequireSigned'
-    $windowsSigningCheckArgs += '-RequireTimestamp'
-}
+$windowsSigningCheckArgs += '-RequireSigned'
+$windowsSigningCheckArgs += '-RequireTimestamp'
 & powershell @windowsSigningCheckArgs
 if ($LASTEXITCODE -ne 0) {
     throw 'Windows Authenticode verification failed.'

@@ -1,8 +1,9 @@
 ﻿# 거래플랜
 
-- 문서 기준시점: 2026-03-12
-- 반영 범위: 커밋 이력 + HEAD(`42a0d21`) 기준 구현 상태
-- 상태 태그: `[완료]`, `[작업중]`, `[검증필요]`, `[보류]`
+- 문서 기준시점: 2026-08-12
+- 반영 범위: 현재 작업트리의 소스·테스트 상태와 `trade.2884.kr` 공개 stable manifest를 분리해 기록
+- 상태 태그: `[공개]`, `[로컬검증]`, `[검증필요]`, `[승인대기]`
+- 상세 진행 상태와 검증 증거: `D:\거래플랜\tasks\거래플랜-전체-품질화-Goal-현황.md`
 
 ## 프로젝트 개요
 - 오프라인 우선 Windows ERP
@@ -10,37 +11,56 @@
 - 목표: 전표/거래처/인쇄/집계 업무를 레거시 흐름과 호환되게 안정 운영
 
 ## 현재 버전 상태
-### 릴리즈 반영 완료
-- `[완료]` 판매/거래처/수금 기본 업무 흐름
-- `[완료]` 거래명세서/세금계산서/견적서/대금청구서 미리보기 + 인쇄
-- `[완료]` 로그인 아이디/비밀번호 저장 옵션 + 오프라인 로그인 fallback
-- `[완료]` 자료 기간별 집계(5종: 판매+구매, 판매/매출, 구매/매입, 수금/지불, 연수구 납품내역) 엑셀 생성/저장/자동 열기
-- `[완료]` 환경설정 운영 화면(회사정보, 선택값 관리, 담당지점 관리, 사용자 관리)
-- `[완료]` 지점별 재고 조회 + 내부 재고이동 기본 흐름
-- `[완료]` 시작/종료 동기화 및 자동 저장 기본 흐름
-- `[완료]` WPF 기본 인쇄 경로로 단일화
+### 공개 stable
+- `[공개]` Windows PC `1.1.691`
+- `[공개]` Android 표시 버전은 `0.2.82`, 실제 APK versionCode는 `193`입니다.
+- `[공개]` 2026-08-12 확인에서 `trade.2884.kr/healthz`와 `/readyz`는 HTTP 200이며 `fileDeletionLeaseProtocol=shared-flock-v1`입니다.
+- 저장소에서 재현 가능한 공개 버전·파일명·SHA-256 기준은 `D:\거래플랜\배포\stable.json`입니다. `배포\업데이트\manifest\stable.json`은 게시 과정의 로컬 산출물이며 live manifest와는 별도로 확인합니다.
 
-### 개발 중
-- `[작업중]` 지점/권한 정책을 전표 저장/조회/수정 전 구간에 더 정교하게 적용
-- `[작업중]` 로컬 확장 도메인(담당지점/창고/선택값/재고이동/원가계층)의 서버 동기화 범위 확장
-- `[작업중]` FIFO 원가/시리얼/부분납품 운영 UX 고도화
+### 현재 소스·테스트판
+- `[로컬검증]` Windows PC 소스 `1.1.691`, FileVersion `1.1.691.0`
+- `[로컬검증]` Android 소스 `0.2.82`, versionCode `193`
+- `[로컬검증]` 서버 전체 850건 중 840건 통과, PostgreSQL 환경 의존 10건 건너뜀, 실패 0
+- `[로컬검증]` 별도 ephemeral PostgreSQL 전체 12/12, 데스크톱 전체 1,462/1,462 통과
+- 현재 버전의 정식 패키지와 Linux PC live 반영은 완료됐지만, 작업트리의 후속 문서·검증 변경은 아직 Git 반영 전입니다.
 
-### 검증 필요/보류
-- `[검증필요]` 프린터별 여백 오차/직인 이미지 예외 케이스
-- `[검증필요]` 자료기간별 집계 및 연수구 납품내역의 실데이터 정합성(누적/중복 제거)
-- `[검증필요]` 장시간 운영 시 동기화/백업 알림 노이즈
+### 승인·실사용 검증 대기
+- `[승인대기]` Windows Authenticode/RFC3161 정식 서명과 기존 설치본 덮어쓰기·롤백 설치
+- `[공개]` Android versionCode 증가, Release signing, emulator `adb install -r` 검증 완료
+- `[완료]` Linux PC 거래플랜 전용 자동 백업 schedule 설치·활성화 및 실제 complete set 1회 검증
+- `[검증필요]` 실제 프린터/PDF/Excel, 제한 계정, 100%·125%·150% 배율의 주요 업무 흐름
+- Git push는 현재 Goal 관련 변경만 선택 stage하고 최종 검증한 뒤 수행합니다.
+
+## Windows PC와 Android 기능 경계
+
+### Android 지원
+- 로그인, 홈, 거래처·품목 조회/입력, 판매·구매 전표, 수금·지급, 계약서 PDF, 동기화, 휴지통
+- 재고이동과 렌탈은 조회 중심
+
+### PC 전용 / Android 미지원
+- 사용자·역할·권한 관리
+- 일반 백업·복원
+- Excel 내보내기와 자료 기간별 집계
+- 재고이동 생성·수령·반려
+- 렌탈 청구 생성·입금 등록·청구 프로필과 자산 수정
+- 회사 설정과 업체 / 데이터 권한 관리
 
 ## 실행 방법
-### 권장 실행(로컬 빠른 확인)
+### 권장: 분리된 테스트 시행 환경
+
+- 일반 수동 실행은 `D:\거래플랜\테스트 시행\실행환경\Launch-Test-App.vbs`를 더블클릭합니다. 테스트 서버와 앱은 CMD 창 없이 시작됩니다.
+- 자동화·진단·종료 코드 수집은 아래처럼 `Run-All.cmd`를 동기 실행합니다. 이 경우 호출한 터미널 창은 의도적으로 유지됩니다.
+
 ```powershell
 cd "D:\거래플랜"
-cmd /c "배포\전체실행.cmd"
+cmd /c "테스트 시행\실행환경\Run-All.cmd"
 ```
 
-- 2026-03-20 실제 검증 결과:
-  - `배포\전체실행.cmd` 는 로컬 테스트용으로 `Development` 환경 + SQLite fallback 기준에서 실행되도록 조정함
-  - 서버는 `http://127.0.0.1:19080` 계열이 아니라, 스크립트가 잡은 실제 포트로 기동
-  - 외부 live 실서버 확인은 `https://trade.2884.kr` 기준으로 별도 검증
+- 모든 데스크톱·서버 변경은 `D:\거래플랜\테스트 시행`의 분리된 데이터와 포트에서 먼저 검증합니다.
+- 일반 사용자는 `Launch-Test-App.vbs`, 자동 검증은 `Run-All.cmd`를 사용합니다. `Run-App.cmd`는 호환 wrapper이고 `Run-Server.cmd`는 구성요소 진단용이므로 일반 실행에 사용하지 않습니다.
+- 앱 창이 실제로 열리고 테스트 서버 health/ready가 통과한 뒤 주요 업무 흐름을 확인합니다.
+- 격리 테스트 런타임은 원격 세션·그래픽 드라이버의 WPF 하드웨어 합성 오류가 화면 검증을 가리지 않도록 소프트웨어 렌더링을 사용하며, 일반 개발·운영 실행의 렌더링 방식은 바꾸지 않습니다.
+- 테스트판 승인 전에는 아래 live 배포 명령을 실행하지 않습니다.
 
 ### 개발 모드 실행
 서버:
@@ -55,14 +75,14 @@ cd "D:\거래플랜\Desktop\거래플랜.Desktop.App"
 dotnet run
 ```
 
-### 배포본 직접 실행(가장 단순한 PC 테스트)
+### 공개 배포본 읽기 전용 확인
 ```powershell
 cd "D:\거래플랜\배포\거래플랜"
 .\거래플랜.exe
 ```
 
 - 위 실행본은 배포 설정에 따라 `https://trade.2884.kr` live API를 바라보는 포터블 배포본이다.
-- 로컬 서버 없이 Linux PC live API에 붙여서 UI/로그인 테스트할 때 가장 단순하다.
+- 운영 데이터를 생성·수정·삭제하는 테스트에는 사용하지 않습니다.
 
 ## 빌드/테스트
 ```powershell
@@ -75,7 +95,8 @@ cd "D:\거래플랜"
 dotnet test "거래플랜.sln" -c Release --no-build
 ```
 
-- 참고: 현재는 `Tests\GeoraePlan.Server.Api.Tests` 중심의 서버 자동 테스트와 task 기반 스모크 검증이 포함되어 있어 `dotnet test` 는 최소 서버 회귀 검증까지 수행합니다.
+- 서버와 데스크톱 테스트 프로젝트를 각각 실행하고, PostgreSQL 전용 회귀는 `D:\거래플랜\tools\verification\Invoke-GeoraePlanEphemeralPostgreSqlTests.ps1`로 실제 임시 DB에서 확인합니다.
+- 정적 검사나 자동 테스트는 실제 WPF 화면, 프린터, Android emulator/실기기 검증을 대체하지 않습니다.
 
 ## Linux PC 주기 점검 / 백업 / 인증서 갱신
 - 현재 거래플랜 서버 본체는 Linux PC `itw@192.168.0.199:2222`의 `/srv/georaeplan` 기준으로 운영합니다.
@@ -94,8 +115,9 @@ dotnet test "거래플랜.sln" -c Release --no-build
   - `/srv/georaeplan/ops/state/routine-ops.log`
   - DB 백업 폴더: `/srv/georaeplan/backups/db`
   - 파일 백업 폴더: `/srv/georaeplan/backups/files`
+- 2026-08-12 `georaeplan-backup.timer`를 Linux PC에 설치해 enabled/active 상태로 확인했고, 실제 1회 실행에서 중앙·업체 DB dump와 파일·Data Protection key archive가 하나의 검증된 complete set으로 게시됐습니다.
 
-## Linux PC 자동 배포(권장)
+## 사용자 승인 후 Linux PC 배포
 PC 설치파일, Android APK, 업데이트 자산 생성 후 Linux PC에 **release 업로드 + `apply-release.sh` 실행 + 거래플랜 서비스 단위 반영**까지 한 번에 처리하려면 아래 명령을 사용합니다.
 
 ```powershell
@@ -142,16 +164,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\linux
 - `[검증필요]` 일부 실운영 데이터셋에서 산식 검증 필요
 
 ## 변경 근거
-### 최근 커밋
-- `[완료]` 2026-03-12 `42a0d21` office-based settings and inventory management updates
-- `[완료]` 2026-03-11 `ec50b37` 거래구분과 내부 재고이동 흐름 추가
-- `[완료]` 2026-03-11 `b64ce1c` 지점 운영과 네이티브 인쇄 기반 정리
-- `[완료]` 2026-03-05 `dc47549` docs update
-- `[완료]` 2026-03-01 `ead6e68` period ledger aggregation/export
-
-### 현재 리포지토리 상태
-- `[완료]` 현재 tracked 소스 트리는 HEAD 기준으로 정리된 상태
-- `[완료]` 현재 사용자 노출 브랜딩 문자열은 거래플랜 기준으로 정리됨
+- 현재 장기 품질화 Goal의 기준 HEAD는 `b9f1b058ec121ff6135661ab57679a73b0f09c0b`입니다.
+- 작업트리는 기존 사용자 변경과 Goal 변경을 함께 보존하는 dirty 상태입니다. 정리된 clean tree라고 가정하지 않습니다.
+- 배치별 변경·검증·남은 위험은 `업데이트 내역.md`와 `tasks\거래플랜-전체-품질화-Goal-현황.md`를 기준으로 확인합니다.
 
 ## 관련 문서
 - 통합 진행 문서: `D:\거래플랜\기획.md`
@@ -166,7 +181,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\linux
 - 안드로이드 keystore 생성 스크립트: `D:\거래플랜\tools\mobile\New-GeoraePlanAndroidKeystore.ps1`
 - 안드로이드 서명 APK 빌드 스크립트: `D:\거래플랜\tools\mobile\Build-GeoraePlanAndroidApk.ps1`
 - 안드로이드 live 서명 연속성 점검 스크립트: `D:\거래플랜\tools\mobile\Test-GeoraePlanAndroidSigningContinuity.ps1`
-- 안드로이드 실사용 APK: `D:\거래플랜\배포\거래플랜-안드로이드-v0.2.4-signed.apk`
+- 안드로이드 공개 stable 저장소 기준: `D:\거래플랜\배포\stable.json`의 `android` 노드
+- 사용자 메뉴얼 PDF 공식 생성: `D:\거래플랜\tools\manual\Build-GeoraePlanUserManualPdf.ps1`
 - 안드로이드 스튜디오 직접 테스트 런처:
   - `D:\거래플랜\배포\안드로이드스튜디오-테스트.cmd`
 - PC 설치 패키지 생성 스크립트: `D:\거래플랜\tools\release\Build-GeoraePlanDesktopInstaller.ps1`

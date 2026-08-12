@@ -16,6 +16,7 @@
     <PackageReference Include="QuestPDF" Version="2024.7.1" />
     <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
   </ItemGroup>
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -26,8 +27,9 @@
     <AssemblyTitle>거래플랜</AssemblyTitle>
     <Product>거래플랜</Product>
     <ApplicationIcon>..\..\AppIcons\tradeplan-windows.ico</ApplicationIcon>
-    <Version>1.1.688</Version>
-    <FileVersion>1.1.688.0</FileVersion>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>1.1.691</Version>
+    <FileVersion>1.1.691.0</FileVersion>
   </PropertyGroup>
   <ItemGroup></ItemGroup>
   <ItemGroup>
@@ -46,7 +48,7 @@
     </ItemGroup>
     <Delete Files="@(StaleWpfTempArtifacts)" ContinueOnError="WarnAndContinue" />
   </Target>
-  <Target Name="CopyUpdaterOutput" AfterTargets="Build">
+  <Target Name="CopyUpdaterOutput" AfterTargets="Build" Condition="'$(SkipCopyUpdaterOutput)' != 'true'">
     <PropertyGroup>
       <UpdaterOutputDir>$(MSBuildThisFileDirectory)..\..\Updater\거래플랜.Updater\bin\$(Configuration)\net8.0-windows\</UpdaterOutputDir>
       <UpdaterDestinationDir>$(OutDir)Updater\</UpdaterDestinationDir>

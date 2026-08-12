@@ -31,18 +31,24 @@ public sealed class JsonSyncStateStore
     private string StateDirectory => Path.Combine(FileSystem.AppDataDirectory, "sync-states");
     private string DatabasePath => Path.Combine(StateDirectory, "mobile-sync-state.db");
     private string LegacyQuarantineDirectory => Path.Combine(StateDirectory, "legacy-unassigned");
-    private string FilePath => ResolveScopedFilePath();
-    private string StateKey => ResolveScopedStateKey();
+    public Task<MobileSyncState> LoadAsync(
+        CancellationToken ct = default)
+        => LoadAsync(_sessionStore.CaptureOwner(), ct);
 
-    public async Task<MobileSyncState> LoadAsync(CancellationToken ct = default)
+    public async Task<MobileSyncState> LoadAsync(
+        MobileSessionOwner owner,
+        CancellationToken ct = default)
     {
-        var filePath = FilePath;
-        var stateKey = StateKey;
+        ArgumentNullException.ThrowIfNull(owner);
+        _sessionStore.ThrowIfOwnerChanged(owner);
+        var filePath = ResolveScopedFilePath(owner);
+        var stateKey = owner.BuildStateKey();
         var databasePath = DatabasePath;
         var fileLock = GetFileLock(databasePath);
         await fileLock.WaitAsync(ct);
         try
         {
+            _sessionStore.ThrowIfOwnerChanged(owner);
             try
             {
                 await EnsureDatabaseAsync(databasePath, ct);
@@ -50,20 +56,32 @@ public sealed class JsonSyncStateStore
                 if (storedState is not null)
                 {
                     storedState.Normalize();
-                    ApplyCurrentOwner(storedState);
+                    ApplyOwner(storedState, owner);
+                    _sessionStore.ThrowIfOwnerChanged(owner);
                     return storedState;
                 }
 
                 var fresh = new MobileSyncState();
                 fresh.Normalize();
-                ApplyCurrentOwner(fresh);
-                await TryRecoverOrQuarantineLegacyStateAsync(stateKey, filePath, fresh, ct);
+                ApplyOwner(fresh, owner);
+                await TryRecoverOrQuarantineLegacyStateAsync(
+                    owner,
+                    stateKey,
+                    filePath,
+                    fresh,
+                    ct);
+                _sessionStore.ThrowIfOwnerChanged(owner);
                 return fresh;
             }
-            catch (Exception ex) when (IsSqliteStorageException(ex))
+            catch (Exception ex) when (
+                ex is not StaleMobileSessionOwnerException &&
+                IsSqliteStorageException(ex))
             {
                 MobileAppLogger.Warn("SYNC", $"SQLite 모바일 동기화 상태를 읽지 못해 JSON 백업 저장소로 전환합니다: {ex.Message}");
-                return await LoadFromJsonFileAsync(filePath, ct);
+                return await LoadFromJsonFileAsync(
+                    owner,
+                    filePath,
+                    ct);
             }
         }
         finally
@@ -72,27 +90,58 @@ public sealed class JsonSyncStateStore
         }
     }
 
-    public async Task SaveAsync(MobileSyncState state, CancellationToken ct = default)
+    public Task SaveAsync(
+        MobileSyncState state,
+        CancellationToken ct = default)
+        => SaveAsync(
+            _sessionStore.CaptureOwner(),
+            state,
+            ct);
+
+    public async Task SaveAsync(
+        MobileSessionOwner owner,
+        MobileSyncState state,
+        CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentNullException.ThrowIfNull(state);
+        using var ownerCommitLease =
+            await _sessionStore.AcquireOwnerCommitLeaseAsync(
+                owner,
+                ct);
         state.Normalize();
-        ApplyCurrentOwner(state);
-        var filePath = FilePath;
+        ApplyOwner(state, owner);
+        var filePath = ResolveScopedFilePath(owner);
         var databasePath = DatabasePath;
-        var stateKey = StateKey;
+        var stateKey = owner.BuildStateKey();
         var fileLock = GetFileLock(databasePath);
         await fileLock.WaitAsync(ct);
         try
         {
+            _sessionStore.ThrowIfOwnerChanged(owner);
             try
             {
                 await EnsureDatabaseAsync(databasePath, ct);
+                _sessionStore.ThrowIfOwnerChanged(owner);
                 await SaveStateToDatabaseAsync(databasePath, stateKey, state, ct);
-                await TrySaveJsonBackupAsync(filePath, state, ct);
+                _sessionStore.ThrowIfOwnerChanged(owner);
+                await TrySaveJsonBackupAsync(
+                    owner,
+                    filePath,
+                    state,
+                    ct);
             }
-            catch (Exception ex) when (IsSqliteStorageException(ex))
+            catch (Exception ex) when (
+                ex is not StaleMobileSessionOwnerException &&
+                IsSqliteStorageException(ex))
             {
                 MobileAppLogger.Warn("SYNC", $"SQLite 모바일 동기화 상태 저장에 실패해 JSON 백업 저장소로 전환합니다: {ex.Message}");
-                await SaveToJsonFileAsync(filePath, state, ct);
+                _sessionStore.ThrowIfOwnerChanged(owner);
+                await SaveToJsonFileAsync(
+                    owner,
+                    filePath,
+                    state,
+                    ct);
             }
         }
         finally
@@ -101,14 +150,22 @@ public sealed class JsonSyncStateStore
         }
     }
 
-    private async Task<MobileSyncState> LoadFromJsonFileAsync(string filePath, CancellationToken ct)
+    private async Task<MobileSyncState> LoadFromJsonFileAsync(
+        MobileSessionOwner owner,
+        string filePath,
+        CancellationToken ct)
     {
+        _sessionStore.ThrowIfOwnerChanged(owner);
         if (!File.Exists(filePath))
         {
             var fresh = new MobileSyncState();
             fresh.Normalize();
-            ApplyCurrentOwner(fresh);
-            await TryRecoverLegacyJsonOnlyStateAsync(filePath, fresh, ct);
+            ApplyOwner(fresh, owner);
+            await TryRecoverLegacyJsonOnlyStateAsync(
+                owner,
+                filePath,
+                fresh,
+                ct);
             return fresh;
         }
 
@@ -117,14 +174,20 @@ public sealed class JsonSyncStateStore
                     ?? new MobileSyncState();
 
         state.Normalize();
-        ApplyCurrentOwner(state);
+        ApplyOwner(state, owner);
+        _sessionStore.ThrowIfOwnerChanged(owner);
         return state;
     }
 
-    private async Task SaveToJsonFileAsync(string filePath, MobileSyncState state, CancellationToken ct)
+    private async Task SaveToJsonFileAsync(
+        MobileSessionOwner owner,
+        string filePath,
+        MobileSyncState state,
+        CancellationToken ct)
     {
+        _sessionStore.ThrowIfOwnerChanged(owner);
         state.Normalize();
-        ApplyCurrentOwner(state);
+        ApplyOwner(state, owner);
         Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
 
         var tempPath = $"{filePath}.{Guid.NewGuid():N}.tmp";
@@ -142,6 +205,7 @@ public sealed class JsonSyncStateStore
                 await stream.FlushAsync(ct);
             }
 
+            _sessionStore.ThrowIfOwnerChanged(owner);
             File.Move(tempPath, filePath, overwrite: true);
         }
         finally
@@ -151,11 +215,19 @@ public sealed class JsonSyncStateStore
         }
     }
 
-    private async Task TrySaveJsonBackupAsync(string filePath, MobileSyncState state, CancellationToken ct)
+    private async Task TrySaveJsonBackupAsync(
+        MobileSessionOwner owner,
+        string filePath,
+        MobileSyncState state,
+        CancellationToken ct)
     {
         try
         {
-            await SaveToJsonFileAsync(filePath, state, ct);
+            await SaveToJsonFileAsync(
+                owner,
+                filePath,
+                state,
+                ct);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
@@ -265,20 +337,20 @@ public sealed class JsonSyncStateStore
         return new SqliteConnection(builder.ToString());
     }
 
-    private string ResolveScopedFilePath()
+    private string ResolveScopedFilePath(
+        MobileSessionOwner owner)
     {
-        var snapshot = _sessionStore.GetSnapshot();
-        if (!snapshot.IsAuthenticated ||
-            string.IsNullOrWhiteSpace(snapshot.Username) ||
-            string.IsNullOrWhiteSpace(snapshot.TenantCode) ||
-            string.IsNullOrWhiteSpace(snapshot.OfficeCode))
+        if (!owner.IsAuthenticated ||
+            string.IsNullOrWhiteSpace(owner.Username) ||
+            string.IsNullOrWhiteSpace(owner.TenantCode) ||
+            string.IsNullOrWhiteSpace(owner.OfficeCode))
         {
             return LegacyFilePath;
         }
 
-        var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(snapshot.TenantCode, snapshot.OfficeCode);
-        var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(snapshot.OfficeCode);
-        var username = snapshot.Username.Trim();
+        var tenantCode = owner.TenantCode;
+        var officeCode = owner.OfficeCode;
+        var username = owner.Username;
         var scopeKey = BuildOwnerScopeKey(username, tenantCode, officeCode);
         var hash = HashScopeKey(scopeKey);
         var readableName = $"{SanitizeFilePart(tenantCode)}-{SanitizeFilePart(officeCode)}-{SanitizeFilePart(username)}";
@@ -286,36 +358,27 @@ public sealed class JsonSyncStateStore
         return Path.Combine(StateDirectory, $"{readableName}-{hash}.json");
     }
 
-    private string ResolveScopedStateKey()
-    {
-        var snapshot = _sessionStore.GetSnapshot();
-        if (!snapshot.IsAuthenticated ||
-            string.IsNullOrWhiteSpace(snapshot.Username) ||
-            string.IsNullOrWhiteSpace(snapshot.TenantCode) ||
-            string.IsNullOrWhiteSpace(snapshot.OfficeCode))
-        {
-            return "legacy";
-        }
-
-        var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(snapshot.TenantCode, snapshot.OfficeCode);
-        var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(snapshot.OfficeCode);
-        var username = snapshot.Username.Trim();
-        return BuildOwnerScopeKey(username, tenantCode, officeCode);
-    }
-
     private async Task TryRecoverOrQuarantineLegacyStateAsync(
+        MobileSessionOwner owner,
         string stateKey,
         string scopedFilePath,
         MobileSyncState freshState,
         CancellationToken ct)
     {
+        _sessionStore.ThrowIfOwnerChanged(owner);
         if (File.Exists(scopedFilePath))
         {
             var scopedState = await TryReadJsonStateAsync(scopedFilePath, ct);
-            if (scopedState is not null && (string.Equals(scopedFilePath, LegacyFilePath, StringComparison.OrdinalIgnoreCase) || BelongsToCurrentOwner(scopedState)))
+            if (scopedState is not null &&
+                (string.Equals(
+                     scopedFilePath,
+                     LegacyFilePath,
+                     StringComparison.OrdinalIgnoreCase) ||
+                 BelongsToOwner(scopedState, owner)))
             {
                 scopedState.Normalize();
-                ApplyCurrentOwner(scopedState);
+                ApplyOwner(scopedState, owner);
+                _sessionStore.ThrowIfOwnerChanged(owner);
                 await SaveStateToDatabaseAsync(DatabasePath, stateKey, scopedState, ct);
                 CopyState(scopedState, freshState);
                 MobileAppLogger.Info("SYNC", $"기존 JSON 모바일 동기화 상태를 SQLite로 이전했습니다: {Path.GetFileName(scopedFilePath)}");
@@ -334,9 +397,10 @@ public sealed class JsonSyncStateStore
             return;
 
         legacyState.Normalize();
-        if (BelongsToCurrentOwner(legacyState))
+        if (BelongsToOwner(legacyState, owner))
         {
-            ApplyCurrentOwner(legacyState);
+            ApplyOwner(legacyState, owner);
+            _sessionStore.ThrowIfOwnerChanged(owner);
             await SaveStateToDatabaseAsync(DatabasePath, stateKey, legacyState, ct);
             CopyState(legacyState, freshState);
             MobileAppLogger.Info("SYNC", "기존 미분리 모바일 동기화 상태를 현재 계정 SQLite 상태로 이전했습니다.");
@@ -365,10 +429,12 @@ public sealed class JsonSyncStateStore
     }
 
     private async Task TryRecoverLegacyJsonOnlyStateAsync(
+        MobileSessionOwner owner,
         string scopedFilePath,
         MobileSyncState freshState,
         CancellationToken ct)
     {
+        _sessionStore.ThrowIfOwnerChanged(owner);
         if (!File.Exists(LegacyFilePath) ||
             string.Equals(scopedFilePath, LegacyFilePath, StringComparison.OrdinalIgnoreCase))
         {
@@ -380,11 +446,15 @@ public sealed class JsonSyncStateStore
             return;
 
         legacyState.Normalize();
-        if (BelongsToCurrentOwner(legacyState))
+        if (BelongsToOwner(legacyState, owner))
         {
-            ApplyCurrentOwner(legacyState);
+            ApplyOwner(legacyState, owner);
             Directory.CreateDirectory(Path.GetDirectoryName(scopedFilePath)!);
-            await SaveToJsonFileAsync(scopedFilePath, legacyState, ct);
+            await SaveToJsonFileAsync(
+                owner,
+                scopedFilePath,
+                legacyState,
+                ct);
             CopyState(legacyState, freshState);
             return;
         }
@@ -424,10 +494,11 @@ public sealed class JsonSyncStateStore
         }
     }
 
-    private bool BelongsToCurrentOwner(MobileSyncState state)
+    private static bool BelongsToOwner(
+        MobileSyncState state,
+        MobileSessionOwner owner)
     {
-        var snapshot = _sessionStore.GetSnapshot();
-        if (!snapshot.IsAuthenticated ||
+        if (!owner.IsAuthenticated ||
             string.IsNullOrWhiteSpace(state.OwnerUsername) ||
             string.IsNullOrWhiteSpace(state.OwnerTenantCode) ||
             string.IsNullOrWhiteSpace(state.OwnerOfficeCode))
@@ -435,11 +506,18 @@ public sealed class JsonSyncStateStore
             return false;
         }
 
-        var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(snapshot.TenantCode, snapshot.OfficeCode);
-        var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(snapshot.OfficeCode);
-        return string.Equals(state.OwnerUsername, snapshot.Username, StringComparison.OrdinalIgnoreCase) &&
-               string.Equals(state.OwnerTenantCode, tenantCode, StringComparison.OrdinalIgnoreCase) &&
-               string.Equals(state.OwnerOfficeCode, officeCode, StringComparison.OrdinalIgnoreCase);
+        return string.Equals(
+                   state.OwnerUsername,
+                   owner.Username,
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(
+                   state.OwnerTenantCode,
+                   owner.TenantCode,
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(
+                   state.OwnerOfficeCode,
+                   owner.OfficeCode,
+                   StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool HasPendingPayload(MobileSyncState state)
@@ -475,6 +553,8 @@ public sealed class JsonSyncStateStore
         target.OwnerUsername = source.OwnerUsername;
         target.OwnerTenantCode = source.OwnerTenantCode;
         target.OwnerOfficeCode = source.OwnerOfficeCode;
+        target.OwnerSessionGeneration =
+            source.OwnerSessionGeneration;
         target.LastRevision = source.LastRevision;
         target.LastSuccessUtc = source.LastSuccessUtc;
         target.LastAttemptUtc = source.LastAttemptUtc;
@@ -513,15 +593,18 @@ public sealed class JsonSyncStateStore
         target.PendingPaymentAttachments = source.PendingPaymentAttachments;
     }
 
-    private void ApplyCurrentOwner(MobileSyncState state)
+    private static void ApplyOwner(
+        MobileSyncState state,
+        MobileSessionOwner owner)
     {
-        var snapshot = _sessionStore.GetSnapshot();
-        if (!snapshot.IsAuthenticated)
+        if (!owner.IsAuthenticated)
             return;
 
-        state.OwnerUsername = snapshot.Username?.Trim() ?? string.Empty;
-        state.OwnerTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(snapshot.TenantCode, snapshot.OfficeCode);
-        state.OwnerOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(snapshot.OfficeCode);
+        state.OwnerUsername = owner.Username;
+        state.OwnerTenantCode = owner.TenantCode;
+        state.OwnerOfficeCode = owner.OfficeCode;
+        state.OwnerSessionGeneration =
+            owner.SessionGeneration;
     }
 
     private static string SanitizeFilePart(string? value)

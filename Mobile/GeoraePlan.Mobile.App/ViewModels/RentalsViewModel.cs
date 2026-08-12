@@ -19,6 +19,7 @@ public sealed class RentalsViewModel : ObservableObject
     private readonly JsonSyncStateStore _syncStateStore;
     private readonly SyncCoordinator _syncCoordinator;
     private readonly SessionStore _sessionStore;
+    private readonly MobileOwnerOperationGate _ownerOperations;
 
     private string _searchText = string.Empty;
     private string _statusMessage = "렌탈 서버 동기화 데이터를 불러올 준비가 되었습니다.";
@@ -31,6 +32,8 @@ public sealed class RentalsViewModel : ObservableObject
         _syncStateStore = syncStateStore;
         _syncCoordinator = syncCoordinator;
         _sessionStore = sessionStore;
+        _ownerOperations =
+            new MobileOwnerOperationGate(sessionStore);
         RefreshCommand = new AsyncCommand(RefreshAsync);
         SyncNowCommand = new AsyncCommand(SyncNowAsync);
     }
@@ -46,7 +49,11 @@ public sealed class RentalsViewModel : ObservableObject
     public string SearchText
     {
         get => _searchText;
-        set => SetProperty(ref _searchText, value);
+        set
+        {
+            EnsureCurrentOwner();
+            SetProperty(ref _searchText, value);
+        }
     }
 
     public string StatusMessage
@@ -123,59 +130,117 @@ public sealed class RentalsViewModel : ObservableObject
     public bool NeedsRefresh(TimeSpan maxAge)
         => !_lastRefreshUtc.HasValue || DateTime.UtcNow - _lastRefreshUtc.Value >= maxAge;
 
-    public void ShowBillingProfiles() => SelectedSection = RentalMobileSection.BillingProfiles;
-    public void ShowRentalAssets() => SelectedSection = RentalMobileSection.Assets;
-    public void ShowBillingLogs() => SelectedSection = RentalMobileSection.BillingLogs;
-    public void ShowAssignmentHistories() => SelectedSection = RentalMobileSection.AssignmentHistories;
+    public MobileSessionOwner EnsureCurrentOwner()
+    {
+        var owner = _ownerOperations.EnsureCurrentOwner(
+            ResetForOwner);
+        IsBusy = _ownerOperations.IsBusy;
+        return owner;
+    }
+
+    public bool IsCurrentOwner(MobileSessionOwner owner)
+        => _ownerOperations.IsCurrent(owner);
+
+    public void ShowBillingProfiles()
+    {
+        EnsureCurrentOwner();
+        SelectedSection = RentalMobileSection.BillingProfiles;
+    }
+
+    public void ShowRentalAssets()
+    {
+        EnsureCurrentOwner();
+        SelectedSection = RentalMobileSection.Assets;
+    }
+
+    public void ShowBillingLogs()
+    {
+        EnsureCurrentOwner();
+        SelectedSection = RentalMobileSection.BillingLogs;
+    }
+
+    public void ShowAssignmentHistories()
+    {
+        EnsureCurrentOwner();
+        SelectedSection = RentalMobileSection.AssignmentHistories;
+    }
 
     public bool TryNavigateBackOneStep()
     {
+        EnsureCurrentOwner();
         if (SelectedSection == RentalMobileSection.BillingProfiles)
             return false;
 
-        ShowBillingProfiles();
+        SelectedSection = RentalMobileSection.BillingProfiles;
         StatusMessage = "렌탈 기본 목록으로 돌아왔습니다.";
         return true;
     }
 
     public async Task RefreshAsync()
     {
-        if (IsBusy)
+        var operation = _ownerOperations.TryBegin(
+            ResetForOwner,
+            deferRefreshWhenBusy: true);
+        IsBusy = _ownerOperations.IsBusy;
+        if (operation is null)
             return;
 
+        var runDeferredRefresh = false;
+        var searchTextSnapshot = SearchText;
+        var sessionSnapshot = _sessionStore.GetSnapshot();
         try
         {
-            IsBusy = true;
             StatusMessage = "렌탈 서버 동기화 데이터를 확인하고 있습니다.";
             var state = await _syncCoordinator.RefreshIfServerChangedAsync("rentals-refresh", TimeSpan.FromSeconds(5));
+            if (!_ownerOperations.CanCommit(operation))
+                return;
+
             if (ShouldHideCachedDataAfterSyncFailure(state))
             {
                 ClearRentalDisplay($"렌탈 데이터를 표시할 수 없습니다. {state.LastError}");
                 return;
             }
 
-            await LoadFromStateAsync();
+            await LoadFromStateAsync(
+                operation,
+                sessionSnapshot,
+                searchTextSnapshot);
         }
         catch (Exception ex)
         {
-            StatusMessage = $"렌탈 화면 초기화 실패: {ex.Message}";
+            if (_ownerOperations.CanCommit(operation))
+                StatusMessage = $"렌탈 화면 초기화 실패: {ex.Message}";
         }
         finally
         {
-            IsBusy = false;
+            runDeferredRefresh = _ownerOperations.Complete(
+                operation,
+                ResetForOwner);
+            IsBusy = _ownerOperations.IsBusy;
+            if (runDeferredRefresh)
+                await RefreshAsync();
         }
     }
 
     public async Task SyncNowAsync()
     {
-        if (IsBusy)
+        var operation = _ownerOperations.TryBegin(
+            ResetForOwner,
+            deferRefreshWhenBusy: false);
+        IsBusy = _ownerOperations.IsBusy;
+        if (operation is null)
             return;
 
+        var runDeferredRefresh = false;
+        var searchTextSnapshot = SearchText;
+        var sessionSnapshot = _sessionStore.GetSnapshot();
         try
         {
-            IsBusy = true;
             StatusMessage = "렌탈 데이터를 서버와 동기화하는 중입니다.";
             var state = await _syncCoordinator.SynchronizeNowAsync();
+            if (!_ownerOperations.CanCommit(operation))
+                return;
+
             if (!string.IsNullOrWhiteSpace(state.LastError))
             {
                 StatusMessage = $"동기화 주의: {state.LastError}";
@@ -186,53 +251,68 @@ public sealed class RentalsViewModel : ObservableObject
                 }
             }
 
-            await LoadFromStateAsync();
+            await LoadFromStateAsync(
+                operation,
+                sessionSnapshot,
+                searchTextSnapshot);
         }
         catch (Exception ex)
         {
-            StatusMessage = $"렌탈 동기화 실패: {ex.Message}";
+            if (_ownerOperations.CanCommit(operation))
+                StatusMessage = $"렌탈 동기화 실패: {ex.Message}";
         }
         finally
         {
-            IsBusy = false;
+            runDeferredRefresh = _ownerOperations.Complete(
+                operation,
+                ResetForOwner);
+            IsBusy = _ownerOperations.IsBusy;
+            if (runDeferredRefresh)
+                await RefreshAsync();
         }
     }
 
-    private async Task LoadFromStateAsync()
+    private async Task LoadFromStateAsync(
+        MobileOwnerUiOperation operation,
+        SessionSnapshot sessionSnapshot,
+        string searchTextSnapshot)
     {
-        var state = await _syncStateStore.LoadAsync();
+        var state = await _syncStateStore.LoadAsync(
+            operation.Owner);
+        if (!_ownerOperations.CanCommit(operation))
+            return;
+
         state.Normalize();
-        var snapshot = _sessionStore.GetSnapshot();
 
         var effectiveBillingProfiles = MergeForDisplay(
             state.SyncedRentalBillingProfiles,
             state.PendingPush.RentalBillingProfiles)
-            .Where(profile => MobileSessionScopeFilter.CanAccessRentalBillingProfile(snapshot, profile))
+            .Where(profile => MobileSessionScopeFilter.CanAccessRentalBillingProfile(sessionSnapshot, profile))
             .ToList();
         var effectiveRentalAssets = MergeForDisplay(
             state.SyncedRentalAssets,
             state.PendingPush.RentalAssets)
-            .Where(asset => MobileSessionScopeFilter.CanAccessRentalAsset(snapshot, asset))
+            .Where(asset => MobileSessionScopeFilter.CanAccessRentalAsset(sessionSnapshot, asset))
             .ToList();
         var effectiveAssignmentHistories = MergeForDisplay(
             state.SyncedRentalAssetAssignmentHistories,
             state.PendingPush.RentalAssetAssignmentHistories)
-            .Where(history => MobileSessionScopeFilter.CanAccessRentalAssetAssignmentHistory(snapshot, history))
+            .Where(history => MobileSessionScopeFilter.CanAccessRentalAssetAssignmentHistory(sessionSnapshot, history))
             .ToList();
         var effectiveBillingLogs = MergeForDisplay(
             state.SyncedRentalBillingLogs,
             state.PendingPush.RentalBillingLogs)
-            .Where(log => MobileSessionScopeFilter.CanAccessRentalBillingLog(snapshot, log))
+            .Where(log => MobileSessionScopeFilter.CanAccessRentalBillingLog(sessionSnapshot, log))
             .ToList();
         var effectiveInvoices = MergeForDisplay(
             state.SyncedInvoices,
             state.PendingPush.Invoices)
-            .Where(invoice => MobileSessionScopeFilter.CanAccessInvoice(snapshot, invoice))
+            .Where(invoice => MobileSessionScopeFilter.CanAccessInvoice(sessionSnapshot, invoice))
             .ToList();
         var effectiveTransactions = MergeForDisplay(
             state.SyncedTransactions,
             state.PendingPush.Transactions)
-            .Where(transaction => MobileSessionScopeFilter.CanAccessTransaction(snapshot, transaction))
+            .Where(transaction => MobileSessionScopeFilter.CanAccessTransaction(sessionSnapshot, transaction))
             .ToList();
         var effectivePayments = MergeForDisplay(
             state.SyncedPayments,
@@ -248,12 +328,19 @@ public sealed class RentalsViewModel : ObservableObject
             .ToDictionary(group => group.Key, group => group.First(), EqualityComparer<Guid>.Default);
 
         var filteredProfiles = effectiveBillingProfiles
-            .Where(profile => MatchesProfile(profile, companyMap))
+            .Where(profile => MatchesProfile(
+                profile,
+                companyMap,
+                searchTextSnapshot))
             .OrderBy(profile => profile.CustomerName)
             .ThenBy(profile => profile.ProfileKey)
             .ToList();
         var filteredAssets = effectiveRentalAssets
-            .Where(asset => MatchesAsset(asset, companyMap, profileMap))
+            .Where(asset => MatchesAsset(
+                asset,
+                companyMap,
+                profileMap,
+                searchTextSnapshot))
             .OrderBy(asset => asset.CustomerName)
             .ThenBy(asset => asset.ItemName)
             .ToList();
@@ -264,17 +351,23 @@ public sealed class RentalsViewModel : ObservableObject
                 effectivePayments,
                 effectiveBillingLogs,
                 profileMap)
-            .Where(MatchesBillingHistory)
+            .Where(row => MatchesBillingHistory(
+                row,
+                searchTextSnapshot))
             .OrderByDescending(row => row.SortDate)
             .ThenBy(row => row.CustomerName)
             .ThenBy(row => row.ProfileKey)
             .ToList();
         var filteredAssignmentHistories = BuildAssignmentHistoryRows(effectiveAssignmentHistories, profileMap, assetMap)
-            .Where(MatchesAssignmentHistory)
+            .Where(row => MatchesAssignmentHistory(
+                row,
+                searchTextSnapshot))
             .OrderByDescending(row => row.SortDate)
             .ThenBy(row => row.CustomerName)
             .ThenBy(row => row.ManagementNumber)
             .ToList();
+        if (!_ownerOperations.CanCommit(operation))
+            return;
 
         Replace(BillingProfiles, filteredProfiles);
         Replace(RentalAssets, filteredAssets);
@@ -298,6 +391,21 @@ public sealed class RentalsViewModel : ObservableObject
         AssignmentHistories.Clear();
         _lastRefreshUtc = DateTime.UtcNow;
         StatusMessage = message;
+        OnPropertyChanged(nameof(CurrentSectionSummary));
+        OnPropertyChanged(nameof(CurrentListHeight));
+    }
+
+    private void ResetForOwner()
+    {
+        SearchText = string.Empty;
+        SelectedSection = RentalMobileSection.BillingProfiles;
+        BillingProfiles.Clear();
+        RentalAssets.Clear();
+        BillingLogs.Clear();
+        AssignmentHistories.Clear();
+        _lastRefreshUtc = null;
+        StatusMessage =
+            "렌탈 서버 동기화 데이터를 불러올 준비가 되었습니다.";
         OnPropertyChanged(nameof(CurrentSectionSummary));
         OnPropertyChanged(nameof(CurrentListHeight));
     }
@@ -349,12 +457,15 @@ public sealed class RentalsViewModel : ObservableObject
         return candidate.UpdatedAtUtc >= current.UpdatedAtUtc;
     }
 
-    private bool MatchesProfile(RentalBillingProfileDto profile, IReadOnlyDictionary<string, string> companyMap)
+    private static bool MatchesProfile(
+        RentalBillingProfileDto profile,
+        IReadOnlyDictionary<string, string> companyMap,
+        string searchText)
     {
-        if (string.IsNullOrWhiteSpace(SearchText))
+        if (string.IsNullOrWhiteSpace(searchText))
             return true;
 
-        var q = SearchText.Trim();
+        var q = searchText.Trim();
         return Contains(profile.ProfileKey, q)
                || Contains(profile.CustomerName, q)
                || Contains(profile.ItemName, q)
@@ -365,15 +476,16 @@ public sealed class RentalsViewModel : ObservableObject
                || Contains(ResolveCompanyName(profile.ManagementCompanyCode, companyMap), q);
     }
 
-    private bool MatchesAsset(
+    private static bool MatchesAsset(
         RentalAssetDto asset,
         IReadOnlyDictionary<string, string> companyMap,
-        IReadOnlyDictionary<Guid, RentalBillingProfileDto> profileMap)
+        IReadOnlyDictionary<Guid, RentalBillingProfileDto> profileMap,
+        string searchText)
     {
-        if (string.IsNullOrWhiteSpace(SearchText))
+        if (string.IsNullOrWhiteSpace(searchText))
             return true;
 
-        var q = SearchText.Trim();
+        var q = searchText.Trim();
         return Contains(asset.AssetKey, q)
                || Contains(asset.CustomerName, q)
                || Contains(asset.ItemName, q)
@@ -389,12 +501,14 @@ public sealed class RentalsViewModel : ObservableObject
                    (Contains(profile.ProfileKey, q) || Contains(profile.CustomerName, q)));
     }
 
-    private bool MatchesBillingHistory(RentalBillingHistoryDisplayRow row)
+    private static bool MatchesBillingHistory(
+        RentalBillingHistoryDisplayRow row,
+        string searchText)
     {
-        if (string.IsNullOrWhiteSpace(SearchText))
+        if (string.IsNullOrWhiteSpace(searchText))
             return true;
 
-        var q = SearchText.Trim();
+        var q = searchText.Trim();
         return Contains(row.Title, q)
                || Contains(row.Subtitle, q)
                || Contains(row.Meta, q)
@@ -406,12 +520,14 @@ public sealed class RentalsViewModel : ObservableObject
                || Contains(row.OfficeCode, q);
     }
 
-    private bool MatchesAssignmentHistory(RentalAssignmentHistoryDisplayRow row)
+    private static bool MatchesAssignmentHistory(
+        RentalAssignmentHistoryDisplayRow row,
+        string searchText)
     {
-        if (string.IsNullOrWhiteSpace(SearchText))
+        if (string.IsNullOrWhiteSpace(searchText))
             return true;
 
-        var q = SearchText.Trim();
+        var q = searchText.Trim();
         return Contains(row.Title, q)
                || Contains(row.Subtitle, q)
                || Contains(row.Meta, q)

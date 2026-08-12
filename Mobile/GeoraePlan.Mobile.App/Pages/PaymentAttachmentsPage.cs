@@ -1,5 +1,6 @@
 using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
+using GeoraePlan.Mobile.App.Services;
 using Microsoft.Maui.Controls.Shapes;
 using 거래플랜.Shared.Contracts;
 
@@ -8,6 +9,7 @@ namespace GeoraePlan.Mobile.App.Pages;
 public sealed class PaymentAttachmentsPage : ContentPage
 {
     private readonly PaymentAttachmentsViewModel _viewModel;
+    private readonly MobileSessionOwner _pageOwner;
     private readonly Guid _paymentId;
     private readonly string _titleText;
     private readonly IReadOnlyList<PaymentAttachmentDto> _fallbackAttachments;
@@ -23,6 +25,9 @@ public sealed class PaymentAttachmentsPage : ContentPage
         _paymentId = paymentId;
         _titleText = titleText;
         _fallbackAttachments = fallbackAttachments?.Where(attachment => attachment is not null && !attachment.IsDeleted).ToList() ?? [];
+        _pageOwner = ServiceHelper
+            .GetRequiredService<SessionStore>()
+            .CaptureOwner();
         _viewModel = ServiceHelper.GetRequiredService<PaymentAttachmentsViewModel>();
         BindingContext = _viewModel;
 
@@ -124,10 +129,17 @@ public sealed class PaymentAttachmentsPage : ContentPage
             async () =>
             {
 if (_initialized)
+        {
+            _viewModel.EnsureContextOwnerCurrent();
             return;
+        }
 
         _initialized = true;
-        await _viewModel.InitializeAsync(_paymentId, _titleText, _fallbackAttachments);
+        await _viewModel.InitializeAsync(
+            _paymentId,
+            _titleText,
+            _pageOwner,
+            _fallbackAttachments);
             },
             "수금/지급 첨부 화면 초기화");
     }

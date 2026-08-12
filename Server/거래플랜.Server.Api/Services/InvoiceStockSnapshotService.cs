@@ -8,12 +8,11 @@ namespace 거래플랜.Server.Api.Services;
 public sealed class InvoiceStockSnapshotService
 {
     private readonly AppDbContext _dbContext;
-    private readonly RevisionClock _revisionClock;
 
     public InvoiceStockSnapshotService(AppDbContext dbContext, RevisionClock revisionClock)
     {
         _dbContext = dbContext;
-        _revisionClock = revisionClock;
+        ArgumentNullException.ThrowIfNull(revisionClock);
     }
 
     public async Task<IReadOnlyDictionary<InvoiceStockKey, decimal>> BuildInvoiceStockDeltasAsync(
@@ -49,16 +48,11 @@ public sealed class InvoiceStockSnapshotService
         {
             var itemId = line.ItemId!.Value;
             if (!itemTrackingMap.TryGetValue(itemId, out var itemTrackingType) ||
-                !ItemOperationalPolicy.SupportsInventory(itemTrackingType))
+                !ItemOperationalPolicy.SupportsInventory(itemTrackingType) ||
+                !ItemOperationalPolicy.SupportsInventory(line.ItemTrackingType))
             {
                 continue;
             }
-
-            var lineTrackingType = ItemTrackingTypes.Normalize(
-                line.ItemTrackingType,
-                itemId == Guid.Empty ? ItemTrackingTypes.NonStock : itemTrackingType);
-            if (!ItemOperationalPolicy.SupportsInventory(lineTrackingType))
-                continue;
 
             var quantity = Math.Abs(line.Quantity);
             var signedQuantity = invoice.VoucherType == VoucherType.Sales ? -quantity : quantity;
@@ -127,7 +121,7 @@ public sealed class InvoiceStockSnapshotService
                 continue;
             }
 
-            var transferQuantity = Math.Abs(line.Quantity);
+            var transferQuantity = line.Quantity;
             AddStockDelta(deltas, new InvoiceStockKey(itemId, fromWarehouseCode), -transferQuantity);
             if (!isReceived)
                 continue;
@@ -171,9 +165,39 @@ public sealed class InvoiceStockSnapshotService
             if (!items.ContainsKey(key.ItemId))
                 continue;
 
-            var stock = stocks.FirstOrDefault(row =>
-                row.ItemId == key.ItemId &&
-                string.Equals(row.WarehouseCode, key.WarehouseCode, StringComparison.OrdinalIgnoreCase));
+            var trackedStockEntries = _dbContext.ChangeTracker
+                .Entries<ItemWarehouseStock>()
+                .Where(entry =>
+                    entry.Entity.ItemId == key.ItemId &&
+                    string.Equals(
+                        entry.Entity.WarehouseCode,
+                        key.WarehouseCode,
+                        StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (trackedStockEntries.Any(entry => entry.State == EntityState.Deleted))
+            {
+                throw new InvalidOperationException(
+                    "Cannot apply a stock snapshot delta while a matching warehouse stock is pending deletion.");
+            }
+
+            var matchingStocks = stocks
+                .Where(row =>
+                    row.ItemId == key.ItemId &&
+                    string.Equals(row.WarehouseCode, key.WarehouseCode, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            foreach (var trackedStock in trackedStockEntries.Select(entry => entry.Entity))
+            {
+                if (matchingStocks.All(stock => !ReferenceEquals(stock, trackedStock)))
+                    matchingStocks.Add(trackedStock);
+            }
+
+            if (matchingStocks.Count > 1)
+            {
+                throw new InvalidOperationException(
+                    "Cannot apply a stock snapshot delta because multiple physical warehouse stocks match the same logical key.");
+            }
+
+            var stock = matchingStocks.SingleOrDefault();
             if (stock is null)
             {
                 stock = new ItemWarehouseStock
@@ -181,8 +205,7 @@ public sealed class InvoiceStockSnapshotService
                     ItemId = key.ItemId,
                     WarehouseCode = key.WarehouseCode,
                     Quantity = 0m,
-                    UpdatedAtUtc = now,
-                    Revision = _revisionClock.NextRevision()
+                    UpdatedAtUtc = now
                 };
                 _dbContext.ItemWarehouseStocks.Add(stock);
                 stocks.Add(stock);
@@ -190,7 +213,6 @@ public sealed class InvoiceStockSnapshotService
 
             stock.Quantity += delta;
             stock.UpdatedAtUtc = now;
-            stock.Revision = _revisionClock.NextRevision();
             itemDeltaTotals[key.ItemId] = itemDeltaTotals.TryGetValue(key.ItemId, out var itemDelta)
                 ? itemDelta + delta
                 : delta;
@@ -206,9 +228,20 @@ public sealed class InvoiceStockSnapshotService
         }
     }
 
+    public Task<IReadOnlyList<InvoiceStockShortage>> FindStockShortagesAsync(
+        IReadOnlyDictionary<InvoiceStockKey, decimal> previous,
+        IReadOnlyDictionary<InvoiceStockKey, decimal> current,
+        CancellationToken cancellationToken = default)
+        => FindStockShortagesAsync(
+            previous,
+            current,
+            new Dictionary<InvoiceStockKey, decimal>(),
+            cancellationToken);
+
     public async Task<IReadOnlyList<InvoiceStockShortage>> FindStockShortagesAsync(
         IReadOnlyDictionary<InvoiceStockKey, decimal> previous,
         IReadOnlyDictionary<InvoiceStockKey, decimal> current,
+        IReadOnlyDictionary<InvoiceStockKey, decimal> currentQuantityOverrides,
         CancellationToken cancellationToken = default)
     {
         var keys = previous.Keys.Concat(current.Keys).Distinct().ToList();
@@ -245,9 +278,18 @@ public sealed class InvoiceStockSnapshotService
             })
             .ToDictionaryAsync(item => item.Id, cancellationToken);
         var stocks = await _dbContext.ItemWarehouseStocks
-            .AsNoTracking()
             .Where(stock => itemIds.Contains(stock.ItemId))
             .ToListAsync(cancellationToken);
+        stocks.RemoveAll(stock => _dbContext.Entry(stock).State == EntityState.Deleted);
+        foreach (var localStock in _dbContext.ItemWarehouseStocks.Local.Where(stock => itemIds.Contains(stock.ItemId)))
+        {
+            if (stocks.All(stock =>
+                    stock.ItemId != localStock.ItemId ||
+                    !string.Equals(stock.WarehouseCode, localStock.WarehouseCode, StringComparison.OrdinalIgnoreCase)))
+            {
+                stocks.Add(localStock);
+            }
+        }
 
         var shortages = new List<InvoiceStockShortage>();
         foreach (var row in appliedDeltas)
@@ -258,13 +300,18 @@ public sealed class InvoiceStockSnapshotService
                 continue;
             }
 
-            var currentQuantity = stocks
-                .Where(stock =>
-                    stock.ItemId == row.Key.ItemId &&
-                    string.Equals(stock.WarehouseCode, row.Key.WarehouseCode, StringComparison.OrdinalIgnoreCase))
-                .Select(stock => stock.Quantity)
-                .DefaultIfEmpty(0m)
-                .Sum();
+            var currentQuantity =
+                currentQuantityOverrides.TryGetValue(
+                    row.Key,
+                    out var currentQuantityOverride)
+                    ? currentQuantityOverride
+                    : stocks
+                        .Where(stock =>
+                            stock.ItemId == row.Key.ItemId &&
+                            string.Equals(stock.WarehouseCode, row.Key.WarehouseCode, StringComparison.OrdinalIgnoreCase))
+                        .Select(stock => stock.Quantity)
+                        .DefaultIfEmpty(0m)
+                        .Sum();
             var finalQuantity = currentQuantity + row.Delta;
             if (finalQuantity >= 0m)
                 continue;

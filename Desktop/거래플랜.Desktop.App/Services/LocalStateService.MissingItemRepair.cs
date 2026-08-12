@@ -37,9 +37,6 @@ public sealed partial class LocalStateService
                 .Select(item => item.Id)
                 .ToListAsync(ct))
             .ToHashSet();
-        var knownItemIds = activeItemIds
-            .Concat(deletedItemIds)
-            .ToHashSet();
 
         var invoiceRows = await (
                 from line in _db.InvoiceLines.IgnoreQueryFilters().AsNoTracking()
@@ -153,7 +150,7 @@ public sealed partial class LocalStateService
             .ToDictionary(group => group.Key, group => group.Sum(movement => movement.QuantityDelta));
 
         var missingReferenceIds = referencedItemIds
-            .Where(itemId => !knownItemIds.Contains(itemId))
+            .Where(itemId => !activeItemIds.Contains(itemId))
             .ToList();
         var unresolvedReferenceCount = missingReferenceIds.Count(itemId => !candidates.ContainsKey(itemId));
 
@@ -173,7 +170,10 @@ public sealed partial class LocalStateService
 
             try
             {
-                await UpsertItemAsync(item, session, candidate.OfficeCode, ct);
+                if (deletedItemIds.Contains(itemId))
+                    await RestoreDeletedMissingItemAsync(item, session, candidate.OfficeCode, ct);
+                else
+                    await UpsertItemAsync(item, session, candidate.OfficeCode, ct);
             }
             catch (UnauthorizedAccessException)
             {

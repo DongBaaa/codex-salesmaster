@@ -18,7 +18,9 @@ public sealed partial class LegacyDataMigrationService
 
     private static string? ResolveLegacyLocalDbPath()
     {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var localAppData = AppPaths.IsTestEnvironment
+            ? Path.Combine(AppPaths.AppRoot, "legacy-probe", "local-app-data")
+            : Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var candidates = new[]
         {
             Path.Combine(localAppData, "SalesMaster", "data", LegacyLocalDbFileName),
@@ -28,11 +30,12 @@ public sealed partial class LegacyDataMigrationService
         var currentDbPath = Path.GetFullPath(AppPaths.LocalDbFile);
         foreach (var candidate in candidates)
         {
-            if (!File.Exists(candidate))
-                continue;
-
             var fullPath = Path.GetFullPath(candidate);
             if (string.Equals(fullPath, currentDbPath, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!IsAllowedAutomaticLegacyProbePath(fullPath))
+                continue;
+            if (!File.Exists(fullPath))
                 continue;
 
             return fullPath;
@@ -43,26 +46,51 @@ public sealed partial class LegacyDataMigrationService
 
     private async Task<LegacyExcelPathPair> ResolveConfiguredLegacyExcelPathsAsync(CancellationToken ct)
     {
-        var configuredCustomerPath = (await _local.GetSettingAsync(LegacyCustomerExcelPathSettingKey, ct))?.Trim();
-        var configuredItemPath = (await _local.GetSettingAsync(LegacyItemExcelPathSettingKey, ct))?.Trim();
+        var configuredCustomerPath = SanitizeAutomaticLegacyProbePath(
+            (await _local.GetSettingAsync(LegacyCustomerExcelPathSettingKey, ct))?.Trim());
+        var configuredItemPath = SanitizeAutomaticLegacyProbePath(
+            (await _local.GetSettingAsync(LegacyItemExcelPathSettingKey, ct))?.Trim());
 
-        if (File.Exists(configuredCustomerPath) && File.Exists(configuredItemPath))
-            return new LegacyExcelPathPair(configuredCustomerPath!, configuredItemPath!);
+        if (AreAutomaticLegacyExcelPathsSafeForImport(
+                configuredCustomerPath,
+                configuredItemPath))
+        {
+            return new LegacyExcelPathPair(configuredCustomerPath, configuredItemPath);
+        }
 
         foreach (var root in EnumerateLegacyProbeRoots())
         {
             var customerCandidate = Path.Combine(root, DefaultCustomerExcelFileName);
             var itemCandidate = Path.Combine(root, DefaultItemExcelFileName);
-            if (File.Exists(customerCandidate) && File.Exists(itemCandidate))
+            if (IsAllowedAutomaticLegacyProbePath(customerCandidate) &&
+                IsAllowedAutomaticLegacyProbePath(itemCandidate) &&
+                File.Exists(customerCandidate) &&
+                File.Exists(itemCandidate))
+            {
                 return new LegacyExcelPathPair(customerCandidate, itemCandidate);
+            }
         }
 
-        return new LegacyExcelPathPair(configuredCustomerPath ?? string.Empty, configuredItemPath ?? string.Empty);
+        return new LegacyExcelPathPair(configuredCustomerPath, configuredItemPath);
     }
 
     private static IEnumerable<string> EnumerateLegacyProbeRoots()
     {
         var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (AppPaths.IsTestEnvironment)
+        {
+            var isolatedProbeRoot = Path.Combine(AppPaths.AppRoot, "legacy-probe");
+            AppPaths.EnsureNoExistingReparsePointInPathChain(
+                isolatedProbeRoot,
+                "automatic legacy probe root");
+            Directory.CreateDirectory(isolatedProbeRoot);
+            AppPaths.EnsureNoExistingReparsePointInPathChain(
+                isolatedProbeRoot,
+                "automatic legacy probe root");
+            yield return isolatedProbeRoot;
+            yield break;
+        }
 
         static IEnumerable<string> EnumerateSelfAndParents(string? start)
         {
@@ -90,6 +118,57 @@ public sealed partial class LegacyDataMigrationService
         {
             if (visited.Add(candidate))
                 yield return candidate;
+        }
+    }
+
+    private static bool IsAllowedAutomaticLegacyProbePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return false;
+
+        return !AppPaths.IsTestEnvironment || AppPaths.IsWithinAppRoot(path);
+    }
+
+    private static string SanitizeAutomaticLegacyProbePath(string? path)
+    {
+        if (!IsAllowedAutomaticLegacyProbePath(path))
+            return string.Empty;
+
+        try
+        {
+            return Path.GetFullPath(path!);
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static bool AreAutomaticLegacyExcelPathsSafeForImport(
+        string customerExcelPath,
+        string itemExcelPath)
+        => IsAllowedAutomaticLegacyProbePath(customerExcelPath)
+           && IsAllowedAutomaticLegacyProbePath(itemExcelPath)
+           && File.Exists(customerExcelPath)
+           && File.Exists(itemExcelPath);
+
+    private static void EnsureAutomaticLegacyExcelPathsSafeForImport(
+        string customerExcelPath,
+        string itemExcelPath)
+    {
+        if (!AreAutomaticLegacyExcelPathsSafeForImport(customerExcelPath, itemExcelPath))
+        {
+            throw new InvalidOperationException(
+                "Automatic legacy Excel migration refused a path outside the isolated application root.");
+        }
+    }
+
+    private static void EnsureAutomaticLegacyDatabasePathSafeForImport(string sourceDbPath)
+    {
+        if (!IsAllowedAutomaticLegacyProbePath(sourceDbPath) || !File.Exists(sourceDbPath))
+        {
+            throw new InvalidOperationException(
+                "Automatic legacy database migration refused a path outside the isolated application root.");
         }
     }
 

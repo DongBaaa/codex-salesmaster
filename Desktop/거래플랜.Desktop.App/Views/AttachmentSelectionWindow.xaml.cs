@@ -11,6 +11,7 @@ public partial class AttachmentSelectionWindow : Window
     public AttachmentSelectionWindow(AttachmentSelectionDialogViewModel viewModel)
     {
         InitializeComponent();
+        ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(this);
         _viewModel = viewModel;
         DataContext = viewModel;
         _viewModel.RequestClose += OnRequestClose;

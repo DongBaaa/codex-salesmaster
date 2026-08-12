@@ -9,23 +9,70 @@ namespace 거래플랜.Desktop.App.Views;
 
 public partial class RentalCustomerOnboardingWindow : Window
 {
+    private const double CompactLayoutWidthThreshold = 920d;
+    private const double CompactContentHeightThreshold = 620d;
+
     private bool _allowClose;
     private bool _closeInProgress;
+    private bool? _isCompactLayout;
+    private bool? _isCompactContentLayout;
 
     public RentalCustomerOnboardingWindow(RentalCustomerOnboardingViewModel viewModel)
     {
         InitializeComponent();
+        ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(this);
         DataContext = viewModel;
         viewModel.Completed += HandleCompleted;
         Closing += HandleClosing;
         Closed += (_, _) => viewModel.Completed -= HandleCompleted;
+        Loaded += (_, _) => ApplyResponsiveLayout();
+        SizeChanged += (_, _) => ApplyResponsiveLayout();
+    }
+
+    private void ApplyResponsiveLayout()
+    {
+        if (ActualWidth <= 0d || ActualHeight <= 0d)
+            return;
+
+        var useCompactLayout = ActualWidth < CompactLayoutWidthThreshold;
+        if (_isCompactLayout != useCompactLayout)
+        {
+            _isCompactLayout = useCompactLayout;
+            OnboardingStepSidebar.Visibility = useCompactLayout
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+            OnboardingSidebarColumn.Width = useCompactLayout
+                ? new GridLength(0d)
+                : new GridLength(250d);
+            OnboardingSidebarGapColumn.Width = useCompactLayout
+                ? new GridLength(0d)
+                : new GridLength(10d);
+        }
+
+        var useCompactContentLayout =
+            ActualHeight < CompactContentHeightThreshold;
+        if (_isCompactContentLayout == useCompactContentLayout)
+            return;
+
+        _isCompactContentLayout = useCompactContentLayout;
+        CandidateAssetSummaryPanel.Visibility = useCompactContentLayout
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        TemplateGuidancePanel.Visibility = useCompactContentLayout
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        TemplateSummaryBorder.Visibility = useCompactContentLayout
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        TemplateSummaryGapRow.Height = useCompactContentLayout
+            ? new GridLength(0d)
+            : new GridLength(10d);
     }
 
     private void HandleCompleted(object? sender, EventArgs e)
     {
         _allowClose = true;
-        DialogResult = true;
-        Close();
+        DialogWindowCloseHelper.Close(this, true);
     }
 
     private async void HandleClosing(object? sender, CancelEventArgs e)
@@ -59,8 +106,7 @@ public partial class RentalCustomerOnboardingWindow : Window
 
     private void CancelButton_Click(object sender, RoutedEventArgs e)
     {
-        DialogResult = false;
-        Close();
+        DialogWindowCloseHelper.Close(this, false);
     }
 
     private void CustomerLookupButton_Click(object sender, RoutedEventArgs e)
@@ -82,12 +128,12 @@ public partial class RentalCustomerOnboardingWindow : Window
                 var customerVm = new CustomerEditViewModel(viewModel.LocalStateService, viewModel.SessionState);
                 await customerVm.LoadAsync();
                 var customerWindow = new CustomerEditWindow(customerVm) { Owner = this };
-                customerWindow.ShowDialog();
+                DialogWindowCloseHelper.ShowDialog(customerWindow);
                 return await viewModel.BuildCustomerLookupRowsAsync();
             })
         { Owner = this };
 
-        if (dialog.ShowDialog() == true && dialog.SelectedRow?.Tag is LocalCustomer customer)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) == true && dialog.SelectedRow?.Tag is LocalCustomer customer)
             viewModel.ApplySelectedCustomer(customer);
     }
 }

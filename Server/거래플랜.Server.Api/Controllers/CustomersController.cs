@@ -190,6 +190,11 @@ public sealed class CustomersController : ControllerBase
         if (dto.IsDeleted)
             return SoftDeleteMutationGuard.RejectCreate("거래처");
 
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
+
         NormalizeCustomerClassification(dto);
         var entity = new Customer { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
         dto.ResponsibleOfficeCode = _officeScopeService.ResolveCustomerResponsibleScopeForCreate(
@@ -200,10 +205,23 @@ public sealed class CustomersController : ControllerBase
             dto.ResponsibleOfficeCode,
             dto.OfficeCode);
         dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode);
+
+        var mutationCheck = await ProcessedSyncMutationRecorder.CheckAsync(
+            _dbContext,
+            dto,
+            nameof(Customer),
+            cancellationToken);
+        if (mutationCheck.Status == DirectMutationStatus.Conflict)
+            return Conflict(ProcessedSyncMutationRecorder.BuildConflictResponse(mutationCheck));
+        if (mutationCheck.Status == DirectMutationStatus.Duplicate)
+            return await ResolveDuplicateCustomerAsync(mutationCheck, cancellationToken);
+
         entity.Apply(dto);
         _dbContext.Customers.Add(entity);
         await RentalCustomerLinkSynchronizer.SynchronizeAsync(_dbContext, entity, cancellationToken);
+        ProcessedSyncMutationRecorder.Record(_dbContext, mutationCheck, entity.Id);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
 
@@ -213,13 +231,18 @@ public sealed class CustomersController : ControllerBase
     {
         if (!_officeScopeService.CanEditCustomers())
             return Forbid();
+        if (dto.Id != Guid.Empty && dto.Id != id)
+            return BadRequest("Customer route id must match the body id.");
 
+        dto.Id = id;
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
         var entity = await _dbContext.Customers.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
         if (!_officeScopeService.CanWriteOfficeForCustomers(entity.ResponsibleOfficeCode, entity.TenantCode, entity.OfficeCode))
             return Forbid();
-        if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Customer)) is { } conflict)
-            return conflict;
         if (dto.IsDeleted)
             return SoftDeleteMutationGuard.RejectUpdate("거래처");
 
@@ -237,9 +260,24 @@ public sealed class CustomersController : ControllerBase
             dto.OfficeCode,
             entity.TenantCode,
             entity.OfficeCode);
+
+        var mutationCheck = await ProcessedSyncMutationRecorder.CheckAsync(
+            _dbContext,
+            dto,
+            nameof(Customer),
+            cancellationToken);
+        if (mutationCheck.Status == DirectMutationStatus.Conflict)
+            return Conflict(ProcessedSyncMutationRecorder.BuildConflictResponse(mutationCheck));
+        if (mutationCheck.Status == DirectMutationStatus.Duplicate)
+            return await ResolveDuplicateCustomerAsync(mutationCheck, cancellationToken);
+        if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Customer)) is { } conflict)
+            return conflict;
+
         entity.Apply(dto);
         await RentalCustomerLinkSynchronizer.SynchronizeAsync(_dbContext, entity, cancellationToken);
+        ProcessedSyncMutationRecorder.Record(_dbContext, mutationCheck, entity.Id);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
 
@@ -250,10 +288,19 @@ public sealed class CustomersController : ControllerBase
         if (!_officeScopeService.CanEditCustomers())
             return Forbid();
 
-        var entity = await _dbContext.Customers.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
+
+        var entity = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
         if (!_officeScopeService.CanWriteOfficeForCustomers(entity.ResponsibleOfficeCode, entity.TenantCode, entity.OfficeCode))
             return Forbid();
+        if (entity.IsDeleted)
+            return NoContent();
         if (OptimisticConcurrencyGuard.Check(this, entity, expectedRevision, nameof(Customer)) is { } conflict)
             return conflict;
 
@@ -281,7 +328,33 @@ public sealed class CustomersController : ControllerBase
             contract.IsDeleted = true;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return NoContent();
+    }
+
+    private async Task<ActionResult<CustomerDto>> ResolveDuplicateCustomerAsync(
+        DirectMutationCheck mutationCheck,
+        CancellationToken cancellationToken)
+    {
+        if (mutationCheck.ExistingReceipt is not null &&
+            Guid.TryParse(mutationCheck.ExistingReceipt.EntityId, out var entityId))
+        {
+            var entity = await _officeScopeService.ApplyCustomerScope(
+                    _dbContext.Customers.AsNoTracking())
+                .FirstOrDefaultAsync(
+                    current => current.Id == entityId,
+                    cancellationToken);
+            if (entity is not null)
+                return Ok(entity.ToDto());
+        }
+
+        return Conflict(new DirectMutationConflictResponse
+        {
+            MutationId = mutationCheck.MutationId,
+            EntityName = nameof(Customer),
+            EntityId = mutationCheck.RequestedEntityId,
+            Reason = "The processed mutation is unavailable in the current scope."
+        });
     }
 
     private static void PreserveCustomerTextWhenIncomingLooksLossy(CustomerDto dto, Customer entity)

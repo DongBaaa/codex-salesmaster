@@ -9,24 +9,42 @@ using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.ViewModels;
 
-public sealed partial class InventoryTransferViewModel : ObservableObject
+public sealed partial class InventoryTransferViewModel : ObservableObject, IDisposable
 {
     private readonly LocalStateService _local;
     private readonly SessionState _session;
     private readonly SemaphoreSlim _autoSaveGate = new(1, 1);
+    private readonly UiAsyncRefreshCoalescer _externalStateRefresh;
     private readonly Dictionary<(Guid ItemId, string WarehouseCode), decimal> _warehouseStocks = new();
     private readonly Dictionary<string, string> _warehouseNames = new(StringComparer.OrdinalIgnoreCase);
     private List<LocalItem> _allItems = new();
     private bool _suppressTransferSelectionChanged;
     private bool _suppressLineSelectionChanged;
-    private bool _isInventoryRefreshInProgress;
+    private bool _deferExternalRefreshUntilIdle;
+    private bool _isDisposed;
     private int _openTransferVersion;
     private string _baselineStateSignature = string.Empty;
     private long _transferRevision;
+    private DateTime _transferUpdatedAtUtc;
+    private readonly HashSet<Guid>
+        _remoteTombstoneConflictTransferIds = [];
+    private readonly HashSet<Guid>
+        _remoteTombstoneConflictShadowTransferIds = [];
+    private readonly Dictionary<Guid, string>
+        _remoteTombstoneConflictSourceOfficeCodes = [];
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasSavedTransfer))]
+    [NotifyPropertyChangedFor(nameof(CanReloadLatestTransfer))]
+    [NotifyPropertyChangedFor(
+        nameof(HasRemoteTombstoneConflictDraft))]
+    [NotifyPropertyChangedFor(
+        nameof(CanRecoverRemoteDeletedTransferAsNew))]
     [NotifyPropertyChangedFor(nameof(CanDeleteTransfer))]
+    [NotifyPropertyChangedFor(nameof(CanEditReceiptDraft))]
+    [NotifyPropertyChangedFor(nameof(CanEditTransferDraft))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateReceiptLine))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateLine))]
     [NotifyPropertyChangedFor(nameof(CanConfirmReceipt))]
     [NotifyPropertyChangedFor(nameof(CanRejectTransfer))]
     private Guid _transferId;
@@ -40,19 +58,70 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(TransferRouteText))]
     [NotifyPropertyChangedFor(nameof(CanDeleteTransfer))]
+    [NotifyPropertyChangedFor(nameof(CanReloadLatestTransfer))]
+    [NotifyPropertyChangedFor(
+        nameof(CanRecoverRemoteDeletedTransferAsNew))]
+    [NotifyPropertyChangedFor(nameof(CanEditSourceDraft))]
+    [NotifyPropertyChangedFor(nameof(CanSaveTransfer))]
+    [NotifyPropertyChangedFor(nameof(CanEditTransferDraft))]
+    [NotifyPropertyChangedFor(nameof(CanAddLine))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateSourceLine))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateLine))]
+    [NotifyPropertyChangedFor(nameof(CanDeleteLine))]
     private string _fromWarehouseCode = DomainConstants.WarehouseUsenetMain;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(TransferRouteText))]
     [NotifyPropertyChangedFor(nameof(CanDeleteTransfer))]
+    [NotifyPropertyChangedFor(nameof(CanEditReceiptDraft))]
+    [NotifyPropertyChangedFor(nameof(CanEditTransferDraft))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateReceiptLine))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateLine))]
     [NotifyPropertyChangedFor(nameof(CanConfirmReceipt))]
     [NotifyPropertyChangedFor(nameof(CanRejectTransfer))]
     private string _toWarehouseCode = DomainConstants.WarehouseYeonsuMain;
 
     [ObservableProperty] private string _memo = string.Empty;
-    [ObservableProperty] private bool _isBusy;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(
+        nameof(CanRecoverRemoteDeletedTransferAsNew))]
+    [NotifyPropertyChangedFor(nameof(CanEditSourceDraft))]
+    [NotifyPropertyChangedFor(nameof(CanEditReceiptDraft))]
+    [NotifyPropertyChangedFor(nameof(CanEditTransferDraft))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateSourceLine))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateReceiptLine))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateLine))]
+    private bool _isBusy;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanSaveTransfer))]
+    [NotifyPropertyChangedFor(nameof(CanEditSourceDraft))]
+    [NotifyPropertyChangedFor(nameof(CanEditReceiptDraft))]
+    [NotifyPropertyChangedFor(nameof(CanEditTransferDraft))]
+    [NotifyPropertyChangedFor(nameof(CanAddLine))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateSourceLine))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateReceiptLine))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateLine))]
+    [NotifyPropertyChangedFor(nameof(CanDeleteLine))]
+    [NotifyPropertyChangedFor(nameof(CanDeleteTransfer))]
+    [NotifyPropertyChangedFor(nameof(CanConfirmReceipt))]
+    [NotifyPropertyChangedFor(nameof(CanRejectTransfer))]
+    private bool _isExternalTransferUnavailable;
+
+    [ObservableProperty]
+    private bool _hasExternalTransferConflict;
+
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanDeleteTransfer))]
+    [NotifyPropertyChangedFor(nameof(CanEditSourceDraft))]
+    [NotifyPropertyChangedFor(nameof(CanEditReceiptDraft))]
+    [NotifyPropertyChangedFor(nameof(CanEditTransferDraft))]
+    [NotifyPropertyChangedFor(nameof(CanSaveTransfer))]
+    [NotifyPropertyChangedFor(nameof(CanAddLine))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateSourceLine))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateReceiptLine))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateLine))]
+    [NotifyPropertyChangedFor(nameof(CanDeleteLine))]
     [NotifyPropertyChangedFor(nameof(CanConfirmReceipt))]
     [NotifyPropertyChangedFor(nameof(CanRejectTransfer))]
     private string _transferStatus = "수령대기";
@@ -66,12 +135,15 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     [ObservableProperty] private LocalInventoryTransfer? _selectedTransfer;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanUpdateSourceLine))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateReceiptLine))]
     [NotifyPropertyChangedFor(nameof(CanUpdateLine))]
     [NotifyPropertyChangedFor(nameof(CanDeleteLine))]
     private InventoryTransferLineEditModel? _selectedLine;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanAddLine))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateSourceLine))]
     [NotifyPropertyChangedFor(nameof(CanUpdateLine))]
     [NotifyPropertyChangedFor(nameof(AvailableStockText))]
     private LocalItem? _selectedInputItem;
@@ -82,12 +154,14 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanAddLine))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateSourceLine))]
     [NotifyPropertyChangedFor(nameof(CanUpdateLine))]
     private decimal _inputQty = 1m;
 
     [ObservableProperty] private string _inputRemark = string.Empty;
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanAddLine))]
+    [NotifyPropertyChangedFor(nameof(CanUpdateReceiptLine))]
     [NotifyPropertyChangedFor(nameof(CanUpdateLine))]
     private decimal _inputReceivedQty = 1m;
     [ObservableProperty] private string _inputReceiptRemark = string.Empty;
@@ -101,14 +175,48 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     public ObservableCollection<InventoryTransferLineEditModel> Lines { get; } = new();
 
     public bool HasStatus => !string.IsNullOrWhiteSpace(StatusMessage);
+    internal long TransferRevision
+    {
+        get => _transferRevision;
+        set => SetTransferRevision(value);
+    }
     public bool IsAdmin => _session.HasAdministrativePrivileges;
     public bool HasSavedTransfer => TransferId != Guid.Empty;
-    public bool CanDeleteTransfer => HasSavedTransfer && CanCurrentUserDelete;
-    public bool CanConfirmReceipt => HasSavedTransfer && !IsFinalTransferStatus && CanCurrentUserReceive;
-    public bool CanRejectTransfer => HasSavedTransfer && !IsFinalTransferStatus && CanCurrentUserReceive;
-    public bool CanAddLine => !IsFinalTransferStatus && SelectedInputItem is not null && InputQty > 0m;
-    public bool CanUpdateLine => !IsFinalTransferStatus && SelectedLine is not null && CanAddLine;
-    public bool CanDeleteLine => !IsFinalTransferStatus && SelectedLine is not null;
+    public bool IsInteractionEnabled => !IsBusy;
+    public bool CanEditSourceDraft =>
+        !IsBusy &&
+        !IsExternalTransferUnavailable &&
+        !IsFinalTransferStatus &&
+        CanCurrentUserEditSource(FromWarehouseCode);
+    public bool CanEditReceiptDraft =>
+        !IsBusy &&
+        !IsExternalTransferUnavailable &&
+        HasSavedTransfer &&
+        !IsFinalTransferStatus &&
+        CanCurrentUserReceive &&
+        !RequiresSourceSyncBeforeReceipt;
+    public bool CanEditTransferDraft => CanEditSourceDraft || CanEditReceiptDraft;
+    public bool CanSaveTransfer => CanEditSourceDraft;
+    public bool CanReloadLatestTransfer =>
+        !IsBusy &&
+        HasSavedTransfer &&
+        (!HasRemoteTombstoneConflictDraft ||
+         CanCurrentUserResolveRemoteTombstoneConflict);
+    public bool HasRemoteTombstoneConflictDraft =>
+        HasSavedTransfer &&
+        _remoteTombstoneConflictTransferIds.Contains(TransferId);
+    public bool CanRecoverRemoteDeletedTransferAsNew =>
+        !IsBusy &&
+        HasRemoteTombstoneConflictDraft &&
+        CanCurrentUserResolveRemoteTombstoneConflict;
+    public bool CanDeleteTransfer => !IsBusy && !IsExternalTransferUnavailable && HasSavedTransfer && CanCurrentUserDelete;
+    public bool CanConfirmReceipt => CanEditReceiptDraft;
+    public bool CanRejectTransfer => CanEditReceiptDraft;
+    public bool CanAddLine => CanEditSourceDraft && SelectedInputItem is not null && QuantityNumericContract.IsPositiveQuantity18Scale2(InputQty);
+    public bool CanUpdateSourceLine => CanEditSourceDraft && SelectedLine is not null && SelectedInputItem is not null && QuantityNumericContract.IsPositiveQuantity18Scale2(InputQty);
+    public bool CanUpdateReceiptLine => CanEditReceiptDraft && SelectedLine is not null && QuantityNumericContract.IsValidReceivedQuantity18Scale2(InputReceivedQty, SelectedLine.Quantity);
+    public bool CanUpdateLine => CanUpdateSourceLine || CanUpdateReceiptLine;
+    public bool CanDeleteLine => CanEditSourceDraft && SelectedLine is not null;
     public bool HasPendingChanges => !string.Equals(_baselineStateSignature, BuildEditStateSignature(CaptureEditSnapshot()), StringComparison.Ordinal);
     public bool HasMeaningfulDraftContentForClose => HasMeaningfulDraftContent(CaptureEditSnapshot());
     public string TransferNumberDisplay => string.IsNullOrWhiteSpace(TransferNumber) ? "(저장 시 자동생성)" : TransferNumber;
@@ -121,6 +229,48 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
         string.Equals(TransferStatus, "반려", StringComparison.OrdinalIgnoreCase);
     private bool CanCurrentUserEditDeliveries =>
         _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.DeliveryEdit);
+
+    private bool CanCurrentUserEditSource(string? warehouseCode)
+    {
+        if (!CanCurrentUserEditDeliveries)
+            return false;
+
+        if (_session.HasAdministrativePrivileges)
+            return true;
+
+        var writableOfficeCodes =
+            _local.GetWritableOfficeCodesForSession(_session);
+        var sourceOfficeCode =
+            ResolveOfficeCodeFromWarehouseCode(warehouseCode);
+        return writableOfficeCodes.Contains(
+            sourceOfficeCode,
+            StringComparer.OrdinalIgnoreCase);
+    }
+    private bool CanCurrentUserResolveRemoteTombstoneConflict
+    {
+        get
+        {
+            if (!CanCurrentUserEditDeliveries)
+                return false;
+
+            if (_session.HasAdministrativePrivileges)
+                return true;
+
+            var writableOfficeCodes =
+                _local.GetWritableOfficeCodesForSession(_session);
+            var sourceOfficeCode =
+                HasRemoteTombstoneConflictDraft &&
+                _remoteTombstoneConflictSourceOfficeCodes.TryGetValue(
+                    TransferId,
+                    out var conflictSourceOfficeCode)
+                    ? conflictSourceOfficeCode
+                    : ResolveOfficeCodeFromWarehouseCode(
+                        FromWarehouseCode);
+            return writableOfficeCodes.Contains(
+                sourceOfficeCode,
+                StringComparer.OrdinalIgnoreCase);
+        }
+    }
     public bool CanCurrentUserReceive
     {
         get
@@ -136,6 +286,13 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             return string.Equals(destinationOfficeCode, userOfficeCode, StringComparison.OrdinalIgnoreCase);
         }
     }
+
+    private bool RequiresSourceSyncBeforeReceipt =>
+        HasSavedTransfer &&
+        _transferRevision <= 0 &&
+        !IsFinalTransferStatus &&
+        CanCurrentUserReceive &&
+        !CanCurrentUserEditSource(FromWarehouseCode);
     public bool CanCurrentUserDelete
     {
         get
@@ -162,8 +319,25 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     {
         _local = local;
         _session = session;
+        _externalStateRefresh = new UiAsyncRefreshCoalescer(
+            HandleInventoryStateChangedAsync,
+            task => UiTaskHelper.Forget(
+                task,
+                "TRANSFER",
+                "열린 재고이동 화면 동기화",
+                ex => StatusMessage = $"다른 PC의 재고이동 변경 내용을 다시 불러오지 못했습니다. {ex.Message}"));
         _local.InventoryStateChanged += HandleInventoryStateChanged;
         ResetEditBaseline();
+    }
+
+    public void Dispose()
+    {
+        if (_isDisposed)
+            return;
+
+        _isDisposed = true;
+        _local.InventoryStateChanged -= HandleInventoryStateChanged;
+        _externalStateRefresh.Dispose();
     }
 
     public async Task LoadAsync(LocalInventoryTransfer? transfer = null)
@@ -188,36 +362,158 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
 
     private void HandleInventoryStateChanged(object? sender, EventArgs e)
     {
-        if (_isInventoryRefreshInProgress || IsBusy)
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null)
             return;
 
-        UiTaskHelper.Forget(HandleInventoryStateChangedAsync(), "UI", "재고이동 화면 재고 상태 새로고침");
+        if (!dispatcher.CheckAccess())
+        {
+            _ = dispatcher.InvokeAsync(QueueInventoryStateRefreshOnDispatcher);
+            return;
+        }
+
+        QueueInventoryStateRefreshOnDispatcher();
     }
 
-    private async Task HandleInventoryStateChangedAsync()
+    private void QueueInventoryStateRefreshOnDispatcher()
     {
-        if (_isInventoryRefreshInProgress || IsBusy)
+        if (_isDisposed)
             return;
 
-        _isInventoryRefreshInProgress = true;
+        if (IsBusy)
+        {
+            _deferExternalRefreshUntilIdle = true;
+            return;
+        }
+
+        _externalStateRefresh.Request();
+    }
+
+    internal async Task HandleInventoryStateChangedAsync()
+    {
+        if (_isDisposed)
+            return;
+
+        if (IsBusy)
+        {
+            _deferExternalRefreshUntilIdle = true;
+            return;
+        }
+
+        IsBusy = true;
         try
         {
-            var selectedInputItemId = SelectedInputItem?.Id;
-            await LoadLookupsAsync();
-            await RefreshWarehouseStocksAsync();
+            var editorTransferId = TransferId;
+            var editorOpenVersion = Volatile.Read(ref _openTransferVersion);
+            var selectedTransferId = SelectedTransfer?.Id;
 
-            if (selectedInputItemId.HasValue)
+            await LoadLookupsAsync();
+            if (_isDisposed)
+                return;
+
+            await RefreshWarehouseStocksAsync();
+            if (_isDisposed)
+                return;
+
+            var refreshedTransfers =
+                await LoadVisibleTransfersIncludingRemoteTombstoneDraftsAsync();
+            if (_isDisposed)
+                return;
+
+            var sameEditor =
+                TransferId == editorTransferId &&
+                editorOpenVersion == Volatile.Read(ref _openTransferVersion);
+            var selectedIdAfterAwait = SelectedTransfer?.Id ?? selectedTransferId;
+            ReplaceTransfers(refreshedTransfers, selectedIdAfterAwait);
+
+            if (!sameEditor)
+                return;
+
+            var currentSnapshot = CaptureEditSnapshot();
+            var hasPendingChanges = HasPendingChanges;
+            var latestTransfer = editorTransferId == Guid.Empty
+                ? null
+                : refreshedTransfers.FirstOrDefault(transfer => transfer.Id == editorTransferId);
+
+            if (editorTransferId == Guid.Empty)
             {
-                var refreshedItem = _allItems.FirstOrDefault(item => item.Id == selectedInputItemId.Value);
-                if (refreshedItem is null)
-                    ResetLineEditor(clearSelection: false);
-                else
-                    ApplyInputItem(refreshedItem);
+                RebindSelectedInputItem(preserveDraft: hasPendingChanges);
+                return;
             }
+
+            if (_remoteTombstoneConflictShadowTransferIds.Contains(
+                    editorTransferId))
+            {
+                IsExternalTransferUnavailable = true;
+                HasExternalTransferConflict = true;
+                ApplySnapshot(currentSnapshot, resetBaseline: false);
+                RebindSelectedInputItem(preserveDraft: true);
+                StatusMessage =
+                    "서버에서 삭제된 재고이동 문서입니다. 로컬 초안은 안전하게 별도 보관했고 재고에서는 제외했습니다. 저장·삭제·수령·반려는 차단됩니다. ‘초안을 새 문서로 복구’하거나 ‘최신본 불러오기’로 초안을 폐기하세요.";
+                return;
+            }
+
+            if (latestTransfer is null)
+            {
+                if (!hasPendingChanges)
+                {
+                    RemoveUnavailableTransfer(editorTransferId);
+                    StatusMessage = "다른 PC에서 이 재고이동 문서가 삭제되었거나 현재 조회 권한에서 제외되어 새 문서 화면으로 전환했습니다.";
+                    return;
+                }
+
+                IsExternalTransferUnavailable = true;
+                HasExternalTransferConflict = true;
+                ApplySnapshot(currentSnapshot, resetBaseline: false);
+                SetSelectedTransfer(null);
+                StatusMessage = "다른 PC에서 이 재고이동 문서가 삭제되었거나 현재 조회 권한에서 제외되었습니다. 미저장 내용은 보존했지만 문서가 다시 생기지 않도록 저장·삭제·수령·반려를 차단했습니다. ‘최신본 불러오기’로 임시 내용을 폐기하세요.";
+                return;
+            }
+
+            var remoteChanged =
+                latestTransfer.Revision != currentSnapshot.Revision ||
+                latestTransfer.UpdatedAtUtc != _transferUpdatedAtUtc;
+            var pendingDraftMatchesLatest =
+                hasPendingChanges &&
+                string.Equals(
+                    BuildEditStateSignature(currentSnapshot),
+                    BuildEditStateSignature(
+                        CreateSnapshotFromTransfer(latestTransfer)),
+                    StringComparison.Ordinal);
+
+            if (hasPendingChanges && !pendingDraftMatchesLatest)
+            {
+                ApplySnapshot(currentSnapshot, resetBaseline: false);
+                RebindSelectedInputItem(preserveDraft: true);
+
+                if (remoteChanged)
+                {
+                    IsExternalTransferUnavailable = false;
+                    HasExternalTransferConflict = true;
+                    StatusMessage = "다른 PC에서 이 재고이동 문서의 최신 내용이 먼저 반영되었습니다. 미저장 내용과 기존 기준 버전은 그대로 보존했습니다. 저장하면 동시 수정 충돌로 보호되며, ‘최신본 불러오기’를 누르면 임시 내용을 폐기하고 최신 문서를 확인할 수 있습니다.";
+                }
+
+                return;
+            }
+
+            if (!remoteChanged && !hasPendingChanges)
+            {
+                RebindSelectedInputItem(preserveDraft: false);
+                return;
+            }
+
+            ClearExternalTransferConflict();
+            RunWithSuppressedTransferSelectionChanged(() =>
+            {
+                SelectedTransfer = Transfers.FirstOrDefault(
+                    transfer => transfer.Id == latestTransfer.Id);
+                ApplyTransferToEditor(latestTransfer);
+            });
         }
         finally
         {
-            _isInventoryRefreshInProgress = false;
+            if (!_isDisposed)
+                IsBusy = false;
         }
     }
 
@@ -269,22 +565,91 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             return;
         }
 
-        var transfer = await _local.GetInventoryTransferAsync(transferId, _session);
-        if (version != Volatile.Read(ref _openTransferVersion))
+        var transfer =
+            await _local.GetInventoryTransferAsync(
+                transferId,
+                _session);
+        if (version != Volatile.Read(
+                ref _openTransferVersion))
+        {
             return;
+        }
+
+        var tombstoneConflict =
+            await _local.GetInventoryTransferTombstoneConflictDraftAsync(
+                transferId,
+                _session);
+        if (version != Volatile.Read(
+                ref _openTransferVersion))
+        {
+            return;
+        }
+
+        if (tombstoneConflict is not null)
+        {
+            AddRemoteTombstoneConflictTransferId(
+                transferId,
+                ResolveOfficeCodeFromWarehouseCode(
+                    tombstoneConflict.LocalDraft
+                        .FromWarehouseCode));
+            if (transfer is null)
+            {
+                transfer = tombstoneConflict.LocalDraft;
+                _remoteTombstoneConflictShadowTransferIds.Add(
+                    transferId);
+            }
+            else
+            {
+                _remoteTombstoneConflictShadowTransferIds.Remove(
+                    transferId);
+            }
+        }
+        else
+        {
+            RemoveRemoteTombstoneConflictTransferId(transferId);
+            _remoteTombstoneConflictShadowTransferIds.Remove(
+                transferId);
+        }
 
         if (transfer is null)
         {
+            RemoveUnavailableTransfer(transferId);
             StatusMessage = "선택한 재고이동 문서를 찾을 수 없습니다.";
             return;
         }
 
-        ApplyTransferToEditor(transfer);
-        SetSelectedTransfer(transfer.Id);
+        RunWithSuppressedTransferSelectionChanged(() =>
+        {
+            var existing = Transfers.FirstOrDefault(
+                current => current.Id == transfer.Id);
+            if (existing is null)
+            {
+                Transfers.Insert(0, transfer);
+            }
+            else
+            {
+                Transfers[Transfers.IndexOf(existing)] = transfer;
+            }
+
+            SelectedTransfer = transfer;
+            ApplyTransferToEditor(transfer);
+        });
     }
 
     public async Task DeleteCurrentTransferAsync()
     {
+        if (IsBusy)
+        {
+            StatusMessage = "재고이동 화면을 새로고침하는 중입니다. 잠시 후 다시 시도하세요.";
+            return;
+        }
+
+        if (IsExternalTransferUnavailable)
+        {
+            StatusMessage = "다른 PC에서 삭제되었거나 조회 범위에서 제외된 문서는 삭제할 수 없습니다. ‘최신본 불러오기’로 임시 내용을 폐기하세요.";
+            return;
+        }
+
         if (TransferId == Guid.Empty)
         {
             StatusMessage = "삭제할 재고이동 문서를 먼저 선택하세요.";
@@ -327,6 +692,12 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     [RelayCommand]
     private async Task NewTransfer()
     {
+        if (IsBusy)
+        {
+            StatusMessage = "재고이동 화면을 새로고침하는 중입니다. 잠시 후 다시 시도하세요.";
+            return;
+        }
+
         if (!await TryAutoSaveCurrentEditAsync(refreshAfterSave: true))
             return;
 
@@ -336,15 +707,21 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     [RelayCommand]
     private void AddLine()
     {
+        if (!CanEditSourceDraft)
+        {
+            StatusMessage = "출발지 담당자 또는 관리자만 이동 요청 품목을 추가할 수 있습니다.";
+            return;
+        }
+
         if (SelectedInputItem is null)
         {
             StatusMessage = "목록에서 이동 품목을 선택하세요.";
             return;
         }
 
-        if (InputQty <= 0m)
+        if (!QuantityNumericContract.IsPositiveQuantity18Scale2(InputQty))
         {
-            StatusMessage = "이동 수량은 0보다 커야 합니다.";
+            StatusMessage = "요청수량은 0보다 크고 허용 범위 안에서 소수 둘째 자리까지 입력해야 합니다.";
             return;
         }
 
@@ -355,9 +732,9 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             Specification = InputSpec.Trim(),
             Unit = InputUnit.Trim(),
             Quantity = InputQty,
-            ReceivedQuantity = InputReceivedQty <= 0m ? InputQty : InputReceivedQty,
+            ReceivedQuantity = InputQty,
             Remark = InputRemark.Trim(),
-            ReceiptRemark = InputReceiptRemark.Trim()
+            ReceiptRemark = string.Empty
         };
 
         Lines.Add(line);
@@ -367,8 +744,14 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void UpdateLine()
+    private void UpdateSourceLine()
     {
+        if (!CanEditSourceDraft)
+        {
+            StatusMessage = "출발지 담당자 또는 관리자만 이동 요청 품목을 수정할 수 있습니다.";
+            return;
+        }
+
         if (SelectedLine is null)
         {
             StatusMessage = "수정할 이동 품목을 선택하세요.";
@@ -381,9 +764,9 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             return;
         }
 
-        if (InputQty <= 0m)
+        if (!QuantityNumericContract.IsPositiveQuantity18Scale2(InputQty))
         {
-            StatusMessage = "이동 수량은 0보다 커야 합니다.";
+            StatusMessage = "요청수량은 0보다 크고 허용 범위 안에서 소수 둘째 자리까지 입력해야 합니다.";
             return;
         }
 
@@ -392,15 +775,57 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
         SelectedLine.Specification = InputSpec.Trim();
         SelectedLine.Unit = InputUnit.Trim();
         SelectedLine.Quantity = InputQty;
-        SelectedLine.ReceivedQuantity = InputReceivedQty <= 0m ? InputQty : InputReceivedQty;
+        SelectedLine.ReceivedQuantity = InputQty;
         SelectedLine.Remark = InputRemark.Trim();
+        SelectedLine.ReceiptRemark = string.Empty;
+        InputReceivedQty = InputQty;
+        InputReceiptRemark = string.Empty;
+        StatusMessage = "선택한 이동 요청 품목을 수정했습니다.";
+    }
+
+    [RelayCommand]
+    private void UpdateReceiptLine()
+    {
+        if (RequiresSourceSyncBeforeReceipt)
+        {
+            StatusMessage = "출발지에서 재고이동 요청을 먼저 서버에 동기화한 뒤 수령값을 입력하세요.";
+            return;
+        }
+
+        if (!CanEditReceiptDraft)
+        {
+            StatusMessage = "도착지 담당자 또는 관리자만 수령수량과 수령메모를 수정할 수 있습니다.";
+            return;
+        }
+
+        if (SelectedLine is null)
+        {
+            StatusMessage = "수령값을 수정할 이동 품목을 선택하세요.";
+            return;
+        }
+
+        if (!QuantityNumericContract.IsValidReceivedQuantity18Scale2(
+                InputReceivedQty,
+                SelectedLine.Quantity))
+        {
+            StatusMessage = "수령수량은 0 이상, 요청수량 이하이고 허용 범위 안에서 소수 둘째 자리까지 입력해야 합니다.";
+            return;
+        }
+
+        SelectedLine.ReceivedQuantity = InputReceivedQty;
         SelectedLine.ReceiptRemark = InputReceiptRemark.Trim();
-        StatusMessage = "선택한 이동 품목을 수정했습니다.";
+        StatusMessage = "선택한 품목의 수령값을 적용했습니다.";
     }
 
     [RelayCommand]
     private void DeleteLine()
     {
+        if (!CanEditSourceDraft)
+        {
+            StatusMessage = "출발지 담당자 또는 관리자만 이동 요청 품목을 삭제할 수 있습니다.";
+            return;
+        }
+
         if (SelectedLine is null)
         {
             StatusMessage = "삭제할 이동 품목을 선택하세요.";
@@ -417,6 +842,16 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     [RelayCommand]
     private async Task SaveTransferAsync()
     {
+        if (!CanSaveTransfer)
+        {
+            StatusMessage = IsExternalTransferUnavailable
+                ? "다른 PC에서 삭제되었거나 조회 범위에서 제외된 문서는 저장할 수 없습니다. ‘최신본 불러오기’로 임시 내용을 폐기하세요."
+                : IsFinalTransferStatus
+                    ? "수령확정 또는 반려된 문서는 수정할 수 없습니다."
+                    : "출발지 담당자 또는 관리자만 재고이동 요청 문서를 저장할 수 있습니다.";
+            return;
+        }
+
         var snapshot = CaptureEditSnapshot();
         await SaveSnapshotAsync(
             snapshot,
@@ -427,8 +862,199 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     }
 
     [RelayCommand]
+    private async Task ReloadLatestTransfer()
+    {
+        if (!CanReloadLatestTransfer)
+        {
+            StatusMessage =
+                HasRemoteTombstoneConflictDraft &&
+                !CanCurrentUserResolveRemoteTombstoneConflict
+                    ? "출발지 담당자 또는 관리자만 보관된 원격삭제 충돌 초안을 폐기할 수 있습니다."
+                    : HasSavedTransfer
+                        ? "재고이동 화면을 새로고침하는 중입니다. 잠시 후 다시 시도하세요."
+                        : "최신본을 불러올 재고이동 문서를 먼저 선택하세요.";
+            return;
+        }
+
+        if (HasRemoteTombstoneConflictDraft)
+        {
+            var pendingEditWarning = HasPendingChanges
+                ? " 현재 화면의 저장하지 않은 편집 내용도 함께 폐기됩니다."
+                : string.Empty;
+            var confirmed = System.Windows.MessageBox.Show(
+                "별도 보관된 로컬 초안과 해당 전송 대기 기록을 영구 폐기합니다." +
+                pendingEditWarning +
+                " 이후에는 복구할 수 없습니다. 서버 최신본만 유지하시겠습니까?",
+                "보관 초안 폐기",
+                System.Windows.MessageBoxButton.YesNo,
+                System.Windows.MessageBoxImage.Warning);
+            if (confirmed != System.Windows.MessageBoxResult.Yes)
+            {
+                StatusMessage =
+                    "보관 초안 폐기를 취소하여 로컬 초안과 전송 대기 기록을 그대로 유지했습니다.";
+                return;
+            }
+        }
+        else if (HasPendingChanges)
+        {
+            var confirmed = System.Windows.MessageBox.Show(
+                "저장하지 않은 편집 내용은 폐기됩니다. 다른 PC에서 반영된 최신 재고이동 문서를 불러오시겠습니까?",
+                "최신본 불러오기",
+                System.Windows.MessageBoxButton.YesNo,
+                System.Windows.MessageBoxImage.Warning);
+            if (confirmed != System.Windows.MessageBoxResult.Yes)
+            {
+                StatusMessage = "최신본 불러오기를 취소하여 미저장 내용을 그대로 유지했습니다.";
+                return;
+            }
+        }
+
+        await DiscardDraftAndReloadLatestTransferAsync();
+    }
+
+    internal async Task DiscardDraftAndReloadLatestTransferAsync()
+    {
+        var transferId = TransferId;
+        if (transferId == Guid.Empty)
+        {
+            StatusMessage = "최신본을 불러올 재고이동 문서를 먼저 선택하세요.";
+            return;
+        }
+
+        IsBusy = true;
+        try
+        {
+            if (_remoteTombstoneConflictTransferIds.Contains(transferId))
+            {
+                var resolved =
+                    await _local.ResolveInventoryTransferTombstoneConflictAsync(
+                        transferId,
+                        InventoryTransferTombstoneConflictPolicy
+                            .DiscardedResolution,
+                        _session);
+                if (!resolved)
+                {
+                    StatusMessage =
+                        "보관된 원격삭제 충돌 초안을 찾거나 폐기할 수 없습니다. 화면을 다시 열어 상태를 확인하세요.";
+                    return;
+                }
+
+                RemoveRemoteTombstoneConflictTransferId(transferId);
+                _remoteTombstoneConflictShadowTransferIds.Remove(
+                    transferId);
+            }
+
+            await LoadLookupsAsync();
+            if (_isDisposed)
+                return;
+
+            await RefreshWarehouseStocksAsync();
+            if (_isDisposed)
+                return;
+
+            await RefreshTransfersAsync(transferId);
+            if (_isDisposed)
+                return;
+
+            if (SelectedTransfer is null)
+            {
+                StartNewTransfer();
+                StatusMessage = "다른 PC에서 삭제되었거나 현재 조회 권한에서 제외된 재고이동 문서의 임시 내용을 폐기하고 새 문서 화면으로 전환했습니다.";
+                return;
+            }
+
+            await OpenTransferAsync(transferId);
+            if (_isDisposed)
+                return;
+
+            ClearExternalTransferConflict();
+            StatusMessage = $"재고이동 {TransferNumberDisplay} 최신 문서를 불러왔습니다.";
+        }
+        finally
+        {
+            if (!_isDisposed)
+                IsBusy = false;
+        }
+    }
+
+    [RelayCommand]
+    private async Task RecoverRemoteDeletedTransferAsNew()
+    {
+        if (!CanRecoverRemoteDeletedTransferAsNew)
+        {
+            StatusMessage =
+                HasRemoteTombstoneConflictDraft &&
+                !CanCurrentUserResolveRemoteTombstoneConflict
+                    ? "출발지 담당자 또는 관리자만 원격삭제 충돌 초안을 새 문서로 복구할 수 있습니다."
+                    : "새 문서로 복구할 원격삭제 충돌 초안을 먼저 선택하세요.";
+            return;
+        }
+
+        if (HasPendingChanges &&
+            !IsExternalTransferUnavailable)
+        {
+            var confirmed = System.Windows.MessageBox.Show(
+                "현재 서버 문서의 저장하지 않은 편집 내용은 폐기됩니다. 별도 보관된 로컬 초안을 새 문서로 복구하시겠습니까?",
+                "보관 초안 복구",
+                System.Windows.MessageBoxButton.YesNo,
+                System.Windows.MessageBoxImage.Warning);
+            if (confirmed != System.Windows.MessageBoxResult.Yes)
+            {
+                StatusMessage =
+                    "보관 초안 복구를 취소하여 현재 편집 내용을 그대로 유지했습니다.";
+                return;
+            }
+        }
+
+        var conflictTransferId = TransferId;
+        await _autoSaveGate.WaitAsync();
+        try
+        {
+            IsBusy = true;
+            var result =
+                await _local
+                    .RecoverInventoryTransferTombstoneConflictAsNewAsync(
+                        conflictTransferId,
+                        _session);
+            if (!result.Success)
+            {
+                StatusMessage =
+                    $"새 문서 복구에 실패하여 원본 초안을 그대로 보관했습니다. {result.Message}";
+                return;
+            }
+
+            RemoveRemoteTombstoneConflictTransferId(
+                conflictTransferId);
+            _remoteTombstoneConflictShadowTransferIds.Remove(
+                conflictTransferId);
+            await RefreshWarehouseStocksAsync();
+            await RefreshTransfersAsync(result.EntityId);
+            await OpenTransferAsync(result.EntityId);
+            StatusMessage =
+                $"원격에서 삭제된 초안을 새 재고이동 {TransferNumberDisplay} 문서로 복구해 저장했습니다.";
+        }
+        finally
+        {
+            _autoSaveGate.Release();
+            IsBusy = false;
+        }
+    }
+
+    [RelayCommand]
     private async Task ConfirmReceiptAsync()
     {
+        if (IsExternalTransferUnavailable)
+        {
+            StatusMessage = "다른 PC에서 삭제되었거나 조회 범위에서 제외된 문서는 수령확정할 수 없습니다. ‘최신본 불러오기’로 임시 내용을 폐기하세요.";
+            return;
+        }
+
+        if (RequiresSourceSyncBeforeReceipt)
+        {
+            StatusMessage = "출발지에서 재고이동 요청을 먼저 서버에 동기화한 뒤 수령확정하세요.";
+            return;
+        }
+
         if (!CanConfirmReceipt)
         {
             StatusMessage = "도착지 담당자 또는 관리자만 수령확정할 수 있습니다.";
@@ -438,6 +1064,16 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
         if (Lines.Count == 0)
         {
             StatusMessage = "수령확정할 이동 품목이 없습니다.";
+            return;
+        }
+
+        var invalidReceiptLine = Lines.FirstOrDefault(line =>
+            !QuantityNumericContract.IsValidReceivedQuantity18Scale2(
+                line.ReceivedQuantity,
+                line.Quantity));
+        if (invalidReceiptLine is not null)
+        {
+            StatusMessage = $"{invalidReceiptLine.ItemName} 품목의 수령수량은 0 이상, 요청수량 이하이고 허용 범위 안에서 소수 둘째 자리까지 입력해야 합니다.";
             return;
         }
 
@@ -479,6 +1115,18 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
     [RelayCommand]
     private async Task RejectTransferAsync()
     {
+        if (IsExternalTransferUnavailable)
+        {
+            StatusMessage = "다른 PC에서 삭제되었거나 조회 범위에서 제외된 문서는 반려할 수 없습니다. ‘최신본 불러오기’로 임시 내용을 폐기하세요.";
+            return;
+        }
+
+        if (RequiresSourceSyncBeforeReceipt)
+        {
+            StatusMessage = "출발지에서 재고이동 요청을 먼저 서버에 동기화한 뒤 반려하세요.";
+            return;
+        }
+
         if (!CanRejectTransfer)
         {
             StatusMessage = "도착지 담당자 또는 관리자만 재고이동을 반려할 수 있습니다.";
@@ -579,6 +1227,25 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
         OnPropertyChanged(nameof(AvailableStockText));
     }
 
+    partial void OnIsBusyChanged(bool value)
+    {
+        OnPropertyChanged(nameof(IsInteractionEnabled));
+        OnPropertyChanged(nameof(CanSaveTransfer));
+        OnPropertyChanged(nameof(CanReloadLatestTransfer));
+        OnPropertyChanged(nameof(CanAddLine));
+        OnPropertyChanged(nameof(CanUpdateLine));
+        OnPropertyChanged(nameof(CanDeleteLine));
+        OnPropertyChanged(nameof(CanDeleteTransfer));
+        OnPropertyChanged(nameof(CanConfirmReceipt));
+        OnPropertyChanged(nameof(CanRejectTransfer));
+
+        if (value || !_deferExternalRefreshUntilIdle || _isDisposed)
+            return;
+
+        _deferExternalRefreshUntilIdle = false;
+        _externalStateRefresh.Request();
+    }
+
     partial void OnSelectedTransferChanged(LocalInventoryTransfer? value)
     {
         if (_suppressTransferSelectionChanged || value is null)
@@ -586,7 +1253,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
 
         var version = Interlocked.Increment(ref _openTransferVersion);
         UiTaskHelper.Forget(
-            OpenTransferAsync(value.Id, version),
+            () => OpenTransferAsync(value.Id, version),
             "TRANSFER",
             "재고이동 상세 열기",
             ex =>
@@ -605,7 +1272,7 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             return;
 
         UiTaskHelper.Forget(
-            HandleSelectionAutoSaveAsync(snapshot, oldValue, newValue),
+            () => HandleSelectionAutoSaveAsync(snapshot, oldValue, newValue),
             "TRANSFER",
             "재고이동 선택 변경 자동저장",
             ex => StatusMessage = $"재고이동 자동저장 중 오류가 발생했습니다. {ex.Message}");
@@ -648,6 +1315,8 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
 
     private async Task LoadLookupsAsync()
     {
+        var preservedFromWarehouseCode = FromWarehouseCode;
+        var preservedToWarehouseCode = ToWarehouseCode;
         _allItems = await _local.GetItemsForInventoryTransferAsync(_session);
 
         var warehouses = await _local.GetWarehousesForInventoryTransferAsync(_session);
@@ -662,6 +1331,12 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             Warehouses.Add(warehouse);
             _warehouseNames[NormalizeCode(warehouse.Code)] = warehouse.Name;
         }
+
+        // A bound ComboBox clears SelectedValue while its ItemsSource is reset.
+        // Keep the editor route stable across lookup refreshes so that the
+        // temporary binding transition cannot become a false local draft.
+        FromWarehouseCode = preservedFromWarehouseCode;
+        ToWarehouseCode = preservedToWarehouseCode;
     }
 
     private async Task RefreshWarehouseStocksAsync()
@@ -678,23 +1353,114 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
 
     private async Task RefreshTransfersAsync(Guid? selectedTransferId = null)
     {
-        var transfers = await _local.GetInventoryTransfersAsync(_session);
-        Transfers.Clear();
-        foreach (var transfer in transfers)
-            Transfers.Add(transfer);
+        var transfers =
+            await LoadVisibleTransfersIncludingRemoteTombstoneDraftsAsync();
+        ReplaceTransfers(transfers, selectedTransferId);
+    }
 
-        SetSelectedTransfer(selectedTransferId);
+    private async Task<List<LocalInventoryTransfer>>
+        LoadVisibleTransfersIncludingRemoteTombstoneDraftsAsync()
+    {
+        var transfers = await _local.GetInventoryTransfersAsync(_session);
+        var conflicts =
+            await _local.GetInventoryTransferTombstoneConflictDraftsAsync(
+                _session);
+
+        var activeTransferIds = transfers
+            .Select(transfer => transfer.Id)
+            .ToHashSet();
+        var shadowConflicts = conflicts
+            .Where(conflict =>
+                !activeTransferIds.Contains(conflict.TransferId))
+            .ToList();
+        ReplaceRemoteTombstoneConflictSourceOfficeCodes(
+            conflicts);
+        ReplaceRemoteTombstoneConflictTransferIds(
+            conflicts.Select(conflict => conflict.TransferId));
+        ReplaceRemoteTombstoneConflictShadowTransferIds(
+            shadowConflicts.Select(conflict => conflict.TransferId));
+
+        if (shadowConflicts.Count == 0)
+            return transfers;
+
+        return transfers
+            .Concat(
+                shadowConflicts.Select(
+                    conflict => conflict.LocalDraft))
+            .OrderByDescending(transfer => transfer.TransferDate)
+            .ThenByDescending(transfer => transfer.UpdatedAtUtc)
+            .ToList();
+    }
+
+    private void ReplaceTransfers(
+        IReadOnlyCollection<LocalInventoryTransfer> transfers,
+        Guid? selectedTransferId)
+    {
+        RunWithSuppressedTransferSelectionChanged(() =>
+        {
+            Transfers.Clear();
+            foreach (var transfer in transfers)
+                Transfers.Add(transfer);
+
+            SelectedTransfer = selectedTransferId.HasValue &&
+                               selectedTransferId.Value != Guid.Empty
+                ? Transfers.FirstOrDefault(
+                    transfer => transfer.Id == selectedTransferId.Value)
+                : null;
+        });
+    }
+
+    private void RebindSelectedInputItem(bool preserveDraft)
+    {
+        var selectedInputItemId = SelectedInputItem?.Id;
+        if (!selectedInputItemId.HasValue)
+            return;
+
+        var refreshedItem = _allItems.FirstOrDefault(
+            item => item.Id == selectedInputItemId.Value);
+        if (refreshedItem is not null)
+        {
+            if (!preserveDraft)
+                SelectedInputItem = refreshedItem;
+            return;
+        }
+
+        if (!preserveDraft)
+            InputAvailableStock = 0m;
     }
 
     private void ApplyTransferToEditor(LocalInventoryTransfer transfer)
     {
         ApplySnapshot(CreateSnapshotFromTransfer(transfer), resetBaseline: true);
-        StatusMessage = $"재고이동 {TransferNumberDisplay} 문서를 불러왔습니다.";
+        _transferUpdatedAtUtc = transfer.UpdatedAtUtc;
+        if (_remoteTombstoneConflictShadowTransferIds.Contains(
+                transfer.Id))
+        {
+            IsExternalTransferUnavailable = true;
+            HasExternalTransferConflict = true;
+            StatusMessage =
+                CanCurrentUserResolveRemoteTombstoneConflict
+                    ? "서버에서 삭제된 재고이동 문서의 로컬 초안입니다. 초안은 별도 보관되어 재고에는 반영되지 않으며, ‘초안을 새 문서로 복구’하거나 ‘최신본 불러오기’로 폐기할 수 있습니다."
+                    : "서버에서 삭제된 재고이동 문서의 로컬 초안입니다. 초안은 별도 보관되어 재고에는 반영되지 않으며, 출발지 담당자 또는 관리자만 복구하거나 폐기할 수 있습니다.";
+            return;
+        }
+
+        ClearExternalTransferConflict();
+        StatusMessage = RequiresSourceSyncBeforeReceipt
+            ? "출발지에서 이 재고이동 요청을 서버에 먼저 동기화해야 수령확정 또는 반려할 수 있습니다. 출발지 동기화 후 최신본을 다시 불러오세요."
+            : _remoteTombstoneConflictTransferIds.Contains(
+                transfer.Id)
+            ? CanCurrentUserResolveRemoteTombstoneConflict
+                ? $"재고이동 {TransferNumberDisplay} 서버 최신 문서를 불러왔습니다. 서버 복원 전에 충돌한 로컬 초안도 별도 보관 중이므로 복구하거나 폐기할 수 있습니다."
+                : $"재고이동 {TransferNumberDisplay} 서버 최신 문서를 불러왔습니다. 서버 복원 전에 충돌한 로컬 초안은 별도 보관 중이며, 출발지 담당자 또는 관리자만 처리할 수 있습니다."
+            : $"재고이동 {TransferNumberDisplay} 문서를 불러왔습니다.";
     }
 
     private void StartNewTransfer()
     {
+        ClearExternalTransferConflict();
         ApplySnapshot(CreateNewTransferSnapshot(), resetBaseline: true);
+        _transferUpdatedAtUtc = default;
         SetSelectedTransfer(null);
         StatusMessage = BuildNewTransferStatusMessage();
     }
@@ -784,11 +1550,144 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
 
     private void SetSelectedTransfer(Guid? transferId)
     {
+        RunWithSuppressedTransferSelectionChanged(() =>
+        {
+            SelectedTransfer = transferId.HasValue &&
+                               transferId.Value != Guid.Empty
+                ? Transfers.FirstOrDefault(
+                    transfer => transfer.Id == transferId.Value)
+                : null;
+        });
+    }
+
+    private void RemoveUnavailableTransfer(Guid transferId)
+    {
+        var resetEditor =
+            TransferId == transferId ||
+            SelectedTransfer?.Id == transferId;
+
+        RunWithSuppressedTransferSelectionChanged(() =>
+        {
+            var staleTransfer = Transfers.FirstOrDefault(
+                transfer => transfer.Id == transferId);
+            if (staleTransfer is not null)
+                Transfers.Remove(staleTransfer);
+
+            if (SelectedTransfer?.Id == transferId)
+                SelectedTransfer = null;
+        });
+
+        if (resetEditor)
+            StartNewTransfer();
+    }
+
+    private void ClearExternalTransferConflict()
+    {
+        IsExternalTransferUnavailable = false;
+        HasExternalTransferConflict = false;
+    }
+
+    private void ReplaceRemoteTombstoneConflictTransferIds(
+        IEnumerable<Guid> transferIds)
+    {
+        _remoteTombstoneConflictTransferIds.Clear();
+        foreach (var transferId in transferIds.Where(id => id != Guid.Empty))
+            _remoteTombstoneConflictTransferIds.Add(transferId);
+
+        OnPropertyChanged(
+            nameof(HasRemoteTombstoneConflictDraft));
+        OnPropertyChanged(
+            nameof(CanRecoverRemoteDeletedTransferAsNew));
+        OnPropertyChanged(
+            nameof(CanReloadLatestTransfer));
+    }
+
+    private void ReplaceRemoteTombstoneConflictSourceOfficeCodes(
+        IEnumerable<InventoryTransferTombstoneConflictDraft>
+            conflicts)
+    {
+        _remoteTombstoneConflictSourceOfficeCodes.Clear();
+        foreach (var conflict in conflicts)
+        {
+            _remoteTombstoneConflictSourceOfficeCodes[
+                conflict.TransferId] =
+                ResolveOfficeCodeFromWarehouseCode(
+                    conflict.LocalDraft.FromWarehouseCode);
+        }
+    }
+
+    private void ReplaceRemoteTombstoneConflictShadowTransferIds(
+        IEnumerable<Guid> transferIds)
+    {
+        _remoteTombstoneConflictShadowTransferIds.Clear();
+        foreach (var transferId in transferIds.Where(
+                     id => id != Guid.Empty))
+        {
+            _remoteTombstoneConflictShadowTransferIds.Add(transferId);
+        }
+    }
+
+    private void AddRemoteTombstoneConflictTransferId(
+        Guid transferId,
+        string sourceOfficeCode)
+    {
+        if (transferId == Guid.Empty)
+            return;
+
+        var normalizedSourceOfficeCode =
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+                sourceOfficeCode,
+                DomainConstants.OfficeUsenet);
+        var sourceScopeChanged =
+            !_remoteTombstoneConflictSourceOfficeCodes.TryGetValue(
+                transferId,
+                out var previousSourceOfficeCode) ||
+            !string.Equals(
+                previousSourceOfficeCode,
+                normalizedSourceOfficeCode,
+                StringComparison.OrdinalIgnoreCase);
+        _remoteTombstoneConflictSourceOfficeCodes[transferId] =
+            normalizedSourceOfficeCode;
+        var added =
+            _remoteTombstoneConflictTransferIds.Add(transferId);
+        if (!added && !sourceScopeChanged)
+            return;
+
+        OnPropertyChanged(
+            nameof(HasRemoteTombstoneConflictDraft));
+        OnPropertyChanged(
+            nameof(CanRecoverRemoteDeletedTransferAsNew));
+        OnPropertyChanged(
+            nameof(CanReloadLatestTransfer));
+    }
+
+    private void RemoveRemoteTombstoneConflictTransferId(Guid transferId)
+    {
+        _remoteTombstoneConflictSourceOfficeCodes.Remove(
+            transferId);
+        if (!_remoteTombstoneConflictTransferIds.Remove(transferId))
+            return;
+
+        OnPropertyChanged(
+            nameof(HasRemoteTombstoneConflictDraft));
+        OnPropertyChanged(
+            nameof(CanRecoverRemoteDeletedTransferAsNew));
+        OnPropertyChanged(
+            nameof(CanReloadLatestTransfer));
+    }
+
+    private void RunWithSuppressedTransferSelectionChanged(Action action)
+    {
+        var wasSuppressed = _suppressTransferSelectionChanged;
         _suppressTransferSelectionChanged = true;
-        SelectedTransfer = transferId.HasValue && transferId.Value != Guid.Empty
-            ? Transfers.FirstOrDefault(transfer => transfer.Id == transferId.Value)
-            : null;
-        _suppressTransferSelectionChanged = false;
+        try
+        {
+            action();
+        }
+        finally
+        {
+            _suppressTransferSelectionChanged = wasSuppressed;
+        }
     }
 
     private static string NormalizeCode(string? code)
@@ -856,6 +1755,34 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
         string successMessage,
         bool showConflictDialog)
     {
+        if (IsBusy)
+        {
+            StatusMessage = "재고이동 화면을 새로고침하거나 다른 작업을 처리하는 중입니다. 잠시 후 다시 시도하세요.";
+            return false;
+        }
+
+        if (IsExternalTransferUnavailable &&
+            snapshot.TransferId != Guid.Empty &&
+            snapshot.TransferId == TransferId)
+        {
+            StatusMessage = "다른 PC에서 삭제되었거나 조회 범위에서 제외된 문서는 저장하거나 자동저장할 수 없습니다. ‘최신본 불러오기’로 임시 내용을 폐기하세요.";
+            return false;
+        }
+
+        if (IsFinalTransferStatusText(snapshot.TransferStatus))
+        {
+            StatusMessage = "수령확정 또는 반려된 문서는 저장하거나 자동저장할 수 없습니다.";
+            return false;
+        }
+
+        if (!CanCurrentUserEditSource(snapshot.FromWarehouseCode))
+        {
+            StatusMessage = CanEditReceiptDraft
+                ? "도착지 수령 입력은 ‘수령확정’ 또는 ‘반려’를 실행할 때만 반영됩니다. 출발지 문서로 자동저장하지 않았습니다."
+                : "출발지 담당자 또는 관리자만 재고이동 요청 문서를 저장하거나 자동저장할 수 있습니다.";
+            return false;
+        }
+
         await _autoSaveGate.WaitAsync();
         try
         {
@@ -955,10 +1882,18 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
                 break;
         }
 
+        var invalidQuantityLine = materializedLines.FirstOrDefault(line =>
+            !QuantityNumericContract.IsPositiveQuantity18Scale2(line.Quantity));
+        if (invalidQuantityLine is not null)
+        {
+            validationMessage = "요청수량은 0보다 크고 허용 범위 안에서 소수 둘째 자리까지 입력해야 합니다.";
+            return false;
+        }
+
         var validLines = materializedLines
             .Where(line => line.ItemId.HasValue
                            && !string.IsNullOrWhiteSpace(line.ItemName)
-                           && line.Quantity > 0m)
+                           && QuantityNumericContract.IsPositiveQuantity18Scale2(line.Quantity))
             .ToList();
 
         if (validLines.Count == 0)
@@ -1024,7 +1959,12 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             transfer.FromWarehouseCode ?? string.Empty,
             transfer.ToWarehouseCode ?? string.Empty,
             transfer.Memo ?? string.Empty,
-            string.IsNullOrWhiteSpace(transfer.TransferStatus) ? "수령대기" : transfer.TransferStatus,
+            InventoryTransferStatusNormalizer.Normalize(
+                transfer.TransferStatus,
+                transfer.ReceivedByUsername,
+                transfer.ReceivedAtUtc,
+                transfer.RejectedByUsername,
+                transfer.RejectedAtUtc),
             transfer.ReceiveMemo ?? string.Empty,
             transfer.RejectReason ?? string.Empty,
             transfer.Lines
@@ -1067,13 +2007,41 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             string.Empty);
     }
 
+    private static InventoryTransferEditSnapshot
+        CreateRecoveredAsNewSnapshot(
+            InventoryTransferEditSnapshot snapshot)
+    {
+        Guid? selectedLineId = null;
+        var lines = snapshot.Lines
+            .Select(line =>
+            {
+                var newLineId = Guid.NewGuid();
+                if (snapshot.SelectedLineId == line.Id)
+                    selectedLineId = newLineId;
+                return line with { Id = newLineId };
+            })
+            .ToList();
+
+        return snapshot with
+        {
+            TransferId = Guid.Empty,
+            Revision = 0,
+            TransferNumber = string.Empty,
+            TransferStatus = "수령대기",
+            ReceiveMemo = string.Empty,
+            RejectReason = string.Empty,
+            Lines = lines,
+            SelectedLineId = selectedLineId
+        };
+    }
+
     private void ApplySnapshot(InventoryTransferEditSnapshot snapshot, bool resetBaseline)
     {
         _suppressLineSelectionChanged = true;
         try
         {
             TransferId = snapshot.TransferId;
-            _transferRevision = snapshot.Revision;
+            TransferRevision = snapshot.Revision;
             TransferNumber = snapshot.TransferNumber;
             TransferDate = snapshot.TransferDate;
             FromWarehouseCode = snapshot.FromWarehouseCode;
@@ -1116,6 +2084,20 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             ResetEditBaseline();
     }
 
+    private void SetTransferRevision(long revision)
+    {
+        if (_transferRevision == revision)
+            return;
+
+        _transferRevision = revision;
+        OnPropertyChanged(nameof(CanEditReceiptDraft));
+        OnPropertyChanged(nameof(CanEditTransferDraft));
+        OnPropertyChanged(nameof(CanUpdateReceiptLine));
+        OnPropertyChanged(nameof(CanUpdateLine));
+        OnPropertyChanged(nameof(CanConfirmReceipt));
+        OnPropertyChanged(nameof(CanRejectTransfer));
+    }
+
     private void ResetEditBaseline()
         => _baselineStateSignature = BuildEditStateSignature(CaptureEditSnapshot());
 
@@ -1155,8 +2137,8 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
                 .Append(':').Append(line.ItemName ?? string.Empty)
                 .Append(':').Append(line.Specification ?? string.Empty)
                 .Append(':').Append(line.Unit ?? string.Empty)
-                .Append(':').Append(line.Quantity)
-                .Append(':').Append(line.ReceivedQuantity)
+                .Append(':').Append(FormatEditStateDecimal(line.Quantity))
+                .Append(':').Append(FormatEditStateDecimal(line.ReceivedQuantity))
                 .Append(':').Append(line.Remark ?? string.Empty)
                 .Append(':').Append(line.ReceiptRemark ?? string.Empty);
         }
@@ -1169,14 +2151,19 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
                 .Append(':').Append(snapshot.InputItemName ?? string.Empty)
                 .Append(':').Append(snapshot.InputSpec ?? string.Empty)
                 .Append(':').Append(snapshot.InputUnit ?? string.Empty)
-                .Append(':').Append(snapshot.InputQty)
-                .Append(':').Append(snapshot.InputReceivedQty)
+                .Append(':').Append(FormatEditStateDecimal(snapshot.InputQty))
+                .Append(':').Append(FormatEditStateDecimal(snapshot.InputReceivedQty))
                 .Append(':').Append(snapshot.InputRemark ?? string.Empty)
                 .Append(':').Append(snapshot.InputReceiptRemark ?? string.Empty);
         }
 
         return builder.ToString();
     }
+
+    private static string FormatEditStateDecimal(decimal value)
+        => value.ToString(
+            "G29",
+            System.Globalization.CultureInfo.InvariantCulture);
 
     private bool HasMeaningfulDraftContent(InventoryTransferEditSnapshot snapshot)
     {
@@ -1266,9 +2253,9 @@ public sealed partial class InventoryTransferViewModel : ObservableObject
             return LineDraftState.Invalid;
         }
 
-        if (draftLine.Quantity <= 0m)
+        if (!QuantityNumericContract.IsPositiveQuantity18Scale2(draftLine.Quantity))
         {
-            validationMessage = "이동 수량은 0보다 커야 합니다.";
+            validationMessage = "요청수량은 0보다 크고 허용 범위 안에서 소수 둘째 자리까지 입력해야 합니다.";
             return LineDraftState.Invalid;
         }
 

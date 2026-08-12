@@ -746,7 +746,7 @@ public sealed partial class PaymentViewModel : ObservableObject
     {
         var version = Interlocked.Increment(ref _settlementSuggestionVersion);
         UiTaskHelper.Forget(
-            ApplySuggestedAmountsCoreAsync(forceResetAmounts, version),
+            () => ApplySuggestedAmountsCoreAsync(forceResetAmounts, version),
             "PAYMENT",
             "수금/지급 기본 금액 계산",
             ex => StatusMessage = $"수금/지급 금액 계산 중 오류가 발생했습니다. {ex.Message}");
@@ -884,7 +884,7 @@ public sealed partial class PaymentViewModel : ObservableObject
     {
         var version = Interlocked.Increment(ref _contextRefreshVersion);
         UiTaskHelper.Forget(
-            RefreshContextCoreAsync(version),
+            () => RefreshContextCoreAsync(version),
             "PAYMENT",
             "수금/지급 맥락 갱신",
             ex =>
@@ -973,7 +973,7 @@ public sealed partial class PaymentViewModel : ObservableObject
     {
         var version = Interlocked.Increment(ref _historyLoadVersion);
         UiTaskHelper.Forget(
-            LoadHistoryAsync(customerId, version),
+            () => LoadHistoryAsync(customerId, version),
             "PAYMENT",
             "수금/지급 이력 조회",
             ex =>
@@ -987,7 +987,7 @@ public sealed partial class PaymentViewModel : ObservableObject
     {
         var version = Interlocked.Increment(ref _attachmentLoadVersion);
         UiTaskHelper.Forget(
-            LoadAttachmentsAsync(transactionId, version),
+            () => LoadAttachmentsAsync(transactionId, version),
             "PAYMENT",
             "수금/지급 증빙 조회",
             ex =>
@@ -1542,7 +1542,7 @@ public sealed partial class PaymentViewModel : ObservableObject
             Multiselect = false
         };
 
-        if (dialog.ShowDialog() != true)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) != true)
             return;
 
         var result = await _local.SaveTransactionAttachmentAsync(

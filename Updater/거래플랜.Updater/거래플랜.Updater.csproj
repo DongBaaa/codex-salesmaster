@@ -10,4 +10,7 @@
     <Version>1.1.36</Version>
     <FileVersion>1.1.36.0</FileVersion>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\Shared\거래플랜.Shared.Contracts\거래플랜.Shared.Contracts.csproj" />
+  </ItemGroup>
 </Project>

@@ -29,6 +29,12 @@ internal static class WindowShowHelper
         var loadStarted = false;
         var wasEnabled = window.IsEnabled;
         var previousCursor = window.Cursor;
+        var mainWindowLifetime = Application.Current?.MainWindow as global::거래플랜.Desktop.App.MainWindow;
+
+        Task RunWithinMainWindowLifetimeAsync(Func<Task> operation)
+            => mainWindowLifetime is null
+                ? operation()
+                : mainWindowLifetime.RunTrackedWindowOperationAsync(operation);
 
         void ApplyDeferredLoadState()
         {
@@ -60,7 +66,7 @@ internal static class WindowShowHelper
                 await OperationTiming.MeasureAsync(
                     "UI",
                     $"{windowTitle} 초기화",
-                    loadAsync,
+                    () => RunWithinMainWindowLifetimeAsync(loadAsync),
                     detail: window.GetType().Name,
                     infoThreshold: TimeSpan.FromMilliseconds(600),
                     warningThreshold: TimeSpan.FromSeconds(2));
@@ -90,7 +96,7 @@ internal static class WindowShowHelper
             {
                 UiTaskHelper.Run(
                     messageOwner ?? window.Owner ?? Application.Current?.MainWindow,
-                    closedAsync,
+                    () => RunWithinMainWindowLifetimeAsync(closedAsync),
                     "UI",
                     $"{windowTitle} 닫힘 후 처리",
                     $"{windowTitle} 닫힘 후 처리 중 오류가 발생했습니다.");

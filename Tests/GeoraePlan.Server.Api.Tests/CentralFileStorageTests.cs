@@ -83,6 +83,123 @@ public sealed class CentralFileStorageTests : IDisposable
         Assert.Equal("unsafe_storage_path", unsafePath.Error);
     }
 
+    [Theory]
+    [InlineData(".")]
+    [InlineData("..")]
+    public async Task SaveBytesAsync_RejectsDotPathSegments(string segment)
+    {
+        var service = CreateService();
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            service.SaveBytesAsync(
+                segment,
+                "owner",
+                Guid.NewGuid(),
+                "sample.pdf",
+                [1, 2, 3]));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            service.SaveBytesAsync(
+                "contracts",
+                segment,
+                Guid.NewGuid(),
+                "sample.pdf",
+                [1, 2, 3]));
+    }
+
+    [Fact]
+    public async Task SaveReadInspectAndDelete_RejectDirectorySymlinkEscapingStorageRoot()
+    {
+        var service = CreateService();
+        var outsideDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "georaeplan-central-file-storage-outside-tests",
+            Guid.NewGuid().ToString("N"));
+        var linkedArea = Path.Combine(_rootPath, "contracts");
+        Directory.CreateDirectory(outsideDirectory);
+
+        try
+        {
+            try
+            {
+                Directory.CreateSymbolicLink(linkedArea, outsideDirectory);
+            }
+            catch (Exception ex) when (
+                ex is UnauthorizedAccessException or
+                    PlatformNotSupportedException or
+                    IOException)
+            {
+                return;
+            }
+
+            var outsideFile = Path.Combine(outsideDirectory, "outside.txt");
+            await File.WriteAllTextAsync(outsideFile, "outside");
+            var aliasedPath = Path.Combine(linkedArea, "outside.txt");
+
+            await Assert.ThrowsAsync<InvalidDataException>(() =>
+                service.SaveBytesAsync(
+                    "contracts",
+                    "owner",
+                    Guid.NewGuid(),
+                    "sample.pdf",
+                    [1, 2, 3]));
+            Assert.Equal(
+                [9, 8, 7],
+                service.ReadBytes(aliasedPath, [9, 8, 7]));
+
+            var inspection = service.Inspect(aliasedPath, computeHash: true);
+            Assert.True(inspection.HasStoredPath);
+            Assert.False(inspection.IsSafePath);
+            Assert.False(inspection.Exists);
+            Assert.Equal("unsafe_storage_path", inspection.Error);
+
+            service.DeleteIfExists(aliasedPath);
+            Assert.True(File.Exists(outsideFile));
+            Assert.Equal("outside", await File.ReadAllTextAsync(outsideFile));
+        }
+        finally
+        {
+            if (Directory.Exists(linkedArea))
+                Directory.Delete(linkedArea);
+            if (Directory.Exists(outsideDirectory))
+                Directory.Delete(outsideDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SaveBytesAsync_ReusesIdenticalFileButDoesNotOverwriteDifferentContent()
+    {
+        var service = CreateService();
+        var fileId = Guid.NewGuid();
+        var storedPath = await service.SaveBytesAsync(
+            "contracts",
+            "owner",
+            fileId,
+            "sample.pdf",
+            [1, 2, 3]);
+
+        var repeatedPath = await service.SaveBytesAsync(
+            "contracts",
+            "owner",
+            fileId,
+            "sample.pdf",
+            [1, 2, 3]);
+        await Assert.ThrowsAsync<IOException>(() =>
+            service.SaveBytesAsync(
+                "contracts",
+                "owner",
+                fileId,
+                "sample.pdf",
+                [9, 9, 9]));
+
+        Assert.Equal(storedPath, repeatedPath);
+        Assert.Equal([1, 2, 3], await File.ReadAllBytesAsync(storedPath));
+        Assert.Empty(
+            Directory.EnumerateFiles(
+                Path.GetDirectoryName(storedPath)!,
+                "*.tmp",
+                SearchOption.TopDirectoryOnly));
+    }
+
     private CentralFileStorage CreateService()
     {
         var options = Options.Create(new CentralFileStorageOptions { RootPath = _rootPath });

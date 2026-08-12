@@ -295,7 +295,7 @@ public sealed partial class CustomerEditViewModel : ObservableObject
             Multiselect = false
         };
 
-        if (dialog.ShowDialog() != true)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) != true)
             return;
 
         var editingContract = IsEditingSelectedContract ? SelectedContract : null;

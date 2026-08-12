@@ -134,6 +134,27 @@ public sealed class RentalWorkbookSafetyTests
                 CreateRentalImportSession(OfficeCodeCatalog.Usenet));
 
             Assert.False(result.IsBlocked, result.BlockReason);
+            Assert.False(string.IsNullOrWhiteSpace(result.BackupPath));
+            Assert.True(File.Exists(result.BackupPath));
+            await using (var backupConnection = new SqliteConnection(
+                             $"Data Source={result.BackupPath};Mode=ReadOnly"))
+            {
+                await backupConnection.OpenAsync();
+                await using var quickCheck = backupConnection.CreateCommand();
+                quickCheck.CommandText = "PRAGMA quick_check;";
+                Assert.Equal(
+                    "ok",
+                    Assert.IsType<string>(await quickCheck.ExecuteScalarAsync()));
+
+                await using var originalCustomer = backupConnection.CreateCommand();
+                originalCustomer.CommandText =
+                    "SELECT COUNT(*) FROM Customers WHERE Id = $id COLLATE NOCASE AND NameOriginal = $name;";
+                originalCustomer.Parameters.AddWithValue("$id", customer.Id.ToString());
+                originalCustomer.Parameters.AddWithValue("$name", customer.NameOriginal);
+                Assert.Equal(
+                    1L,
+                    Assert.IsType<long>(await originalCustomer.ExecuteScalarAsync()));
+            }
 
             var asset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync();
             Assert.Equal(customer.Id, asset.CustomerId);

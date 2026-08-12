@@ -15,6 +15,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     private readonly LocalStateService _local;
     private readonly SessionState _session;
     private readonly UiDebouncer _filterDebouncer = new();
+    private readonly BackgroundTaskTracker _backgroundWork = new();
     private readonly SemaphoreSlim _autoSaveGate = new(1, 1);
     private readonly CancellationTokenSource _lifetimeCts = new();
     private readonly Dictionary<Guid, Dictionary<string, decimal>> _itemOfficeQuantities = new();
@@ -25,6 +26,9 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     private List<LocalPriceGradeOption> _priceGradeOptions = new();
     private bool _isInventoryRefreshInProgress;
     private bool _suppressSelectionAutoSave;
+    private bool _preservePendingEditOnSameItemSelection;
+    private bool _preservePendingEditDuringListRefresh;
+    private Guid? _preservedFilteredEditItemId;
     private int _suppressInventoryStateRefresh;
     private int _selectedItemMovementLoadVersion;
     private int _selectedItemVendorPriceLoadVersion;
@@ -75,6 +79,8 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     [ObservableProperty] private decimal _editPriceC;
     [ObservableProperty] private DateOnly? _editLastPurchaseDate;
     [ObservableProperty] private DateOnly? _editLastSaleDate;
+    [ObservableProperty] private DateOnly? _displayLastPurchaseDate;
+    [ObservableProperty] private DateOnly? _displayLastSaleDate;
     [ObservableProperty] private string _editSimpleMemo = string.Empty;
     [ObservableProperty] private bool _editIsSale = true;
     [ObservableProperty] private bool _editIsRental;
@@ -84,13 +90,19 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     [ObservableProperty] private bool _isNew = true;
 
     public bool IsAdmin => _session.HasAdministrativePrivileges;
+    public bool CanResetInventory =>
+        _session.HasAdministrativePrivileges ||
+        _session.HasPermission(AppPermissionNames.InventoryReset);
+    public bool CanManageInventoryTransfers =>
+        _session.HasAdministrativePrivileges ||
+        _session.HasPermission(AppPermissionNames.DeliveryEdit);
     public bool CanSwitchOfficeTabs => _session.HasGlobalDataScope;
     public string SelectedOfficeDisplay => OfficeCodeCatalog.GetOfficeDisplayName(SelectedOfficeCode);
     public string SelectedOfficeStockLabel => $"{SelectedOfficeDisplay} 재고";
     public string InventoryScopeMessage => _session.HasGlobalDataScope
         ? $"{SelectedOfficeDisplay} 재고를 보는 중입니다."
         : $"{SelectedOfficeDisplay} 재고만 조회할 수 있습니다.";
-    public string TransferGuideMessage => IsAdmin
+    public string TransferGuideMessage => CanManageInventoryTransfers
         ? "상단 재고이동 버튼으로 지점간 이동을 입력하고 아래 이동 내역에서 출고/입고를 확인하세요."
         : "아래 이동 내역에서 자동이동 출고/입고를 확인하세요.";
     public string UsenetTabText => $"유즈넷 재고 ({UsenetTotalQuantity:N0})";
@@ -123,23 +135,42 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         _selectedOfficeCode = ResolveDefaultOfficeCode(session);
         ApplyDraftScopeForNewItem();
         _local.InventoryStateChanged += HandleInventoryStateChanged;
+        _local.ItemInvoiceHistoryChanged += HandleItemInvoiceHistoryChanged;
         ResetEditBaseline();
     }
 
     public void Dispose()
     {
-        if (_isDisposed)
+        if (!BeginCancelPendingBackgroundWork())
             return;
 
+        _filterDebouncer.Dispose();
+    }
+
+    public async Task CancelPendingBackgroundWorkAsync()
+    {
+        BeginCancelPendingBackgroundWork();
+
+        await _filterDebouncer.DisposeAsync();
+        await _backgroundWork.DrainAsync();
+    }
+
+    private bool BeginCancelPendingBackgroundWork()
+    {
+        if (_isDisposed)
+            return false;
+
         _isDisposed = true;
+        _backgroundWork.BeginShutdown();
         Interlocked.Increment(ref _selectedItemMovementLoadVersion);
         Interlocked.Increment(ref _selectedItemVendorPriceLoadVersion);
         _lifetimeCts.Cancel();
         _local.InventoryStateChanged -= HandleInventoryStateChanged;
-        _filterDebouncer.Dispose();
+        _local.ItemInvoiceHistoryChanged -= HandleItemInvoiceHistoryChanged;
         // 선택 품목 조회 작업은 창이 닫히는 순간에도 비동기 진입을 시작할 수 있습니다.
         // 여기서 CTS까지 즉시 Dispose하면 Token 접근과 경합해 ObjectDisposedException이
         // 발생할 수 있으므로 취소만 하고 ViewModel 수명과 함께 회수되도록 둡니다.
+        return true;
     }
 
     public async Task LoadAsync()
@@ -212,7 +243,9 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
     private async Task RefreshInventoryScreenAsync(bool reloadCategories)
     {
-        var selectedItemId = SelectedItem?.Id;
+        var selectedItemId = SelectedItem?.Id ?? _preservedFilteredEditItemId;
+        if (!selectedItemId.HasValue && !IsNew && HasPendingChanges)
+            selectedItemId = EditId;
 
         if (reloadCategories)
         {
@@ -228,7 +261,11 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         if (selectedItemId.HasValue)
             SelectedItem = FilteredItems.FirstOrDefault(row => row.Id == selectedItemId.Value);
 
-        if (selectedItemId.HasValue && SelectedItem is null)
+        var selectedItemStillExists = selectedItemId.HasValue &&
+                                      _allItems.Any(item => item.Id == selectedItemId.Value);
+        if (selectedItemId.HasValue &&
+            SelectedItem is null &&
+            (!selectedItemStillExists || !HasPendingChanges))
             ResetForNewItem();
 
         if (SelectedItem is null && string.IsNullOrWhiteSpace(EditCategoryName))
@@ -240,10 +277,28 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
     private void HandleInventoryStateChanged(object? sender, EventArgs e)
     {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null)
+            return;
+
+        if (!dispatcher.CheckAccess())
+        {
+            _ = dispatcher.InvokeAsync(QueueInventoryStateRefreshOnDispatcher);
+            return;
+        }
+
+        QueueInventoryStateRefreshOnDispatcher();
+    }
+
+    private void QueueInventoryStateRefreshOnDispatcher()
+    {
         if (_isDisposed || _isInventoryRefreshInProgress || Volatile.Read(ref _suppressInventoryStateRefresh) > 0)
             return;
 
-        UiTaskHelper.Forget(HandleInventoryStateChangedAsync(), "UI", "재고관리 화면 재고 상태 새로고침");
+        TryStartBackgroundWork(
+            HandleInventoryStateChangedAsync,
+            "UI",
+            "재고관리 화면 재고 상태 새로고침");
     }
 
     private async Task HandleInventoryStateChangedAsync()
@@ -261,6 +316,26 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         {
             _isInventoryRefreshInProgress = false;
         }
+    }
+
+    private void HandleItemInvoiceHistoryChanged(object? sender, EventArgs e)
+    {
+        if (_isDisposed)
+            return;
+
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null)
+            return;
+
+        _ = dispatcher.InvokeAsync(() =>
+        {
+            if (_isDisposed || SelectedItem is not { } selectedItem)
+                return;
+
+            DisplayLastPurchaseDate = selectedItem.Source.LastPurchaseDate;
+            DisplayLastSaleDate = selectedItem.Source.LastSaleDate;
+            RequestLoadSelectedItemVendorPurchasePrices(selectedItem.Id);
+        });
     }
 
     [RelayCommand(CanExecute = nameof(CanShowUsenetOffice))]
@@ -308,14 +383,27 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
     partial void OnSelectedItemChanging(InventoryItemRow? oldValue, InventoryItemRow? newValue)
     {
-        if (_suppressSelectionAutoSave || ReferenceEquals(oldValue, newValue))
+        var isSameItem = oldValue is not null &&
+                         newValue is not null &&
+                         oldValue.Id == newValue.Id;
+        _preservePendingEditOnSameItemSelection =
+            !_preservePendingEditDuringListRefresh &&
+            !_suppressSelectionAutoSave &&
+            isSameItem &&
+            HasPendingChanges;
+
+        if (_preservePendingEditDuringListRefresh ||
+            _suppressSelectionAutoSave ||
+            _isInventoryRefreshInProgress ||
+            ReferenceEquals(oldValue, newValue) ||
+            isSameItem)
             return;
 
         if (!TryCaptureAutoSaveSnapshot(out var snapshot))
             return;
 
-        UiTaskHelper.Forget(
-            HandleSelectionAutoSaveAsync(snapshot, oldValue, newValue),
+        TryStartBackgroundWork(
+            () => HandleSelectionAutoSaveAsync(snapshot, oldValue, newValue),
             "INVENTORY",
             "품목 선택 변경 자동저장",
             ex => StatusMessage = $"품목 자동저장 중 오류가 발생했습니다. {ex.Message}");
@@ -324,6 +412,25 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     partial void OnSelectedItemChanged(InventoryItemRow? value)
     {
         DeleteItemCommand.NotifyCanExecuteChanged();
+
+        if (value is null)
+        {
+            Interlocked.Increment(ref _selectedItemMovementLoadVersion);
+            Interlocked.Increment(ref _selectedItemVendorPriceLoadVersion);
+        }
+
+        if (_preservePendingEditDuringListRefresh)
+            return;
+
+        if (_preservePendingEditOnSameItemSelection)
+        {
+            _preservePendingEditOnSameItemSelection = false;
+            if (value is not null)
+                RefreshDerivedStockFieldsFromItem(value);
+            return;
+        }
+
+        _preservedFilteredEditItemId = null;
 
         if (value is null)
         {
@@ -477,7 +584,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         if (SelectedItem is null)
             return;
 
-        var deleteResult = await _local.DeleteItemAsync(SelectedItem.Id, _session, SelectedItem.Source.Revision);
+        var deleteResult = await _local.DeleteItemAsync(SelectedItem.Id, _session, _editRevision);
         if (!deleteResult.Success)
         {
             StatusMessage = deleteResult.Message;
@@ -688,9 +795,9 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
                 return false;
             }
 
+            var selectionIdBeforeRefresh = preserveSelectionItemId ?? SelectedItem?.Id;
             if (refreshAfterSave)
             {
-                var selectionIdBeforeRefresh = preserveSelectionItemId ?? SelectedItem?.Id;
                 _suppressSelectionAutoSave = true;
                 try
                 {
@@ -702,6 +809,17 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
                 {
                     _suppressSelectionAutoSave = false;
                 }
+            }
+
+            if (refreshAfterSave &&
+                selectionIdBeforeRefresh.HasValue &&
+                SelectedItem is null &&
+                !IsNew &&
+                EditId == selectionIdBeforeRefresh.Value &&
+                _preservedFilteredEditItemId == selectionIdBeforeRefresh.Value)
+            {
+                _editRevision = snapshot.EditRevision;
+                _baselineStateSignature = BuildEditStateSignature(snapshot);
             }
 
             if (waitForServerWrite)
@@ -727,7 +845,12 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         Interlocked.Increment(ref _suppressInventoryStateRefresh);
         try
         {
-            await _local.UpsertItemAsync(BuildItem(snapshot), _session, snapshot.PreferredOfficeCode, BuildItemPriceGrades(snapshot));
+            var item = BuildItem(snapshot);
+            await _local.UpsertItemAsync(
+                item,
+                _session,
+                snapshot.PreferredOfficeCode,
+                BuildItemPriceGrades(snapshot));
         }
         finally
         {
@@ -807,7 +930,9 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
     private void ApplyFilter()
     {
-        var selectedItemId = SelectedItem?.Id;
+        var selectedItemId = SelectedItem?.Id ?? _preservedFilteredEditItemId;
+        if (!selectedItemId.HasValue && !IsNew && HasPendingChanges)
+            selectedItemId = EditId;
         var keyword = (SearchText ?? string.Empty).Trim();
         var trackingFilter = (SelectedTrackingTypeFilter ?? string.Empty).Trim();
 
@@ -841,15 +966,58 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             .Select(BuildRow)
             .ToList();
 
-        FilteredItems.Clear();
-        foreach (var row in rows)
-            FilteredItems.Add(row);
+        var selectedReplacement = selectedItemId.HasValue
+            ? rows.FirstOrDefault(row => row.Id == selectedItemId.Value)
+            : null;
+        var selectedItemStillExists = selectedItemId.HasValue
+            ? _allItems.FirstOrDefault(item => item.Id == selectedItemId.Value)
+            : null;
+        var isPreservedFilteredEdit =
+            selectedItemId.HasValue &&
+            _preservedFilteredEditItemId == selectedItemId.Value;
+        var preservePendingEdit =
+            !_suppressSelectionAutoSave &&
+            selectedItemStillExists is not null &&
+            HasPendingChanges;
+        if (preservePendingEdit)
+            RefreshDerivedStockFieldsFromItem(BuildRow(selectedItemStillExists!));
 
-        TotalCount = FilteredItems.Count;
-        if (selectedItemId.HasValue)
-            SelectedItem = FilteredItems.FirstOrDefault(row => row.Id == selectedItemId.Value);
+        var previousPreservePendingEdit = _preservePendingEditDuringListRefresh;
+        _preservePendingEditDuringListRefresh =
+            previousPreservePendingEdit || preservePendingEdit;
+        try
+        {
+            FilteredItems.Clear();
+            foreach (var row in rows)
+                FilteredItems.Add(row);
 
-        SelectedItem ??= FilteredItems.FirstOrDefault();
+            TotalCount = FilteredItems.Count;
+            if (selectedReplacement is not null)
+            {
+                SelectedItem = selectedReplacement;
+                if (_preservedFilteredEditItemId == selectedReplacement.Id)
+                    _preservedFilteredEditItemId = null;
+            }
+            else if (preservePendingEdit)
+            {
+                _preservedFilteredEditItemId = selectedItemId;
+                SelectedItem = null;
+            }
+            else if (isPreservedFilteredEdit && selectedItemStillExists is not null)
+            {
+                SelectedItem = null;
+            }
+            else
+            {
+                if (isPreservedFilteredEdit)
+                    _preservedFilteredEditItemId = null;
+                SelectedItem ??= FilteredItems.FirstOrDefault();
+            }
+        }
+        finally
+        {
+            _preservePendingEditDuringListRefresh = previousPreservePendingEdit;
+        }
     }
 
     private InventoryItemRow BuildRow(LocalItem item)
@@ -862,6 +1030,18 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             item,
             officeQuantities,
             SelectedOfficeCode);
+    }
+
+    private void RefreshDerivedStockFieldsFromItem(InventoryItemRow row)
+    {
+        EditUsenetStock = row.UsenetQuantity;
+        EditItworldStock = row.ItworldQuantity;
+        EditYeonsuStock = row.YeonsuQuantity;
+        EditSelectedOfficeStock = row.GetOfficeQuantity(SelectedOfficeCode);
+        EditTotalStock = row.TotalQuantity;
+        OnPropertyChanged(nameof(BoxCurrentStock));
+        OnPropertyChanged(nameof(AssetValue));
+        OnPropertyChanged(nameof(ShortageStock));
     }
 
     private void LoadFormFromItem(InventoryItemRow row)
@@ -885,11 +1065,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         EditUnit = item.Unit;
         EditBoxQty = item.BoxQuantity;
         EditStorageLocation = item.StorageLocation;
-        EditUsenetStock = row.UsenetQuantity;
-        EditItworldStock = row.ItworldQuantity;
-        EditYeonsuStock = row.YeonsuQuantity;
-        EditSelectedOfficeStock = row.GetOfficeQuantity(SelectedOfficeCode);
-        EditTotalStock = row.TotalQuantity;
+        RefreshDerivedStockFieldsFromItem(row);
         EditSafetyStock = item.SafetyStock;
         EditPurchasePrice = item.PurchasePrice;
         EditSalePrice = item.SalePrice;
@@ -900,6 +1076,8 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         ApplyPriceGradeRows(BuildPriceGradeRowsForItem(item));
         EditLastPurchaseDate = item.LastPurchaseDate;
         EditLastSaleDate = item.LastSaleDate;
+        DisplayLastPurchaseDate = item.LastPurchaseDate;
+        DisplayLastSaleDate = item.LastSaleDate;
         EditSimpleMemo = item.SimpleMemo;
         EditIsSale = item.IsSale;
         EditIsRental = item.IsRental;
@@ -912,6 +1090,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
     private void ClearDetailForm()
     {
+        _preservedFilteredEditItemId = null;
         IsNew = true;
         _editRevision = 0;
         ApplyDraftScopeForNewItem();
@@ -939,6 +1118,8 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         ResetPriceGradeRows();
         EditLastPurchaseDate = null;
         EditLastSaleDate = null;
+        DisplayLastPurchaseDate = null;
+        DisplayLastSaleDate = null;
         EditSimpleMemo = string.Empty;
         EditIsSale = true;
         EditIsRental = false;
@@ -955,13 +1136,13 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             return;
 
         var version = Interlocked.Increment(ref _selectedItemMovementLoadVersion);
-        UiTaskHelper.Forget(
-            LoadSelectedItemMovementsAsync(itemId, version),
+        TryStartBackgroundWork(
+            () => LoadSelectedItemMovementsAsync(itemId, version),
             "INVENTORY",
             "선택 품목 이동내역 조회",
             ex =>
             {
-                if (IsCurrentSelectedItemMovementLoad(version))
+                if (IsCurrentSelectedItemMovementLoad(version, itemId))
                     StatusMessage = $"재고 이동내역을 불러오지 못했습니다. {ex.Message}";
             });
     }
@@ -970,7 +1151,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     {
         var ct = _lifetimeCts.Token;
         ct.ThrowIfCancellationRequested();
-        if (!IsCurrentSelectedItemMovementLoad(version))
+        if (!IsCurrentSelectedItemMovementLoad(version, itemId))
             return;
 
         SelectedItemMovements.Clear();
@@ -979,7 +1160,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
         var movements = await _local.GetInventoryMovementsAsync(itemId, ct: ct);
         ct.ThrowIfCancellationRequested();
-        if (!IsCurrentSelectedItemMovementLoad(version))
+        if (!IsCurrentSelectedItemMovementLoad(version, itemId))
             return;
 
         IEnumerable<LocalInventoryMovement> filtered = movements;
@@ -1008,8 +1189,10 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         }
     }
 
-    private bool IsCurrentSelectedItemMovementLoad(int version)
-        => !_isDisposed && version == Volatile.Read(ref _selectedItemMovementLoadVersion);
+    private bool IsCurrentSelectedItemMovementLoad(int version, Guid itemId)
+        => !_isDisposed
+           && version == Volatile.Read(ref _selectedItemMovementLoadVersion)
+           && SelectedItem?.Id == itemId;
 
     private void RequestLoadSelectedItemVendorPurchasePrices(Guid itemId)
     {
@@ -1017,13 +1200,13 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             return;
 
         var version = Interlocked.Increment(ref _selectedItemVendorPriceLoadVersion);
-        UiTaskHelper.Forget(
-            LoadSelectedItemVendorPurchasePricesAsync(itemId, version),
+        TryStartBackgroundWork(
+            () => LoadSelectedItemVendorPurchasePricesAsync(itemId, version),
             "INVENTORY",
             "선택 품목 매입처별 단가 조회",
             ex =>
             {
-                if (IsCurrentSelectedItemVendorPriceLoad(version))
+                if (IsCurrentSelectedItemVendorPriceLoad(version, itemId))
                     StatusMessage = $"매입처별 최근 구매단가를 불러오지 못했습니다. {ex.Message}";
             });
     }
@@ -1032,24 +1215,53 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     {
         var ct = _lifetimeCts.Token;
         ct.ThrowIfCancellationRequested();
-        if (!IsCurrentSelectedItemVendorPriceLoad(version))
+        if (!IsCurrentSelectedItemVendorPriceLoad(version, itemId))
             return;
 
         SelectedItemVendorPurchasePrices.Clear();
         if (itemId == Guid.Empty)
             return;
 
+        var invoiceDates = await _local.GetItemConfirmedInvoiceDatesAsync(itemId, _session, ct);
+        ct.ThrowIfCancellationRequested();
+        if (!IsCurrentSelectedItemVendorPriceLoad(version, itemId))
+            return;
+
+        if (invoiceDates.LastPurchaseDate.HasValue)
+            DisplayLastPurchaseDate = invoiceDates.LastPurchaseDate;
+        if (invoiceDates.LastSaleDate.HasValue)
+            DisplayLastSaleDate = invoiceDates.LastSaleDate;
+
         var rows = await _local.GetItemVendorPurchasePricesAsync(itemId, _session, ct);
         ct.ThrowIfCancellationRequested();
-        if (!IsCurrentSelectedItemVendorPriceLoad(version))
+        if (!IsCurrentSelectedItemVendorPriceLoad(version, itemId))
             return;
 
         foreach (var row in rows)
             SelectedItemVendorPurchasePrices.Add(row);
     }
 
-    private bool IsCurrentSelectedItemVendorPriceLoad(int version)
-        => !_isDisposed && version == Volatile.Read(ref _selectedItemVendorPriceLoadVersion);
+    private bool IsCurrentSelectedItemVendorPriceLoad(int version, Guid itemId)
+        => !_isDisposed
+           && version == Volatile.Read(ref _selectedItemVendorPriceLoadVersion)
+           && SelectedItem?.Id == itemId;
+
+    private Task? TryStartBackgroundWork(
+        Func<Task> operation,
+        string category,
+        string description,
+        Action<Exception>? onError = null)
+    {
+        if (_isDisposed)
+            return null;
+
+        var task = _backgroundWork.TryStart(operation);
+        if (task is null)
+            return null;
+
+        UiTaskHelper.Forget(task, category, description, onError);
+        return task;
+    }
 
     private async Task<bool> ValidateBeforeSaveAsync(InventoryEditSnapshot snapshot)
     {
@@ -1537,11 +1749,6 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             .Append('|').Append(snapshot.EditUnit ?? string.Empty)
             .Append('|').Append(snapshot.EditBoxQty)
             .Append('|').Append(snapshot.EditStorageLocation ?? string.Empty)
-            .Append('|').Append(snapshot.EditUsenetStock)
-            .Append('|').Append(snapshot.EditItworldStock)
-            .Append('|').Append(snapshot.EditYeonsuStock)
-            .Append('|').Append(snapshot.EditSelectedOfficeStock)
-            .Append('|').Append(snapshot.EditTotalStock)
             .Append('|').Append(snapshot.EditSafetyStock)
             .Append('|').Append(snapshot.EditPurchasePrice)
             .Append('|').Append(snapshot.EditSalePrice)

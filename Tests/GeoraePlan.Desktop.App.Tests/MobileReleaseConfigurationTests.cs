@@ -1,4 +1,7 @@
+using System.Diagnostics;
 using System.Text.RegularExpressions;
+using GeoraePlan.Mobile.App.Models;
+using GeoraePlan.Mobile.App.Services;
 using Xunit;
 using 거래플랜.Shared.Contracts;
 
@@ -109,15 +112,18 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("CanEditConnectionSettings = session.CanEditSettings;", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("public bool HasCustomBaseUrl", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("HasCustomBaseUrl = _settings.HasCustomBaseUrl();", settingsViewModelSource, StringComparison.Ordinal);
-        Assert.Contains("if (!EnsureCanEditConnectionSettings())", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("if (!EnsureCanEditConnectionSettings(", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("고급 연결 설정은 관리자 또는 Settings.Edit 권한 계정만 사용할 수 있습니다.", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("TestConnectionCommand = new AsyncCommand(TestConnectionAsync", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("ResetConnectionCommand = new AsyncCommand(ResetConnectionAsync);", settingsViewModelSource, StringComparison.Ordinal);
-        Assert.Contains("await _settings.ResetBaseUrlAsync();", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("CommitConnectionSettingIfAuthorizedAsync(", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("_settings.ResetBaseUrlAsync", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("AcquireOwnerCommitLeaseAsync(expectedOwner)", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("if (!snapshot.CanEditSettings)", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("StatusMessage = \"저장 전 연결 테스트 중...\";", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("if (!result.IsSuccess)", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("StatusMessage = $\"저장 중단: {result.Message}\";", settingsViewModelSource, StringComparison.Ordinal);
-        Assert.Contains("await _settings.SaveBaseUrlAsync(result.NormalizedBaseUrl);", settingsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("() => _settings.SaveBaseUrlAsync(", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("catch (ArgumentException ex)", settingsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("new Uri(new Uri(normalizedBaseUrl.TrimEnd('/') + \"/\"), \"healthz\")", connectionTestServiceSource, StringComparison.Ordinal);
         Assert.Contains("ConnectionTestTimeout = TimeSpan.FromSeconds(8)", connectionTestServiceSource, StringComparison.Ordinal);
@@ -472,7 +478,7 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("삭제되었거나 현재 권한/담당지점 범위 밖일 수 있습니다", invoiceDraftSource, StringComparison.Ordinal);
 
         Assert.True(
-            CountOccurrences(itemsViewModelSource, "MobileRetryableNetworkFailure.IsRetryable(ex)") >= 3,
+            CountOccurrences(itemsViewModelSource, "MobileRetryableNetworkFailure.IsRetryable(") >= 3,
             "품목 화면의 초기화/검색/상세 fallback은 retryable 장애에서만 허용해야 합니다.");
         Assert.Contains("ClearAllItemDisplay();", itemsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("Items.Clear();\n            ClearSelectedItem();", itemsViewModelSource, StringComparison.Ordinal);
@@ -522,19 +528,19 @@ public sealed class MobileReleaseConfigurationTests
             StringComparison.Ordinal);
         Assert.Contains("SelectedCustomer = null;\n            StatusMessage = \"거래처를 서버에서 찾지 못했습니다.", invoiceDraftSource, StringComparison.Ordinal);
 
-        Assert.Contains("if (MobileRetryableNetworkFailure.IsRetryable(ex))\n            {\n                var cached = await LoadCachedCustomersAsync();", customersViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("if (MobileRetryableNetworkFailure.IsRetryable(ex))\n            {\n                var cached = await LoadCachedCustomersAsync(\n                    ownerSession);", customersViewModelSource, StringComparison.Ordinal);
         Assert.Contains("detailError is not null && !MobileRetryableNetworkFailure.IsRetryable(detailError)", customersViewModelSource, StringComparison.Ordinal);
         Assert.Contains("ClearSelectedCustomer();\n                DetailStatusMessage = $\"거래처 상세를 사용할 수 없습니다.", customersViewModelSource, StringComparison.Ordinal);
-        Assert.Contains("if (MobileRetryableNetworkFailure.IsRetryable(ex))\n                    contracts = await _cacheStore.LoadContractsAsync(customer.Id);", customersViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("if (MobileRetryableNetworkFailure.IsRetryable(ex))\n                {\n                    contracts = await _cacheStore.LoadContractsAsync(\n                        ownerSession,\n                        customer.Id);", customersViewModelSource, StringComparison.Ordinal);
 
         Assert.Contains("if (MobileRetryableNetworkFailure.IsRetryable(ex))", contractsViewModelSource, StringComparison.Ordinal);
         Assert.Contains("ReplaceContracts(Array.Empty<CustomerContractDto>());", contractsViewModelSource, StringComparison.Ordinal);
 
         Assert.Contains(
-            "MobileRetryableNetworkFailure.IsRetryable(ex) &&\n                await TryLoadInvoicesFromSyncedStateAsync",
+            "MobileRetryableNetworkFailure.IsRetryable(ex) &&\n                    await TryLoadInvoicesFromSyncedStateAsync",
             paymentDraftSource,
             StringComparison.Ordinal);
-        Assert.Contains("Invoices.Clear();\n            SelectedInvoice = null;", paymentDraftSource, StringComparison.Ordinal);
+        Assert.Contains("Invoices.Clear();\n                    SelectedInvoice = null;", paymentDraftSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -571,7 +577,10 @@ public sealed class MobileReleaseConfigurationTests
             .Replace("\r\n", "\n", StringComparison.Ordinal);
 
         Assert.Contains("public bool LastFailureAllowsCachedDisplay { get; set; } = true;", syncStateSource, StringComparison.Ordinal);
-        Assert.Contains("state.LastFailureAllowsCachedDisplay = MobileRetryableNetworkFailure.IsRetryable(ex) || IsConcurrencyConflict(ex);", syncCoordinatorSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "state.LastFailureAllowsCachedDisplay =\n            ex is MobileClientUpgradeRequiredException ||\n            MobileRetryableNetworkFailure.IsRetryable(ex) ||\n            IsConcurrencyConflict(ex);",
+            syncCoordinatorSource,
+            StringComparison.Ordinal);
         Assert.Contains("state.LastFailureAllowsCachedDisplay = true;", syncCoordinatorSource, StringComparison.Ordinal);
 
         Assert.Contains("ShouldHideCachedDataAfterSyncFailure(state)", inventoryTransfersSource, StringComparison.Ordinal);
@@ -720,8 +729,8 @@ public sealed class MobileReleaseConfigurationTests
         var purgeKinds = ExtractServerRecycleBinMutationKinds(serverControllerSource, "Purge");
         var desktopPurgeFlowSource = ExtractBetween(
             desktopSyncSource,
-            "private async Task ApplyPulledPurgeRecordsAsync",
-            "private Task<bool> IsPurgeRecordSupersededByActiveLocalEntityAsync");
+            "private async Task<bool> ApplyPulledPurgeRecordsAsync",
+            "private Task<bool> HasDeferredPurgeRecordsAsync");
         var desktopOrderSource = ExtractBetween(
             desktopSyncSource,
             "private static int GetPurgeApplyOrder",
@@ -739,8 +748,19 @@ public sealed class MobileReleaseConfigurationTests
             "private static int GetPurgeApplyOrder",
             "            _ => 99");
 
-        Assert.Contains("await _local.ApplyServerPurgeRecycleBinEntryAsync(entityKind, dto.EntityId, ct);", desktopPurgeFlowSource, StringComparison.Ordinal);
-        Assert.Contains("await ApplyPurgeRecordAsync(state, NormalizePurgeRecordKind(record.Kind), record.EntityId, record.Revision, ct);", mobileSyncSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "attachmentFileJournal is null",
+            desktopPurgeFlowSource,
+            StringComparison.Ordinal);
+        Assert.Matches(
+            "ownerScope\\.BusinessDatabaseName,\\s*attachmentFileJournal,\\s*ct",
+            desktopPurgeFlowSource);
+        Assert.Contains(
+            "return invoicePurgeApplied;",
+            desktopPurgeFlowSource,
+            StringComparison.Ordinal);
+        Assert.Contains("await ApplyPurgeRecordAsync(", mobileSyncSource, StringComparison.Ordinal);
+        Assert.Contains("cacheOwnerSession,", mobileSyncSource, StringComparison.Ordinal);
 
         foreach (var kind in purgeKinds)
         {
@@ -801,7 +821,7 @@ public sealed class MobileReleaseConfigurationTests
 
         Assert.Contains("PaymentAttachmentDraftStore attachmentStore,\n        SessionStore sessionStore)", normalizedMobilePaymentViewModelSource, StringComparison.Ordinal);
         Assert.Contains("public bool CanCreatePayments => _sessionStore.GetSnapshot().CanCreatePayments;", mobilePaymentViewModelSource, StringComparison.Ordinal);
-        Assert.True(CountOccurrences(mobilePaymentViewModelSource, "if (!CanCreatePayments)") >= 2);
+        Assert.True(CountOccurrences(mobilePaymentViewModelSource, "if (!sessionSnapshot.CanCreatePayments)") >= 2);
         Assert.Contains("saveButton.SetBinding(VisualElement.IsEnabledProperty, nameof(PaymentDraftViewModel.CanCreatePayments));", mobilePaymentPageSource, StringComparison.Ordinal);
     }
 
@@ -918,11 +938,192 @@ public sealed class MobileReleaseConfigurationTests
             "ItemsPage.cs"));
 
         Assert.Contains("if (saved is null || saved.IsDeleted)", customersPageSource, StringComparison.Ordinal);
-        Assert.Contains("await _viewModel.RemoveDeletedCustomerFromCurrentViewAsync(editedCustomerId);", customersPageSource, StringComparison.Ordinal);
+        Assert.Contains("await _viewModel.RemoveDeletedCustomerFromCurrentViewAsync(\n                        editedCustomerId,\n                        requestOwnerSession);", customersPageSource, StringComparison.Ordinal);
         Assert.Contains("var editedCustomerId = _viewModel.SelectedCustomer.Id;", customersPageSource, StringComparison.Ordinal);
         Assert.Contains("if (saved is null || saved.IsDeleted)", itemsPageSource, StringComparison.Ordinal);
         Assert.Contains("_viewModel.RemoveDeletedItemFromCurrentView(editedItemId);", itemsPageSource, StringComparison.Ordinal);
         Assert.Contains("var editedItemId = _viewModel.SelectedItem.Id;", itemsPageSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MobileCustomerCallbacks_PinApiStartOwnerThroughCacheAndUiCommit()
+    {
+        var root = FindRepositoryRoot();
+        var editPageSource = File.ReadAllText(Path.Combine(
+                root,
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "Pages",
+                "CustomerEditPage.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var customersPageSource = File.ReadAllText(Path.Combine(
+                root,
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "Pages",
+                "CustomersPage.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var customersViewSource = File.ReadAllText(Path.Combine(
+                root,
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "ViewModels",
+                "CustomersViewModel.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Func<CustomerDto?, CacheOwnerSession, Task> _afterSaved",
+            editPageSource,
+            StringComparison.Ordinal);
+        var saveApiOwnerCapture = editPageSource.IndexOf(
+            "var apiOwner = _sessionStore.CaptureOwner();",
+            StringComparison.Ordinal);
+        var saveOwnerCapture = editPageSource.IndexOf(
+            "var requestOwnerSession =\n            _cacheStore.CaptureOwnerSession();",
+            saveApiOwnerCapture,
+            StringComparison.Ordinal);
+        var saveOwnerGuard = editPageSource.IndexOf(
+            "_cacheStore.ThrowIfOwnerSessionStale(\n                requestOwnerSession);\n            _sessionStore.ThrowIfOwnerChanged(apiOwner);",
+            saveOwnerCapture,
+            StringComparison.Ordinal);
+        var saveApiCall = editPageSource.IndexOf(
+            "var saved = _source is null",
+            saveOwnerGuard,
+            StringComparison.Ordinal);
+        var saveCallback = editPageSource.IndexOf(
+            "await InvokeAfterSavedAsync(\n                saved,\n                requestOwnerSession,\n                apiOwner);",
+            saveApiCall,
+            StringComparison.Ordinal);
+        var saveClose = editPageSource.IndexOf(
+            "await CloseAsync(apiOwner);",
+            saveCallback,
+            StringComparison.Ordinal);
+        Assert.True(
+            saveApiOwnerCapture >= 0 &&
+            saveOwnerCapture > saveApiOwnerCapture &&
+            saveOwnerGuard > saveOwnerCapture &&
+            saveApiCall > saveOwnerGuard &&
+            saveCallback > saveApiCall &&
+            saveClose > saveCallback);
+
+        var deleteApiOwnerCapture = editPageSource.LastIndexOf(
+            "var apiOwner = _sessionStore.CaptureOwner();",
+            StringComparison.Ordinal);
+        var deleteOwnerCapture = editPageSource.LastIndexOf(
+            "var requestOwnerSession =\n            _cacheStore.CaptureOwnerSession();",
+            StringComparison.Ordinal);
+        var deleteOwnerGuard = editPageSource.IndexOf(
+            "_cacheStore.ThrowIfOwnerSessionStale(\n                requestOwnerSession);\n            _sessionStore.ThrowIfOwnerChanged(apiOwner);",
+            deleteOwnerCapture,
+            StringComparison.Ordinal);
+        var deleteApiCall = editPageSource.IndexOf(
+            "await _api.DeleteCustomerAsync(",
+            deleteOwnerGuard,
+            StringComparison.Ordinal);
+        var deleteCallback = editPageSource.IndexOf(
+            "await InvokeAfterSavedAsync(\n                null,\n                requestOwnerSession,\n                apiOwner);",
+            deleteApiCall,
+            StringComparison.Ordinal);
+        var deleteClose = editPageSource.IndexOf(
+            "await CloseAsync(apiOwner);",
+            deleteCallback,
+            StringComparison.Ordinal);
+        Assert.True(
+            deleteApiOwnerCapture > saveApiOwnerCapture &&
+            deleteOwnerCapture > saveOwnerCapture &&
+            deleteOwnerCapture > deleteApiOwnerCapture &&
+            deleteOwnerGuard > deleteOwnerCapture &&
+            deleteApiCall > deleteOwnerGuard &&
+            deleteCallback > deleteApiCall &&
+            deleteClose > deleteCallback);
+        Assert.Contains(
+            """
+            _cacheStore.ThrowIfOwnerSessionStale(
+                        requestOwnerSession);
+                    _sessionStore.ThrowIfOwnerChanged(apiOwner);
+                    await _afterSaved(
+                        saved,
+                        requestOwnerSession);
+                    _cacheStore.ThrowIfOwnerSessionStale(
+                        requestOwnerSession);
+                    _sessionStore.ThrowIfOwnerChanged(apiOwner);
+            """,
+            editPageSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "QueuePendingDeleteAsync(\n                _source,\n                ex,\n                requestOwnerSession,\n                apiOwner)",
+            editPageSource,
+            StringComparison.Ordinal);
+
+        Assert.Equal(
+            3,
+            CountOccurrences(
+                customersPageSource,
+                "async (saved, requestOwnerSession) =>"));
+        Assert.Equal(
+            3,
+            CountOccurrences(
+                customersPageSource,
+                "_cacheStore.ThrowIfOwnerSessionStale(\n                    requestOwnerSession);"));
+        Assert.Contains(
+            "await _viewModel.RefreshAsync(\n                    requestOwnerSession);",
+            customersPageSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "CacheOwnerSession requestOwnerSession)",
+            customersViewSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "await _cacheStore.RemoveCustomerFromIndexAsync(\n                requestOwnerSession,\n                customerId);",
+            customersViewSource,
+            StringComparison.Ordinal);
+        var finalOwnerCheck = customersViewSource.IndexOf(
+            "_cacheStore.ThrowIfOwnerSessionStale(\n            requestOwnerSession);\n        var removed =",
+            StringComparison.Ordinal);
+        Assert.True(
+            finalOwnerCheck >= 0,
+            "The callback owner must be revalidated immediately before mutating the visible customer list.");
+        var refreshMethod = customersViewSource.IndexOf(
+            "public async Task RefreshAsync(",
+            StringComparison.Ordinal);
+        var selectMethod = customersViewSource.IndexOf(
+            "public async Task SelectCustomerAsync(",
+            refreshMethod,
+            StringComparison.Ordinal);
+        var detailMethodEnd = customersViewSource.IndexOf(
+            "public void ShowSummaryTab()",
+            selectMethod,
+            StringComparison.Ordinal);
+        Assert.True(
+            refreshMethod >= 0 &&
+            selectMethod > refreshMethod &&
+            detailMethodEnd > selectMethod,
+            "The customer refresh/detail method boundaries were not found.");
+        var refreshMethodSource =
+            customersViewSource[refreshMethod..selectMethod];
+        var selectMethodSource =
+            customersViewSource[selectMethod..detailMethodEnd];
+        Assert.Contains(
+            "_cacheStore.ThrowIfOwnerSessionStale(\n                ownerSession);\n            ThrowIfOperationStale(operation);\n            ReplaceCustomers(displayResult);",
+            refreshMethodSource,
+            StringComparison.Ordinal);
+        var selectOwnerCheck = customersViewSource.IndexOf(
+            "_cacheStore.ThrowIfOwnerSessionStale(\n            ownerSession);",
+            selectMethod,
+            StringComparison.Ordinal);
+        var selectUiMutation = customersViewSource.IndexOf(
+            "SelectedCustomer = customer;",
+            selectMethod,
+            StringComparison.Ordinal);
+        Assert.True(
+            selectMethod >= 0 &&
+            selectOwnerCheck > selectMethod &&
+            selectUiMutation > selectOwnerCheck,
+            "A stale completion callback must be rejected before customer-detail UI is replaced.");
+        Assert.Contains(
+            "_cacheStore.ThrowIfOwnerSessionStale(ownerSession);\n            ThrowIfOperationStale(operation);\n            SelectedCustomer = displayCustomer;\n            ReplaceInvoices(invoices);",
+            selectMethodSource,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1233,12 +1434,23 @@ public sealed class MobileReleaseConfigurationTests
                 "SyncCoordinator.cs"))
             .Replace("\r\n", "\n", StringComparison.Ordinal);
 
-        Assert.Contains("private async Task<MobileSyncState> PushInternalAsync(MobileSyncState state, CancellationToken ct)", source, StringComparison.Ordinal);
-        Assert.Contains("var result = EnsurePushResult(await _api.PushAsync(scopedPush, ct));", source, StringComparison.Ordinal);
+        Assert.Contains("private async Task<MobileSyncState> PushInternalAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionOwner owner,", source, StringComparison.Ordinal);
+        Assert.Contains("await _api.PushAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("scopedPush,", source, StringComparison.Ordinal);
         Assert.Contains("RemoveSentScopedPendingMutations(state.PendingPush, scopedPush, result);", source, StringComparison.Ordinal);
-        Assert.Matches(
-            "private async Task<MobileSyncState> PushInternalAsync[\\s\\S]*catch \\(Exception ex\\)\\n\\s*\\{\\n\\s*MarkFailure\\(state, ex\\);\\n\\s*await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync\\(state, ct\\);\\n\\s*return state;\\n\\s*\\}",
-            source);
+        Assert.Contains(
+            "if (ex is StaleMobileSessionOwnerException)",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "MarkFailure(state, ex);",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(",
+            source,
+            StringComparison.Ordinal);
         Assert.DoesNotContain(
             "catch (Exception ex)\n        {\n            state.PendingPush = new SyncPushRequest",
             source,
@@ -1249,7 +1461,10 @@ public sealed class MobileReleaseConfigurationTests
             StringComparison.Ordinal);
 
         Assert.Contains("state.LastError = TranslateFailureMessage(ex);", source, StringComparison.Ordinal);
-        Assert.Contains("state.LastFailureAllowsCachedDisplay = MobileRetryableNetworkFailure.IsRetryable(ex) || IsConcurrencyConflict(ex);", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "state.LastFailureAllowsCachedDisplay =\n            ex is MobileClientUpgradeRequiredException ||\n            MobileRetryableNetworkFailure.IsRetryable(ex) ||\n            IsConcurrencyConflict(ex);",
+            source,
+            StringComparison.Ordinal);
         Assert.Contains("HttpRequestException httpEx when httpEx.StatusCode == HttpStatusCode.Forbidden", source, StringComparison.Ordinal);
         Assert.Contains("=> \"현재 계정 권한 또는 지점 범위 때문에 저장할 수 없습니다. 담당지점/권한을 확인해 주세요.\"", source, StringComparison.Ordinal);
     }
@@ -1272,6 +1487,13 @@ public sealed class MobileReleaseConfigurationTests
                 "ViewModels",
                 "PaymentDraftViewModel.cs"))
             .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var paymentResultSource = File.ReadAllText(Path.Combine(
+                root,
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "Services",
+                "MobileImmediatePaymentSaveResult.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
 
         var methodStart = coordinatorSource.IndexOf(
             "public async Task<MobileSyncState> SavePaymentImmediatelyAsync",
@@ -1288,49 +1510,121 @@ public sealed class MobileReleaseConfigurationTests
             "StatusCode: HttpStatusCode.BadRequest\n                   or HttpStatusCode.Unauthorized\n                   or HttpStatusCode.Forbidden\n                   or HttpStatusCode.NotFound\n                   or HttpStatusCode.UnprocessableEntity",
             coordinatorSource,
             StringComparison.Ordinal);
+        var prepareIndex = savePaymentMethod.IndexOf(
+            "MobilePaymentWriteAheadJournal.PrepareBeforeNetworkMutation(",
+            StringComparison.Ordinal);
+        var writeAheadSaveIndex = savePaymentMethod.IndexOf(
+            "await _store.SaveAsync(owner, state, ct);",
+            prepareIndex,
+            StringComparison.Ordinal);
+        var paymentMutationIndex = savePaymentMethod.IndexOf(
+            "await _api.CreatePaymentAsync(",
+            writeAheadSaveIndex,
+            StringComparison.Ordinal);
+        var acceptedIndex = savePaymentMethod.IndexOf(
+            "MobilePaymentWriteAheadJournal.MarkServerAccepted(",
+            paymentMutationIndex,
+            StringComparison.Ordinal);
+        var acceptedSaveIndex = savePaymentMethod.IndexOf(
+            "await _store.SaveAsync(owner, state, ct);",
+            acceptedIndex,
+            StringComparison.Ordinal);
+        var attachmentMutationIndex = savePaymentMethod.IndexOf(
+            "await _api.UploadPaymentAttachmentAsync(",
+            acceptedSaveIndex,
+            StringComparison.Ordinal);
+
+        Assert.True(prepareIndex >= 0);
+        Assert.True(writeAheadSaveIndex > prepareIndex);
+        Assert.True(paymentMutationIndex > writeAheadSaveIndex);
+        Assert.True(acceptedIndex > paymentMutationIndex);
+        Assert.True(acceptedSaveIndex > acceptedIndex);
+        Assert.True(attachmentMutationIndex > acceptedSaveIndex);
         Assert.Contains(
-            "catch (Exception ex) when (IsNonRetryableClientFailure(ex))\n            {\n                MarkFailure(state, ex);\n            }",
+            "catch (Exception ex) when (IsNonRetryableClientFailure(ex))",
             savePaymentMethod,
             StringComparison.Ordinal);
-        Assert.DoesNotContain(
-            "catch (Exception ex) when (IsNonRetryableClientFailure(ex))\n            {\n                state.PendingPush.Payments.Add(payment);",
+        Assert.Contains(
+            "MobilePaymentWriteAheadJournal.MarkTerminallyRejected(",
             savePaymentMethod,
             StringComparison.Ordinal);
         Assert.Contains(
-            "catch (Exception ex)\n            {\n                state.PendingPush.Payments.Add(payment);",
+            "var serverAcceptanceDurablyRecorded = false;",
             savePaymentMethod,
             StringComparison.Ordinal);
         Assert.Contains(
-            "if (result.ConflictCount > 0)\n                    {\n                        if (WasAccepted(result.AcceptedRevisions, PaymentEntityName, payment.Id))\n                            QueuePaymentAttachmentsForRetry(state, payment.Id, attachmentList);\n                        else\n                            QueueDiscardedPaymentAttachmentDrafts(attachmentList);",
+            "var terminalRejectionDurablyRecorded = false;",
+            savePaymentMethod,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "catch (Exception ex)\n            {\n                if (!serverAcceptanceDurablyRecorded &&\n                    !terminalRejectionDurablyRecorded)",
+            savePaymentMethod,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "MobilePaymentWriteAheadJournal\n                        .PrepareBeforeNetworkMutation(",
             savePaymentMethod,
             StringComparison.Ordinal);
         Assert.DoesNotContain("QueueUnacceptedLinkedPaymentConflict", savePaymentMethod, StringComparison.Ordinal);
 
         var saveCallIndex = paymentViewSource.IndexOf(
-            "var state = await _syncCoordinator.SavePaymentImmediatelyAsync(payment, Attachments, linkedTransaction);",
+            "SavePaymentWithOutcomeImmediatelyAsync(",
             StringComparison.Ordinal);
         var failureGuardIndex = paymentViewSource.IndexOf(
-            "if (state.PendingPaymentCount == 0 &&\n                SyncCoordinator.IsFailedImmediateSaveWithoutServerAcceptance(state))",
+            "var isRejected =",
             saveCallIndex,
             StringComparison.Ordinal);
         var successBranchIndex = paymentViewSource.IndexOf(
-            "if (state.PendingPaymentCount == 0)\n            {\n                _refreshCoordinator.MarkInvoicesChanged();",
+            "StatusMessage = statusMessage;",
             failureGuardIndex + 1,
             StringComparison.Ordinal);
-        var successCallbackIndex = paymentViewSource.IndexOf(
-            "await SavedSuccessfully.Invoke();",
+        var callbackStartIndex = paymentViewSource.IndexOf(
+            "await _ownerOperations.TryStartCallbackAsync(",
             successBranchIndex,
+            StringComparison.Ordinal);
+        var successCallbackIndex = paymentViewSource.IndexOf(
+            "SavedSuccessfully?.Invoke(",
+            callbackStartIndex,
             StringComparison.Ordinal);
 
         Assert.True(saveCallIndex >= 0);
         Assert.True(failureGuardIndex > saveCallIndex);
         Assert.True(successBranchIndex > failureGuardIndex);
-        Assert.True(successCallbackIndex > successBranchIndex);
+        Assert.True(callbackStartIndex > successBranchIndex);
+        Assert.True(successCallbackIndex > callbackStartIndex);
         Assert.Contains("public static bool IsFailedImmediateSaveWithoutServerAcceptance(MobileSyncState state)", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("!HasServerAcceptanceDuringCurrentAttempt(state);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Matches(
-            "if \\(state\\.PendingPaymentCount == 0 &&\\n\\s*SyncCoordinator\\.IsFailedImmediateSaveWithoutServerAcceptance\\(state\\)\\)\\n\\s*\\{\\n\\s*StatusMessage = \\$\"\\{PaymentActionText\\}[^\\n]+\\{state\\.LastError\\}\";\\n\\s*return;\\n\\s*\\}",
-            paymentViewSource);
+        Assert.Contains(
+            "await _ownerOperations.TryCommitAsync(",
+            paymentViewSource,
+            StringComparison.Ordinal);
+
+        var journalState = new MobileSyncState();
+        var rejectedPayment = new PaymentDto
+        {
+            Id = Guid.NewGuid(),
+            MutationId = "forbidden-contract"
+        };
+        var rejectedAttachment =
+            new PendingPaymentAttachmentRecord
+            {
+                LocalId = Guid.NewGuid()
+            };
+        MobilePaymentWriteAheadJournal
+            .PrepareBeforeNetworkMutation(
+                journalState,
+                rejectedPayment,
+                linkedTransaction: null,
+                [rejectedAttachment]);
+        var discarded = MobilePaymentWriteAheadJournal
+            .MarkTerminallyRejected(
+                journalState,
+                rejectedPayment,
+                linkedTransaction: null);
+        Assert.Empty(journalState.PendingPush.Payments);
+        Assert.Empty(journalState.PendingPaymentAttachments);
+        Assert.Equal(
+            rejectedAttachment.LocalId,
+            Assert.Single(discarded).LocalId);
     }
 
     [Fact]
@@ -1380,7 +1674,15 @@ public sealed class MobileReleaseConfigurationTests
             saveInvoiceMethod,
             StringComparison.Ordinal);
         Assert.Contains(
-            "catch (Exception ex) when (IsNonRetryableClientFailure(ex))\n            {\n                MarkFailure(state, ex);\n            }",
+            "catch (Exception ex) when (IsNonRetryableClientFailure(ex))",
+            savePaymentMethod,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "MobilePaymentWriteAheadJournal.MarkTerminallyRejected(",
+            savePaymentMethod,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "MarkFailure(state, ex);\n                await _store.SaveAsync(owner, state, ct);",
             savePaymentMethod,
             StringComparison.Ordinal);
         Assert.DoesNotContain(
@@ -1396,7 +1698,11 @@ public sealed class MobileReleaseConfigurationTests
             invoiceViewSource,
             StringComparison.Ordinal);
         Assert.Contains(
-            "if (state.PendingPaymentCount == 0 &&\n                SyncCoordinator.IsFailedImmediateSaveWithoutServerAcceptance(state))\n            {\n                StatusMessage = $\"{PaymentActionText}이 저장되지 않았습니다. {state.LastError}\";\n                return;\n            }",
+            "var isRejected =\n                saveResult.PaymentRejected;",
+            paymentViewSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "if (isRejected)",
             paymentViewSource,
             StringComparison.Ordinal);
     }
@@ -1426,32 +1732,45 @@ public sealed class MobileReleaseConfigurationTests
                 "ViewModels",
                 "PaymentDraftViewModel.cs"))
             .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var paymentResultSource = File.ReadAllText(Path.Combine(
+                root,
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "Services",
+                "MobileImmediatePaymentSaveResult.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
 
         Assert.Contains("private static bool HasServerAcceptanceDuringCurrentAttempt(MobileSyncState state)", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("state.LastSuccessUtc.Value >= state.LastAttemptUtc.Value;", coordinatorSource, StringComparison.Ordinal);
         Assert.True(
-            coordinatorSource.Split("state = await PullInternalAsync(state, ct);\n                state.LastSuccessUtc = DateTime.UtcNow;", StringSplitOptions.None).Length >= 3,
+            Regex.Matches(
+                coordinatorSource,
+                "state = await PullInternalAsync\\(\\s*owner,\\s*state,\\s*ct\\);\\s*state\\.LastSuccessUtc = DateTime\\.UtcNow;")
+                .Count >= 2,
             "Invoice and payment immediate-save paths must rewrite LastSuccessUtc after PullInternalAsync so refresh failures are not treated as save rejection.");
-        Assert.Contains(
-            "state = await PullInternalAsync(state, ct);\n                state.LastSuccessUtc = DateTime.UtcNow;\n                RestorePaymentAttachmentUploadErrorsAfterPull(state, attachmentUploadErrors);",
-            coordinatorSource,
-            StringComparison.Ordinal);
+        Assert.Matches(
+            "state = await PullInternalAsync\\(\\s*owner,\\s*state,\\s*ct\\);\\s*state\\.LastSuccessUtc = DateTime\\.UtcNow;\\s*RestorePaymentAttachmentUploadErrorsAfterPull\\(state, attachmentUploadErrors\\);",
+            coordinatorSource);
 
         Assert.Contains(
             "if (state.PendingInvoiceCount == 0 &&\n                SyncCoordinator.IsFailedImmediateSaveWithoutServerAcceptance(state))",
             invoiceViewSource,
             StringComparison.Ordinal);
         Assert.Contains(
-            "if (state.PendingPaymentCount == 0 &&\n                SyncCoordinator.IsFailedImmediateSaveWithoutServerAcceptance(state))",
+            "var isAccepted =\n                saveResult.PaymentAccepted;",
+            paymentViewSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "var statusMessage =\n                saveResult.BuildStatusMessage(",
             paymentViewSource,
             StringComparison.Ordinal);
         Assert.Contains("최신 데이터 새로고침 대기", invoiceViewSource, StringComparison.Ordinal);
-        Assert.Contains("최신 데이터 새로고침 대기", paymentViewSource, StringComparison.Ordinal);
-        Assert.Contains("첨부 {state.PendingPaymentAttachmentCount:N0}건", paymentViewSource, StringComparison.Ordinal);
+        Assert.Contains("최신 데이터 새로고침 대기", paymentResultSource, StringComparison.Ordinal);
+        Assert.Contains("첨부 {State.PendingPaymentAttachmentCount:N0}건", paymentResultSource, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void MobileImmediatePaymentConflict_QueuesOnlyAcceptedAttachmentsBeforeReturning()
+    public void MobileImmediatePaymentConflict_DurablyRetainsAttachmentsOnlyForAcceptedPayment()
     {
         var source = File.ReadAllText(Path.Combine(
             FindRepositoryRoot(),
@@ -1459,18 +1778,80 @@ public sealed class MobileReleaseConfigurationTests
             "GeoraePlan.Mobile.App",
             "Services",
             "SyncCoordinator.cs"));
-        var normalizedSource = source.Replace("\r\n", "\n", StringComparison.Ordinal);
+        var normalizedSource = ExtractBetween(
+            source.Replace("\r\n", "\n", StringComparison.Ordinal),
+            "public async Task<MobileSyncState> SavePaymentImmediatelyAsync",
+            "public async Task<MobileSyncState> TryBackgroundSyncAsync");
 
-        Assert.Contains("private static void QueuePaymentAttachmentsForRetry(", source, StringComparison.Ordinal);
-        Assert.Contains("QueuePaymentAttachmentsForRetry(state, payment.Id, attachmentList);", source, StringComparison.Ordinal);
-        Assert.Contains("QueuePaymentAttachmentsForRetry(state, paymentId, attachmentList);", source, StringComparison.Ordinal);
-        Assert.Contains("QueueDiscardedPaymentAttachmentDrafts(attachmentList);", source, StringComparison.Ordinal);
-        Assert.Contains("state.PendingPaymentAttachments.RemoveAll(x => x.LocalId == attachment.LocalId);", source, StringComparison.Ordinal);
-        Assert.Contains("state.PendingPaymentAttachments.Add(attachment);", source, StringComparison.Ordinal);
+        var conflictStart = normalizedSource.IndexOf(
+            "if (result.ConflictCount > 0)",
+            StringComparison.Ordinal);
+        var acceptedTransition = normalizedSource.IndexOf(
+            "MobilePaymentWriteAheadJournal.MarkServerAccepted(",
+            conflictStart,
+            StringComparison.Ordinal);
+        var rejectedTransition = normalizedSource.IndexOf(
+            "MobilePaymentWriteAheadJournal.MarkTerminallyRejected(",
+            acceptedTransition,
+            StringComparison.Ordinal);
+        var durableTransition = normalizedSource.IndexOf(
+            "await _store.SaveAsync(owner, state, ct);",
+            rejectedTransition,
+            StringComparison.Ordinal);
+        var refreshStart = normalizedSource.IndexOf(
+            "state = await MarkPushConflictAndRefreshAsync(",
+            durableTransition,
+            StringComparison.Ordinal);
+
+        Assert.True(conflictStart >= 0);
+        Assert.True(acceptedTransition > conflictStart);
+        Assert.True(rejectedTransition > acceptedTransition);
+        Assert.True(durableTransition > rejectedTransition);
+        Assert.True(refreshStart > durableTransition);
         Assert.DoesNotContain("QueueUnacceptedLinkedPaymentConflict", source, StringComparison.Ordinal);
-        Assert.Matches(
-            "if \\(result\\.ConflictCount > 0\\)\\n\\s*\\{\\n\\s*if \\(WasAccepted\\(result\\.AcceptedRevisions, PaymentEntityName, payment\\.Id\\)\\)\\n\\s*QueuePaymentAttachmentsForRetry\\(state, payment\\.Id, attachmentList\\);\\n\\s*else\\n\\s*QueueDiscardedPaymentAttachmentDrafts\\(attachmentList\\);",
-            normalizedSource);
+
+        var payment = new PaymentDto
+        {
+            Id = Guid.NewGuid(),
+            MutationId = "accepted-conflict"
+        };
+        var acceptedAttachment =
+            new PendingPaymentAttachmentRecord
+            {
+                LocalId = Guid.NewGuid()
+            };
+        var acceptedState = new MobileSyncState();
+        MobilePaymentWriteAheadJournal
+            .PrepareBeforeNetworkMutation(
+                acceptedState,
+                payment,
+                linkedTransaction: null,
+                [acceptedAttachment]);
+        MobilePaymentWriteAheadJournal.MarkServerAccepted(
+            acceptedState,
+            payment,
+            linkedTransaction: null);
+        Assert.Empty(acceptedState.PendingPush.Payments);
+        Assert.Single(acceptedState.PendingPaymentAttachments);
+        Assert.Contains(
+            acceptedState.SyncedPayments,
+            current => current.Id == payment.Id);
+
+        var rejectedState = new MobileSyncState();
+        MobilePaymentWriteAheadJournal
+            .PrepareBeforeNetworkMutation(
+                rejectedState,
+                payment,
+                linkedTransaction: null,
+                [acceptedAttachment]);
+        Assert.Single(
+            MobilePaymentWriteAheadJournal
+                .MarkTerminallyRejected(
+                    rejectedState,
+                    payment,
+                    linkedTransaction: null));
+        Assert.Empty(rejectedState.PendingPush.Payments);
+        Assert.Empty(rejectedState.PendingPaymentAttachments);
     }
 
     [Fact]
@@ -1534,11 +1915,32 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("SQLitePCL.Batteries_V2.Init();", storeSource, StringComparison.Ordinal);
         Assert.Contains("CREATE TABLE IF NOT EXISTS {StateTableName}", storeSource, StringComparison.Ordinal);
         Assert.Contains("INSERT OR REPLACE INTO {StateTableName}", storeSource, StringComparison.Ordinal);
-        Assert.Contains("await TrySaveJsonBackupAsync(filePath, state, ct);", storeSource, StringComparison.Ordinal);
+        Assert.Contains("await TrySaveJsonBackupAsync(\n                    owner,\n                    filePath,\n                    state,\n                    ct);", storeSource, StringComparison.Ordinal);
         Assert.Contains("SQLite 저장은 완료됐지만 JSON 백업 저장에는 실패했습니다", storeSource, StringComparison.Ordinal);
-        Assert.Contains("await TryRecoverOrQuarantineLegacyStateAsync(stateKey, filePath, fresh, ct);", storeSource, StringComparison.Ordinal);
+        Assert.Contains("await TryRecoverOrQuarantineLegacyStateAsync(\n                    owner,\n                    stateKey,\n                    filePath,\n                    fresh,\n                    ct);", storeSource, StringComparison.Ordinal);
         Assert.Contains("기존 JSON 모바일 동기화 상태를 SQLite로 이전했습니다", storeSource, StringComparison.Ordinal);
         Assert.Contains("SQLite 모바일 동기화 상태 저장에 실패해 JSON 백업 저장소로 전환합니다", storeSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SqliteNativeBundle_IsPinnedToSecurityMaintenanceReleaseAcrossApps()
+    {
+        var root = FindRepositoryRoot();
+        var projectPaths = new[]
+        {
+            Path.Combine(root, "Server", "거래플랜.Server.Api", "거래플랜.Server.Api.csproj"),
+            Path.Combine(root, "Desktop", "거래플랜.Desktop.App", "거래플랜.Desktop.App.csproj"),
+            Path.Combine(root, "Mobile", "GeoraePlan.Mobile.App", "GeoraePlan.Mobile.App.csproj")
+        };
+
+        foreach (var projectPath in projectPaths)
+        {
+            var projectSource = File.ReadAllText(projectPath);
+            Assert.Contains(
+                "<PackageReference Include=\"SQLitePCLRaw.bundle_e_sqlite3\" Version=\"2.1.12\" />",
+                projectSource,
+                StringComparison.Ordinal);
+        }
     }
 
     [Fact]
@@ -1621,8 +2023,12 @@ public sealed class MobileReleaseConfigurationTests
 
         Assert.Contains("private static SyncPushResult EnsurePushResult(SyncPushResult? result)", source, StringComparison.Ordinal);
         Assert.Contains("동기화 push 응답이 비어 있어 서버 반영 여부를 확인할 수 없습니다.", source, StringComparison.Ordinal);
-        Assert.Contains("var result = EnsurePushResult(await _api.PushAsync(scopedPush, ct));", source, StringComparison.Ordinal);
-        Assert.Contains("var result = EnsurePushResult(await _api.PushAsync(request, ct));", source, StringComparison.Ordinal);
+        Assert.Matches(
+            "EnsurePushResult\\(\\s*await _api\\.PushAsync\\(\\s*scopedPush,\\s*owner,\\s*ct\\)\\)",
+            normalizedSource);
+        Assert.Matches(
+            "EnsurePushResult\\(\\s*await _api\\.PushAsync\\(\\s*request,\\s*owner,\\s*ct\\)\\)",
+            normalizedSource);
         Assert.DoesNotContain(
             "var result = await _api.PushAsync(state.PendingPush, ct);\n                if (result is not null)",
             normalizedSource,
@@ -1648,8 +2054,11 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("private static SyncStatusDto EnsureSyncStatus(SyncStatusDto? status)", source, StringComparison.Ordinal);
         Assert.Contains("동기화 pull 응답이 비어 있어 최신 데이터 반영 여부를 확인할 수 없습니다.", source, StringComparison.Ordinal);
         Assert.Contains("동기화 상태 응답이 비어 있어 최신 데이터 여부를 확인할 수 없습니다.", source, StringComparison.Ordinal);
-        Assert.Contains("var response = EnsurePullResponse(await _api.PullAsync(state.LastRevision, ct));", source, StringComparison.Ordinal);
-        Assert.Contains("var syncStatus = EnsureSyncStatus(await _api.GetSyncStatusAsync(ct));", source, StringComparison.Ordinal);
+        Assert.Contains("var response = EnsurePullResponse(", source, StringComparison.Ordinal);
+        Assert.Contains("await _api.PullAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("state.LastRevision,", source, StringComparison.Ordinal);
+        Assert.Contains("var syncStatus = EnsureSyncStatus(", source, StringComparison.Ordinal);
+        Assert.Contains("await _api.GetSyncStatusAsync(", source, StringComparison.Ordinal);
         Assert.DoesNotContain(
             "var response = await _api.PullAsync(state.LastRevision, ct);\n                if (response is not null)",
             normalizedSource,
@@ -1678,22 +2087,28 @@ public sealed class MobileReleaseConfigurationTests
             "PaymentAttachmentDraftStore.cs"));
 
         Assert.Contains("public async Task<int> RemoveOrphanDraftsAsync(", draftStoreSource, StringComparison.Ordinal);
-        Assert.Contains("Directory.EnumerateFiles(DraftDirectory, \"*\", SearchOption.TopDirectoryOnly)", draftStoreSource, StringComparison.Ordinal);
+        Assert.Contains("Directory.EnumerateFiles(", draftStoreSource, StringComparison.Ordinal);
+        Assert.Contains("ownerDirectory,", draftStoreSource, StringComparison.Ordinal);
         Assert.Contains("IsDraftFileName(Path.GetFileName(fullPath))", draftStoreSource, StringComparison.Ordinal);
         Assert.Contains("activePaths.Contains(fullPath)", draftStoreSource, StringComparison.Ordinal);
         Assert.Contains("File.GetLastWriteTimeUtc(fullPath) > cutoffUtc", draftStoreSource, StringComparison.Ordinal);
-        Assert.Contains("NormalizeDraftPathOrNull(attachment.StoredPath, draftRoot)", draftStoreSource, StringComparison.Ordinal);
-        Assert.Contains("File.Exists(storedPath)", draftStoreSource, StringComparison.Ordinal);
-        Assert.Matches("(?s)private static string\\? NormalizeDraftPathOrNull\\(string\\? path, string draftRoot\\).*catch\\s*\\{\\s*return null;\\s*\\}", draftStoreSource);
-        Assert.Contains("EnsureTrailingDirectorySeparator(Path.GetFullPath(DraftDirectory))", draftStoreSource, StringComparison.Ordinal);
-        Assert.Contains("private static bool IsDraftFileName(string? fileName)", draftStoreSource, StringComparison.Ordinal);
-        Assert.Contains("private static string EnsureTrailingDirectorySeparator(string path)", draftStoreSource, StringComparison.Ordinal);
+        Assert.Contains("NormalizeDraftPathOrNull(", draftStoreSource, StringComparison.Ordinal);
+        Assert.Contains("NormalizeLegacyDraftPathOrNull(", draftStoreSource, StringComparison.Ordinal);
+        Assert.Contains("if (await OwnerBoundFileMutation.DeleteIfExistsAsync(\n                        fullPath,", draftStoreSource, StringComparison.Ordinal);
+        Assert.Matches(
+            "(?s)private static string\\? NormalizeDraftPathOrNull\\(\\s*string\\? path,\\s*string draftRoot\\).*catch\\s*\\{\\s*return null;\\s*\\}",
+            draftStoreSource);
+        Assert.Contains("Path.GetFullPath(GetOwnerDirectory(owner))", draftStoreSource, StringComparison.Ordinal);
+        Assert.Contains("private static bool IsDraftFileName(", draftStoreSource, StringComparison.Ordinal);
+        Assert.Contains("private static string EnsureTrailingDirectorySeparator(", draftStoreSource, StringComparison.Ordinal);
 
         Assert.Contains("private static readonly TimeSpan OrphanPaymentAttachmentDraftMinimumAge = TimeSpan.FromDays(7);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("public async Task<MobileSyncState> LoadAsync(CancellationToken ct = default)", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("await CleanupOrphanPaymentAttachmentDraftsAsync(state, ct);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("public Task<MobileSyncState> LoadAsync(CancellationToken ct = default)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("public async Task<MobileSyncState> LoadAsync(\n        MobileSessionOwner owner,", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("await CleanupOrphanPaymentAttachmentDraftsAsync(", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("await _attachmentStore.RemoveOrphanDraftsAsync(", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("await _store.SaveAsync(owner, state, ct);", coordinatorSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1708,13 +2123,14 @@ public sealed class MobileReleaseConfigurationTests
 
         Assert.Contains("private static PaymentAttachmentDto EnsurePaymentAttachmentResult(PaymentAttachmentDto? result)", source, StringComparison.Ordinal);
         Assert.Contains("첨부 업로드 응답이 비어 있어 서버 저장 여부를 확인할 수 없습니다.", source, StringComparison.Ordinal);
-        Assert.Contains("EnsurePaymentAttachmentResult(await _api.UploadPaymentAttachmentAsync(payment.Id, attachment, ct));", source, StringComparison.Ordinal);
-        Assert.Contains("EnsurePaymentAttachmentResult(await _api.UploadPaymentAttachmentAsync(attachment.PaymentId, attachment, ct));", source, StringComparison.Ordinal);
+        Assert.Contains("EnsurePaymentAttachmentResult(await _api.UploadPaymentAttachmentAsync(payment.Id, attachment, owner, ct));", source, StringComparison.Ordinal);
+        Assert.Contains("EnsurePaymentAttachmentResult(await _api.UploadPaymentAttachmentAsync(attachment.PaymentId, attachment, owner, ct));", source, StringComparison.Ordinal);
         Assert.Contains("state.PendingPaymentAttachments.Add(attachment);", source, StringComparison.Ordinal);
         Assert.Contains("errors.Add(ex.Message);", source, StringComparison.Ordinal);
-        Assert.Contains("RemovePendingPaymentAttachments(state, attachment => uploadedIds.Contains(attachment.LocalId));", source, StringComparison.Ordinal);
-        Assert.Contains("await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);", source, StringComparison.Ordinal);
-        Assert.Contains("await RemoveDiscardedPaymentAttachmentDraftsAsync(ct);", source, StringComparison.Ordinal);
+        Assert.Contains("RemovePendingPaymentAttachments(", source, StringComparison.Ordinal);
+        Assert.Contains("await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("await _store.SaveAsync(owner, state, ct);", source, StringComparison.Ordinal);
+        Assert.Contains("await RemoveDiscardedPaymentAttachmentDraftsAsync(", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1737,7 +2153,10 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("catch (Exception uploadEx) when (ShouldRetryPaymentAttachmentUpload(uploadEx))", source, StringComparison.Ordinal);
         Assert.Contains("BuildTerminalPaymentAttachmentUploadFailureMessage(attachment, uploadEx)", source, StringComparison.Ordinal);
         Assert.Contains("terminalFailedAttachments.Add(attachment);", source, StringComparison.Ordinal);
-        Assert.Contains("QueueDiscardedPaymentAttachmentDrafts(terminalFailedAttachments);", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "QueueDiscardedPaymentAttachmentDrafts(\n                owner,\n                terminalFailedAttachments);",
+            normalizedSource,
+            StringComparison.Ordinal);
         Assert.Contains("catch (Exception ex) when (ShouldRetryPaymentAttachmentUpload(ex))", source, StringComparison.Ordinal);
         Assert.Contains(
             "uploadedIds.Add(attachment.LocalId);\n                errors.Add(BuildTerminalPaymentAttachmentUploadFailureMessage(attachment, ex));",
@@ -1771,7 +2190,7 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("다음 동기화에서 다시 시도합니다", source, StringComparison.Ordinal);
         Assert.Contains("state.ConsecutiveFailureCount = Math.Max(1, state.ConsecutiveFailureCount);", source, StringComparison.Ordinal);
         Assert.Matches(
-            "state = await PullInternalAsync\\(state, ct\\);\\n\\s*state\\.LastSuccessUtc = DateTime\\.UtcNow;\\n\\s*RestorePaymentAttachmentUploadErrorsAfterPull\\(state, attachmentUploadErrors\\);",
+            "state = await PullInternalAsync\\(\\s*owner,\\s*state,\\s*ct\\);\\s*state\\.LastSuccessUtc = DateTime\\.UtcNow;\\s*RestorePaymentAttachmentUploadErrorsAfterPull\\(state, attachmentUploadErrors\\);",
             normalizedSource);
     }
 
@@ -1791,7 +2210,10 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("saved = EnsureEntityResult(saved, \"전표 저장\");", source, StringComparison.Ordinal);
         Assert.Contains("saved = EnsureEntityResult(saved, \"입금 저장\");", source, StringComparison.Ordinal);
         Assert.Contains("state.PendingPush.Invoices.Add(invoice);", source, StringComparison.Ordinal);
-        Assert.Contains("state.PendingPush.Payments.Add(payment);", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "MobilePaymentWriteAheadJournal.PrepareBeforeNetworkMutation(",
+            source,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1814,12 +2236,35 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("saved = EnsureSavedResult(saved, \"거래처 저장\");", customerEditSource, StringComparison.Ordinal);
         Assert.Contains("private static T EnsureSavedResult<T>(T? result, string operationName)", customerEditSource, StringComparison.Ordinal);
         Assert.Contains("{operationName} 응답이 비어 있어 서버 반영 여부를 확인할 수 없습니다.", customerEditSource, StringComparison.Ordinal);
-        Assert.Contains("await QueuePendingSaveAsync(dto, ex);", customerEditSource, StringComparison.Ordinal);
+        Assert.Contains("await QueuePendingSaveAsync(\n                dto,\n                ex,\n                requestOwnerSession,\n                apiOwner);", customerEditSource, StringComparison.Ordinal);
 
         Assert.Contains("saved = EnsureSavedResult(saved, \"품목 저장\");", itemEditSource, StringComparison.Ordinal);
         Assert.Contains("private static T EnsureSavedResult<T>(T? result, string operationName)", itemEditSource, StringComparison.Ordinal);
         Assert.Contains("{operationName} 응답이 비어 있어 서버 반영 여부를 확인할 수 없습니다.", itemEditSource, StringComparison.Ordinal);
-        Assert.Contains("await QueuePendingSaveAsync(dto, ex);", itemEditSource, StringComparison.Ordinal);
+        Assert.Contains("await QueuePendingSaveAsync(\n                dto,\n                ex,\n                apiOwner);", itemEditSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MobileItemEditClone_PreservesOptionalCatalogFieldsAndDatePresenceFlags()
+    {
+        var source = File.ReadAllText(Path.Combine(
+                FindRepositoryRoot(),
+                "Mobile",
+                "GeoraePlan.Mobile.App",
+                "Pages",
+                "ItemEditPage.cs"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var cloneSource = ExtractBetween(
+            source,
+            "private static ItemDto Clone(ItemDto source)",
+            "private static string Read(Entry entry)");
+
+        Assert.Contains("BoxQuantity = source.BoxQuantity,", cloneSource, StringComparison.Ordinal);
+        Assert.Contains("StorageLocation = source.StorageLocation,", cloneSource, StringComparison.Ordinal);
+        Assert.Contains("LastPurchaseDate = source.LastPurchaseDate,", cloneSource, StringComparison.Ordinal);
+        Assert.Contains("LastPurchaseDateSpecified = source.LastPurchaseDateSpecified,", cloneSource, StringComparison.Ordinal);
+        Assert.Contains("LastSaleDate = source.LastSaleDate,", cloneSource, StringComparison.Ordinal);
+        Assert.Contains("LastSaleDateSpecified = source.LastSaleDateSpecified,", cloneSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2193,7 +2638,15 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("_sessionTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(snapshot.TenantCode, _sessionOfficeCode);", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("private static IReadOnlyList<string> ResolveWritableInvoiceOfficeCodes(", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("var scopeType = TenantScopeCatalog.NormalizeScopeTypeOrDefault(", viewModelSource, StringComparison.Ordinal);
-        Assert.Contains("snapshot.IsAdmin ? TenantScopeCatalog.ScopeAdmin : TenantScopeCatalog.ScopeOfficeOnly", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "snapshot.ScopeType,\n" +
+            "            TenantScopeCatalog.ScopeOfficeOnly",
+            normalizedSource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "snapshot.IsAdmin ? TenantScopeCatalog.ScopeAdmin : TenantScopeCatalog.ScopeOfficeOnly",
+            viewModelSource,
+            StringComparison.Ordinal);
         Assert.Contains(
             "snapshot.IsAdmin && string.Equals(scopeType, TenantScopeCatalog.ScopeAdmin",
             viewModelSource,
@@ -2342,6 +2795,18 @@ public sealed class MobileReleaseConfigurationTests
             "GeoraePlan.Mobile.App",
             "Services",
             "MobileAppUpdateService.cs"));
+        var policySource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "MobileUpdateGatePolicy.cs"));
+        var resultSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "MobileAppUpdateCheckResult.cs"));
         var settingsSource = File.ReadAllText(Path.Combine(
             root,
             "Mobile",
@@ -2354,17 +2819,37 @@ public sealed class MobileReleaseConfigurationTests
             "GeoraePlan.Mobile.App",
             "App.cs"));
 
-        Assert.Contains("var minimumSupportedVersion = ResolveMinimumSupportedVersion(package, latestVersion);", serviceSource, StringComparison.Ordinal);
-        Assert.Contains("IsBelowMinimumSupportedVersion = isBelowMinimumSupportedVersion", serviceSource, StringComparison.Ordinal);
-        Assert.Contains("public bool IsBelowMinimumSupportedVersion { get; set; }", serviceSource, StringComparison.Ordinal);
-        Assert.Contains("public bool RequiresImmediateUpdate => IsBelowMinimumSupportedVersion || (IsUpdateAvailable && Package?.Mandatory == true);", serviceSource, StringComparison.Ordinal);
-        Assert.Contains("private static string ResolveMinimumSupportedVersion(AppUpdatePackageDto package, string latestVersion)", serviceSource, StringComparison.Ordinal);
-        Assert.Contains("package.MinimumSupportedVersion", serviceSource, StringComparison.Ordinal);
-        Assert.Contains("package.Mandatory ? latestVersion : string.Empty", serviceSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "return MobileUpdateGatePolicy.EvaluateManifest(",
+            serviceSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "manifest,\n                current,\n                channel",
+            serviceSource.Replace(
+                "\r\n",
+                "\n",
+                StringComparison.Ordinal),
+            StringComparison.Ordinal);
+        Assert.Contains("else if (package.Mandatory)", policySource, StringComparison.Ordinal);
+        Assert.Contains("minimumVersion = latestVersion;", policySource, StringComparison.Ordinal);
+        Assert.Contains(
+            "IsBelowMinimumSupportedVersion = isBelowMinimumVersion",
+            policySource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "public bool IsBelowMinimumSupportedVersion { get; set; }",
+            resultSource,
+            StringComparison.Ordinal);
+        Assert.Contains("public bool RequiresImmediateUpdate =>", resultSource, StringComparison.Ordinal);
+        Assert.Contains("IsBelowMinimumSupportedVersion ||", resultSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "(Package?.Mandatory == true || RequiresUserAction)",
+            resultSource,
+            StringComparison.Ordinal);
         Assert.Contains("IsUpdateAvailable = result.IsUpdateAvailable || result.RequiresImmediateUpdate;", settingsSource, StringComparison.Ordinal);
         Assert.Contains("result.MinimumSupportedVersion", settingsSource, StringComparison.Ordinal);
-        Assert.Contains("if (!result.RequiresImmediateUpdate)", appSource, StringComparison.Ordinal);
-        Assert.Contains("result.RequiresImmediateUpdate", appSource, StringComparison.Ordinal);
+        Assert.Contains("if (result.RequiresImmediateUpdate)", appSource, StringComparison.Ordinal);
+        Assert.Contains("ShowCompatibilityGateAsync(outcome)", appSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2430,16 +2915,24 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("IsCachedDownloadValidAsync(cachedPath, contract.FileSize, contract.FileHash, ct)", apiSource, StringComparison.Ordinal);
         Assert.Contains("IsCachedDownloadValidAsync(cachedPath, attachment.FileSize, attachment.FileHash, ct)", apiSource, StringComparison.Ordinal);
         Assert.Contains("SHA256.HashDataAsync(stream, ct)", apiSource, StringComparison.Ordinal);
-        Assert.Contains("cachedPath + \".download\"", apiSource, StringComparison.Ordinal);
-        Assert.Contains("File.Move(temporaryPath, cachedPath, overwrite: true)", apiSource, StringComparison.Ordinal);
+        Assert.Contains("$\"{cachedPath}.download.{Guid.NewGuid():N}\"", apiSource, StringComparison.Ordinal);
+        Assert.Matches(
+            new Regex(
+                @"File\.Move\s*\(\s*temporaryPath\s*,\s*cachedPath\s*,\s*overwrite:\s*true\s*\)",
+                RegexOptions.CultureInvariant),
+            apiSource);
         Assert.Contains("TryDeleteFile(temporaryPath)", apiSource, StringComparison.Ordinal);
 
-        Assert.Contains("IsCachedPdfValidAsync(pdfPath, contract, ct)", cacheSource, StringComparison.Ordinal);
+        Assert.Contains("IsCachedPdfBindingValidAsync(", cacheSource, StringComparison.Ordinal);
         Assert.Contains("contract.FileSize > 0 && length != contract.FileSize", cacheSource, StringComparison.Ordinal);
         Assert.Contains("contract.FileHash.Trim()", cacheSource, StringComparison.Ordinal);
-        Assert.Contains("TryDeleteFile(pdfPath)", cacheSource, StringComparison.Ordinal);
-        Assert.Contains("CachePdfAsync(Guid customerId, CustomerContractDto contract, string sourcePath", cacheSource, StringComparison.Ordinal);
-        Assert.Contains("CachePdfAsync(_customerId, contract, downloadedPath)", contractsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("ContractMetadataMatches(", cacheSource, StringComparison.Ordinal);
+        Assert.Contains("PdfBindings", cacheSource, StringComparison.Ordinal);
+        Assert.Contains("ObjectFileName", cacheSource, StringComparison.Ordinal);
+        Assert.Contains("public async Task<string> CachePdfAsync(", cacheSource, StringComparison.Ordinal);
+        Assert.Contains("CacheOwnerSession ownerSession,", cacheSource, StringComparison.Ordinal);
+        Assert.Contains("path = await _cacheStore.CachePdfAsync(", contractsViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("ownerSession,", contractsViewModelSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2473,6 +2966,37 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void AndroidSmoke_WaitsForBackNavigationAndFailsOnTargetAppAnr()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "mobile",
+            "Invoke-GeoraePlanAndroidSmoke.ps1"));
+
+        Assert.Contains("[switch]$AllowTimeout", source, StringComparison.Ordinal);
+        Assert.Contains("mobile-smoke-$Timestamp-after-$safeStepName-back", source, StringComparison.Ordinal);
+        Assert.Contains("-TimeoutSeconds 15 `", source, StringComparison.Ordinal);
+        Assert.Contains("-AllowTimeout", source, StringComparison.Ordinal);
+        Assert.Contains("$isLauncherAnr", source, StringComparison.Ordinal);
+        Assert.Contains("대상 앱 ANR을 감지했습니다", source, StringComparison.Ordinal);
+        Assert.Contains("[switch]$AllowTargetAppRecovery", source, StringComparison.Ordinal);
+        Assert.Contains("mobile-smoke-$timestamp-preflight-system-dialog", source, StringComparison.Ordinal);
+        Assert.Contains("-AllowTargetAppRecovery | Out-Null", source, StringComparison.Ordinal);
+        Assert.Contains("Step = 'pre-existing-anr-dialog'", source, StringComparison.Ordinal);
+
+        var backIndex = source.IndexOf("'KEYCODE_BACK'", StringComparison.Ordinal);
+        var backWaitIndex = source.IndexOf("mobile-smoke-$Timestamp-after-$safeStepName-back", StringComparison.Ordinal);
+        var fallbackHomeTapIndex = source.IndexOf(
+            "Tap-BottomTab -AdbPath $AdbPath -DeviceId $DeviceId -Screen $Screen -XRatio 0.10",
+            backWaitIndex,
+            StringComparison.Ordinal);
+        Assert.True(backIndex >= 0);
+        Assert.True(backWaitIndex > backIndex);
+        Assert.True(fallbackHomeTapIndex > backWaitIndex);
+    }
+
+    [Fact]
     public void AndroidSmoke_CanRequireUpdateInPlaceWithoutUninstallFallback()
     {
         var source = File.ReadAllText(Path.Combine(
@@ -2490,6 +3014,30 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("Install-MobileApk -AdbPath $resolvedAdb -DeviceId $deviceId -ApkPath $resolvedApk -PackageName $PackageName -RequireUpdateInPlace", source, StringComparison.Ordinal);
         Assert.Contains("Step = 'update-in-place'", source, StringComparison.Ordinal);
         Assert.Contains("RequireUpdateInPlace = [bool]$RequireUpdateInPlace", source, StringComparison.Ordinal);
+        Assert.Contains("[string]$ApkAnalyzerPath", source, StringComparison.Ordinal);
+        Assert.Contains("manifest application-id $ApkPath", source, StringComparison.Ordinal);
+        Assert.Contains("manifest version-code $ApkPath", source, StringComparison.Ordinal);
+        Assert.Contains("$candidateApkMetadata.VersionCode -le $installedVersionCodeBefore", source, StringComparison.Ordinal);
+        Assert.Contains("$installedVersionCodeAfter -ne $candidateApkMetadata.VersionCode", source, StringComparison.Ordinal);
+        Assert.Contains("'dumpsys',", source, StringComparison.Ordinal);
+        Assert.Contains("CandidateApplicationId", source, StringComparison.Ordinal);
+        Assert.Contains("InstalledVersionCodeBefore", source, StringComparison.Ordinal);
+        Assert.Contains("InstalledVersionCodeAfter", source, StringComparison.Ordinal);
+        Assert.Contains("Join-Path $env:LOCALAPPDATA 'Android\\Sdk'", source, StringComparison.Ordinal);
+        Assert.Contains("Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\\android-sdk'", source, StringComparison.Ordinal);
+        Assert.Contains("$candidateApkMetadata.ApplicationId,", source, StringComparison.Ordinal);
+        Assert.Contains("$PackageName,", source, StringComparison.Ordinal);
+        Assert.Contains("[System.StringComparison]::Ordinal", source, StringComparison.Ordinal);
+        Assert.Contains("$versionCode -le 0", source, StringComparison.Ordinal);
+        Assert.Contains("[string]$JavaSdkDirectory", source, StringComparison.Ordinal);
+        Assert.Contains("function Resolve-JavaHomeForApkAnalyzer", source, StringComparison.Ordinal);
+        Assert.Contains("$previousJavaHome = $env:JAVA_HOME", source, StringComparison.Ordinal);
+        Assert.Contains("$previousPath = $env:PATH", source, StringComparison.Ordinal);
+        Assert.Contains("$env:JAVA_HOME = $JavaHome", source, StringComparison.Ordinal);
+        Assert.Contains("[System.IO.Path]::PathSeparator", source, StringComparison.Ordinal);
+        Assert.Contains("finally {", source, StringComparison.Ordinal);
+        Assert.Contains("$env:JAVA_HOME = $previousJavaHome", source, StringComparison.Ordinal);
+        Assert.Contains("$env:PATH = $previousPath", source, StringComparison.Ordinal);
         Assert.Contains("기존 설치본 덮어쓰기 검증", source, StringComparison.Ordinal);
         var updateFailureGuardIndex = source.IndexOf("if ($RequireUpdateInPlace)", StringComparison.Ordinal);
         var updateFailureThrowIndex = source.IndexOf("throw \"Android update-in-place install failed", StringComparison.Ordinal);
@@ -2499,11 +3047,213 @@ public sealed class MobileReleaseConfigurationTests
         Assert.True(uninstallFallbackIndex > updateFailureThrowIndex);
 
         var packageInstalledAssertIndex = source.IndexOf("Assert-MobilePackageInstalled -AdbPath $resolvedAdb -DeviceId $deviceId -PackageName $PackageName", StringComparison.Ordinal);
+        var installedBeforeIndex = source.IndexOf("$installedVersionCodeBefore = Get-InstalledMobileVersionCode", packageInstalledAssertIndex, StringComparison.Ordinal);
+        var monotonicVersionGuardIndex = source.IndexOf("$candidateApkMetadata.VersionCode -le $installedVersionCodeBefore", installedBeforeIndex, StringComparison.Ordinal);
         var updateInstallIndex = source.IndexOf("Install-MobileApk -AdbPath $resolvedAdb -DeviceId $deviceId -ApkPath $resolvedApk -PackageName $PackageName -RequireUpdateInPlace", StringComparison.Ordinal);
-        var updateStepIndex = source.IndexOf("$steps.Add([pscustomobject]@{ Step = 'update-in-place'", StringComparison.Ordinal);
+        var installedAfterIndex = source.IndexOf("$installedVersionCodeAfter = Get-InstalledMobileVersionCode", updateInstallIndex, StringComparison.Ordinal);
+        var installedAfterGuardIndex = source.IndexOf("$installedVersionCodeAfter -ne $candidateApkMetadata.VersionCode", installedAfterIndex, StringComparison.Ordinal);
+        var updateStepIndex = source.IndexOf("Step = 'update-in-place'", installedAfterGuardIndex, StringComparison.Ordinal);
         Assert.True(packageInstalledAssertIndex >= 0);
-        Assert.True(updateInstallIndex > packageInstalledAssertIndex);
-        Assert.True(updateStepIndex > updateInstallIndex);
+        Assert.True(installedBeforeIndex > packageInstalledAssertIndex);
+        Assert.True(monotonicVersionGuardIndex > installedBeforeIndex);
+        Assert.True(updateInstallIndex > monotonicVersionGuardIndex);
+        Assert.True(installedAfterIndex > updateInstallIndex);
+        Assert.True(installedAfterGuardIndex > installedAfterIndex);
+        Assert.True(updateStepIndex > installedAfterGuardIndex);
+
+        var installFlowStart = source.IndexOf(
+            "if ($RequireUpdateInPlace) {",
+            source.IndexOf("if (-not $SkipInstall)", StringComparison.Ordinal),
+            StringComparison.Ordinal);
+        var installFlowEnd = source.IndexOf("    else {", installFlowStart, StringComparison.Ordinal);
+        Assert.True(installFlowStart >= 0 && installFlowEnd > installFlowStart);
+        var strictUpdateFlow = source[installFlowStart..installFlowEnd];
+        Assert.DoesNotContain("$installArgs += '-d'", strictUpdateFlow, StringComparison.Ordinal);
+        Assert.DoesNotContain("'uninstall'", strictUpdateFlow, StringComparison.Ordinal);
+        Assert.DoesNotContain("'pm', 'clear'", strictUpdateFlow, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AndroidSmoke_UpdateInPlaceInstallDoesNotAllowVersionDowngrade()
+    {
+        var source = File.ReadAllText(Path.Combine(
+                FindRepositoryRoot(),
+                "tools",
+                "mobile",
+                "Invoke-GeoraePlanAndroidSmoke.ps1"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        const string installArgsBase = "$installArgs = @('-s', $DeviceId, 'install', '-r')";
+        const string localSmokeGuard = "if (-not $RequireUpdateInPlace)";
+        const string downgradeAllowance = "$installArgs += '-d'";
+        const string apkArgument = "$installArgs += $ApkPath";
+
+        Assert.Contains(installArgsBase, source, StringComparison.Ordinal);
+        Assert.Contains(localSmokeGuard, source, StringComparison.Ordinal);
+        Assert.Contains(downgradeAllowance, source, StringComparison.Ordinal);
+        Assert.Contains(apkArgument, source, StringComparison.Ordinal);
+        Assert.Contains(
+            """
+                $installArgs = @('-s', $DeviceId, 'install', '-r')
+                if (-not $RequireUpdateInPlace) {
+                    $installArgs += '-d'
+                }
+                $installArgs += $ApkPath
+            """,
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            """
+                if (-not $RequireUpdateInPlace) {
+                    try { Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'pm', 'trim-caches', '1024M') | Out-Null } catch {}
+                }
+            """,
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "$installArgs = @('-s', $DeviceId, 'install', '-r', '-d'",
+            source,
+            StringComparison.Ordinal);
+
+        var installArgsBaseIndex = source.IndexOf(installArgsBase, StringComparison.Ordinal);
+        var localSmokeGuardIndex = source.IndexOf(localSmokeGuard, installArgsBaseIndex, StringComparison.Ordinal);
+        var downgradeAllowanceIndex = source.IndexOf(downgradeAllowance, localSmokeGuardIndex, StringComparison.Ordinal);
+        var apkArgumentIndex = source.IndexOf(apkArgument, downgradeAllowanceIndex, StringComparison.Ordinal);
+        var trimCachesIndex = source.IndexOf(
+            "'pm', 'trim-caches'",
+            apkArgumentIndex,
+            StringComparison.Ordinal);
+        var installInvocationIndex = source.IndexOf(
+            "Invoke-Adb -AdbPath $AdbPath -Arguments $installArgs",
+            apkArgumentIndex,
+            StringComparison.Ordinal);
+
+        Assert.True(localSmokeGuardIndex > installArgsBaseIndex);
+        Assert.True(downgradeAllowanceIndex > localSmokeGuardIndex);
+        Assert.True(apkArgumentIndex > downgradeAllowanceIndex);
+        Assert.True(trimCachesIndex > apkArgumentIndex);
+        Assert.True(installInvocationIndex > trimCachesIndex);
+    }
+
+    [Fact]
+    public async Task AndroidSmoke_StrictUpdateInstallBehaviorNeverMutatesOtherDeviceData()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "mobile",
+            "Invoke-GeoraePlanAndroidSmoke.ps1"));
+        var installFunction = ExtractBetween(
+            source,
+            "function Install-MobileApk {",
+            "function Assert-MobilePackageInstalled");
+        var testRoot = Path.Combine(
+            Path.GetTempPath(),
+            "georaeplan-android-smoke-install-tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(testRoot);
+        var harnessPath = Path.Combine(testRoot, "strict-install-harness.ps1");
+
+        try
+        {
+            File.WriteAllText(
+                harnessPath,
+                $$"""
+                $ErrorActionPreference = 'Stop'
+                $script:AdbCalls = [System.Collections.Generic.List[string]]::new()
+                $script:FailInstall = $false
+
+                function Invoke-Adb {
+                    param(
+                        [string]$AdbPath,
+                        [string[]]$Arguments
+                    )
+
+                    $joined = $Arguments -join ' '
+                    $script:AdbCalls.Add($joined) | Out-Null
+                    if ($script:FailInstall -and
+                        $Arguments -contains 'install') {
+                        throw 'fake strict install failure'
+                    }
+                    return @('Success')
+                }
+
+                {{installFunction}}
+
+                function Assert-StrictCalls {
+                    param([string]$Scenario)
+
+                    if ($script:AdbCalls.Count -ne 1 -or
+                        $script:AdbCalls[0] -notmatch '\binstall\s+-r\b') {
+                        throw "$Scenario strict update must issue exactly one adb install -r call: $($script:AdbCalls -join ' | ')"
+                    }
+
+                    $allCalls = $script:AdbCalls -join "`n"
+                    foreach ($forbidden in @(
+                        ' -d',
+                        'uninstall',
+                        'pm trim-caches',
+                        'pm clear'
+                    )) {
+                        if ($allCalls.IndexOf(
+                                $forbidden,
+                                [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                            throw "$Scenario strict update used forbidden adb operation '$forbidden': $allCalls"
+                        }
+                    }
+                }
+
+                Install-MobileApk `
+                    -AdbPath 'fake-adb.exe' `
+                    -DeviceId 'device-1' `
+                    -ApkPath 'candidate.apk' `
+                    -PackageName 'kr.georaeplan.mobile' `
+                    -RequireUpdateInPlace
+                Assert-StrictCalls -Scenario 'success'
+
+                $script:AdbCalls.Clear()
+                $script:FailInstall = $true
+                $failed = $false
+                try {
+                    Install-MobileApk `
+                        -AdbPath 'fake-adb.exe' `
+                        -DeviceId 'device-1' `
+                        -ApkPath 'candidate.apk' `
+                        -PackageName 'kr.georaeplan.mobile' `
+                        -RequireUpdateInPlace
+                }
+                catch {
+                    if ($_.Exception.Message.IndexOf(
+                            'uninstall fallback is disabled',
+                            [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+                        throw
+                    }
+                    $failed = $true
+                }
+                if (-not $failed) {
+                    throw 'Strict update failure did not propagate.'
+                }
+                Assert-StrictCalls -Scenario 'failure'
+
+                Write-Output 'android_strict_install_behavior=PASS'
+                """,
+                System.Text.Encoding.Unicode);
+
+            var result = await RunPowerShellHarnessAsync(harnessPath);
+
+            Assert.True(
+                result.ExitCode == 0,
+                $"Strict update harness failed.{Environment.NewLine}{result.StdOut}{Environment.NewLine}{result.StdErr}");
+            Assert.Contains(
+                "android_strict_install_behavior=PASS",
+                result.StdOut,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(testRoot))
+                Directory.Delete(testRoot, recursive: true);
+        }
     }
 
     [Fact]
@@ -2556,6 +3306,198 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("Invoke-SyncNowAndAssert", source, StringComparison.Ordinal);
         Assert.Contains("mobile-$voucherSlug-invoice-dirty-push", source, StringComparison.Ordinal);
         Assert.Contains("오프라인 dirty 동기화 검증은 로컬 테스트 API에서만 허용됩니다.", source, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("Invoke-GeoraePlanAndroidWriteE2E.ps1")]
+    [InlineData("Invoke-GeoraePlanAndroidPaymentE2E.ps1")]
+    public void AndroidE2E_FixtureUsesWarehouseStockContractAndCleansPartialCreation(
+        string scriptName)
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "mobile",
+            scriptName));
+
+        Assert.Contains("currentStock = 0", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("currentStock = 10", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "function Reset-TestItemWarehouseStocks",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "-Relative \"items/$ItemId/detail\"",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "expectedRevision = [long]$_.revision",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Result = 'reset-warehouse-stocks'",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "-Fixture $partialFixture",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "-CleanupSteps $CleanupSteps",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "$customerId = [guid]::NewGuid()",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "$customer = [pscustomobject]@{ id = $customerId }",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "$mainWarehouseStocks.Count -ne 1",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "[decimal]$itemDetail.item.currentStock -ne 10",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "function Resolve-E2ECleanupResult",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "(cleanup-failed|restart-failed)",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("Invoke-GeoraePlanAndroidWriteE2E.ps1")]
+    [InlineData("Invoke-GeoraePlanAndroidPaymentE2E.ps1")]
+    public async Task AndroidE2E_CleanupFailureCannotRemainPass(
+        string scriptName)
+    {
+        var sourceScript = Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "mobile",
+            scriptName);
+        var testRoot = Path.Combine(
+            Path.GetTempPath(),
+            "georaeplan-android-e2e-cleanup-tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(testRoot);
+        var harnessPath = Path.Combine(testRoot, "cleanup-result-harness.ps1");
+
+        try
+        {
+            var source = File.ReadAllText(sourceScript);
+            Assert.Contains(
+                "-CleanupSteps ($cleanupSteps.ToArray())",
+                source,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "-CleanupSteps @($cleanupSteps)",
+                source,
+                StringComparison.Ordinal);
+
+            var escapedSourceScript = sourceScript.Replace(
+                "'",
+                "''",
+                StringComparison.Ordinal);
+            File.WriteAllText(
+                harnessPath,
+                $$"""
+                $ErrorActionPreference = 'Stop'
+                $tokens = $null
+                $parseErrors = $null
+                $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+                    '{{escapedSourceScript}}',
+                    [ref]$tokens,
+                    [ref]$parseErrors)
+                if ($parseErrors.Count -ne 0) {
+                    throw 'Android E2E source did not parse.'
+                }
+                $functionAst = $ast.Find({
+                    param($node)
+                    $node -is
+                        [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                        $node.Name -eq 'Resolve-E2ECleanupResult'
+                }, $true)
+                if ($null -eq $functionAst) {
+                    throw 'Cleanup result function was not found.'
+                }
+                . ([scriptblock]::Create($functionAst.Extent.Text))
+
+                $cleanupFailureSteps =
+                    New-Object System.Collections.Generic.List[object]
+                $cleanupFailureSteps.Add(
+                    [pscustomobject]@{
+                        Result = 'cleanup-failed: fixture remained'
+                    })
+                $cleanupFailure = Resolve-E2ECleanupResult `
+                    -ResultStatus 'PASS' `
+                    -ErrorMessage '' `
+                    -CleanupSteps ($cleanupFailureSteps.ToArray())
+                if (
+                    $cleanupFailure.ResultStatus -ne 'FAIL' -or
+                    $cleanupFailure.CleanupFailureCount -ne 1 -or
+                    $cleanupFailure.ErrorMessage -notmatch
+                        'cleanupFailureCount=1'
+                ) {
+                    throw 'Cleanup failure remained green.'
+                }
+
+                $restartFailureSteps =
+                    New-Object System.Collections.Generic.List[object]
+                $restartFailureSteps.Add(
+                    [pscustomobject]@{
+                        Result = 'restart-failed: local API'
+                    })
+                $restartFailure = Resolve-E2ECleanupResult `
+                    -ResultStatus 'PASS' `
+                    -ErrorMessage '' `
+                    -CleanupSteps ($restartFailureSteps.ToArray())
+                if (
+                    $restartFailure.ResultStatus -ne 'FAIL' -or
+                    $restartFailure.CleanupFailureCount -ne 1
+                ) {
+                    throw 'Restart failure remained green.'
+                }
+
+                $cleanSteps =
+                    New-Object System.Collections.Generic.List[object]
+                $clean = Resolve-E2ECleanupResult `
+                    -ResultStatus 'PASS' `
+                    -ErrorMessage '' `
+                    -CleanupSteps ($cleanSteps.ToArray())
+                if (
+                    $clean.ResultStatus -ne 'PASS' -or
+                    $clean.CleanupFailureCount -ne 0
+                ) {
+                    throw 'Clean completion did not remain green.'
+                }
+
+                Write-Output 'android_e2e_cleanup_result=PASS'
+                """,
+                System.Text.Encoding.Unicode);
+
+            var result = await RunPowerShellHarnessAsync(harnessPath);
+
+            Assert.True(
+                result.ExitCode == 0,
+                $"Cleanup result harness failed.{Environment.NewLine}{result.StdOut}{Environment.NewLine}{result.StdErr}");
+            Assert.Contains(
+                "android_e2e_cleanup_result=PASS",
+                result.StdOut,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (Directory.Exists(testRoot))
+                Directory.Delete(testRoot, recursive: true);
+        }
     }
 
     [Fact]
@@ -2750,11 +3692,15 @@ public sealed class MobileReleaseConfigurationTests
 
         Assert.Contains("private IReadOnlyList<PaymentAttachmentDto> _fallbackAttachments = [];", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("IEnumerable<PaymentAttachmentDto>? fallbackAttachments = null", viewModelSource, StringComparison.Ordinal);
-        Assert.Contains("_fallbackAttachments = NormalizeFallbackAttachments(fallbackAttachments);", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("_fallbackAttachments =\n                NormalizeFallbackAttachments(\n                    fallbackAttachments);", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("상세 화면 기준 첨부", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("ReplaceAttachments(_fallbackAttachments)", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("NormalizeFallbackAttachments", viewModelSource, StringComparison.Ordinal);
-        Assert.Contains("await _viewModel.InitializeAsync(_paymentId, _titleText, _fallbackAttachments);", pageSource, StringComparison.Ordinal);
+        Assert.Matches(
+            new Regex(
+                @"await\s+_viewModel\.InitializeAsync\s*\(\s*_paymentId\s*,\s*_titleText\s*,\s*_pageOwner\s*,\s*_fallbackAttachments\s*\)",
+                RegexOptions.CultureInvariant),
+            pageSource);
         Assert.Contains("if (!File.Exists(path))", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("var opened = await Launcher.Default.OpenAsync", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("? \"첨부 파일을 열었습니다.\"", viewModelSource, StringComparison.Ordinal);
@@ -2782,7 +3728,7 @@ public sealed class MobileReleaseConfigurationTests
             "MobileRetryableNetworkFailure.cs"));
 
         Assert.Contains("CanQueuePaymentWithSelectedInvoiceAfterRefreshFailure", source, StringComparison.Ordinal);
-        Assert.Contains("latestInvoice = SelectedInvoice", source, StringComparison.Ordinal);
+        Assert.Contains("latestInvoice = selectedInvoice", source, StringComparison.Ordinal);
         Assert.Contains("최신 전표 확인 지연으로 현재 화면 전표 기준", source, StringComparison.Ordinal);
         Assert.Contains("MobileRetryableNetworkFailure.IsRetryable(ex)", source, StringComparison.Ordinal);
         Assert.Contains("TaskCanceledException or OperationCanceledException or TimeoutException", retryPolicySource, StringComparison.Ordinal);
@@ -2792,8 +3738,8 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("Network is unreachable", retryPolicySource, StringComparison.Ordinal);
         Assert.Contains("IOException", retryPolicySource, StringComparison.Ordinal);
         Assert.Contains("HttpStatusCode.ServiceUnavailable", retryPolicySource, StringComparison.Ordinal);
-        Assert.Contains("RefreshSelectedInvoiceForSaveAsync(SelectedInvoice)", source, StringComparison.Ordinal);
-        Assert.Contains("SavePaymentImmediatelyAsync(payment, Attachments, linkedTransaction)", source, StringComparison.Ordinal);
+        Assert.Contains("RefreshSelectedInvoiceForSaveAsync(\n                    selectedInvoice,\n                    owner,\n                    sessionSnapshot)", source, StringComparison.Ordinal);
+        Assert.Contains("SavePaymentWithOutcomeImmediatelyAsync(\n                        payment,\n                        owner,\n                        attachments,\n                        linkedTransaction)", source, StringComparison.Ordinal);
         Assert.Contains("ExpectedRevision = latestInvoice.Revision", source, StringComparison.Ordinal);
         Assert.Contains("ExpectedRevision = invoice.Revision", source, StringComparison.Ordinal);
     }
@@ -2809,12 +3755,12 @@ public sealed class MobileReleaseConfigurationTests
             "ViewModels",
             "PaymentDraftViewModel.cs"));
 
-        Assert.Contains("var selectedInvoiceRevision = SelectedInvoice.Revision;", source, StringComparison.Ordinal);
+        Assert.Contains("var selectedInvoiceRevision = selectedInvoice.Revision;", source, StringComparison.Ordinal);
         Assert.Contains("if (selectedInvoiceRevision > 0 && latestInvoice.Revision != selectedInvoiceRevision)", source, StringComparison.Ordinal);
         Assert.Contains("ReplaceInvoiceSnapshot(latestInvoice);", source, StringComparison.Ordinal);
         Assert.Contains("전표 최신값이 변경되었습니다", source, StringComparison.Ordinal);
         Assert.Contains("저장되지 않았습니다", source, StringComparison.Ordinal);
-        Assert.Contains("SavePaymentImmediatelyAsync(payment, Attachments, linkedTransaction)", source, StringComparison.Ordinal);
+        Assert.Contains("SavePaymentWithOutcomeImmediatelyAsync(\n                        payment,\n                        owner,\n                        attachments,\n                        linkedTransaction)", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2834,7 +3780,14 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("state.PendingPush.Payments", source, StringComparison.Ordinal);
         Assert.Contains("var pendingPayments = SyncCoordinator.IsConcurrencyConflictState(state)\n            ? null\n            : state.PendingPush.Payments;", source, StringComparison.Ordinal);
         Assert.Contains("BuildEffectivePaymentsForInvoice(invoice.Id, invoice.Payments, pendingPayments)", source, StringComparison.Ordinal);
-        Assert.Contains("ReplaceInvoiceSnapshot(MergePendingPaymentsIntoInvoice(latestInvoice, state));", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "var mergedInvoice =\n                state.PendingPaymentCount > 0\n                    ? MergePendingPaymentsIntoInvoice(\n                        latestInvoice,\n                        state)\n                    : null;",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "if (mergedInvoice is not null)\n                            ReplaceInvoiceSnapshot(mergedInvoice);",
+            source,
+            StringComparison.Ordinal);
         Assert.Contains("latest = MergePendingPaymentsIntoInvoice(latest, pendingState);", source, StringComparison.Ordinal);
     }
 
@@ -2936,28 +3889,53 @@ public sealed class MobileReleaseConfigurationTests
             "HomeViewModel.cs"));
 
         Assert.Contains("ServiceHelper.GetRequiredService<SyncCoordinator>()", customerPageSource, StringComparison.Ordinal);
-        Assert.Contains("QueueCustomerDraftAsync(dto, reason)", customerPageSource, StringComparison.Ordinal);
-        Assert.Contains("QueuePendingDeleteAsync(_source, ex)", customerPageSource, StringComparison.Ordinal);
+        Assert.Contains("QueueCustomerDraftAsync(\n                dto,\n                apiOwner,\n                reason)", customerPageSource, StringComparison.Ordinal);
+        Assert.Contains("QueuePendingDeleteAsync(\n                _source,\n                ex,\n                requestOwnerSession,\n                apiOwner)", customerPageSource, StringComparison.Ordinal);
         Assert.Contains("MobileRetryableNetworkFailure.IsRetryable(ex)", customerPageSource, StringComparison.Ordinal);
-        Assert.Contains("MobileErrorHandler.FireAndForget(() => _afterSaved(dto), \"거래처 저장 후 목록 새로고침\")", customerPageSource, StringComparison.Ordinal);
+        Assert.Equal(
+            2,
+            CountOccurrences(
+                customerPageSource,
+                "() => InvokeAfterSavedAsync(\n                    dto,\n                    requestOwnerSession,\n                    apiOwner)"));
         Assert.Contains("dto.Id = _source?.Id ?? Guid.NewGuid();", customerPageSource, StringComparison.Ordinal);
         Assert.Contains("BuildMutationId(\"customer\", dto.Id)", customerPageSource, StringComparison.Ordinal);
 
         Assert.Contains("ServiceHelper.GetRequiredService<SyncCoordinator>()", itemPageSource, StringComparison.Ordinal);
-        Assert.Contains("QueueItemDraftAsync(dto, reason)", itemPageSource, StringComparison.Ordinal);
-        Assert.Contains("QueuePendingDeleteAsync(_source, ex)", itemPageSource, StringComparison.Ordinal);
+        Assert.Contains("QueueItemDraftAsync(\n                dto,\n                apiOwner,\n                reason)", itemPageSource, StringComparison.Ordinal);
+        Assert.Contains("QueuePendingDeleteAsync(\n                _source,\n                ex,\n                apiOwner)", itemPageSource, StringComparison.Ordinal);
         Assert.Contains("MobileRetryableNetworkFailure.IsRetryable(ex)", itemPageSource, StringComparison.Ordinal);
-        Assert.Contains("MobileErrorHandler.FireAndForget(() => _afterSaved(dto), \"품목 저장 후 목록 새로고침\")", itemPageSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "private readonly Func<ItemDto?, MobileSessionOwner, Task> _afterSaved;",
+            itemPageSource,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            2,
+            CountOccurrences(
+                itemPageSource,
+                "() => InvokeAfterSavedAsync(dto, apiOwner)"));
+        Assert.Contains(
+            "_sessionStore.ThrowIfOwnerChanged(apiOwner);\n        await _afterSaved(saved, apiOwner);\n        _sessionStore.ThrowIfOwnerChanged(apiOwner);",
+            itemPageSource,
+            StringComparison.Ordinal);
         Assert.Contains("dto.Id = _source?.Id ?? Guid.NewGuid();", itemPageSource, StringComparison.Ordinal);
         Assert.Contains("BuildMutationId(\"item\", dto.Id)", itemPageSource, StringComparison.Ordinal);
-        Assert.Contains("MobileErrorHandler.FireAndForget(() => _afterSaved(dto), \"거래처 삭제 후 목록 새로고침\")", customerPageSource, StringComparison.Ordinal);
-        Assert.Contains("MobileErrorHandler.FireAndForget(() => _afterSaved(dto), \"품목 삭제 후 목록 새로고침\")", itemPageSource, StringComparison.Ordinal);
-        Assert.Contains("saved?.IsDeleted == true", customersPageSource, StringComparison.Ordinal);
-        Assert.Contains("RemoveDeletedCustomerFromCurrentViewAsync(deletedCustomerId)", customersPageSource, StringComparison.Ordinal);
+        Assert.Contains("\"거래처 삭제 후 목록 새로고침\"", customerPageSource, StringComparison.Ordinal);
+        Assert.Contains("if (saved is null || saved.IsDeleted)", customersPageSource, StringComparison.Ordinal);
+        Assert.Contains("RemoveDeletedCustomerFromCurrentViewAsync(\n                        deletedCustomerId,\n                        requestOwnerSession)", customersPageSource, StringComparison.Ordinal);
+        Assert.Equal(
+            3,
+            CountOccurrences(
+                itemsPageSource,
+                "async (saved, apiOwner) =>"));
+        Assert.Equal(
+            6,
+            CountOccurrences(
+                itemsPageSource,
+                "if (!_viewModel.IsCurrentOwner(apiOwner))"));
         Assert.Contains("saved?.IsDeleted == true", itemsPageSource, StringComparison.Ordinal);
         Assert.Contains("RemoveDeletedItemFromCurrentView(deletedItemId)", itemsPageSource, StringComparison.Ordinal);
-        Assert.Contains("public async Task RemoveDeletedCustomerFromCurrentViewAsync(Guid customerId)", customersViewSource, StringComparison.Ordinal);
-        Assert.Contains("await _cacheStore.SaveCustomersAsync(cached)", customersViewSource, StringComparison.Ordinal);
+        Assert.Contains("public async Task RemoveDeletedCustomerFromCurrentViewAsync(\n        Guid customerId,\n        CacheOwnerSession requestOwnerSession)", customersViewSource, StringComparison.Ordinal);
+        Assert.Contains("await _cacheStore.RemoveCustomerFromIndexAsync(", customersViewSource, StringComparison.Ordinal);
         Assert.Contains("public void RemoveDeletedItemFromCurrentView(Guid itemId)", itemsViewSource, StringComparison.Ordinal);
 
         Assert.Contains("public async Task<MobileSyncState> QueueCustomerDraftAsync", syncCoordinatorSource, StringComparison.Ordinal);
@@ -2996,12 +3974,12 @@ public sealed class MobileReleaseConfigurationTests
             "MobileRetryableNetworkFailure.cs"));
 
         Assert.Contains("catch (Exception ex) when (dto is not null && MobileRetryableNetworkFailure.IsRetryable(ex))", customerPageSource, StringComparison.Ordinal);
-        Assert.Contains("await QueuePendingSaveAsync(dto, ex);", customerPageSource, StringComparison.Ordinal);
+        Assert.Contains("await QueuePendingSaveAsync(\n                dto,\n                ex,\n                requestOwnerSession,\n                apiOwner);", customerPageSource, StringComparison.Ordinal);
         Assert.Contains("_statusLabel.Text = $\"거래처 저장 실패: {ex.Message}\";", customerPageSource, StringComparison.Ordinal);
         Assert.Contains("await DisplayAlert(\"거래처 저장 실패\", ex.Message, \"확인\");", customerPageSource, StringComparison.Ordinal);
 
         Assert.Contains("catch (Exception ex) when (dto is not null && MobileRetryableNetworkFailure.IsRetryable(ex))", itemPageSource, StringComparison.Ordinal);
-        Assert.Contains("await QueuePendingSaveAsync(dto, ex);", itemPageSource, StringComparison.Ordinal);
+        Assert.Contains("await QueuePendingSaveAsync(\n                dto,\n                ex,\n                apiOwner);", itemPageSource, StringComparison.Ordinal);
         Assert.Contains("_statusLabel.Text = $\"품목 저장 실패: {ex.Message}\";", itemPageSource, StringComparison.Ordinal);
         Assert.Contains("await DisplayAlert(\"품목 저장 실패\", ex.Message, \"확인\");", itemPageSource, StringComparison.Ordinal);
 
@@ -3105,7 +4083,7 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("ServiceHelper.GetRequiredService<IntegrityReportPage>()", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("운영점검 / 무결성", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("await _api.GetIntegrityReportAsync()", integrityViewModelSource, StringComparison.Ordinal);
-        Assert.Contains("await _api.GetIntegrityIssueDetailsAsync(issue.Code)", integrityViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("await _api.GetIntegrityIssueDetailsAsync(\n                currentIssue.Code)", integrityViewModelSource, StringComparison.Ordinal);
         Assert.Contains("MobileDetailPreviewLimit = 30", integrityViewModelSource, StringComparison.Ordinal);
         Assert.Contains("PC 운영점검", integrityViewModelSource, StringComparison.Ordinal);
         Assert.Contains("CreateIssueList()", integrityPageSource, StringComparison.Ordinal);
@@ -3166,12 +4144,12 @@ public sealed class MobileReleaseConfigurationTests
 
         Assert.Contains("MobileSessionScopeFilter.CanAccessCustomer(_sessionStore.GetSnapshot(), customer)", customersSource, StringComparison.Ordinal);
         Assert.Contains("MobileSessionScopeFilter.CanAccessCustomer(snapshot, customer)", customersSource, StringComparison.Ordinal);
-        Assert.Contains("MobileSessionScopeFilter.CanAccessItem(snapshot, item)", itemsSource, StringComparison.Ordinal);
-        Assert.Contains("MobileSessionScopeFilter.CanAccessWarehouse(snapshot, stock.WarehouseCode)", itemsSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessItem(\n                sessionSnapshot,\n                item)", itemsSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessWarehouse(\n                sessionSnapshot,\n                stock.WarehouseCode)", itemsSource, StringComparison.Ordinal);
         Assert.Contains("CanSaveCurrentInvoiceScope(invoice)", invoiceDraftSource, StringComparison.Ordinal);
-        Assert.Contains("MobileSessionScopeFilter.CanAccessInvoice(_sessionStore.GetSnapshot(), latestInvoice)", paymentDraftSource, StringComparison.Ordinal);
-        Assert.Contains("MobileSessionScopeFilter.CanAccessRentalBillingProfile(snapshot, profile)", rentalsSource, StringComparison.Ordinal);
-        Assert.Contains("MobileSessionScopeFilter.CanAccessInventoryTransfer(snapshot, transfer)", transfersSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessInvoice(sessionSnapshot, latestInvoice)", paymentDraftSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessRentalBillingProfile(sessionSnapshot, profile)", rentalsSource, StringComparison.Ordinal);
+        Assert.Contains("MobileSessionScopeFilter.CanAccessInventoryTransfer(sessionSnapshot, transfer)", transfersSource, StringComparison.Ordinal);
         Assert.Contains("MobileSessionScopeFilter.CanAccessCustomer(_sessionStore.GetSnapshot(), dto)", customerEditSource, StringComparison.Ordinal);
         Assert.Contains("MobileSessionScopeFilter.CanAccessItem(_sessionStore.GetSnapshot(), dto)", itemEditSource, StringComparison.Ordinal);
     }
@@ -3213,7 +4191,9 @@ public sealed class MobileReleaseConfigurationTests
 
         Assert.Contains("private readonly SessionStore _sessionStore;", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("MobilePendingScopeFilter.CreateScopedPushRequest(_sessionStore.GetSnapshot(), state)", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("var result = EnsurePushResult(await _api.PushAsync(scopedPush, ct));", coordinatorSource, StringComparison.Ordinal);
+        Assert.Matches(
+            "EnsurePushResult\\(\\s*await _api\\.PushAsync\\(\\s*scopedPush,\\s*owner,\\s*ct\\)\\)",
+            coordinatorSource);
         Assert.Contains("RemoveSentScopedPendingMutations(state.PendingPush, scopedPush, result);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveSubmittedItemWarehouseStocks(state.PendingPush, scopedPush, result);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains(".GetScopedPaymentAttachments(_sessionStore.GetSnapshot(), state, additionalAllowedPaymentIds)", coordinatorSource, StringComparison.Ordinal);
@@ -3223,6 +4203,146 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("현재 계정 범위 밖 보류", syncViewSource, StringComparison.Ordinal);
         Assert.Contains("MobilePendingScopeFilter.CreateSummary(session, sync)", homeViewSource, StringComparison.Ordinal);
         Assert.Contains("권한/지점 범위 밖 보류", homeViewSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AndroidSync_ItemWarehouseStockPendingRows_AreRemovedOnlyByTypedServerAcceptance()
+    {
+        var root = FindRepositoryRoot();
+        var contractsSource = File.ReadAllText(Path.Combine(
+            root,
+            "Shared",
+            "거래플랜.Shared.Contracts",
+            "Contracts.cs"));
+        var coordinatorSource = File.ReadAllText(Path.Combine(
+            root,
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Services",
+            "SyncCoordinator.cs"));
+        var normalizedSource =
+            coordinatorSource.Replace(
+                "\r\n",
+                "\n",
+                StringComparison.Ordinal);
+        var pushMethod = ExtractBetween(
+            normalizedSource,
+            "private async Task<MobileSyncState> PushInternalAsync",
+            "private static SyncPushResult EnsurePushResult");
+        var synchronizeNowMethod = ExtractBetween(
+            normalizedSource,
+            "public async Task<MobileSyncState> SynchronizeNowAsync",
+            "public async Task<MobileSyncState> RefreshIfServerChangedAsync");
+        var unacknowledgedStockFailureMethod = ExtractBetween(
+            normalizedSource,
+            "private static void MarkUnacknowledgedSubmittedItemWarehouseStocks",
+            "private static void RemoveAccepted<T>");
+
+        Assert.Contains(
+            "public List<SyncAcceptedItemWarehouseStockKeyDto> AcceptedItemWarehouseStockKeys",
+            contractsSource,
+            StringComparison.Ordinal);
+        Assert.Matches(
+            "private static void RemoveSubmittedItemWarehouseStocks[\\s\\S]*?" +
+            "result\\.AcceptedItemWarehouseStockKeys[\\s\\S]*?" +
+            "submittedStockKeys\\.IntersectWith\\(acceptedStockKeys\\);[\\s\\S]*?" +
+            "pendingPush\\.ItemWarehouseStocks\\.RemoveAll",
+            coordinatorSource);
+        Assert.Matches(
+            "var unacknowledgedSubmittedStockKeys =[\\s\\S]*?" +
+            "GetUnacknowledgedSubmittedItemWarehouseStockKeys\\([\\s\\S]*?" +
+            "RemoveSentScopedPendingMutations\\(state\\.PendingPush, scopedPush, result\\);[\\s\\S]*?" +
+            "if \\(unacknowledgedSubmittedStockKeys\\.Count > 0\\)[\\s\\S]*?" +
+            "MarkUnacknowledgedSubmittedItemWarehouseStocks\\([\\s\\S]*?" +
+            "SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync\\([\\s\\S]*?" +
+            "return state;[\\s\\S]*?" +
+            "state\\.LastSuccessUtc = DateTime\\.UtcNow;",
+            pushMethod);
+        Assert.Contains(
+            "OfficeCodeCatalog.TryNormalizeWarehouseCode(",
+            coordinatorSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            ": rawWarehouseCode.ToUpperInvariant();",
+            coordinatorSource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "OfficeCodeCatalog.NormalizeWarehouseCodeLoose(stock.WarehouseCode)",
+            coordinatorSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "state.LastFailureAllowsCachedDisplay = true;",
+            unacknowledgedStockFailureMethod,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "state.LastError =\n            $\"일부 품목 창고재고가 서버에서 승인되지 않아",
+            unacknowledgedStockFailureMethod,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "state.ConsecutiveFailureCount++;",
+            unacknowledgedStockFailureMethod,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "모바일 창고재고 동기화 일부 미승인:",
+            unacknowledgedStockFailureMethod,
+            StringComparison.Ordinal);
+        Assert.Matches(
+            "state = await PushInternalAsync\\([\\s\\S]*?" +
+            "if \\(!string\\.IsNullOrWhiteSpace\\(state\\.LastError\\)\\)\\s*" +
+            "return state;[\\s\\S]*?" +
+            "state = await PullInternalAsync\\(",
+            synchronizeNowMethod);
+    }
+
+    [Fact]
+    public void AndroidSync_ItemWarehouseStockAcceptance_UsesCanonicalKnownAliasesAndRawUnknownIdentity()
+    {
+        var itemId = Guid.NewGuid();
+        var submittedPush = new SyncPushRequest
+        {
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse
+                },
+                new ItemWarehouseStockDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode = " warehouse-x "
+                }
+            ]
+        };
+        var result = new SyncPushResult
+        {
+            AcceptedItemWarehouseStockKeys =
+            [
+                new SyncAcceptedItemWarehouseStockKeyDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode = "유즈넷"
+                }
+            ]
+        };
+
+        var unacknowledgedKeys =
+            SyncCoordinator.GetUnacknowledgedSubmittedItemWarehouseStockKeys(
+                submittedPush,
+                result);
+
+        Assert.Single(unacknowledgedKeys);
+        Assert.Contains(
+            $"{itemId:D}|WAREHOUSE-X",
+            unacknowledgedKeys);
+        Assert.DoesNotContain(
+            $"{itemId:D}|{OfficeCodeCatalog.UsenetMainWarehouse}",
+            unacknowledgedKeys);
+        Assert.NotEqual(
+            SyncCoordinator.BuildItemWarehouseStockConflictKey(
+                submittedPush.ItemWarehouseStocks[0]),
+            SyncCoordinator.BuildItemWarehouseStockConflictKey(
+                submittedPush.ItemWarehouseStocks[1]));
     }
 
     [Fact]
@@ -3269,12 +4389,13 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("CreatePurgeRecord(\"contract\", contract.Id", recycleBinControllerSource, StringComparison.Ordinal);
         Assert.Contains("public SyncCoordinator(JsonSyncStateStore store, GeoraePlanApiClient api, PaymentAttachmentDraftStore attachmentStore, CustomerContractCacheStore contractCacheStore, SessionStore sessionStore)", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("_contractCacheStore = contractCacheStore;", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("await ApplyPurgeRecordsAsync(state, response.PurgeRecords, ct);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("private async Task ApplyPurgeRecordsAsync(MobileSyncState state, IEnumerable<RecycleBinPurgeRecordDto>? purgeRecords, CancellationToken ct)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("await ApplyPurgeRecordsAsync(", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("private async Task ApplyPurgeRecordsAsync(", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("CacheOwnerSession cacheOwnerSession,", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains(".GroupBy(record => (Kind: NormalizePurgeRecordKind(record.Kind), record.EntityId))", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains(".OrderBy(record => GetPurgeApplyOrder(NormalizePurgeRecordKind(record.Kind)))", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("await ApplyPurgeRecordAsync(state, NormalizePurgeRecordKind(record.Kind), record.EntityId, record.Revision, ct);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("private async Task ApplyPurgeRecordAsync(MobileSyncState state, string normalizedKind, Guid entityId, long purgeRevision, CancellationToken ct)", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("await ApplyPurgeRecordAsync(", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("private async Task ApplyPurgeRecordAsync(", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("case \"companyprofile\":", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("case \"company-profile\":", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.PendingPush.CompanyProfiles, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
@@ -3298,12 +4419,12 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("contract.CustomerId == customerId &&", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("!IsEntityNewerThanPurge(contract, purgeRevision)", coordinatorSource, StringComparison.Ordinal);
         Assert.DoesNotContain("state.PendingPush.CustomerContracts.RemoveAll(contract => contract.CustomerId == entityId);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("await _contractCacheStore.RemoveCustomerAsync(entityId, purgeRevision, ct);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("await _contractCacheStore.RemoveCustomerAsync(", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("case \"contract\":", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("case \"customercontract\":", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("case \"customer-contract\":", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.PendingPush.CustomerContracts, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("await _contractCacheStore.RemoveContractAsync(entityId, purgeRevision, ct);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains("await _contractCacheStore.RemoveContractAsync(", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("ClearRentalAssignmentHistoryCustomerReferences(state.SyncedRentalAssetAssignmentHistories, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("ClearRentalAssignmentHistoryCustomerReferences(state.PendingPush.RentalAssetAssignmentHistories, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedItems, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
@@ -3317,14 +4438,20 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("var removedPaymentIds = new HashSet<Guid>();", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemovePaymentsForPurgedInvoice(state.SyncedPayments, entityId, purgeRevision, removedPaymentIds);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemovePaymentsForPurgedInvoice(state.PendingPush.Payments, entityId, purgeRevision, removedPaymentIds);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("RemovePendingPaymentAttachments(state, attachment => removedPaymentIds.Contains(attachment.PaymentId));", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "removedPaymentIds.Contains(\n                            attachment.PaymentId)",
+            coordinatorSource.Replace("\r\n", "\n", StringComparison.Ordinal),
+            StringComparison.Ordinal);
         Assert.Contains("var removedTransactionIds = new HashSet<Guid>();", invoicePurgeCaseSource, StringComparison.Ordinal);
         Assert.Contains("RemoveTransactionsForPurgedInvoice(state.SyncedTransactions, entityId, purgeRevision, removedTransactionIds);", invoicePurgeCaseSource, StringComparison.Ordinal);
         Assert.Contains("RemoveTransactionsForPurgedInvoice(state.PendingPush.Transactions, entityId, purgeRevision, removedTransactionIds);", invoicePurgeCaseSource, StringComparison.Ordinal);
         Assert.Contains("state.SyncedTransactionAttachments.RemoveAll(attachment => removedTransactionIds.Contains(attachment.TransactionId)", invoicePurgeCaseSource, StringComparison.Ordinal);
         Assert.Contains("state.PendingPush.TransactionAttachments.RemoveAll(attachment => removedTransactionIds.Contains(attachment.TransactionId)", invoicePurgeCaseSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedPayments, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("RemovePendingPaymentAttachments(state, attachment => attachment.PaymentId == entityId);", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "attachment.PaymentId == entityId",
+            coordinatorSource,
+            StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedTransactions, entityId, purgeRevision);", paymentPurgeCaseSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.PendingPush.Transactions, entityId, purgeRevision);", paymentPurgeCaseSource, StringComparison.Ordinal);
         Assert.Contains("state.SyncedTransactionAttachments.RemoveAll(attachment => attachment.TransactionId == entityId", paymentPurgeCaseSource, StringComparison.Ordinal);
@@ -3332,7 +4459,10 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("var transactionRemovedPaymentIds = new HashSet<Guid>();", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemovePaymentForPurgedTransaction(state.SyncedPayments, entityId, purgeRevision, transactionRemovedPaymentIds);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemovePaymentForPurgedTransaction(state.PendingPush.Payments, entityId, purgeRevision, transactionRemovedPaymentIds);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("RemovePendingPaymentAttachments(state, attachment => transactionRemovedPaymentIds.Contains(attachment.PaymentId));", coordinatorSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "transactionRemovedPaymentIds.Contains(\n                            attachment.PaymentId)",
+            coordinatorSource.Replace("\r\n", "\n", StringComparison.Ordinal),
+            StringComparison.Ordinal);
         Assert.Contains("state.SyncedTransactionAttachments.RemoveAll(attachment => attachment.TransactionId == entityId", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedInventoryTransfers, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
         Assert.Contains("RemoveEntityById(state.SyncedRentalBillingProfiles, entityId, purgeRevision);", coordinatorSource, StringComparison.Ordinal);
@@ -3377,14 +4507,35 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("=> stock.Revision > purgeRevision;", coordinatorSource, StringComparison.Ordinal);
         Assert.DoesNotContain("state.SyncedItemWarehouseStocks.RemoveAll(stock => stock.ItemId == entityId);", coordinatorSource, StringComparison.Ordinal);
         Assert.DoesNotContain("state.PendingPush.ItemWarehouseStocks.RemoveAll(stock => stock.ItemId == entityId);", coordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("public Task RemoveCustomerContractsAsync(Guid customerId, CancellationToken ct = default)", contractCacheSource, StringComparison.Ordinal);
-        Assert.Contains("public async Task RemoveCustomerAsync(Guid customerId, long purgeRevision, CancellationToken ct = default)", contractCacheSource, StringComparison.Ordinal);
-        Assert.Contains("public async Task RemoveContractAsync(Guid contractId, long purgeRevision, CancellationToken ct = default)", contractCacheSource, StringComparison.Ordinal);
-        Assert.Contains("await using (var stream = File.OpenRead(CustomersManifestPath))", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("public Task RemoveCustomerContractsAsync(", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("public async Task RemoveCustomerAsync(", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("public async Task RemoveContractAsync(", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("ReadRequiredJsonManifestAsync<List<CustomerDto>>(", contractCacheSource, StringComparison.Ordinal);
         Assert.Contains("customers.RemoveAll(customer =>", contractCacheSource, StringComparison.Ordinal);
-        Assert.Contains("!IsCustomerNewerThanPurge(customer, purgeRevision)", contractCacheSource, StringComparison.Ordinal);
-        Assert.Contains("await RemoveCustomerContractsAsync(customerId, ct);", contractCacheSource, StringComparison.Ordinal);
-        Assert.Contains("TryDeleteFile(Path.Combine(customerDirectory, $\"{contractId:N}.pdf\"));", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("!IsCustomerNewerThanPurge(", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("private Task RemoveCustomerContractsUnderRootAsync(", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("var rootDirectory = ResolveRootDirectory(", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("await WriteJsonAtomicallyUnderLockAsync(", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("ManifestWriteLocks.GetOrAdd(", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("private static async Task WithManifestWriteLocksAsync(", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("AcquireManifestProcessLeaseAsync(", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("FileShare.None", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("\".manifest-locks\"", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("RejectReparsePoint(lockPath);", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("WritePdfAtomicallyUnderLockAsync(", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("FileOptions.WriteThrough", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("AtomicOwnerSchema = \"georaeplan-cache-owner-v1\"", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("RecoverOwnedAtomicPublishResidues(", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("ReadAtomicOwnerMarkerStrict(", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("propertyNames.Count != 3", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("var manifestPath = GetManifestPath(rootDirectory, customerId);", contractCacheSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("$\".{targetFileName}.*.{extension}\"", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("File.Replace(", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("File.Move(temporaryPath, targetPath);", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("stream.Flush(flushToDisk: true);", contractCacheSource, StringComparison.Ordinal);
+        Assert.Contains("DeleteFileRequired(", contractCacheSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Stale or unreadable cache must not block authoritative sync/purge handling.", contractCacheSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Cache cleanup must not block authoritative sync/purge handling.", contractCacheSource, StringComparison.Ordinal);
         Assert.Contains("private static bool IsEntityNewerThanPurge(CustomerContractDto contract, long purgeRevision)", contractCacheSource, StringComparison.Ordinal);
         Assert.Contains("private static bool IsCustomerNewerThanPurge(CustomerDto customer, long purgeRevision)", contractCacheSource, StringComparison.Ordinal);
     }
@@ -3460,8 +4611,17 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("or HttpStatusCode.Unauthorized", syncCoordinatorSource, StringComparison.Ordinal);
         Assert.Contains("or HttpStatusCode.Forbidden", syncCoordinatorSource, StringComparison.Ordinal);
         Assert.Contains("or HttpStatusCode.UnprocessableEntity", syncCoordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("var result = EnsurePushResult(await _api.PushAsync(request, ct));", syncCoordinatorSource, StringComparison.Ordinal);
-        Assert.Contains("SyncCoordinator.IsFailedImmediateSaveWithoutServerAcceptance(state)", paymentDraftSource, StringComparison.Ordinal);
+        Assert.Matches(
+            "EnsurePushResult\\(\\s*await _api\\.PushAsync\\(\\s*request,\\s*owner,\\s*ct\\)\\)",
+            syncCoordinatorSource);
+        Assert.Contains(
+            "saveResult.PaymentRejected",
+            paymentDraftSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "saveResult.BuildStatusMessage(",
+            paymentDraftSource,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -3545,6 +4705,82 @@ public sealed class MobileReleaseConfigurationTests
         Assert.NotEmpty(kinds);
         return kinds;
     }
+
+    private static async Task<PowerShellHarnessResult>
+        RunPowerShellHarnessAsync(string scriptPath)
+    {
+        using var process = new Process();
+        process.StartInfo = new ProcessStartInfo
+        {
+            FileName = "powershell",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        process.StartInfo.ArgumentList.Add("-NoProfile");
+        process.StartInfo.ArgumentList.Add("-ExecutionPolicy");
+        process.StartInfo.ArgumentList.Add("Bypass");
+        process.StartInfo.ArgumentList.Add("-File");
+        process.StartInfo.ArgumentList.Add(scriptPath);
+
+        process.Start();
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        var completionTask = Task.WhenAll(
+            process.WaitForExitAsync(),
+            stdoutTask,
+            stderrTask);
+        if (await Task.WhenAny(
+                completionTask,
+                Task.Delay(TimeSpan.FromSeconds(30))) !=
+            completionTask)
+        {
+            var cleanupFailures = new List<Exception>();
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                    await process.WaitForExitAsync()
+                        .WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                else if (!stdoutTask.IsCompleted ||
+                         !stderrTask.IsCompleted)
+                {
+                    cleanupFailures.Add(
+                        new InvalidOperationException(
+                            "PowerShell exited, but a descendant retained a redirected output handle."));
+                }
+            }
+            catch (Exception cleanupEx)
+                when (cleanupEx is InvalidOperationException or
+                      System.ComponentModel.Win32Exception or
+                      TimeoutException)
+            {
+                cleanupFailures.Add(cleanupEx);
+            }
+
+            var message =
+                $"PowerShell harness timed out: {scriptPath}";
+            throw cleanupFailures.Count == 0
+                ? new TimeoutException(message)
+                : new TimeoutException(
+                    message,
+                    new AggregateException(cleanupFailures));
+        }
+
+        await completionTask;
+        return new PowerShellHarnessResult(
+            process.ExitCode,
+            await stdoutTask,
+            await stderrTask);
+    }
+
+    private sealed record PowerShellHarnessResult(
+        int ExitCode,
+        string StdOut,
+        string StdErr);
 
     private static string FindRepositoryRoot()
     {

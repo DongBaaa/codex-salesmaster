@@ -75,7 +75,9 @@ public sealed class RentalBillingStartBillingRevisionTests
                 Status = "Acknowledged",
                 PreparedAtUtc = acknowledgedAtUtc.AddMinutes(-1),
                 SentAtUtc = acknowledgedAtUtc.AddSeconds(-30),
-                AcknowledgedAtUtc = acknowledgedAtUtc
+                AcknowledgedAtUtc = acknowledgedAtUtc,
+                AcceptedRevision = 200,
+                AcceptedUpdatedAtUtc = serverUpdatedAtUtc
             });
             await db.SaveChangesAsync();
 

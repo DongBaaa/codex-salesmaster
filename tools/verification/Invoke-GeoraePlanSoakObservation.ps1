@@ -97,6 +97,27 @@ function Escape-CsvValue {
     return '"' + $text.Replace('"', '""') + '"'
 }
 
+function Get-OptionalManifestVersion {
+    param(
+        [object]$Manifest,
+        [Parameter(Mandatory = $true)][string]$PackageName
+    )
+
+    if ($null -eq $Manifest) {
+        return ''
+    }
+    $packageProperty = $Manifest.PSObject.Properties[$PackageName]
+    if ($null -eq $packageProperty -or $null -eq $packageProperty.Value) {
+        return ''
+    }
+    $versionProperty =
+        $packageProperty.Value.PSObject.Properties['version']
+    if ($null -eq $versionProperty -or $null -eq $versionProperty.Value) {
+        return ''
+    }
+    return [string]$versionProperty.Value
+}
+
 if ($SampleCount -lt 1) {
     throw 'SampleCount는 1 이상이어야 합니다.'
 }
@@ -148,8 +169,14 @@ for ($index = 1; $index -le $SampleCount; $index++) {
     if ($manifest.Success -and -not [string]::IsNullOrWhiteSpace($manifest.Content)) {
         try {
             $manifestJson = $manifest.Content | ConvertFrom-Json
-            $desktopVersion = [string]$manifestJson.desktop.version
-            $androidVersion = [string]$manifestJson.android.version
+            $desktopVersion =
+                Get-OptionalManifestVersion `
+                    -Manifest $manifestJson `
+                    -PackageName 'desktop'
+            $androidVersion =
+                Get-OptionalManifestVersion `
+                    -Manifest $manifestJson `
+                    -PackageName 'android'
         }
         catch {
             $manifest = [pscustomobject]@{

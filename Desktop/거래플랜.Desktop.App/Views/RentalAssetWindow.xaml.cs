@@ -20,11 +20,19 @@ public partial class RentalAssetWindow : Window
     public RentalAssetWindow(RentalAssetViewModel viewModel)
     {
         InitializeComponent();
+        ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(this);
         _viewModel = viewModel;
         DataContext = viewModel;
         Closing += Window_Closing;
-        Closed += (_, _) => _viewModel.CancelPendingBackgroundWork();
+        Closed += Window_Closed;
     }
+
+    private void Window_Closed(object? sender, EventArgs e)
+        => UiTaskHelper.Forget(
+            () => _viewModel.CancelPendingBackgroundWorkAsync(),
+            "UI",
+            "렌탈 자산 창 종료 작업 정리",
+            ex => AppLogger.Error("UI", "렌탈 자산 창 종료 작업 정리 실패", ex));
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
@@ -54,12 +62,12 @@ public partial class RentalAssetWindow : Window
                 var customerVm = new CustomerEditViewModel(_viewModel.LocalStateService, _viewModel.SessionState);
                 await customerVm.LoadAsync();
                 var customerWindow = new CustomerEditWindow(customerVm) { Owner = this };
-                customerWindow.ShowDialog();
+                DialogWindowCloseHelper.ShowDialog(customerWindow);
                 return await _viewModel.BuildCustomerLookupRowsAsync();
             })
         { Owner = this };
 
-        if (dialog.ShowDialog() == true && dialog.SelectedRow?.Tag is LocalCustomer customer)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) == true && dialog.SelectedRow?.Tag is LocalCustomer customer)
             _viewModel.ApplySelectedCustomer(customer);
     }
 
@@ -103,12 +111,12 @@ public partial class RentalAssetWindow : Window
                 inventoryVm.NewItemCommand.Execute(null);
                 inventoryVm.EditTrackingType = ItemTrackingTypes.Asset;
                 var inventoryWindow = new InventoryWindow(inventoryVm) { Owner = this };
-                inventoryWindow.ShowDialog();
+                DialogWindowCloseHelper.ShowDialog(inventoryWindow);
                 return await _viewModel.BuildItemLookupRowsAsync();
             })
         { Owner = this };
 
-        if (dialog.ShowDialog() == true && dialog.SelectedRow?.Tag is LocalItem item)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) == true && dialog.SelectedRow?.Tag is LocalItem item)
             await _viewModel.ApplySelectedItemAsync(item);
     }
 
@@ -126,12 +134,12 @@ public partial class RentalAssetWindow : Window
                 var customerVm = new CustomerEditViewModel(_viewModel.LocalStateService, _viewModel.SessionState);
                 await customerVm.LoadAsync();
                 var customerWindow = new CustomerEditWindow(customerVm) { Owner = this };
-                customerWindow.ShowDialog();
+                DialogWindowCloseHelper.ShowDialog(customerWindow);
                 return await _viewModel.BuildPurchaseVendorLookupRowsAsync();
             })
         { Owner = this };
 
-        if (dialog.ShowDialog() == true && dialog.SelectedRow?.Tag is LocalCustomer customer)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) == true && dialog.SelectedRow?.Tag is LocalCustomer customer)
             _viewModel.ApplySelectedPurchaseVendor(customer);
     }
 

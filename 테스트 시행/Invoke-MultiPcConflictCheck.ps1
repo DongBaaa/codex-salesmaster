@@ -2,7 +2,10 @@
 param(
     [string]$ProjectRoot = "",
     [string]$OutputPath = "",
-    [string]$MarkdownOutputPath = ""
+    [string]$MarkdownOutputPath = "",
+    [ValidateSet("Contract", "DesktopE2E", "All")]
+    [string]$Mode = "Contract",
+    [string]$DesktopE2EEvidenceDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,6 +15,14 @@ if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = Split-Path -Parent $scriptRoot
 }
 $ProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
+
+if ($Mode -eq "DesktopE2E") {
+    $desktopE2EScript = Join-Path $scriptRoot "Invoke-MultiPcDesktopE2E.ps1"
+    & $desktopE2EScript `
+        -ProjectRoot $ProjectRoot `
+        -EvidenceDirectory $DesktopE2EEvidenceDirectory
+    return
+}
 
 function Resolve-DotnetCommand {
     $candidates = @(
@@ -68,19 +79,39 @@ function Get-TrxCounters {
     }
 }
 
+function Get-TrxTestResults {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
+        return @()
+    }
+
+    [xml]$xml = Get-Content -LiteralPath $Path -Raw
+    return @(
+        $xml.TestRun.Results.UnitTestResult |
+            ForEach-Object {
+                [pscustomobject]@{
+                    TestName = [string]$_.testName
+                    Outcome = [string]$_.outcome
+                }
+            })
+}
+
 function Invoke-FilteredTestStep {
     param(
         [string]$Name,
         [string]$Dotnet,
         [string]$ProjectPath,
         [string]$Filter,
-        [string]$ReportDirectory
+        [string]$ReportDirectory,
+        [string[]]$RequiredTestNameFragments
     )
 
     if (-not (Test-Path -LiteralPath $ProjectPath)) {
         return [pscustomobject]@{
             Name = $Name; ProjectPath = $ProjectPath; Filter = $Filter; ExitCode = 1;
             Total = 0; Passed = 0; Failed = 0; NotExecuted = 0; Succeeded = $false;
+            MissingRequiredTests = @($RequiredTestNameFragments)
             TrxPath = ''; Output = "Project not found: $ProjectPath"
         }
     }
@@ -100,7 +131,40 @@ function Invoke-FilteredTestStep {
     $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
     $trxPath = Join-Path $ReportDirectory $trxName
     $counters = Get-TrxCounters -Path $trxPath
-    $succeeded = ($exitCode -eq 0 -and $counters.Total -gt 0 -and $counters.Failed -eq 0)
+    $testResults = @(Get-TrxTestResults -Path $trxPath)
+    $missingRequiredTests = @(
+        $RequiredTestNameFragments |
+            Where-Object {
+                $requiredName = $_
+                -not @(
+                    $testResults |
+                        Where-Object {
+                            [string]::Equals(
+                                $_.Outcome,
+                                "Passed",
+                                [System.StringComparison]::OrdinalIgnoreCase) -and
+                            $_.TestName.IndexOf(
+                                $requiredName,
+                                [System.StringComparison]::Ordinal) -ge 0
+                        }).Count
+            })
+    $nonPassedResults = @(
+        $testResults |
+            Where-Object {
+                -not [string]::Equals(
+                    $_.Outcome,
+                    "Passed",
+                    [System.StringComparison]::OrdinalIgnoreCase)
+            })
+    $succeeded = (
+        $exitCode -eq 0 -and
+        $counters.Total -gt 0 -and
+        $counters.Passed -eq $counters.Total -and
+        $counters.Failed -eq 0 -and
+        $counters.NotExecuted -eq 0 -and
+        $testResults.Count -eq $counters.Total -and
+        $nonPassedResults.Count -eq 0 -and
+        $missingRequiredTests.Count -eq 0)
 
     return [pscustomobject]@{
         Name = $Name
@@ -111,6 +175,7 @@ function Invoke-FilteredTestStep {
         Passed = $counters.Passed
         Failed = $counters.Failed
         NotExecuted = $counters.NotExecuted
+        MissingRequiredTests = @($missingRequiredTests)
         Succeeded = $succeeded
         TrxPath = $trxPath
         Output = Convert-OutputText $output
@@ -150,15 +215,31 @@ $desktopFilter = @(
     'FullyQualifiedName~LocalStateServicePartialsTests.SyncService_TryPrepareItemRevisionRetryAsync_RebasesNewerLocalItemAndRequeuesOutbox',
     'FullyQualifiedName~LocalStateServicePartialsTests.SyncService_PrepareRentalBillingProfileRevisionRetry_RebasesRevisionAndRequeuesOutbox'
 ) -join '|'
-$steps.Add((Invoke-FilteredTestStep -Name 'server-multi-pc-conflict' -Dotnet $dotnet -ProjectPath $serverTests -Filter $serverFilter -ReportDirectory $reportDirectory)) | Out-Null
-$steps.Add((Invoke-FilteredTestStep -Name 'desktop-multi-pc-conflict' -Dotnet $dotnet -ProjectPath $desktopTests -Filter $desktopFilter -ReportDirectory $reportDirectory)) | Out-Null
+$requiredServerTests = @(
+    'DirectCrudConcurrencyTests.CustomersController_Update_ReturnsConflict_WhenExpectedRevisionDoesNotMatch',
+    'SyncControllerTests.Push_ReturnsConflict_WhenCustomerExpectedRevisionDoesNotMatch',
+    'SyncControllerTests.Push_RejectsStaleCustomerUpdate_WhenServerRevisionIsNewerEvenIfIncomingTimestampIsLater',
+    'SyncControllerTests.Push_ReturnsConflict_WhenInvoiceServerVersionIsNewer',
+    'SyncControllerTests.Push_RejectsStaleItemWarehouseStockExpectedRevision',
+    'SyncControllerTests.ConflictLogsController_HidesResolvedByDefault_AndResolveMarksStatus'
+)
+$requiredDesktopTests = @(
+    'LocalStateServicePartialsTests.DeleteInvoiceAsync_RejectsStaleExpectedRevision',
+    'LocalStateServicePartialsTests.CustomerContractMutations_RejectStaleExpectedRevision',
+    'LocalStateServicePartialsTests.TransactionAttachmentMutations_RejectStaleExpectedRevision',
+    'LocalStateServicePartialsTests.SyncService_TryPrepareItemRevisionRetryAsync_RebasesNewerLocalItemAndRequeuesOutbox',
+    'LocalStateServicePartialsTests.SyncService_PrepareRentalBillingProfileRevisionRetry_RebasesRevisionAndRequeuesOutbox'
+)
+$steps.Add((Invoke-FilteredTestStep -Name 'server-multi-pc-conflict' -Dotnet $dotnet -ProjectPath $serverTests -Filter $serverFilter -ReportDirectory $reportDirectory -RequiredTestNameFragments $requiredServerTests)) | Out-Null
+$steps.Add((Invoke-FilteredTestStep -Name 'desktop-multi-pc-conflict' -Dotnet $dotnet -ProjectPath $desktopTests -Filter $desktopFilter -ReportDirectory $reportDirectory -RequiredTestNameFragments $requiredDesktopTests)) | Out-Null
 
 
 $failed = @($steps | Where-Object { -not $_.Succeeded })
 $overall = if ($failed.Count -eq 0) { 'PASS' } else { 'FAIL' }
 $summary = [ordered]@{
     generatedAt = (Get-Date).ToString('o')
-    title = 'Multi-PC conflict regression check'
+    title = 'Multi-PC conflict contract regression'
+    mode = 'Contract'
     projectRoot = $ProjectRoot
     dotnet = $dotnet
     overall = $overall
@@ -170,26 +251,27 @@ $summary = [ordered]@{
 $summary | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $OutputPath -Encoding UTF8
 
 $lines = New-Object System.Collections.Generic.List[string]
-$lines.Add('# Multi-PC conflict regression check') | Out-Null
+$lines.Add('# Multi-PC conflict contract regression') | Out-Null
 $lines.Add('') | Out-Null
 $lines.Add("- GeneratedAt: $($summary.generatedAt)") | Out-Null
 $lines.Add("- Result: **$overall**") | Out-Null
 $lines.Add("- ProjectRoot: $ProjectRoot") | Out-Null
 $lines.Add("- dotnet: $dotnet") | Out-Null
 $lines.Add('') | Out-Null
-$lines.Add('| Result | Step | Tests | Passed | Failed | NotExecuted | TRX |') | Out-Null
-$lines.Add('|---|---|---:|---:|---:|---:|---|') | Out-Null
+$lines.Add('| Result | Step | Tests | Passed | Failed | NotExecuted | Missing required | TRX |') | Out-Null
+$lines.Add('|---|---|---:|---:|---:|---:|---:|---|') | Out-Null
 foreach ($step in $steps) {
     $status = if ($step.Succeeded) { 'PASS' } else { 'FAIL' }
     $trx = if ([string]::IsNullOrWhiteSpace([string]$step.TrxPath)) { '-' } else { [string]$step.TrxPath }
-    $lines.Add("| $status | $($step.Name) | $($step.Total) | $($step.Passed) | $($step.Failed) | $($step.NotExecuted) | $trx |") | Out-Null
+    $lines.Add("| $status | $($step.Name) | $($step.Total) | $($step.Passed) | $($step.Failed) | $($step.NotExecuted) | $(@($step.MissingRequiredTests).Count) | $trx |") | Out-Null
 }
 if ($failed.Count -gt 0) {
     $lines.Add('') | Out-Null
     $lines.Add('## Failed steps') | Out-Null
     foreach ($step in $failed) {
         $tail = (($step.Output -split "`r?`n") | Select-Object -Last 20) -join ' / '
-        $lines.Add("- $($step.Name): exit=$($step.ExitCode), tests=$($step.Total), failed=$($step.Failed), outputTail=$tail") | Out-Null
+        $missing = @($step.MissingRequiredTests) -join ', '
+        $lines.Add("- $($step.Name): exit=$($step.ExitCode), tests=$($step.Total), failed=$($step.Failed), notExecuted=$($step.NotExecuted), missingRequired=$missing, outputTail=$tail") | Out-Null
     }
 }
 $lines | Set-Content -LiteralPath $MarkdownOutputPath -Encoding UTF8
@@ -201,4 +283,11 @@ $steps | Select-Object Name, Succeeded, Total, Passed, Failed, NotExecuted, TrxP
 
 if ($failed.Count -gt 0) {
     throw "Multi-PC conflict regression check failed. See report: $MarkdownOutputPath"
+}
+
+if ($Mode -eq "All") {
+    $desktopE2EScript = Join-Path $scriptRoot "Invoke-MultiPcDesktopE2E.ps1"
+    & $desktopE2EScript `
+        -ProjectRoot $ProjectRoot `
+        -EvidenceDirectory $DesktopE2EEvidenceDirectory
 }

@@ -22,6 +22,12 @@ public static class MobileErrorHandler
         }
         catch (Exception ex)
         {
+            if (ex is MobileClientUpgradeRequiredException upgradeRequired)
+            {
+                MobileClientUpgradeRequiredSignal.Publish(upgradeRequired);
+                return false;
+            }
+
             MobileAppLogger.Error("MOBILE", $"{context} 실패", ex);
             onError?.Invoke(ex);
 

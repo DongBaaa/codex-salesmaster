@@ -6,6 +6,9 @@ param(
     [string]$SecretPath = "D:\거래플랜-운영검증-secrets.json",
     [string]$ApprovedTargetsPath = "",
     [string]$PlatformStateRoot = "",
+    [string]$PlatformBackupRoot = "",
+    [ValidateRange(1, 8760)]
+    [int]$MaximumBackupAgeHours = 36,
     [string]$OutputDirectory = "",
     [string]$LocalCacheAppDataRoot = "",
     [string]$LocalCacheEvidenceDirectory = "",
@@ -15,6 +18,11 @@ param(
     [switch]$RequireLocalCacheConsistencyCheck,
     [switch]$FailOnLocalCacheWarning,
     [string[]]$AllowedIntegrityWarningCodes = @(),
+    [ValidateSet('', 'AuditOnly', 'StrictBlock')]
+    [string]$ExpectedClientCompatibilityMode = '',
+    [ValidateRange(-1, 100)]
+    [int]$ExpectedClientCompatibilityEnabledPolicyCount = -1,
+    [switch]$AllowMissingClientCompatibilitySummary,
     [switch]$SkipWriteSafetyChecks,
     [switch]$UseEphemeralOperationalWrites,
     [switch]$AllowOperationalWrites
@@ -52,6 +60,478 @@ function Get-JsonPropertyValue {
     }
 
     return $property.Value
+}
+
+function Get-RequiredJsonPropertyValue {
+    param(
+        $Object,
+        [string]$Name,
+        [string]$Path
+    )
+
+    if ($null -eq $Object) {
+        throw "$Path is missing."
+    }
+
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        throw "$Path.$Name is missing."
+    }
+
+    return $property.Value
+}
+
+function Assert-ExactCompatibilityObjectSchema {
+    param(
+        $Object,
+        [string[]]$AllowedProperties,
+        [string]$Path
+    )
+
+    if ($null -eq $Object -or
+        $Object -isnot [pscustomobject]) {
+        throw "$Path must be a JSON object."
+    }
+
+    foreach ($property in $Object.PSObject.Properties) {
+        if ($AllowedProperties -cnotcontains $property.Name) {
+            throw "$Path contains unexpected field '$($property.Name)'."
+        }
+    }
+}
+
+function Assert-NoSensitiveCompatibilityField {
+    param(
+        $Value,
+        [string]$Path = 'clientCompatibility'
+    )
+
+    if ($null -eq $Value -or
+        $Value -is [string] -or
+        $Value.GetType().IsValueType) {
+        return
+    }
+
+    if ($Value -is [System.Collections.IEnumerable] -and
+        $Value -isnot [string]) {
+        $index = 0
+        foreach ($item in $Value) {
+            Assert-NoSensitiveCompatibilityField `
+                -Value $item `
+                -Path "$Path[$index]"
+            $index++
+        }
+        return
+    }
+
+    foreach ($property in $Value.PSObject.Properties) {
+        if ($property.Name -match
+            '^(?i:updateUrl|upgradeToken|accessToken|clientSecret|password|secret|token)$') {
+            throw "$Path contains sensitive field '$($property.Name)'."
+        }
+
+        Assert-NoSensitiveCompatibilityField `
+            -Value $property.Value `
+            -Path "$Path.$($property.Name)"
+    }
+}
+
+function ConvertTo-BoundedCompatibilityInteger {
+    param(
+        $Value,
+        [string]$Path,
+        [int64]$Minimum,
+        [int64]$Maximum,
+        [switch]$AllowNull
+    )
+
+    if ($null -eq $Value) {
+        if ($AllowNull) {
+            return $null
+        }
+        throw "$Path is missing."
+    }
+
+    if ($Value -isnot [byte] -and
+        $Value -isnot [sbyte] -and
+        $Value -isnot [int16] -and
+        $Value -isnot [uint16] -and
+        $Value -isnot [int32] -and
+        $Value -isnot [uint32] -and
+        $Value -isnot [int64]) {
+        throw "$Path must be a JSON integer."
+    }
+
+    $parsed = [int64]$Value
+    if (
+        $parsed -lt $Minimum -or
+        $parsed -gt $Maximum) {
+        throw "$Path must be an integer between $Minimum and $Maximum."
+    }
+
+    return $parsed
+}
+
+function ConvertTo-CompatibilityVersion {
+    param(
+        $Value,
+        [string]$Path,
+        [switch]$AllowEmpty
+    )
+
+    if ($Value -isnot [string]) {
+        throw "$Path must be a JSON string."
+    }
+    $text = $Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        if ($AllowEmpty) {
+            return $null
+        }
+        throw "$Path must be a numeric System.Version value."
+    }
+    if (-not [string]::Equals(
+            $text,
+            $text.Trim(),
+            [System.StringComparison]::Ordinal)) {
+        throw "$Path must not contain surrounding whitespace."
+    }
+
+    $parsed = $null
+    if (-not [Version]::TryParse($text, [ref]$parsed)) {
+        throw "$Path must be a numeric System.Version value."
+    }
+    return $parsed
+}
+
+function ConvertTo-NormalizedClientCompatibilitySummary {
+    param(
+        $Summary,
+        [string]$Path = 'clientCompatibility'
+    )
+
+    Assert-NoSensitiveCompatibilityField -Value $Summary -Path $Path
+    Assert-ExactCompatibilityObjectSchema `
+        -Object $Summary `
+        -AllowedProperties @(
+            'mode',
+            'configuredPolicyCount',
+            'enabledPolicyCount',
+            'policies') `
+        -Path $Path
+
+    $modeValue =
+        Get-RequiredJsonPropertyValue `
+            -Object $Summary `
+            -Name 'mode' `
+            -Path $Path
+    if ($modeValue -isnot [string] -or
+        -not [string]::Equals(
+            $modeValue,
+            $modeValue.Trim(),
+            [System.StringComparison]::Ordinal)) {
+        throw "$Path.mode must be exactly AuditOnly or StrictBlock."
+    }
+    $mode = if ([string]::Equals(
+            $modeValue,
+            'AuditOnly',
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        'AuditOnly'
+    }
+    elseif ([string]::Equals(
+            $modeValue,
+            'StrictBlock',
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        'StrictBlock'
+    }
+    else {
+        throw "$Path.mode must be exactly AuditOnly or StrictBlock."
+    }
+
+    $configuredPolicyCount =
+        ConvertTo-BoundedCompatibilityInteger `
+            -Value (
+                Get-RequiredJsonPropertyValue `
+                    -Object $Summary `
+                    -Name 'configuredPolicyCount' `
+                    -Path $Path) `
+            -Path "$Path.configuredPolicyCount" `
+            -Minimum 0 `
+            -Maximum 100
+    $enabledPolicyCount =
+        ConvertTo-BoundedCompatibilityInteger `
+            -Value (
+                Get-RequiredJsonPropertyValue `
+                    -Object $Summary `
+                    -Name 'enabledPolicyCount' `
+                    -Path $Path) `
+            -Path "$Path.enabledPolicyCount" `
+            -Minimum 0 `
+            -Maximum 100
+    if ($configuredPolicyCount -lt $enabledPolicyCount) {
+        throw "$Path.configuredPolicyCount cannot be lower than enabledPolicyCount."
+    }
+
+    $policiesProperty =
+        $Summary.PSObject.Properties['policies']
+    if ($null -eq $policiesProperty) {
+        throw "$Path.policies is missing."
+    }
+    $policiesValue = $policiesProperty.Value
+    if ($policiesValue -isnot [System.Array] -and
+        $policiesValue -isnot [System.Collections.IList]) {
+        throw "$Path.policies must be a JSON array."
+    }
+    $policies = @($policiesValue)
+    if ($policies.Count -ne $enabledPolicyCount) {
+        throw "$Path.policies count must equal enabledPolicyCount."
+    }
+
+    $normalizedPolicies =
+        New-Object System.Collections.Generic.List[object]
+    $policyKeys = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase)
+    for ($index = 0; $index -lt $policies.Count; $index++) {
+        $policy = $policies[$index]
+        $policyPath = "$Path.policies[$index]"
+        if ($null -eq $policy) {
+            throw "$policyPath cannot be null."
+        }
+        Assert-ExactCompatibilityObjectSchema `
+            -Object $policy `
+            -AllowedProperties @(
+                'appId',
+                'platform',
+                'policyVersion',
+                'requiresUserAction',
+                'minimumVersion',
+                'minimumBuild',
+                'minimumProtocolVersion',
+                'latestVersion',
+                'latestBuild') `
+            -Path $policyPath
+
+        $appIdValue =
+            Get-RequiredJsonPropertyValue `
+                -Object $policy `
+                -Name 'appId' `
+                -Path $policyPath
+        $platformValue =
+            Get-RequiredJsonPropertyValue `
+                -Object $policy `
+                -Name 'platform' `
+                -Path $policyPath
+        if ($appIdValue -isnot [string] -or
+            $platformValue -isnot [string]) {
+            throw "$policyPath appId/platform must be JSON strings."
+        }
+        $appId = $appIdValue
+        $platform = $platformValue
+        if ($appId -notmatch '^[A-Za-z0-9._-]{1,128}$') {
+            throw "$policyPath.appId must be a non-empty ASCII token."
+        }
+        if ($platform -notmatch '^[A-Za-z0-9._-]{1,32}$') {
+            throw "$policyPath.platform must be a non-empty ASCII token."
+        }
+
+        $key = "$($appId.ToLowerInvariant())/$($platform.ToLowerInvariant())"
+        if (-not $policyKeys.Add($key)) {
+            throw "$Path contains duplicate enabled policy key '$key'."
+        }
+
+        $policyVersion =
+            ConvertTo-BoundedCompatibilityInteger `
+                -Value (
+                    Get-RequiredJsonPropertyValue `
+                        -Object $policy `
+                        -Name 'policyVersion' `
+                        -Path $policyPath) `
+                -Path "$policyPath.policyVersion" `
+                -Minimum 1 `
+                -Maximum ([int]::MaxValue)
+        $requiresUserAction =
+            Get-RequiredJsonPropertyValue `
+                -Object $policy `
+                -Name 'requiresUserAction' `
+                -Path $policyPath
+        if ($requiresUserAction -isnot [bool] -or
+            $requiresUserAction -ne $true) {
+            throw "$policyPath.requiresUserAction must be true."
+        }
+
+        $minimumVersion =
+            ConvertTo-CompatibilityVersion `
+                -Value (
+                    Get-RequiredJsonPropertyValue `
+                        -Object $policy `
+                        -Name 'minimumVersion' `
+                        -Path $policyPath) `
+                -Path "$policyPath.minimumVersion" `
+                -AllowEmpty
+        $minimumBuild =
+            ConvertTo-BoundedCompatibilityInteger `
+                -Value (
+                    Get-RequiredJsonPropertyValue `
+                        -Object $policy `
+                        -Name 'minimumBuild' `
+                        -Path $policyPath) `
+                -Path "$policyPath.minimumBuild" `
+                -Minimum 1 `
+                -Maximum ([int]::MaxValue) `
+                -AllowNull
+        $minimumProtocolVersion =
+            ConvertTo-BoundedCompatibilityInteger `
+                -Value (
+                    Get-RequiredJsonPropertyValue `
+                        -Object $policy `
+                        -Name 'minimumProtocolVersion' `
+                        -Path $policyPath) `
+                -Path "$policyPath.minimumProtocolVersion" `
+                -Minimum 1 `
+                -Maximum ([int]::MaxValue) `
+                -AllowNull
+        if ($null -eq $minimumVersion -and
+            $null -eq $minimumBuild -and
+            $null -eq $minimumProtocolVersion) {
+            throw "$policyPath must define at least one minimum version, build, or protocol."
+        }
+
+        $latestVersion =
+            ConvertTo-CompatibilityVersion `
+                -Value (
+                    Get-RequiredJsonPropertyValue `
+                        -Object $policy `
+                        -Name 'latestVersion' `
+                        -Path $policyPath) `
+                -Path "$policyPath.latestVersion"
+        if ($null -ne $minimumVersion -and
+            $latestVersion -lt $minimumVersion) {
+            throw "$policyPath.latestVersion cannot be lower than minimumVersion."
+        }
+        $latestBuild =
+            ConvertTo-BoundedCompatibilityInteger `
+                -Value (
+                    Get-RequiredJsonPropertyValue `
+                        -Object $policy `
+                        -Name 'latestBuild' `
+                        -Path $policyPath) `
+                -Path "$policyPath.latestBuild" `
+                -Minimum 1 `
+                -Maximum ([int]::MaxValue)
+        if ($null -ne $minimumBuild -and
+            $latestBuild -lt $minimumBuild) {
+            throw "$policyPath.latestBuild cannot be lower than minimumBuild."
+        }
+
+        $normalizedPolicies.Add(
+            [pscustomobject][ordered]@{
+                appId = $appId.ToLowerInvariant()
+                platform = $platform.ToLowerInvariant()
+                policyVersion = [int]$policyVersion
+                requiresUserAction = $true
+                minimumVersion = if ($null -eq $minimumVersion) {
+                    ''
+                }
+                else {
+                    $minimumVersion.ToString()
+                }
+                minimumBuild = if ($null -eq $minimumBuild) {
+                    $null
+                }
+                else {
+                    [int]$minimumBuild
+                }
+                minimumProtocolVersion =
+                    if ($null -eq $minimumProtocolVersion) {
+                        $null
+                    }
+                    else {
+                        [int]$minimumProtocolVersion
+                    }
+                latestVersion = $latestVersion.ToString()
+                latestBuild = [int]$latestBuild
+            }) | Out-Null
+    }
+
+    if ($mode -eq 'StrictBlock') {
+        foreach ($requiredKey in @(
+            'kr.georaeplan.desktop/windows',
+            'kr.georaeplan.mobile/android')) {
+            if (-not $policyKeys.Contains($requiredKey)) {
+                throw "$Path StrictBlock requires unique enabled policy '$requiredKey'."
+            }
+        }
+    }
+
+    $normalized = [pscustomobject][ordered]@{
+        mode = $mode
+        configuredPolicyCount = [int]$configuredPolicyCount
+        enabledPolicyCount = [int]$enabledPolicyCount
+        policies = @(
+            $normalizedPolicies |
+                Sort-Object appId, platform)
+    }
+    return [pscustomobject]@{
+        Summary = $normalized
+        Canonical = (
+            $normalized |
+                ConvertTo-Json -Depth 8 -Compress)
+    }
+}
+
+function Test-ClientCompatibilitySummaryPair {
+    param(
+        $HealthSummary,
+        $ReadySummary,
+        [string]$ExpectedMode = '',
+        [int]$ExpectedEnabledPolicyCount = -1,
+        [switch]$AllowMissing
+    )
+
+    if ($null -eq $HealthSummary -or
+        $null -eq $ReadySummary) {
+        if ($AllowMissing -and
+            $null -eq $HealthSummary -and
+            $null -eq $ReadySummary) {
+            return [pscustomobject]@{
+                IsLegacyMissing = $true
+                Summary = $null
+            }
+        }
+        throw 'healthz/readyz clientCompatibility summaries must both be present.'
+    }
+
+    $health =
+        ConvertTo-NormalizedClientCompatibilitySummary `
+            -Summary $HealthSummary `
+            -Path 'healthz.clientCompatibility'
+    $ready =
+        ConvertTo-NormalizedClientCompatibilitySummary `
+            -Summary $ReadySummary `
+            -Path 'readyz.clientCompatibility'
+    if (-not [string]::Equals(
+            $health.Canonical,
+            $ready.Canonical,
+            [System.StringComparison]::Ordinal)) {
+        throw 'healthz/readyz clientCompatibility summaries are not fully consistent.'
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedMode) -and
+        -not [string]::Equals(
+            $ready.Summary.mode,
+            $ExpectedMode,
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "clientCompatibility mode differs from expected: expected=$ExpectedMode, actual=$($ready.Summary.mode)"
+    }
+    if ($ExpectedEnabledPolicyCount -ge 0 -and
+        $ready.Summary.enabledPolicyCount -ne
+        $ExpectedEnabledPolicyCount) {
+        throw "clientCompatibility enabled policy count differs from expected: expected=$ExpectedEnabledPolicyCount, actual=$($ready.Summary.enabledPolicyCount)"
+    }
+
+    return [pscustomobject]@{
+        IsLegacyMissing = $false
+        Summary = $ready.Summary
+    }
 }
 
 function First-NonEmpty {
@@ -150,7 +630,10 @@ function Invoke-TextProbe {
 }
 
 function Test-ReadyProbeSemantic {
-    param($Probe)
+    param(
+        $Probe,
+        $HealthProbe
+    )
 
     if (-not $Probe.Success -or $Probe.StatusCode -ne 200) {
         return [pscustomobject]@{
@@ -160,23 +643,57 @@ function Test-ReadyProbeSemantic {
     }
 
     try {
+        if ($null -eq $HealthProbe -or
+            -not $HealthProbe.Success -or
+            $HealthProbe.StatusCode -ne 200) {
+            throw 'healthz probe is unavailable while validating readyz.'
+        }
+
+        $healthJson = $HealthProbe.Content | ConvertFrom-Json
         $readyJson = $Probe.Content | ConvertFrom-Json
+        $healthStatus = [string](
+            Get-JsonPropertyValue -Object $healthJson -Name 'status')
         $status = [string](Get-JsonPropertyValue -Object $readyJson -Name 'status')
         $databaseInitialization = Get-JsonPropertyValue -Object $readyJson -Name 'databaseInitialization'
         $dbStarted = Get-JsonPropertyValue -Object $databaseInitialization -Name 'started'
         $dbCompleted = Get-JsonPropertyValue -Object $databaseInitialization -Name 'completed'
         $dbFailed = Get-JsonPropertyValue -Object $databaseInitialization -Name 'failed'
+        $compatibility =
+            Test-ClientCompatibilitySummaryPair `
+                -HealthSummary (
+                    Get-JsonPropertyValue `
+                        -Object $healthJson `
+                        -Name 'clientCompatibility') `
+                -ReadySummary (
+                    Get-JsonPropertyValue `
+                        -Object $readyJson `
+                        -Name 'clientCompatibility') `
+                -ExpectedMode $ExpectedClientCompatibilityMode `
+                -ExpectedEnabledPolicyCount `
+                    $ExpectedClientCompatibilityEnabledPolicyCount `
+                -AllowMissing:$AllowMissingClientCompatibilitySummary
 
-        if ($status -eq 'ready' -and $dbStarted -eq $true -and $dbCompleted -eq $true -and $dbFailed -eq $false) {
+        if ($healthStatus -eq 'ok' -and
+            $status -eq 'ready' -and
+            $dbStarted -eq $true -and
+            $dbCompleted -eq $true -and
+            $dbFailed -eq $false) {
+            if ($compatibility.IsLegacyMissing) {
+                return [pscustomobject]@{
+                    Status = 'PASS'
+                    Detail = ("200 OK, {0}ms, status=ready, databaseInitialization.started=true/completed=true/failed=false, clientCompatibility=missing on healthz/readyz (explicit pre-deploy bootstrap allowance)" -f $Probe.ElapsedMs)
+                }
+            }
+
             return [pscustomobject]@{
                 Status = 'PASS'
-                Detail = ("200 OK, {0}ms, status=ready, databaseInitialization.started=true/completed=true/failed=false" -f $Probe.ElapsedMs)
+                Detail = ("200 OK, {0}ms, status=ready, databaseInitialization.started=true/completed=true/failed=false, clientCompatibility.mode={1}, configured={2}, enabled={3}" -f $Probe.ElapsedMs, $compatibility.Summary.mode, $compatibility.Summary.configuredPolicyCount, $compatibility.Summary.enabledPolicyCount)
             }
         }
 
         return [pscustomobject]@{
             Status = 'FAIL'
-            Detail = ("200 OK but readiness body is not ready: status={0}, databaseInitialization.started={1}, completed={2}, failed={3}" -f $status, $dbStarted, $dbCompleted, $dbFailed)
+            Detail = ("200 OK but readiness body is not ready: healthStatus={0}, status={1}, databaseInitialization.started={2}, completed={3}, failed={4}" -f $healthStatus, $status, $dbStarted, $dbCompleted, $dbFailed)
         }
     }
     catch {
@@ -190,6 +707,7 @@ function Test-ReadyProbeSemantic {
 function Invoke-ReadyProbeWithRetry {
     param(
         [string]$Uri,
+        $HealthProbe,
         [string]$LogPath,
         [int]$TimeoutSec = 60,
         [int]$DelaySec = 3
@@ -203,7 +721,10 @@ function Invoke-ReadyProbeWithRetry {
     do {
         $attempt += 1
         $lastProbe = Invoke-TextProbe -Uri $Uri
-        $lastSemanticResult = Test-ReadyProbeSemantic -Probe $lastProbe
+        $lastSemanticResult =
+            Test-ReadyProbeSemantic `
+                -Probe $lastProbe `
+                -HealthProbe $HealthProbe
         Add-Content -LiteralPath $LogPath -Encoding UTF8 -Value ("readyz attempt={0} semantic={1} status={2} error={3} body={4}" -f $attempt, $lastSemanticResult.Status, $lastProbe.StatusCode, $lastProbe.Error, $lastProbe.Content)
 
         if ($lastSemanticResult.Status -eq 'PASS') {
@@ -592,7 +1113,11 @@ else {
 }
 Add-Content -LiteralPath $logPath -Encoding UTF8 -Value ("healthz status={0} error={1} body={2}" -f $health.StatusCode, $health.Error, $health.Content)
 
-$readyProbeResult = Invoke-ReadyProbeWithRetry -Uri ($BaseUrl + '/readyz') -LogPath $logPath
+$readyProbeResult =
+    Invoke-ReadyProbeWithRetry `
+        -Uri ($BaseUrl + '/readyz') `
+        -HealthProbe $health `
+        -LogPath $logPath
 $ready = $readyProbeResult.Probe
 $readySemanticResult = $readyProbeResult.SemanticResult
 Add-Check -Checks $checks -Name 'live readyz' -Status $readySemanticResult.Status -Detail $readySemanticResult.Detail
@@ -737,19 +1262,58 @@ if (-not [string]::IsNullOrWhiteSpace($PlatformStateRoot) -and (Test-Path -Liter
     Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "replica=$replica"
     Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "cert=$cert"
 
+    $backupValidationScript = Join-Path $resolvedRoot 'tools\ops\Test-GeoraePlanBackupStatus.ps1'
+    if (-not (Test-Path -LiteralPath $backupValidationScript -PathType Leaf)) {
+        Add-Check -Checks $checks -Name 'backup state integrity' -Status 'FAIL' -Detail 'strict backup status validator script not found'
+    }
+    else {
+        try {
+            $backupValidationParameters = @{
+                PlatformStateRoot = $PlatformStateRoot
+                MaximumAgeHours = $MaximumBackupAgeHours
+            }
+            if (-not [string]::IsNullOrWhiteSpace($PlatformBackupRoot)) {
+                $backupValidationParameters['PlatformBackupRoot'] = $PlatformBackupRoot
+            }
+
+            $backupValidationOutput = @(
+                & $backupValidationScript @backupValidationParameters)
+            if ($backupValidationOutput.Count -ne 1) {
+                Add-Check -Checks $checks -Name 'backup state integrity' -Status 'FAIL' -Detail 'strict backup status validator returned an invalid result count'
+            }
+            else {
+                $backupValidation = $backupValidationOutput[0]
+                $backupValidationStatus = [string](Get-JsonPropertyValue -Object $backupValidation -Name 'Status')
+                $backupValidationReason = [string](Get-JsonPropertyValue -Object $backupValidation -Name 'Reason')
+                $backupValidationDetail = [string](Get-JsonPropertyValue -Object $backupValidation -Name 'Detail')
+                $backupCheckStatus = if ($backupValidationStatus -eq 'PASS') { 'PASS' } else { 'FAIL' }
+                Add-Check `
+                    -Checks $checks `
+                    -Name 'backup state integrity' `
+                    -Status $backupCheckStatus `
+                    -Detail ("reason={0}; {1}" -f $backupValidationReason, $backupValidationDetail)
+            }
+        }
+        catch {
+            Add-Check -Checks $checks -Name 'backup state integrity' -Status 'FAIL' -Detail $_.Exception.Message
+        }
+    }
+
     $dailyEndpointOk = ($daily -match 'healthz=ok') -or ($daily -match 'readyz=ok')
-    $platformOk = $dailyEndpointOk -and ($daily -match 'manifest=ok') -and ($daily -match 'backup=ok') -and ($daily -match 'replica=ok') -and ($backup -match 'backup=ok') -and ($replica -match 'replica=ok') -and ($cert -match 'cert=ok')
+    $platformOk = $dailyEndpointOk -and ($daily -match 'manifest=ok') -and ($daily -match 'replica=ok') -and ($replica -match 'replica=ok') -and ($cert -match 'cert=ok')
     if ($platformOk) {
-        Add-Check -Checks $checks -Name 'platform status files' -Status 'PASS' -Detail 'daily endpoint/manifest/backup/replica/cert ok'
+        Add-Check -Checks $checks -Name 'platform status files' -Status 'PASS' -Detail 'daily endpoint/manifest/replica/cert ok'
     }
     else {
         Add-Check -Checks $checks -Name 'platform status files' -Status 'WARN' -Detail 'state files readable but one or more ok markers missing'
     }
 }
 elseif ([string]::IsNullOrWhiteSpace($PlatformStateRoot)) {
+    Add-Check -Checks $checks -Name 'backup state integrity' -Status 'PASS' -Detail 'SKIP: Linux PC platform state root is not configured'
     Add-Check -Checks $checks -Name 'platform status files' -Status 'PASS' -Detail 'SKIP: Linux PC platform state root is not configured; live health/manifest checks are used instead'
 }
 else {
+    Add-Check -Checks $checks -Name 'backup state integrity' -Status 'FAIL' -Detail ("platform state root is not accessible: {0}" -f $PlatformStateRoot)
     Add-Check -Checks $checks -Name 'platform status files' -Status 'WARN' -Detail ("platform state root is not accessible: {0}" -f $PlatformStateRoot)
 }
 

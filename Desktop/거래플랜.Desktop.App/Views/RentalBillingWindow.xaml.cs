@@ -36,6 +36,7 @@ public partial class RentalBillingWindow : Window
         Func<Task>? refreshAfterBillingChangedAsync = null)
     {
         InitializeComponent();
+        ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(this);
         DataContext = viewModel;
         _openInvoiceWindowAsync = openInvoiceWindowAsync;
         _openRentalAssetWindowAsync = openRentalAssetWindowAsync;
@@ -44,7 +45,11 @@ public partial class RentalBillingWindow : Window
         Loaded += (_, _) => _editSessionMonitor?.Start();
         Closed += (_, _) =>
         {
-            viewModel.CancelPendingBackgroundWork();
+            UiTaskHelper.Forget(
+                () => viewModel.CancelAndDrainPendingBackgroundWorkAsync(),
+                "UI",
+                "렌탈 청구관리 백그라운드 작업 종료",
+                ex => AppLogger.Warn("UI", $"렌탈 청구관리 백그라운드 작업 종료 실패: {ex.Message}"));
             _editSessionMonitor?.Dispose();
         };
 
@@ -242,6 +247,29 @@ public partial class RentalBillingWindow : Window
         dataGrid.SelectedItem = includedAsset;
         if (DataContext is RentalBillingViewModel viewModel)
             viewModel.SelectedIncludedAsset = includedAsset;
+    }
+
+    private void IncludedAssetsDataGrid_BeginningEdit(object sender, DataGridBeginningEditEventArgs e)
+    {
+        if (e.Row.Item is not RentalBillingAssetOption includedAsset ||
+            !includedAsset.IsReferenceOnly)
+        {
+            return;
+        }
+
+        e.Cancel = true;
+        if (DataContext is not RentalBillingViewModel viewModel)
+            return;
+
+        var assetLabel = string.IsNullOrWhiteSpace(includedAsset.ManagementNumber)
+            ? includedAsset.ItemName
+            : includedAsset.ManagementNumber;
+        var labelPrefix = string.IsNullOrWhiteSpace(assetLabel)
+            ? "선택한 자산은"
+            : $"'{assetLabel}' 자산은";
+        viewModel.StatusMessage =
+            $"{labelPrefix} 다른 업체의 참조 전용 자산이므로 원본 정보를 수정할 수 없습니다. " +
+            "대표자산은 행을 선택한 뒤 '대표자산 지정' 버튼으로 설정할 수 있습니다.";
     }
 
     private void OpenIncludedAssetInRentalAssetWindowMenuItem_Click(object sender, RoutedEventArgs e)
@@ -588,12 +616,12 @@ public partial class RentalBillingWindow : Window
                 var customerVm = new CustomerEditViewModel(viewModel.LocalStateService, viewModel.SessionState);
                 await customerVm.LoadAsync();
                 var customerWindow = new CustomerEditWindow(customerVm) { Owner = this };
-                customerWindow.ShowDialog();
+                DialogWindowCloseHelper.ShowDialog(customerWindow);
                 return await viewModel.BuildCustomerLookupRowsAsync();
             })
         { Owner = this };
 
-        if (dialog.ShowDialog() == true && dialog.SelectedRow?.Tag is LocalCustomer customer)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) == true && dialog.SelectedRow?.Tag is LocalCustomer customer)
             viewModel.ApplySelectedCustomer(customer);
     }
 
@@ -633,10 +661,19 @@ public partial class RentalBillingWindow : Window
             Owner = this
         };
 
-        if (dialog.ShowDialog() != true)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) != true)
             return;
 
-        viewModel.ApplyAssetLinkSelections(dialogViewModel.GetSelectedAssets());
+        var selectedAssets = dialogViewModel.GetSelectedAssets();
+        if (!await viewModel.ApplyAssetLinkSelectionsAndSaveAsync(selectedAssets))
+        {
+            MessageBox.Show(
+                this,
+                $"{viewModel.StatusMessage}\n\n입력한 청구관리 내용은 유지됩니다. 내용을 확인한 뒤 다시 적용해 주세요.",
+                "렌탈 자산 적용 실패",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
     }
 
     private async Task OpenCustomerEditorForSelectedRowAsync(RentalBillingViewRow row)
@@ -712,16 +749,24 @@ public partial class RentalBillingWindow : Window
         {
             customerWindow.Closed -= HandleClosed;
             _trackedCustomerEditorWindows.Remove(customerWindow);
-            _ = Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(async () =>
-            {
-                if (DataContext is not RentalBillingViewModel viewModel)
-                    return;
+            if (Application.Current?.MainWindow is MainWindow { IsShutdownProtectionActive: true })
+                return;
 
-                await viewModel.RefreshSelectedCustomerContextAsync();
-                await viewModel.ReloadCommand.ExecuteAsync(null);
-                viewModel.SelectedRow = viewModel.Rows.FirstOrDefault(current => current.SelectionId == row.SelectionId)
-                                        ?? viewModel.Rows.FirstOrDefault(current => current.Source.Id == row.Source.Id);
-            }));
+            UiTaskHelper.Forget(
+                async () =>
+                {
+                    await Dispatcher.Yield(DispatcherPriority.Background);
+                    if (DataContext is not RentalBillingViewModel viewModel)
+                        return;
+
+                    await viewModel.RefreshSelectedCustomerContextAsync();
+                    await viewModel.ReloadCommand.ExecuteAsync(null);
+                    viewModel.SelectedRow = viewModel.Rows.FirstOrDefault(current => current.SelectionId == row.SelectionId)
+                                            ?? viewModel.Rows.FirstOrDefault(current => current.Source.Id == row.Source.Id);
+                },
+                "UI",
+                "렌탈 청구 거래처 편집 후 새로고침",
+                ex => AppLogger.Warn("UI", $"렌탈 청구 거래처 편집 후 새로고침 실패: {ex.Message}"));
         }
         customerWindow.Closed += HandleClosed;
     }
@@ -735,11 +780,19 @@ public partial class RentalBillingWindow : Window
         {
             rentalAssetWindow.Closed -= HandleClosed;
             _trackedRentalAssetWindows.Remove(rentalAssetWindow);
-            _ = Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(async () =>
-            {
-                if (DataContext is RentalBillingViewModel viewModel)
-                    await viewModel.RefreshAfterExternalAssetEditAsync(assetId);
-            }));
+            if (Application.Current?.MainWindow is MainWindow { IsShutdownProtectionActive: true })
+                return;
+
+            UiTaskHelper.Forget(
+                async () =>
+                {
+                    await Dispatcher.Yield(DispatcherPriority.Background);
+                    if (DataContext is RentalBillingViewModel viewModel)
+                        await viewModel.RefreshAfterExternalAssetEditAsync(assetId);
+                },
+                "UI",
+                "렌탈 자산 편집 후 청구관리 새로고침",
+                ex => AppLogger.Warn("UI", $"렌탈 자산 편집 후 청구관리 새로고침 실패: {ex.Message}"));
         }
 
         rentalAssetWindow.Closed += HandleClosed;

@@ -1,4 +1,7 @@
+using System.Collections.Concurrent;
+using System.IO;
 using Microsoft.EntityFrameworkCore;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Shared.Contracts;
 
@@ -11,6 +14,15 @@ public sealed record LoginScopeRegistrationResult(
 
 public sealed partial class LocalStateService
 {
+    internal readonly record struct ServerMirrorRefreshRequestBoundary(
+        string ScopeKey,
+        long Epoch);
+
+    private static readonly ConcurrentDictionary<string, long>
+        ServerMirrorRefreshRequestEpochs = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, int>
+        ServerMirrorRefreshRequestsInFlight = new(StringComparer.OrdinalIgnoreCase);
+
     private const string LastLoginScopeKey = "Login.LastScopeKey";
     private const string LastLoginScopeUsernameKey = "Login.LastScopeUsername";
     private const string LastLoginScopeTenantKey = "Login.LastScopeTenantCode";
@@ -64,14 +76,73 @@ public sealed partial class LocalStateService
         return normalizedCount;
     }
 
-    public Task MarkServerMirrorRefreshRequiredAsync(CancellationToken ct = default)
-        => SetSettingAsync(PendingMirrorRefreshSettingKey, "1", ct);
+    public async Task MarkServerMirrorRefreshRequiredAsync(CancellationToken ct = default)
+    {
+        var scopeKey = GetServerMirrorRefreshRequestScopeKey();
+        ServerMirrorRefreshRequestEpochs.AddOrUpdate(
+            scopeKey,
+            1,
+            static (_, epoch) => checked(epoch + 1));
+        ServerMirrorRefreshRequestsInFlight.AddOrUpdate(
+            scopeKey,
+            1,
+            static (_, count) => checked(count + 1));
+        try
+        {
+            await SetSyncMetadataSettingIndependentAsync(
+                PendingMirrorRefreshSettingKey,
+                "1",
+                ct);
+        }
+        finally
+        {
+            ServerMirrorRefreshRequestsInFlight.AddOrUpdate(
+                scopeKey,
+                0,
+                static (_, count) => Math.Max(0, count - 1));
+        }
+    }
+
+    internal ServerMirrorRefreshRequestBoundary
+        CaptureServerMirrorRefreshRequestBoundary()
+    {
+        var scopeKey = GetServerMirrorRefreshRequestScopeKey();
+        return new ServerMirrorRefreshRequestBoundary(
+            scopeKey,
+            ServerMirrorRefreshRequestEpochs.GetValueOrDefault(scopeKey));
+    }
+
+    internal bool HasServerMirrorRefreshRequestSince(
+        ServerMirrorRefreshRequestBoundary boundary)
+    {
+        var currentScopeKey = GetServerMirrorRefreshRequestScopeKey();
+        return !string.Equals(
+                   currentScopeKey,
+                   boundary.ScopeKey,
+                   StringComparison.OrdinalIgnoreCase) ||
+               ServerMirrorRefreshRequestEpochs.GetValueOrDefault(currentScopeKey) !=
+               boundary.Epoch ||
+               ServerMirrorRefreshRequestsInFlight.GetValueOrDefault(currentScopeKey) > 0;
+    }
+
+    private string GetServerMirrorRefreshRequestScopeKey()
+    {
+        var dataSource = _db.Database.GetDbConnection().DataSource;
+        var databaseIdentity = string.IsNullOrWhiteSpace(dataSource)
+            ? AppPaths.LocalDbFile
+            : dataSource;
+        return $"{Path.GetFullPath(databaseIdentity)}|" +
+               TenantScopeCatalog.GetDatabaseName(
+                   _session.SelectedBusinessDatabaseName);
+    }
 
     public async Task<bool> IsServerMirrorRefreshRequiredAsync(CancellationToken ct = default)
         => string.Equals(await GetSettingAsync(PendingMirrorRefreshSettingKey, ct), "1", StringComparison.Ordinal);
 
     public Task ClearServerMirrorRefreshRequiredAsync(CancellationToken ct = default)
-        => DeleteSettingAsync(PendingMirrorRefreshSettingKey, ct);
+        => DeleteSyncMetadataSettingIndependentAsync(
+            PendingMirrorRefreshSettingKey,
+            ct);
 
     public async Task<LoginScopeRegistrationResult> RegisterLoginScopeAsync(
         SessionState session,
@@ -101,23 +172,16 @@ public sealed partial class LocalStateService
         if (scopeChanged)
         {
             hadPendingSyncChanges = await HasPendingSyncChangesAsync(ct);
-
-            foreach (var key in ServerMirrorStateSettingKeys)
-            {
-                await DeleteSettingAsync(key, ct);
-            }
-
-            await ClearAdministrativeBusinessCacheRevisionSettingsAsync(ct);
-            await _db.SaveChangesAsync(ct);
-
-            await MarkServerMirrorRefreshRequiredAsync(ct);
         }
 
-        await SetSettingAsync(LastLoginScopeKey, currentScopeKey, ct);
-        await SetSettingAsync(LastLoginScopeUsernameKey, username, ct);
-        await SetSettingAsync(LastLoginScopeTenantKey, tenantCode, ct);
-        await SetSettingAsync(LastLoginScopeOfficeKey, officeCode, ct);
-        await SetSettingAsync(LastLoginScopeTypeKey, scopeType, ct);
+        await PersistLoginScopeSettingsIndependentAsync(
+            username,
+            currentScopeKey,
+            tenantCode,
+            officeCode,
+            scopeType,
+            scopeChanged,
+            ct);
 
         var message = scopeChanged
             ? hadPendingSyncChanges
@@ -126,6 +190,74 @@ public sealed partial class LocalStateService
             : "로그인 계정/범위가 이전과 동일합니다.";
 
         return new LoginScopeRegistrationResult(scopeChanged, hadPendingSyncChanges, message);
+    }
+
+    private async Task PersistLoginScopeSettingsIndependentAsync(
+        string username,
+        string currentScopeKey,
+        string tenantCode,
+        string officeCode,
+        string scopeType,
+        bool scopeChanged,
+        CancellationToken ct)
+    {
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [LastLoginScopeKey] = currentScopeKey,
+            [LastLoginScopeUsernameKey] = username,
+            [LastLoginScopeTenantKey] = tenantCode,
+            [LastLoginScopeOfficeKey] = officeCode,
+            [LastLoginScopeTypeKey] = scopeType
+        };
+        if (scopeChanged)
+            values[PendingMirrorRefreshSettingKey] = "1";
+
+        var keysToDetach = values.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (scopeChanged)
+        {
+            foreach (var key in ServerMirrorStateSettingKeys)
+                keysToDetach.Add(key);
+        }
+
+        await using var settingsDb = CreateIndependentAuthenticationDb();
+        await using var transaction =
+            await settingsDb.BeginRuntimeMutationTransactionAsync(ct);
+        try
+        {
+            var settingsToRemove = scopeChanged
+                ? await settingsDb.Settings
+                    .Where(setting =>
+                        ServerMirrorStateSettingKeys.Contains(setting.Key)
+                        || setting.Key.StartsWith(
+                            SyncSettingKeys.AdministrativeBusinessCacheRevisionPrefix))
+                    .ToListAsync(ct)
+                : [];
+            if (settingsToRemove.Count > 0)
+            {
+                foreach (var setting in settingsToRemove)
+                    keysToDetach.Add(setting.Key);
+                settingsDb.Settings.RemoveRange(settingsToRemove);
+            }
+
+            var existing = await settingsDb.Settings
+                .Where(setting => values.Keys.Contains(setting.Key))
+                .ToDictionaryAsync(
+                    setting => setting.Key,
+                    StringComparer.OrdinalIgnoreCase,
+                    ct);
+            foreach (var pair in values)
+                UpsertSetting(settingsDb, existing, pair.Key, pair.Value);
+
+            await settingsDb.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+
+        DetachAuthenticationSettings(keysToDetach);
     }
 
     private static string BuildLoginScopeKey(string username, string tenantCode, string officeCode, string scopeType)
@@ -445,6 +577,8 @@ public sealed partial class LocalStateService
             entry.ErrorMessage = string.Empty;
             entry.SentAtUtc = null;
             entry.AcknowledgedAtUtc = null;
+            entry.AcceptedRevision = 0;
+            entry.AcceptedUpdatedAtUtc = null;
         }
 
         if (staleSentEntries.Count > 0)

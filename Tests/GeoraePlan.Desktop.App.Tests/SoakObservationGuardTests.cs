@@ -20,6 +20,22 @@ public sealed class SoakObservationGuardTests
         Assert.Contains("[switch]$RequireDesktopProcess", source, StringComparison.Ordinal);
         Assert.Contains("/healthz", source, StringComparison.Ordinal);
         Assert.Contains("/updates/manifest?channel=", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "function Get-OptionalManifestVersion",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "$Manifest.PSObject.Properties[$PackageName]",
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "$manifestJson.desktop.version",
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "$manifestJson.android.version",
+            source,
+            StringComparison.Ordinal);
         Assert.Contains("Get-DesktopProcessSnapshot", source, StringComparison.Ordinal);
         Assert.Contains("WorkingSetMb", source, StringComparison.Ordinal);
         Assert.Contains("Responding", source, StringComparison.Ordinal);
@@ -31,6 +47,84 @@ public sealed class SoakObservationGuardTests
         Assert.DoesNotContain("-Method Put", source, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("-Method Patch", source, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("-Method Delete", source, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GeneratedRunAll_ContinuouslyObservesServerWithBoundedReadOnlyLogs()
+    {
+        var repoRoot = FindRepositoryRoot();
+        var scriptPath = Path.Combine(
+            repoRoot,
+            "테스트 시행",
+            "테스트-환경-준비.ps1");
+        var source = File.ReadAllText(scriptPath);
+        var healthProbeStart = source.IndexOf(
+            "function Invoke-RuntimeHealthProbe",
+            StringComparison.Ordinal);
+        var healthProbeEnd = source.IndexOf(
+            "function Remove-OldRuntimeServerLogs",
+            healthProbeStart,
+            StringComparison.Ordinal);
+
+        Assert.True(healthProbeStart >= 0);
+        Assert.True(healthProbeEnd > healthProbeStart);
+        var healthProbeSource = source[healthProbeStart..healthProbeEnd];
+        Assert.Contains("-Method Get", healthProbeSource, StringComparison.Ordinal);
+        Assert.Contains("-TimeoutSec 1", healthProbeSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("-Method Post", healthProbeSource, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("-Method Put", healthProbeSource, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("-Method Patch", healthProbeSource, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("-Method Delete", healthProbeSource, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("RuntimeLogs", source, StringComparison.Ordinal);
+        Assert.Contains("health-observation.csv", source, StringComparison.Ordinal);
+        Assert.Contains("health-observation.previous.csv", source, StringComparison.Ordinal);
+        Assert.Contains("[IO.File]::AppendAllText(", source, StringComparison.Ordinal);
+        Assert.Contains("-MaximumSamplesPerFile 17280", source, StringComparison.Ordinal);
+        Assert.Contains("$appProcess.WaitForExit(250)", source, StringComparison.Ordinal);
+        Assert.Contains("$consecutiveHealthFailures -ge 3", source, StringComparison.Ordinal);
+        Assert.Contains("Stop-RuntimeAppAfterServerFailure", source, StringComparison.Ordinal);
+        Assert.Contains("MaximumBytesPerFile = 67108864", source, StringComparison.Ordinal);
+        Assert.Contains("MaximumTotalBytes = 134217728", source, StringComparison.Ordinal);
+        Assert.Contains("MaximumTotalBytes = 268435456", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "Runtime server logs exceeded their total safety limit.",
+            source,
+            StringComparison.Ordinal);
+        var serverRetryStart = source.IndexOf(
+            "for ($attempt = 1; $attempt -le 10; $attempt++) {",
+            StringComparison.Ordinal);
+        var serverProcessStart = source.IndexOf(
+            "$serverProcess = Start-HiddenServerProcess",
+            serverRetryStart,
+            StringComparison.Ordinal);
+        Assert.True(serverRetryStart >= 0);
+        Assert.True(serverProcessStart > serverRetryStart);
+        Assert.Contains(
+            "Remove-OldRuntimeServerLogs -LogRoot $runtimeLogRoot",
+            source[serverRetryStart..serverProcessStart],
+            StringComparison.Ordinal);
+        var serverLauncherStart = source.IndexOf(
+            "function Start-HiddenServerProcess",
+            StringComparison.Ordinal);
+        var serverLauncherEnd = source.IndexOf(
+            "$dotnetExe = '__DOTNET_EXE__'",
+            serverLauncherStart,
+            StringComparison.Ordinal);
+        Assert.True(serverLauncherStart >= 0);
+        Assert.True(serverLauncherEnd > serverLauncherStart);
+        Assert.Contains(
+            "'Logging__LogLevel__Microsoft.AspNetCore' = 'Warning'",
+            source[serverLauncherStart..serverLauncherEnd],
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "'Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command' = 'Warning'",
+            source[serverLauncherStart..serverLauncherEnd],
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Wait-Process -Id $appProcess.Id",
+            source,
+            StringComparison.Ordinal);
     }
 
     [Fact]

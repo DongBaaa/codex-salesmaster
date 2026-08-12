@@ -13,7 +13,7 @@ public sealed class ItemEditPage : ContentPage
     private readonly SessionStore _sessionStore;
     private readonly SyncCoordinator _syncCoordinator;
     private ItemDto? _source;
-    private readonly Func<ItemDto?, Task> _afterSaved;
+    private readonly Func<ItemDto?, MobileSessionOwner, Task> _afterSaved;
 
     private readonly Entry _nameEntry;
     private readonly Entry _specEntry;
@@ -28,7 +28,10 @@ public sealed class ItemEditPage : ContentPage
     private readonly Label _statusLabel;
     private bool _isBusy;
 
-    public ItemEditPage(ItemDto? item, string? selectedCategoryName, Func<ItemDto?, Task> afterSaved)
+    public ItemEditPage(
+        ItemDto? item,
+        string? selectedCategoryName,
+        Func<ItemDto?, MobileSessionOwner, Task> afterSaved)
     {
         _api = ServiceHelper.GetRequiredService<GeoraePlanApiClient>();
         _sessionStore = ServiceHelper.GetRequiredService<SessionStore>();
@@ -179,6 +182,7 @@ public sealed class ItemEditPage : ContentPage
         if (_isBusy)
             return;
 
+        var apiOwner = _sessionStore.CaptureOwner();
         if (!_sessionStore.GetSnapshot().CanEditItems)
         {
             _statusLabel.Text = "권한이 없어 품목을 저장할 수 없습니다.";
@@ -205,6 +209,7 @@ public sealed class ItemEditPage : ContentPage
         {
             _isBusy = true;
             _statusLabel.Text = "품목을 저장하고 있습니다.";
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
 
             dto = BuildDto(name, tenantCode, officeCode);
             if (!MobileSessionScopeFilter.CanAccessItem(_sessionStore.GetSnapshot(), dto))
@@ -215,21 +220,30 @@ public sealed class ItemEditPage : ContentPage
             }
 
             var saved = _source is null
-                ? await _api.CreateItemAsync(dto)
-                : await _api.UpdateItemAsync(dto);
+                ? await _api.CreateItemAsync(dto, apiOwner)
+                : await _api.UpdateItemAsync(dto, apiOwner);
             saved = EnsureSavedResult(saved, "품목 저장");
 
             _statusLabel.Text = "품목 저장 완료";
-            await _afterSaved(saved);
-            await CloseAsync();
+            await InvokeAfterSavedAsync(saved, apiOwner);
+            await CloseAsync(apiOwner);
         }
         catch (HttpRequestException ex) when (IsConcurrencyConflict(ex) && _source is not null)
         {
-            await HandleConcurrencyConflictAsync("품목 저장");
+            await HandleConcurrencyConflictAsync(
+                "품목 저장",
+                apiOwner);
         }
         catch (Exception ex) when (dto is not null && MobileRetryableNetworkFailure.IsRetryable(ex))
         {
-            await QueuePendingSaveAsync(dto, ex);
+            await QueuePendingSaveAsync(
+                dto,
+                ex,
+                apiOwner);
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -251,6 +265,7 @@ public sealed class ItemEditPage : ContentPage
         if (_isBusy || _source is null)
             return;
 
+        var apiOwner = _sessionStore.CaptureOwner();
         if (!_sessionStore.GetSnapshot().CanEditItems)
         {
             _statusLabel.Text = "권한이 없어 품목을 삭제할 수 없습니다.";
@@ -273,17 +288,30 @@ public sealed class ItemEditPage : ContentPage
         {
             _isBusy = true;
             _statusLabel.Text = "품목을 삭제하고 있습니다.";
-            await _api.DeleteItemAsync(_source.Id, _source.Revision);
-            await _afterSaved(null);
-            await CloseAsync();
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
+            await _api.DeleteItemAsync(
+                _source.Id,
+                _source.Revision,
+                apiOwner);
+            await InvokeAfterSavedAsync(null, apiOwner);
+            await CloseAsync(apiOwner);
         }
         catch (HttpRequestException ex) when (IsConcurrencyConflict(ex) && _source is not null)
         {
-            await HandleConcurrencyConflictAsync("품목 삭제");
+            await HandleConcurrencyConflictAsync(
+                "품목 삭제",
+                apiOwner);
         }
         catch (Exception ex) when (MobileRetryableNetworkFailure.IsRetryable(ex) && _source is not null)
         {
-            await QueuePendingDeleteAsync(_source, ex);
+            await QueuePendingDeleteAsync(
+                _source,
+                ex,
+                apiOwner);
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -296,19 +324,35 @@ public sealed class ItemEditPage : ContentPage
         }
     }
 
-    private async Task QueuePendingSaveAsync(ItemDto dto, Exception ex)
+    private async Task QueuePendingSaveAsync(
+        ItemDto dto,
+        Exception ex,
+        MobileSessionOwner apiOwner)
     {
         var reason = MobileRetryableNetworkFailure.ToPendingSyncMessage(ex);
         try
         {
-            var state = await _syncCoordinator.QueueItemDraftAsync(dto, reason);
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
+            var state = await _syncCoordinator.QueueItemDraftAsync(
+                dto,
+                apiOwner,
+                reason);
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
             _statusLabel.Text = $"품목 저장 완료(동기화 대기 {state.PendingItemCount:N0}건)";
             await DisplayAlert(
                 "품목 저장 대기",
                 $"네트워크/서버 응답 지연으로 품목을 기기에 먼저 저장했습니다.\n동기화 화면에서 저장 대기 품목 {state.PendingItemCount:N0}건을 확인할 수 있으며, 연결 복구 후 자동으로 서버에 반영됩니다.",
                 "확인");
-            await CloseAsync();
-            MobileErrorHandler.FireAndForget(() => _afterSaved(dto), "품목 저장 후 목록 새로고침");
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
+            await CloseAsync(apiOwner);
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
+            MobileErrorHandler.FireAndForget(
+                () => InvokeAfterSavedAsync(dto, apiOwner),
+                "품목 저장 후 목록 새로고침");
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            throw;
         }
         catch (Exception queueEx)
         {
@@ -317,20 +361,36 @@ public sealed class ItemEditPage : ContentPage
         }
     }
 
-    private async Task QueuePendingDeleteAsync(ItemDto source, Exception ex)
+    private async Task QueuePendingDeleteAsync(
+        ItemDto source,
+        Exception ex,
+        MobileSessionOwner apiOwner)
     {
         var dto = BuildDeletedDto(source);
         var reason = MobileRetryableNetworkFailure.ToPendingSyncMessage(ex);
         try
         {
-            var state = await _syncCoordinator.QueueItemDraftAsync(dto, reason);
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
+            var state = await _syncCoordinator.QueueItemDraftAsync(
+                dto,
+                apiOwner,
+                reason);
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
             _statusLabel.Text = $"품목 삭제 완료(동기화 대기 {state.PendingItemCount:N0}건)";
             await DisplayAlert(
                 "품목 삭제 대기",
                 $"네트워크/서버 응답 지연으로 삭제 요청을 기기에 먼저 저장했습니다.\n동기화 화면에서 저장 대기 품목 {state.PendingItemCount:N0}건을 확인할 수 있으며, 연결 복구 후 자동으로 서버에 반영됩니다.",
                 "확인");
-            await CloseAsync();
-            MobileErrorHandler.FireAndForget(() => _afterSaved(dto), "품목 삭제 후 목록 새로고침");
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
+            await CloseAsync(apiOwner);
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
+            MobileErrorHandler.FireAndForget(
+                () => InvokeAfterSavedAsync(dto, apiOwner),
+                "품목 삭제 후 목록 새로고침");
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            throw;
         }
         catch (Exception queueEx)
         {
@@ -355,7 +415,9 @@ public sealed class ItemEditPage : ContentPage
         return false;
     }
 
-    private async Task HandleConcurrencyConflictAsync(string actionName)
+    private async Task HandleConcurrencyConflictAsync(
+        string actionName,
+        MobileSessionOwner apiOwner)
     {
         var source = _source;
         if (source is null)
@@ -365,7 +427,10 @@ public sealed class ItemEditPage : ContentPage
 
         try
         {
-            var latest = (await _api.GetItemDetailAsync(source.Id))?.Item;
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
+            var latest = (await _api.GetItemDetailAsync(
+                source.Id,
+                apiOwner))?.Item;
             if (latest is null || latest.IsDeleted)
             {
                 _statusLabel.Text = "다른 PC/모바일에서 해당 품목이 먼저 삭제되었습니다.";
@@ -373,8 +438,9 @@ public sealed class ItemEditPage : ContentPage
                     "동시 수정 충돌",
                     "다른 PC/모바일에서 해당 품목이 먼저 삭제되었습니다. 목록을 새로고침합니다.",
                     "확인");
-                await _afterSaved(null);
-                await CloseAsync();
+                _sessionStore.ThrowIfOwnerChanged(apiOwner);
+                await InvokeAfterSavedAsync(null, apiOwner);
+                await CloseAsync(apiOwner);
                 return;
             }
 
@@ -385,6 +451,11 @@ public sealed class ItemEditPage : ContentPage
                 "동시 수정 충돌",
                 $"{actionName} 중 다른 PC/모바일에서 먼저 저장된 최신 내용이 확인되었습니다.\n\n최신값을 화면에 다시 불러왔으니 내용을 확인한 뒤 다시 저장해 주세요.",
                 "확인");
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            throw;
         }
         catch (Exception refreshEx)
         {
@@ -521,6 +592,8 @@ public sealed class ItemEditPage : ContentPage
             ItemKind = source.ItemKind,
             TrackingType = source.TrackingType,
             Unit = source.Unit,
+            BoxQuantity = source.BoxQuantity,
+            StorageLocation = source.StorageLocation,
             CurrentStock = source.CurrentStock,
             SafetyStock = source.SafetyStock,
             PurchasePrice = source.PurchasePrice,
@@ -529,6 +602,10 @@ public sealed class ItemEditPage : ContentPage
             PriceGradeA = source.PriceGradeA,
             PriceGradeB = source.PriceGradeB,
             PriceGradeC = source.PriceGradeC,
+            LastPurchaseDate = source.LastPurchaseDate,
+            LastPurchaseDateSpecified = source.LastPurchaseDateSpecified,
+            LastSaleDate = source.LastSaleDate,
+            LastSaleDateSpecified = source.LastSaleDateSpecified,
             SimpleMemo = source.SimpleMemo,
             IsRental = source.IsRental,
             IsSale = source.IsSale,
@@ -572,6 +649,22 @@ public sealed class ItemEditPage : ContentPage
 
     private static bool IsConcurrencyConflict(HttpRequestException ex)
         => ex.StatusCode == HttpStatusCode.Conflict;
+
+    private async Task InvokeAfterSavedAsync(
+        ItemDto? saved,
+        MobileSessionOwner apiOwner)
+    {
+        _sessionStore.ThrowIfOwnerChanged(apiOwner);
+        await _afterSaved(saved, apiOwner);
+        _sessionStore.ThrowIfOwnerChanged(apiOwner);
+    }
+
+    private Task CloseAsync(
+        MobileSessionOwner apiOwner)
+    {
+        _sessionStore.ThrowIfOwnerChanged(apiOwner);
+        return Navigation.PopModalAsync();
+    }
 
     private Task CloseAsync()
         => Navigation.PopModalAsync();

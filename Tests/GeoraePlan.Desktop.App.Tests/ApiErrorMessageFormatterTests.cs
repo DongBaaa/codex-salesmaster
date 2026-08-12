@@ -156,4 +156,27 @@ public sealed class ApiErrorMessageFormatterTests
         Assert.DoesNotContain("{\"EntityName\"", message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void BuildFailureMessage_ExpectedRevisionRequiredPayload_ReturnsReloadGuidanceWithoutRawErrorCode()
+    {
+        var body = JsonSerializer.Serialize(new
+        {
+            error = "expected_revision_required",
+            message = "최신 데이터를 다시 불러온 뒤 리비전을 포함해 다시 시도하세요.",
+            entityName = "Customer",
+            entityId = Guid.Parse("11111111-2222-3333-4444-555555555555"),
+            currentRevision = 4
+        });
+
+        var message = ApiErrorMessageFormatter.BuildFailureMessage(
+            (HttpStatusCode)428,
+            "Precondition Required",
+            body);
+
+        Assert.StartsWith("428 Precondition Required", message);
+        Assert.Contains("최신 데이터를 다시 불러온 뒤 리비전을 포함해 다시 시도하세요.", message);
+        Assert.DoesNotContain("expected_revision_required", message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("{\"error\"", message, StringComparison.OrdinalIgnoreCase);
+    }
+
 }

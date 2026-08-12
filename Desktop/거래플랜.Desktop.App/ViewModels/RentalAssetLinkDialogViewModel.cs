@@ -37,8 +37,9 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
     public int CurrentLinkedCount => _assetPool.Count(asset => asset.IsLinkedToCurrentProfile);
     public int SelectedCount => _assetPool.Count(asset => asset.IsSelected && !asset.IsLinkedToCurrentProfile);
     public int RelinkSelectionCount => _assetPool.Count(asset => asset.IsSelected && asset.IsLinkedToAnotherProfile);
-    public string SelectionSummary => $"현재 연결 {CurrentLinkedCount:N0}대 · 이번 추가 {SelectedCount:N0}대 · 다른 청구에서 이동 {RelinkSelectionCount:N0}대";
-    public string ConfirmButtonLabel => $"선택 장비 {SelectedCount:N0}대 추가";
+    public int ReferenceOnlySelectionCount => _assetPool.Count(asset => asset.IsSelected && asset.IsReferenceOnly);
+    public string SelectionSummary => $"현재 연결 {CurrentLinkedCount:N0}대 · 이번 추가 {SelectedCount:N0}대 · 다른 청구에서 이동 {RelinkSelectionCount:N0}대 · 참조 전용 {ReferenceOnlySelectionCount:N0}대";
+    public string ConfirmButtonLabel => $"선택 장비 {SelectedCount:N0}대 적용 및 저장";
     public bool CanConfirm => SelectedCount > 0;
 
     public RentalAssetLinkDialogViewModel(
@@ -129,6 +130,7 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
                     ManagementCompanyName = candidate.ManagementCompanyName,
                     AssetScopeDisplay = candidate.AssetScopeDisplay,
                     IsOutsideCurrentOffice = candidate.IsOutsideCurrentOffice,
+                    IsReferenceOnly = candidate.IsReferenceOnly,
                     Notes = source.Notes ?? string.Empty,
                     DepositText = source.DepositText,
                     MonthlyFee = source.MonthlyFee,
@@ -206,7 +208,7 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
         var cts = new CancellationTokenSource();
         _searchDebounceCts = cts;
         UiTaskHelper.Forget(
-            LoadAfterDelayAsync(delay, cts),
+            () => LoadAfterDelayAsync(delay, cts),
             "RENTAL",
             "렌탈 자산 연결 후보 다시 불러오기",
             ex =>
@@ -263,11 +265,12 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
         StatusMessage = _assetPool.Count == 0
             ? "연결 가능한 설치현황 장비가 없습니다."
             : SelectedCount > 0
-                ? $"선택 장비 {SelectedCount:N0}대를 현재 거래처에 연결할 예정입니다. {BuildScopeStatusSuffix()}"
+                ? $"선택 장비 {SelectedCount:N0}대를 적용 즉시 저장합니다. {BuildReferenceOnlyStatusSuffix()} {BuildScopeStatusSuffix()}"
                 : $"표시 장비 {Assets.Count:N0}대 / 전체 {_assetPool.Count:N0}대 ({BuildScopeStatusSuffix()})";
         OnPropertyChanged(nameof(SelectedCount));
         OnPropertyChanged(nameof(CurrentLinkedCount));
         OnPropertyChanged(nameof(RelinkSelectionCount));
+        OnPropertyChanged(nameof(ReferenceOnlySelectionCount));
         OnPropertyChanged(nameof(SelectionSummary));
         OnPropertyChanged(nameof(ConfirmButtonLabel));
         OnPropertyChanged(nameof(CanConfirm));
@@ -311,17 +314,18 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
 
             OnPropertyChanged(nameof(SelectedCount));
             OnPropertyChanged(nameof(RelinkSelectionCount));
+            OnPropertyChanged(nameof(ReferenceOnlySelectionCount));
             OnPropertyChanged(nameof(SelectionSummary));
             OnPropertyChanged(nameof(ConfirmButtonLabel));
             OnPropertyChanged(nameof(CanConfirm));
             StatusMessage = SelectedCount > 0
-                ? $"선택 장비 {SelectedCount:N0}대를 현재 거래처에 연결할 예정입니다. {BuildScopeStatusSuffix()}"
+                ? $"선택 장비 {SelectedCount:N0}대를 적용 즉시 저장합니다. {BuildReferenceOnlyStatusSuffix()} {BuildScopeStatusSuffix()}"
                 : $"표시 장비 {Assets.Count:N0}대 / 전체 {_assetPool.Count:N0}대 ({BuildScopeStatusSuffix()})";
             return;
         }
 
         if (SelectedCount > 0)
-            StatusMessage = $"선택 장비 {SelectedCount:N0}대의 상세정보를 저장 대기 중입니다.";
+            StatusMessage = $"선택 장비 {SelectedCount:N0}대의 상세정보를 적용 및 저장할 예정입니다. {BuildReferenceOnlyStatusSuffix()}";
     }
 
     private static RentalBillingAssetOption CloneAsset(RentalBillingAssetOption asset)
@@ -363,8 +367,14 @@ public sealed partial class RentalAssetLinkDialogViewModel : ObservableObject
             PaidSupplyItems = asset.PaidSupplyItems,
             IsLinkedToCurrentProfile = asset.IsLinkedToCurrentProfile,
             IsLinkedToAnotherProfile = asset.IsLinkedToAnotherProfile,
+            IsReferenceOnly = asset.IsReferenceOnly,
             IsSelected = asset.IsSelected
         };
+
+    private string BuildReferenceOnlyStatusSuffix()
+        => ReferenceOnlySelectionCount > 0
+            ? $"다른 업체 자산 {ReferenceOnlySelectionCount:N0}대는 청구 표시품목에서만 참조하며 원본 정보는 수정하지 않습니다."
+            : string.Empty;
 
     private string BuildLoadedStatusMessage()
     {

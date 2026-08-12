@@ -241,6 +241,68 @@ public sealed class ItemPriceGradePersistenceTests
     }
 
     [Fact]
+    public async Task DirtyItemPriceGrades_AdminSelectsOnlyRowsWithExistingWritableParent()
+    {
+        PrepareAppRoot("georaeplan-item-price-grade-dirty-parent-scope");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var parentItemId = Guid.NewGuid();
+            var parentBackedGradeId = Guid.NewGuid();
+            var orphanGradeId = Guid.NewGuid();
+            db.Items.Add(new LocalItem
+            {
+                Id = parentItemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "관리자 등급단가 부모 품목",
+                NameMatchKey = "관리자등급단가부모품목",
+                IsDirty = false
+            });
+            db.ItemPriceGrades.AddRange(
+                new LocalItemPriceGrade
+                {
+                    Id = parentBackedGradeId,
+                    ItemId = parentItemId,
+                    PriceGradeOptionId = Guid.NewGuid(),
+                    PriceGradeName = "부모 있음",
+                    UnitPrice = 10_000m,
+                    IsActive = true,
+                    IsDirty = true
+                },
+                new LocalItemPriceGrade
+                {
+                    Id = orphanGradeId,
+                    ItemId = Guid.NewGuid(),
+                    PriceGradeOptionId = Guid.NewGuid(),
+                    PriceGradeName = "부모 없음",
+                    UnitPrice = 20_000m,
+                    IsActive = true,
+                    IsDirty = true
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = CreateLocalStateService(db, session);
+
+            var selected = await local.GetDirtyItemPriceGradesForSyncAsync(session);
+
+            Assert.Equal(parentBackedGradeId, Assert.Single(selected).Id);
+            Assert.DoesNotContain(selected, row => row.Id == orphanGradeId);
+            Assert.Equal(1, await local.CountDirtyAsync(session));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task DeletePriceGradeOption_RejectsWhenItemCustomPriceUsesIt()
     {
         PrepareAppRoot("georaeplan-item-price-grade-delete-guard");

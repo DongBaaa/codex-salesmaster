@@ -285,13 +285,16 @@ function Set-NormalizedTemplateFromAssets {
         $totalMonthlyFee = [decimal](@($itemAssets | ForEach-Object { [Math]::Max([decimal]0, (Get-Decimal $_.monthlyFee)) }) | Measure-Object -Sum).Sum
         if ($totalMonthlyFee -le 0) { continue }
 
-        $distinctPositiveFees = @($itemAssets | ForEach-Object { [Math]::Max([decimal]0, (Get-Decimal $_.monthlyFee)) } | Where-Object { $_ -gt 0 } | Sort-Object -Unique)
+        $positiveFees = @($itemAssets | ForEach-Object { [Math]::Max([decimal]0, (Get-Decimal $_.monthlyFee)) } | Where-Object { $_ -gt 0 })
+        $distinctPositiveFees = @($positiveFees | Sort-Object -Unique)
         $lineMode = Get-StringValue $item.BillingLineMode
         if ([string]::IsNullOrWhiteSpace($lineMode)) { $lineMode = Get-StringValue $Profile.billingType }
         $shouldBundle = $itemAssets.Count -eq 1 -or [string]::Equals($lineMode, $defaultBundleMode, [System.StringComparison]::OrdinalIgnoreCase) -or $distinctPositiveFees.Count -ne 1
         $quantity = [decimal]1
         if (-not $shouldBundle) {
-            $quantity = [decimal]$itemAssets.Count
+            # Zero-fee assets still belong to the billing line, but they must not
+            # inflate the paid-unit quantity or the line amount.
+            $quantity = [decimal]$positiveFees.Count
         }
         $unitPrice = $totalMonthlyFee
         if (-not $shouldBundle) {

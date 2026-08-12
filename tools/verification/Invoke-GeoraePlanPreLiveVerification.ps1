@@ -28,6 +28,10 @@
     [string]$LinuxPcRoot = '',
     [string]$UpdateChannel = 'stable',
     [string]$UpdateHttpBaseUrl = '',
+    [ValidateSet('', 'AuditOnly', 'StrictBlock')]
+    [string]$ExpectedClientCompatibilityMode = '',
+    [ValidateRange(-1, 100)]
+    [int]$ExpectedClientCompatibilityEnabledPolicyCount = -1,
     [int]$ExpectedLinuxPcReleaseCount = 2,
     [int]$MinVisibleCustomers = 1,
     [int]$MinVisibleItems = 1,
@@ -87,6 +91,466 @@ function Convert-OutputText {
     }
 
     return (($Output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine)
+}
+
+function Assert-NoSensitiveCompatibilityField {
+    param(
+        $Value,
+        [string]$Path = 'clientCompatibility'
+    )
+
+    if ($null -eq $Value -or
+        $Value -is [string] -or
+        $Value.GetType().IsValueType) {
+        return
+    }
+    if ($Value -is [System.Collections.IEnumerable] -and
+        $Value -isnot [string]) {
+        $index = 0
+        foreach ($item in $Value) {
+            Assert-NoSensitiveCompatibilityField `
+                -Value $item `
+                -Path "$Path[$index]"
+            $index++
+        }
+        return
+    }
+
+    foreach ($property in $Value.PSObject.Properties) {
+        if ($property.Name -match
+            '^(?i:updateUrl|upgradeToken|accessToken|clientSecret|password|secret|token)$') {
+            throw "$Path contains sensitive field '$($property.Name)'."
+        }
+        Assert-NoSensitiveCompatibilityField `
+            -Value $property.Value `
+            -Path "$Path.$($property.Name)"
+    }
+}
+
+function ConvertTo-NormalizedClientCompatibilitySummary {
+    param(
+        $Summary,
+        [string]$Path = 'clientCompatibility'
+    )
+
+    Assert-NoSensitiveCompatibilityField -Value $Summary -Path $Path
+    $assertSchema = {
+        param(
+            $Object,
+            [string[]]$AllowedProperties,
+            [string]$ObjectPath)
+        if ($null -eq $Object -or
+            $Object -isnot [pscustomobject]) {
+            throw "$ObjectPath must be a JSON object."
+        }
+        foreach ($property in $Object.PSObject.Properties) {
+            if ($AllowedProperties -cnotcontains
+                $property.Name) {
+                throw "$ObjectPath contains unexpected field '$($property.Name)'."
+            }
+        }
+    }
+    & $assertSchema `
+        $Summary `
+        @(
+            'mode',
+            'configuredPolicyCount',
+            'enabledPolicyCount',
+            'policies') `
+        $Path
+    $required = {
+        param($Object, [string]$Name, [string]$ObjectPath)
+        if ($null -eq $Object) {
+            throw "$ObjectPath is missing."
+        }
+        $property = $Object.PSObject.Properties[$Name]
+        if ($null -eq $property) {
+            throw "$ObjectPath.$Name is missing."
+        }
+        return $property.Value
+    }
+    $boundedInteger = {
+        param(
+            $Value,
+            [string]$ValuePath,
+            [int64]$Minimum,
+            [int64]$Maximum,
+            [bool]$AllowNull)
+        if ($null -eq $Value) {
+            if ($AllowNull) {
+                return $null
+            }
+            throw "$ValuePath is missing."
+        }
+        if ($Value -isnot [byte] -and
+            $Value -isnot [sbyte] -and
+            $Value -isnot [int16] -and
+            $Value -isnot [uint16] -and
+            $Value -isnot [int32] -and
+            $Value -isnot [uint32] -and
+            $Value -isnot [int64]) {
+            throw "$ValuePath must be a JSON integer."
+        }
+        $parsed = [int64]$Value
+        if (
+            $parsed -lt $Minimum -or
+            $parsed -gt $Maximum) {
+            throw "$ValuePath must be an integer between $Minimum and $Maximum."
+        }
+        return $parsed
+    }
+    $version = {
+        param(
+            $Value,
+            [string]$ValuePath,
+            [bool]$AllowEmpty,
+            [bool]$RequirePositive)
+        if ($Value -isnot [string]) {
+            throw "$ValuePath must be a JSON string."
+        }
+        $text = $Value
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            if ($AllowEmpty) {
+                return $null
+            }
+            throw "$ValuePath must be a numeric System.Version value."
+        }
+        if (-not [string]::Equals(
+                $text,
+                $text.Trim(),
+                [System.StringComparison]::Ordinal)) {
+            throw "$ValuePath must not contain surrounding whitespace."
+        }
+        $parsed = $null
+        if (-not [Version]::TryParse($text, [ref]$parsed)) {
+            throw "$ValuePath must be a numeric System.Version value."
+        }
+        return $parsed
+    }
+
+    $modeValue = & $required $Summary 'mode' $Path
+    if ($modeValue -isnot [string] -or
+        -not [string]::Equals(
+            $modeValue,
+            $modeValue.Trim(),
+            [System.StringComparison]::Ordinal)) {
+        throw "$Path.mode must be exactly AuditOnly or StrictBlock."
+    }
+    $mode = if ([string]::Equals(
+            $modeValue,
+            'AuditOnly',
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        'AuditOnly'
+    }
+    elseif ([string]::Equals(
+            $modeValue,
+            'StrictBlock',
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        'StrictBlock'
+    }
+    else {
+        throw "$Path.mode must be exactly AuditOnly or StrictBlock."
+    }
+    $configuredPolicyCount =
+        & $boundedInteger `
+            (& $required $Summary 'configuredPolicyCount' $Path) `
+            "$Path.configuredPolicyCount" 0 100 $false
+    $enabledPolicyCount =
+        & $boundedInteger `
+            (& $required $Summary 'enabledPolicyCount' $Path) `
+            "$Path.enabledPolicyCount" 0 100 $false
+    if ($configuredPolicyCount -lt $enabledPolicyCount) {
+        throw "$Path.configuredPolicyCount cannot be lower than enabledPolicyCount."
+    }
+
+    $policiesProperty =
+        $Summary.PSObject.Properties['policies']
+    if ($null -eq $policiesProperty) {
+        throw "$Path.policies is missing."
+    }
+    $policiesValue = $policiesProperty.Value
+    if ($policiesValue -isnot [System.Array] -and
+        $policiesValue -isnot [System.Collections.IList]) {
+        throw "$Path.policies must be a JSON array."
+    }
+    $policies = @($policiesValue)
+    if ($policies.Count -ne $enabledPolicyCount) {
+        throw "$Path.policies count must equal enabledPolicyCount."
+    }
+    $normalizedPolicies =
+        New-Object System.Collections.Generic.List[object]
+    $policyKeys = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase)
+    for ($index = 0; $index -lt $policies.Count; $index++) {
+        $policy = $policies[$index]
+        $policyPath = "$Path.policies[$index]"
+        if ($null -eq $policy) {
+            throw "$policyPath cannot be null."
+        }
+        & $assertSchema `
+            $policy `
+            @(
+                'appId',
+                'platform',
+                'policyVersion',
+                'requiresUserAction',
+                'minimumVersion',
+                'minimumBuild',
+                'minimumProtocolVersion',
+                'latestVersion',
+                'latestBuild') `
+            $policyPath
+
+        $appIdValue =
+            & $required $policy 'appId' $policyPath
+        $platformValue =
+            & $required $policy 'platform' $policyPath
+        if ($appIdValue -isnot [string] -or
+            $platformValue -isnot [string]) {
+            throw "$policyPath appId/platform must be JSON strings."
+        }
+        $appId = $appIdValue
+        $platform = $platformValue
+        if ($appId -notmatch '^[A-Za-z0-9._-]{1,128}$') {
+            throw "$policyPath.appId must be a non-empty ASCII token."
+        }
+        if ($platform -notmatch '^[A-Za-z0-9._-]{1,32}$') {
+            throw "$policyPath.platform must be a non-empty ASCII token."
+        }
+        $key = "$($appId.ToLowerInvariant())/$($platform.ToLowerInvariant())"
+        if (-not $policyKeys.Add($key)) {
+            throw "$Path contains duplicate enabled policy key '$key'."
+        }
+
+        $policyVersion =
+            & $boundedInteger `
+                (& $required $policy 'policyVersion' $policyPath) `
+                "$policyPath.policyVersion" 1 ([int]::MaxValue) $false
+        $requiresUserAction =
+            & $required $policy 'requiresUserAction' $policyPath
+        if ($requiresUserAction -isnot [bool] -or
+            $requiresUserAction -ne $true) {
+            throw "$policyPath.requiresUserAction must be true."
+        }
+        $minimumVersion =
+            & $version `
+                (& $required $policy 'minimumVersion' $policyPath) `
+                "$policyPath.minimumVersion" $true $false
+        $minimumBuild =
+            & $boundedInteger `
+                (& $required $policy 'minimumBuild' $policyPath) `
+                "$policyPath.minimumBuild" 1 ([int]::MaxValue) $true
+        $minimumProtocolVersion =
+            & $boundedInteger `
+                (& $required $policy 'minimumProtocolVersion' $policyPath) `
+                "$policyPath.minimumProtocolVersion" 1 ([int]::MaxValue) $true
+        if ($null -eq $minimumVersion -and
+            $null -eq $minimumBuild -and
+            $null -eq $minimumProtocolVersion) {
+            throw "$policyPath must define at least one minimum version, build, or protocol."
+        }
+        $latestVersion =
+            & $version `
+                (& $required $policy 'latestVersion' $policyPath) `
+                "$policyPath.latestVersion" $false $false
+        if ($null -ne $minimumVersion -and
+            $latestVersion -lt $minimumVersion) {
+            throw "$policyPath.latestVersion cannot be lower than minimumVersion."
+        }
+        $latestBuild =
+            & $boundedInteger `
+                (& $required $policy 'latestBuild' $policyPath) `
+                "$policyPath.latestBuild" 1 ([int]::MaxValue) $false
+        if ($null -ne $minimumBuild -and
+            $latestBuild -lt $minimumBuild) {
+            throw "$policyPath.latestBuild cannot be lower than minimumBuild."
+        }
+
+        $normalizedPolicies.Add(
+            [pscustomobject][ordered]@{
+                appId = $appId.ToLowerInvariant()
+                platform = $platform.ToLowerInvariant()
+                policyVersion = [int]$policyVersion
+                requiresUserAction = $true
+                minimumVersion = if ($null -eq $minimumVersion) {
+                    ''
+                }
+                else {
+                    $minimumVersion.ToString()
+                }
+                minimumBuild = if ($null -eq $minimumBuild) {
+                    $null
+                }
+                else {
+                    [int]$minimumBuild
+                }
+                minimumProtocolVersion =
+                    if ($null -eq $minimumProtocolVersion) {
+                        $null
+                    }
+                    else {
+                        [int]$minimumProtocolVersion
+                    }
+                latestVersion = $latestVersion.ToString()
+                latestBuild = [int]$latestBuild
+            }) | Out-Null
+    }
+
+    if ($mode -eq 'StrictBlock') {
+        foreach ($requiredKey in @(
+            'kr.georaeplan.desktop/windows',
+            'kr.georaeplan.mobile/android')) {
+            if (-not $policyKeys.Contains($requiredKey)) {
+                throw "$Path StrictBlock requires unique enabled policy '$requiredKey'."
+            }
+        }
+    }
+
+    $normalized = [pscustomobject][ordered]@{
+        mode = $mode
+        configuredPolicyCount = [int]$configuredPolicyCount
+        enabledPolicyCount = [int]$enabledPolicyCount
+        policies = @(
+            $normalizedPolicies |
+                Sort-Object appId, platform)
+    }
+    return [pscustomobject]@{
+        Summary = $normalized
+        Canonical = (
+            $normalized |
+                ConvertTo-Json -Depth 8 -Compress)
+    }
+}
+
+function Test-ClientCompatibilitySummaryPair {
+    param(
+        $HealthSummary,
+        $ReadySummary,
+        [string]$ExpectedMode = '',
+        [int]$ExpectedEnabledPolicyCount = -1
+    )
+
+    if ($null -eq $HealthSummary -or
+        $null -eq $ReadySummary) {
+        throw 'healthz/readyz clientCompatibility summaries must both be present.'
+    }
+    $health =
+        ConvertTo-NormalizedClientCompatibilitySummary `
+            -Summary $HealthSummary `
+            -Path 'healthz.clientCompatibility'
+    $ready =
+        ConvertTo-NormalizedClientCompatibilitySummary `
+            -Summary $ReadySummary `
+            -Path 'readyz.clientCompatibility'
+    if (-not [string]::Equals(
+            $health.Canonical,
+            $ready.Canonical,
+            [System.StringComparison]::Ordinal)) {
+        throw 'healthz/readyz clientCompatibility summaries are not fully consistent.'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedMode) -and
+        -not [string]::Equals(
+            $ready.Summary.mode,
+            $ExpectedMode,
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "clientCompatibility mode differs from expected: expected=$ExpectedMode, actual=$($ready.Summary.mode)"
+    }
+    if ($ExpectedEnabledPolicyCount -ge 0 -and
+        $ready.Summary.enabledPolicyCount -ne
+        $ExpectedEnabledPolicyCount) {
+        throw "clientCompatibility enabled policy count differs from expected: expected=$ExpectedEnabledPolicyCount, actual=$($ready.Summary.enabledPolicyCount)"
+    }
+    return $ready.Summary
+}
+
+function Invoke-WithDesktopTestEnvironment {
+    param(
+        [string]$ProjectRoot,
+        [scriptblock]$Script
+    )
+
+    $resolvedProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot)
+    $projectDrive = [System.IO.Path]::GetPathRoot($resolvedProjectRoot)
+    if ([string]::IsNullOrWhiteSpace($projectDrive)) {
+        throw "프로젝트 드라이브를 확인하지 못했습니다: $ProjectRoot"
+    }
+    $projectDriveRoot = [System.IO.Path]::GetFullPath($projectDrive)
+
+    $sandboxParent = [System.IO.Path]::GetFullPath(
+        (Join-Path $projectDriveRoot 'DevCaches\georaeplan-v1-tests')
+    )
+    $sandboxRoot = [System.IO.Path]::GetFullPath(
+        (Join-Path $sandboxParent ([guid]::NewGuid().ToString('N')))
+    )
+    if (-not [string]::Equals(
+        [System.IO.Path]::GetPathRoot($sandboxRoot),
+        $projectDriveRoot,
+        [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not $sandboxRoot.StartsWith(
+            $sandboxParent.TrimEnd('\') + '\',
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "데스크톱 테스트 격리 경로가 프로젝트 드라이브 밖입니다: $sandboxRoot"
+    }
+
+    $sandboxValues = [ordered]@{
+        GEORAEPLAN_TEST_MODE = '1'
+        GEORAEPLAN_APP_ROOT = Join-Path $sandboxRoot 'AppRoot'
+        GEORAEPLAN_TEMP_ROOT = Join-Path $sandboxRoot 'Temp'
+        GEORAEPLAN_DOWNLOADS_ROOT = Join-Path $sandboxRoot 'Downloads'
+        LOCALAPPDATA = Join-Path $sandboxRoot 'LocalAppData'
+        APPDATA = Join-Path $sandboxRoot 'AppData'
+        TEMP = Join-Path $sandboxRoot 'Temp'
+        TMP = Join-Path $sandboxRoot 'Temp'
+    }
+    foreach ($pathName in @('GEORAEPLAN_APP_ROOT', 'GEORAEPLAN_TEMP_ROOT', 'GEORAEPLAN_DOWNLOADS_ROOT', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP')) {
+        $path = [System.IO.Path]::GetFullPath([string]$sandboxValues[$pathName])
+        if (-not [string]::Equals(
+            [System.IO.Path]::GetPathRoot($path),
+            $projectDriveRoot,
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "데스크톱 테스트 경로가 프로젝트 드라이브 밖으로 벗어났습니다: $pathName=$path"
+        }
+        $sandboxValues[$pathName] = $path
+    }
+
+    $previousValues = @{}
+    foreach ($name in $sandboxValues.Keys) {
+        $previousValues[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+    }
+
+    try {
+        foreach ($path in @(
+            $sandboxRoot,
+            $sandboxValues.GEORAEPLAN_APP_ROOT,
+            $sandboxValues.GEORAEPLAN_TEMP_ROOT,
+            $sandboxValues.GEORAEPLAN_DOWNLOADS_ROOT,
+            $sandboxValues.LOCALAPPDATA,
+            $sandboxValues.APPDATA)) {
+            New-Item -ItemType Directory -Force -Path $path | Out-Null
+        }
+
+        foreach ($name in $sandboxValues.Keys) {
+            [Environment]::SetEnvironmentVariable($name, [string]$sandboxValues[$name], 'Process')
+            $actualValue = [Environment]::GetEnvironmentVariable($name, 'Process')
+            if (-not [string]::Equals($actualValue, [string]$sandboxValues[$name], [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "데스크톱 테스트 환경 격리에 실패했습니다: $name"
+            }
+        }
+
+        & $Script
+    }
+    finally {
+        foreach ($name in $sandboxValues.Keys) {
+            [Environment]::SetEnvironmentVariable($name, $previousValues[$name], 'Process')
+        }
+        $verifiedCleanupRoot = [System.IO.Path]::GetFullPath($sandboxRoot)
+        $isVerifiedSandbox = $verifiedCleanupRoot.StartsWith(
+            $sandboxParent.TrimEnd('\') + '\',
+            [System.StringComparison]::OrdinalIgnoreCase)
+        if ($isVerifiedSandbox -and (Test-Path -LiteralPath $verifiedCleanupRoot)) {
+            Remove-Item -LiteralPath $verifiedCleanupRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Resolve-MarkdownResultStatus {
@@ -159,17 +623,49 @@ function Invoke-StepWithReport {
 }
 
 function Invoke-ApiHealthSummary {
-    param([string]$BaseUrl, [string]$Username, [string]$Password)
+    param(
+        [string]$BaseUrl,
+        [string]$Username,
+        [string]$Password,
+        [string]$ExpectedCompatibilityMode = '',
+        [int]$ExpectedCompatibilityEnabledPolicyCount = -1
+    )
 
-    $health = (Invoke-WebRequest -UseBasicParsing -Uri ($BaseUrl.TrimEnd('/') + '/healthz') -TimeoutSec 5).StatusCode
-    $ready = (Invoke-WebRequest -UseBasicParsing -Uri ($BaseUrl.TrimEnd('/') + '/readyz') -TimeoutSec 5).StatusCode
+    $healthResponse = Invoke-WebRequest -UseBasicParsing -Uri ($BaseUrl.TrimEnd('/') + '/healthz') -TimeoutSec 5
+    $readyResponse = Invoke-WebRequest -UseBasicParsing -Uri ($BaseUrl.TrimEnd('/') + '/readyz') -TimeoutSec 5
+    $healthPayload = $healthResponse.Content | ConvertFrom-Json
+    $readyPayload = $readyResponse.Content | ConvertFrom-Json
+    $healthCompatibility = $healthPayload.clientCompatibility
+    $readyCompatibility = $readyPayload.clientCompatibility
+    if ($healthResponse.StatusCode -ne 200 -or
+        [string]$healthPayload.status -ne 'ok' -or
+        $readyResponse.StatusCode -ne 200 -or
+        [string]$readyPayload.status -ne 'ready' -or
+        $null -eq $healthCompatibility -or
+        $null -eq $readyCompatibility) {
+        throw 'healthz/readyz 호환성 readiness 요약을 확인하지 못했습니다.'
+    }
+
+    $compatibility =
+        Test-ClientCompatibilitySummaryPair `
+            -HealthSummary $healthCompatibility `
+            -ReadySummary $readyCompatibility `
+            -ExpectedMode $ExpectedCompatibilityMode `
+            -ExpectedEnabledPolicyCount `
+                $ExpectedCompatibilityEnabledPolicyCount
+    $mode = [string]$compatibility.mode
+    $configuredPolicyCount =
+        [int]$compatibility.configuredPolicyCount
+    $enabledPolicyCount =
+        [int]$compatibility.enabledPolicyCount
+
     $loginPayload = @{ username = $Username; password = $Password } | ConvertTo-Json -Compress
     $login = Invoke-RestMethod -Method Post -Uri ($BaseUrl.TrimEnd('/') + '/auth/login') -ContentType 'application/json; charset=utf-8' -Body $loginPayload -TimeoutSec 15
     if ([string]::IsNullOrWhiteSpace([string]$login.token)) {
         throw '로그인 토큰을 받지 못했습니다.'
     }
 
-    return "health=$health, ready=$ready, login=OK"
+    return "health=$($healthResponse.StatusCode), ready=$($readyResponse.StatusCode), clientCompatibility.mode=$mode, configured=$configuredPolicyCount, enabled=$enabledPolicyCount, login=OK"
 }
 
 function Invoke-ObservationCheck {
@@ -404,7 +900,9 @@ function Invoke-DotnetTests {
         throw "솔루션 파일을 찾지 못했습니다: $solution"
     }
 
-    $output = & $DotnetExe test $solution -c Debug --no-restore --logger "trx;LogFileName=$LogFileName" 2>&1
+    $output = Invoke-WithDesktopTestEnvironment -ProjectRoot $ProjectRoot -Script {
+        & $DotnetExe test $solution -c Debug --no-restore --logger "trx;LogFileName=$LogFileName" 2>&1
+    }
     if ($LASTEXITCODE -ne 0) {
         throw (Convert-OutputText $output)
     }
@@ -1296,7 +1794,12 @@ $resolvedDotnet = Resolve-DotnetExe -ProjectRoot $ProjectRoot -ExplicitDotnetExe
 $script:Results = New-Object System.Collections.Generic.List[object]
 
 Invoke-Step -Name 'health-ready-login' -Script {
-    Invoke-ApiHealthSummary -BaseUrl $BaseUrl -Username $Username -Password $Password
+    Invoke-ApiHealthSummary `
+        -BaseUrl $BaseUrl `
+        -Username $Username `
+        -Password $Password `
+        -ExpectedCompatibilityMode $ExpectedClientCompatibilityMode `
+        -ExpectedCompatibilityEnabledPolicyCount $ExpectedClientCompatibilityEnabledPolicyCount
 }
 
 if (-not $SkipApiVisibilitySmoke) {

@@ -26,7 +26,7 @@ public sealed partial class SyncDiagnosticsViewModel
             InitialDirectory = AppPaths.UserDownloadsDir
         };
 
-        if (dialog.ShowDialog() != true)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) != true)
             return;
 
         IsBusy = true;

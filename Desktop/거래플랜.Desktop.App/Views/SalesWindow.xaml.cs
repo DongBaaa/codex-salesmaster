@@ -11,18 +11,28 @@ namespace 거래플랜.Desktop.App.Views;
 
 public partial class SalesWindow : Window
 {
+    private const double CompactWorkspaceHeightThreshold = 620d;
+
     private readonly SalesViewModel _vm;
     private readonly EntityEditSessionMonitor? _editSessionMonitor;
     private bool _allowCloseWithoutSave;
     private bool _closeInProgress;
+    private bool? _isCompactWorkspaceLayout;
+    private bool _showCompactDocumentSection;
 
     public SalesWindow(SalesViewModel vm)
     {
         InitializeComponent();
+        ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(this);
         _vm = vm;
         DataContext = vm;
         _vm.ConfirmRentalLinkedInvoiceEdit = ConfirmRentalLinkedInvoiceEdit;
-        Loaded += (_, _) => _editSessionMonitor?.Start();
+        Loaded += (_, _) =>
+        {
+            ApplyResponsiveWorkspaceLayout();
+            _editSessionMonitor?.Start();
+        };
+        SizeChanged += (_, _) => ApplyResponsiveWorkspaceLayout();
         Closed += (_, _) =>
         {
             _editSessionMonitor?.Dispose();
@@ -41,6 +51,58 @@ public partial class SalesWindow : Window
                     string.IsNullOrWhiteSpace(vm.CustomerName)
                         ? "전표 편집"
                         : $"{vm.CustomerName} 전표"));
+    }
+
+    private void ApplyResponsiveWorkspaceLayout()
+    {
+        if (ActualHeight <= 0d)
+            return;
+
+        var useCompactLayout = ActualHeight < CompactWorkspaceHeightThreshold;
+        if (_isCompactWorkspaceLayout == useCompactLayout)
+            return;
+
+        _isCompactWorkspaceLayout = useCompactLayout;
+        if (useCompactLayout)
+            _showCompactDocumentSection = false;
+
+        SalesCompactSectionSwitcher.Visibility = useCompactLayout
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        ApplyCompactSectionVisibility();
+    }
+
+    private void ApplyCompactSectionVisibility()
+    {
+        var useCompactLayout = _isCompactWorkspaceLayout == true;
+        SalesDocumentHeaderScrollViewer.Visibility =
+            !useCompactLayout || _showCompactDocumentSection
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        SalesLineEntryScrollViewer.Visibility =
+            !useCompactLayout || !_showCompactDocumentSection
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        ShowCompactDocumentSectionButton.IsEnabled =
+            !useCompactLayout || !_showCompactDocumentSection;
+        ShowCompactLineEntrySectionButton.IsEnabled =
+            !useCompactLayout || _showCompactDocumentSection;
+    }
+
+    private void ShowCompactDocumentSectionButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        _showCompactDocumentSection = true;
+        ApplyCompactSectionVisibility();
+    }
+
+    private void ShowCompactLineEntrySectionButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        _showCompactDocumentSection = false;
+        ApplyCompactSectionVisibility();
     }
 
     private bool ConfirmRentalLinkedInvoiceEdit(string title, string message)
@@ -187,7 +249,7 @@ public partial class SalesWindow : Window
             Owner = this
         };
 
-        if (dialog.ShowDialog() != true)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) != true)
             return;
 
         if (_vm.Lines.Any(line => !string.IsNullOrWhiteSpace(line.ItemName)))
@@ -308,14 +370,14 @@ public partial class SalesWindow : Window
                 var customerVm = new CustomerEditViewModel(_vm.LocalStateService, _vm.SessionState);
                 await customerVm.LoadAsync();
                 var customerWindow = new CustomerEditWindow(customerVm) { Owner = this };
-                customerWindow.ShowDialog();
+                DialogWindowCloseHelper.ShowDialog(customerWindow);
 
                 await _vm.ReloadCustomersAsync();
                 return BuildCustomerRows();
             })
         { Owner = this };
 
-        if (dlg.ShowDialog() == true && dlg.SelectedRow?.Tag is LocalCustomer selected)
+        if (DialogWindowCloseHelper.ShowDialog(dlg) == true && dlg.SelectedRow?.Tag is LocalCustomer selected)
         {
             _vm.SetCustomer(selected);
         }
@@ -459,7 +521,7 @@ public partial class SalesWindow : Window
                 inventoryVm.NewItemCommand.Execute(null);
 
                 var inventoryWindow = new InventoryWindow(inventoryVm) { Owner = this };
-                inventoryWindow.ShowDialog();
+                DialogWindowCloseHelper.ShowDialog(inventoryWindow);
 
                 await _vm.ReloadItemsAsync();
                 return BuildItemRows(_vm.GetAllItems());
@@ -468,7 +530,7 @@ public partial class SalesWindow : Window
 
         var dlg = new LookupWindow(title, rows, registerButtonText, registerAction) { Owner = this };
 
-        if (dlg.ShowDialog() == true && dlg.SelectedRow?.Tag is LocalItem selected)
+        if (DialogWindowCloseHelper.ShowDialog(dlg) == true && dlg.SelectedRow?.Tag is LocalItem selected)
         {
             _vm.ApplyInputItem(selected);
             _vm.StatusMessage = "상품을 선택해 입력했습니다.";

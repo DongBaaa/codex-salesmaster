@@ -162,6 +162,7 @@ public sealed class LocalItem : LocalSyncEntity
     public decimal PriceGradeC { get; set; }
     public DateOnly? LastPurchaseDate { get; set; }
     public DateOnly? LastSaleDate { get; set; }
+    public bool CatalogExtensionSyncPending { get; set; }
     public string SimpleMemo { get; set; } = string.Empty;
     public bool IsRental { get; set; }
     public bool IsSale { get; set; }

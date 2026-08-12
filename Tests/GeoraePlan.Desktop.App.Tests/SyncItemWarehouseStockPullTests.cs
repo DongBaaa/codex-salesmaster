@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Net.Http.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Data;
@@ -359,6 +360,269 @@ public sealed class SyncItemWarehouseStockPullTests
     }
 
     [Fact]
+    public async Task SyncPullPendingInventoryTransfer_KeepsCanonicalStockUntilLocalMutationRebuildsDerivedProjection()
+    {
+        PrepareAppRoot("georaeplan-sync-pending-transfer-derived-projection");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(
+                db,
+                new OfficeAccessService(),
+                new SyncRequestDispatcher(),
+                session);
+            var now = new DateTime(2026, 8, 1, 2, 30, 0, DateTimeKind.Utc);
+            var customerId = Guid.Parse("81810000-0000-0000-0000-000000000001");
+            var itemId = Guid.Parse("81810000-0000-0000-0000-000000000002");
+            var invoiceId = Guid.Parse("81810000-0000-0000-0000-000000000003");
+            var transferId = Guid.Parse("81810000-0000-0000-0000-000000000004");
+            var lineId = Guid.Parse("81810000-0000-0000-0000-000000000005");
+            const string marker = "MULTIPC-PULL-PENDING-DERIVED";
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "재고이동 pull 파생 검증 거래처",
+                NameMatchKey = "재고이동pull파생검증거래처"
+            });
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "재고이동 pull 파생 검증 품목",
+                NameMatchKey = "재고이동pull파생검증품목",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                PurchasePrice = 1000m,
+                CreatedAtUtc = now.AddDays(-1),
+                UpdatedAtUtc = now.AddDays(-1)
+            });
+            await db.SaveChangesAsync();
+
+            var savedInvoice = await local.SaveInvoiceAsync(new LocalInvoice
+            {
+                Id = invoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                SourceWarehouseCode = DomainConstants.WarehouseUsenetMain,
+                VoucherType = VoucherType.Purchase,
+                PurchaseReceivingRequired = true,
+                PurchaseReceivingStatus = InvoiceReceivingStatuses.Confirmed,
+                PurchaseReceivedAtUtc = now.AddMinutes(-30),
+                PurchaseReceivedByUsername = "sync-stock-admin",
+                InvoiceDate = new DateOnly(2026, 8, 1),
+                Lines =
+                {
+                    new LocalInvoiceLine
+                    {
+                        ItemId = itemId,
+                        ItemNameOriginal = "재고이동 pull 파생 검증 품목",
+                        ItemTrackingType = ItemTrackingTypes.Stock,
+                        Unit = "EA",
+                        Quantity = 5m,
+                        UnitPrice = 1000m,
+                        LineAmount = 5000m
+                    }
+                }
+            });
+            Assert.Equal(invoiceId, savedInvoice.Id);
+            var acknowledgedItem = await db.Items
+                .IgnoreQueryFilters()
+                .SingleAsync(item => item.Id == itemId);
+            acknowledgedItem.IsDirty = false;
+            acknowledgedItem.Revision = 65;
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            using var sync = CreateSyncService(db, session);
+            await InvokeApplyPullAsync(
+                sync,
+                new SyncPullResponse
+                {
+                    CurrentServerRevision = 70,
+                    ItemWarehouseStocks =
+                    {
+                        new ItemWarehouseStockDto
+                        {
+                            ItemId = itemId,
+                            WarehouseCode = DomainConstants.WarehouseUsenetMain,
+                            Quantity = 4m,
+                            UpdatedAtUtc = now,
+                            Revision = 69
+                        },
+                        new ItemWarehouseStockDto
+                        {
+                            ItemId = itemId,
+                            WarehouseCode = DomainConstants.WarehouseYeonsuMain,
+                            Quantity = 0m,
+                            UpdatedAtUtc = now,
+                            Revision = 70
+                        }
+                    },
+                    InventoryTransfers =
+                    {
+                        new InventoryTransferDto
+                        {
+                            Id = transferId,
+                            TenantCode = TenantScopeCatalog.UsenetGroup,
+                            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                            TransferNumber = "TR-PULL-PENDING-DERIVED",
+                            TransferDate = new DateOnly(2026, 8, 1),
+                            FromWarehouseCode = DomainConstants.WarehouseUsenetMain,
+                            ToWarehouseCode = DomainConstants.WarehouseYeonsuMain,
+                            TransferStatus = InventoryTransferStatusNormalizer.Pending,
+                            Memo = marker + "|INITIAL",
+                            CreatedByUsername = "sync-stock-admin",
+                            RequestedByUsername = "sync-stock-admin",
+                            RequestedAtUtc = now.AddMinutes(-5),
+                            LastSavedByUsername = "sync-stock-admin",
+                            LastSavedAtUtc = now.AddMinutes(-5),
+                            LastStatusChangedByUsername = "sync-stock-admin",
+                            LastStatusChangedAtUtc = now.AddMinutes(-5),
+                            CreatedAtUtc = now.AddMinutes(-5),
+                            UpdatedAtUtc = now,
+                            Revision = 70,
+                            Lines =
+                            {
+                                new InventoryTransferLineDto
+                                {
+                                    Id = lineId,
+                                    TransferId = transferId,
+                                    ItemId = itemId,
+                                    ItemNameOriginal = "재고이동 pull 파생 검증 품목",
+                                    Unit = "EA",
+                                    Quantity = 1m,
+                                    ReceivedQuantity = 1m,
+                                    QuantityDifference = 0m,
+                                    Remark = marker
+                                }
+                            }
+                        }
+                    }
+                });
+            db.ChangeTracker.Clear();
+
+            Assert.Equal(
+                4m,
+                await ReadWarehouseQuantityAsync(
+                    db,
+                    itemId,
+                    DomainConstants.WarehouseUsenetMain));
+            Assert.Equal(
+                0m,
+                await ReadWarehouseQuantityAsync(
+                    db,
+                    itemId,
+                    DomainConstants.WarehouseYeonsuMain));
+            Assert.Equal(
+                4m,
+                (await db.Items.IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .SingleAsync(item => item.Id == itemId)).CurrentStock);
+            Assert.Empty(
+                await db.InventoryMovements
+                    .AsNoTracking()
+                    .Where(movement => movement.Note.Contains(marker))
+                    .ToListAsync());
+            Assert.Equal(
+                5m,
+                await ReadLayerRemainingQuantityAsync(
+                    db,
+                    itemId,
+                    DomainConstants.WarehouseUsenetMain));
+
+            var pulled = await db.InventoryTransfers
+                .IgnoreQueryFilters()
+                .Include(transfer => transfer.Lines)
+                .SingleAsync(transfer => transfer.Id == transferId);
+            pulled.Memo = marker + "|B-WINS";
+            var saveResult = await local.SaveInventoryTransferAsync(
+                pulled,
+                session);
+            Assert.True(saveResult.Success, saveResult.Message);
+            db.ChangeTracker.Clear();
+
+            Assert.Equal(
+                4m,
+                await ReadWarehouseQuantityAsync(
+                    db,
+                    itemId,
+                    DomainConstants.WarehouseUsenetMain));
+            Assert.Equal(
+                0m,
+                await ReadWarehouseQuantityAsync(
+                    db,
+                    itemId,
+                    DomainConstants.WarehouseYeonsuMain));
+            var projectedMovement = Assert.Single(
+                await db.InventoryMovements
+                    .AsNoTracking()
+                    .Where(movement => movement.Note.Contains(marker))
+                    .ToListAsync());
+            Assert.Equal("TransferOutManual", projectedMovement.MovementType);
+            Assert.Equal(
+                DomainConstants.WarehouseUsenetMain,
+                projectedMovement.WarehouseCode);
+            Assert.Equal(-1m, projectedMovement.QuantityDelta);
+            Assert.Equal(
+                4m,
+                await ReadLayerRemainingQuantityAsync(
+                    db,
+                    itemId,
+                    DomainConstants.WarehouseUsenetMain));
+
+            var deleteResult = await local.DeleteInventoryTransferAsync(
+                transferId,
+                session);
+            Assert.True(deleteResult.Success, deleteResult.Message);
+            db.ChangeTracker.Clear();
+
+            Assert.Equal(
+                5m,
+                await ReadWarehouseQuantityAsync(
+                    db,
+                    itemId,
+                    DomainConstants.WarehouseUsenetMain));
+            Assert.Equal(
+                0m,
+                await ReadWarehouseQuantityAsync(
+                    db,
+                    itemId,
+                    DomainConstants.WarehouseYeonsuMain));
+            Assert.Empty(
+                await db.InventoryMovements
+                    .AsNoTracking()
+                    .Where(movement => movement.Note.Contains(marker))
+                    .ToListAsync());
+            Assert.Equal(
+                5m,
+                await ReadLayerRemainingQuantityAsync(
+                    db,
+                    itemId,
+                    DomainConstants.WarehouseUsenetMain));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "GEORAEPLAN_APP_ROOT",
+                null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SyncPullItemWarehouseStocks_RemovesServerMissingRowsAndPreservesDirtyItemRows()
     {
         PrepareAppRoot("georaeplan-sync-stock-pull-replace");
@@ -469,6 +733,93 @@ public sealed class SyncItemWarehouseStockPullTests
         finally
         {
             Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SyncPullItemWarehouseStocks_CompleteEmptySnapshotRemovesCleanStockAndZerosCurrentStock()
+    {
+        PrepareAppRoot(
+            "georaeplan-sync-stock-pull-complete-empty");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var itemId =
+                Guid.Parse(
+                    "81900000-0000-0000-0000-000000000003");
+            var now = new DateTime(
+                2026,
+                7,
+                31,
+                1,
+                5,
+                0,
+                DateTimeKind.Utc);
+            db.Items.Add(
+                new LocalItem
+                {
+                    Id = itemId,
+                    TenantCode =
+                        TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal =
+                        "Complete empty stock snapshot item",
+                    NameMatchKey =
+                        "COMPLETEEMPTYSTOCKSNAPSHOTITEM",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    IsSale = true,
+                    CurrentStock = 19m,
+                    CreatedAtUtc = now.AddDays(-1),
+                    UpdatedAtUtc = now.AddMinutes(-1),
+                    Revision = 19,
+                    IsDirty = false
+                });
+            db.ItemWarehouseStocks.Add(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemId,
+                    WarehouseCode =
+                        DomainConstants.WarehouseUsenetMain,
+                    Quantity = 19m,
+                    UpdatedAtUtc = now.AddMinutes(-1),
+                    Revision = 19
+                });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            using var sync = CreateSyncService(db, session);
+            await InvokeApplyPullAsync(
+                sync,
+                new SyncPullResponse
+                {
+                    CurrentServerRevision = 80
+                });
+
+            db.ChangeTracker.Clear();
+            Assert.False(
+                await db.ItemWarehouseStocks
+                    .AsNoTracking()
+                    .AnyAsync(stock => stock.ItemId == itemId));
+            var item = await db.Items
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == itemId);
+            Assert.Equal(0m, item.CurrentStock);
+            Assert.False(item.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "GEORAEPLAN_APP_ROOT",
+                null);
             SqliteConnection.ClearAllPools();
         }
     }
@@ -771,6 +1122,389 @@ public sealed class SyncItemWarehouseStockPullTests
         }
     }
 
+    [Fact]
+    public async Task TrySyncScopeAsync_OfficeItemEditor_SendsWarehouseStockWithDirtyItem()
+    {
+        PrepareAppRoot("georaeplan-sync-stock-selected-office-push");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session =
+                CreateOnlineOfficeItemEditorSession(
+                    OfficeCodeCatalog.Usenet);
+            var itemId =
+                Guid.Parse(
+                    "81920000-0000-0000-0000-000000000003");
+            var updatedAtUtc =
+                new DateTime(
+                    2026,
+                    7,
+                    30,
+                    12,
+                    30,
+                    0,
+                    DateTimeKind.Utc);
+            db.Items.Add(
+                new LocalItem
+                {
+                    Id = itemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal =
+                        "USENET selected scope stock item",
+                    NameMatchKey =
+                        "USENETSELECTEDSCOPSTOCKITEM",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    IsSale = true,
+                    CurrentStock = 12m,
+                    CreatedAtUtc = updatedAtUtc.AddDays(-1),
+                    UpdatedAtUtc = updatedAtUtc,
+                    Revision = 7,
+                    IsDirty = true
+                });
+            db.ItemWarehouseStocks.Add(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemId,
+                    WarehouseCode =
+                        DomainConstants.WarehouseUsenetMain,
+                    Quantity = 12m,
+                    UpdatedAtUtc = updatedAtUtc,
+                    Revision = 7
+                });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            var handler =
+                new CaptureSelectedOfficeStockPushHandler();
+            using var httpClient =
+                new HttpClient(handler)
+                {
+                    BaseAddress = new Uri("http://localhost/")
+                };
+            using var sync =
+                CreateSyncService(
+                    db,
+                    session,
+                    httpClient);
+
+            var result =
+                await sync.TrySyncScopeAsync(
+                    $"OFFICE:{OfficeCodeCatalog.Usenet}");
+
+            Assert.True(result.Attempted);
+            Assert.True(result.Succeeded);
+            Assert.True(result.UsedCurrentSession);
+            Assert.Equal(1, result.PendingCountBefore);
+            Assert.Equal(0, result.PendingCountAfter);
+
+            var pushRequest =
+                Assert.Single(handler.PushRequests);
+            Assert.Equal(
+                itemId,
+                Assert.Single(pushRequest.Items).Id);
+            var pushedStock =
+                Assert.Single(
+                    pushRequest.ItemWarehouseStocks);
+            Assert.Equal(itemId, pushedStock.ItemId);
+            Assert.Equal(
+                DomainConstants.WarehouseUsenetMain,
+                pushedStock.WarehouseCode);
+            Assert.Equal(12m, pushedStock.Quantity);
+            Assert.Empty(
+                pushRequest
+                    .ItemWarehouseStockSnapshotMarkers);
+
+            db.ChangeTracker.Clear();
+            Assert.False(
+                await db.Items
+                    .IgnoreQueryFilters()
+                    .Where(item => item.Id == itemId)
+                    .Select(item => item.IsDirty)
+                    .SingleAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "GEORAEPLAN_APP_ROOT",
+                null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task TrySyncScopeAsync_ZeroStock_SendsExplicitZeroRowWithoutCompletenessMarker()
+    {
+        PrepareAppRoot(
+            "georaeplan-sync-explicit-zero-stock-push");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session =
+                CreateOnlineOfficeItemEditorSession(
+                    OfficeCodeCatalog.Usenet);
+            var itemId =
+                Guid.Parse(
+                    "81920000-0000-0000-0000-000000000006");
+            var updatedAtUtc =
+                new DateTime(
+                    2026,
+                    7,
+                    30,
+                    12,
+                    35,
+                    0,
+                    DateTimeKind.Utc);
+            db.Items.Add(
+                new LocalItem
+                {
+                    Id = itemId,
+                    TenantCode =
+                        TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal =
+                        "USENET explicit zero stock item",
+                    NameMatchKey =
+                        "USENETEXPLICITZEROSTOCKITEM",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    IsSale = true,
+                    CurrentStock = 8m,
+                    CreatedAtUtc = updatedAtUtc.AddDays(-1),
+                    UpdatedAtUtc = updatedAtUtc,
+                    Revision = 5,
+                    IsDirty = false
+                });
+            db.ItemWarehouseStocks.Add(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemId,
+                    WarehouseCode =
+                        DomainConstants.WarehouseUsenetMain,
+                    Quantity = 8m,
+                    UpdatedAtUtc = updatedAtUtc,
+                    Revision = 5
+                });
+            await db.SaveChangesAsync();
+
+            var local =
+                new LocalStateService(
+                    db,
+                    new OfficeAccessService(),
+                    new SyncRequestDispatcher(),
+                    session);
+            await local.SetItemOfficeStockAsync(
+                itemId,
+                0m,
+                OfficeCodeCatalog.Usenet);
+            db.ChangeTracker.Clear();
+
+            var handler =
+                new CaptureSelectedOfficeStockPushHandler();
+            using var httpClient =
+                new HttpClient(handler)
+                {
+                    BaseAddress = new Uri("http://localhost/")
+                };
+            using var sync =
+                CreateSyncService(
+                    db,
+                    session,
+                    httpClient);
+
+            var result =
+                await sync.TrySyncScopeAsync(
+                    $"OFFICE:{OfficeCodeCatalog.Usenet}");
+
+            Assert.True(result.Succeeded);
+            var pushRequest =
+                Assert.Single(handler.PushRequests);
+            var pushedItem =
+                Assert.Single(pushRequest.Items);
+            Assert.Equal(itemId, pushedItem.Id);
+            Assert.Equal(0m, pushedItem.CurrentStock);
+            var pushedStock =
+                Assert.Single(
+                    pushRequest.ItemWarehouseStocks);
+            Assert.Equal(itemId, pushedStock.ItemId);
+            Assert.Equal(0m, pushedStock.Quantity);
+            Assert.Equal(5, pushedStock.Revision);
+            Assert.Empty(
+                pushRequest
+                    .ItemWarehouseStockSnapshotMarkers);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "GEORAEPLAN_APP_ROOT",
+                null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task TrySyncScopeAsync_AdminSelectedUsenetOffice_ExcludesCleanItworldStockSnapshot()
+    {
+        PrepareAppRoot(
+            "georaeplan-sync-stock-admin-selected-office-push");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            session.SetBusinessDatabase(
+                TenantScopeCatalog.UsenetGroup,
+                TenantScopeCatalog.GetDatabaseName(
+                    TenantScopeCatalog.UsenetGroup));
+            var usenetItemId =
+                Guid.Parse(
+                    "81920000-0000-0000-0000-000000000004");
+            var itworldItemId =
+                Guid.Parse(
+                    "81920000-0000-0000-0000-000000000005");
+            var updatedAtUtc =
+                new DateTime(
+                    2026,
+                    7,
+                    30,
+                    12,
+                    40,
+                    0,
+                    DateTimeKind.Utc);
+            db.Items.AddRange(
+                new LocalItem
+                {
+                    Id = usenetItemId,
+                    TenantCode =
+                        TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal =
+                        "USENET admin selected stock item",
+                    NameMatchKey =
+                        "USENETADMINSELECTEDSTOCKITEM",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    IsSale = true,
+                    CurrentStock = 15m,
+                    CreatedAtUtc = updatedAtUtc.AddDays(-1),
+                    UpdatedAtUtc = updatedAtUtc,
+                    Revision = 9,
+                    IsDirty = true
+                },
+                new LocalItem
+                {
+                    Id = itworldItemId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal =
+                        "ITWORLD clean stock item",
+                    NameMatchKey =
+                        "ITWORLDCLEANSTOCKITEM",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    IsSale = true,
+                    CurrentStock = 23m,
+                    CreatedAtUtc = updatedAtUtc.AddDays(-2),
+                    UpdatedAtUtc = updatedAtUtc.AddMinutes(-1),
+                    Revision = 11,
+                    IsDirty = false
+                });
+            db.ItemWarehouseStocks.AddRange(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = usenetItemId,
+                    WarehouseCode =
+                        DomainConstants.WarehouseUsenetMain,
+                    Quantity = 15m,
+                    UpdatedAtUtc = updatedAtUtc,
+                    Revision = 9
+                },
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itworldItemId,
+                    WarehouseCode =
+                        DomainConstants.WarehouseItworldMain,
+                    Quantity = 23m,
+                    UpdatedAtUtc =
+                        updatedAtUtc.AddMinutes(-1),
+                    Revision = 11
+                });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            var handler =
+                new CaptureSelectedOfficeStockPushHandler();
+            using var httpClient =
+                new HttpClient(handler)
+                {
+                    BaseAddress = new Uri("http://localhost/")
+                };
+            using var sync =
+                CreateSyncService(
+                    db,
+                    session,
+                    httpClient);
+
+            var result =
+                await sync.TrySyncScopeAsync(
+                    $"OFFICE:{OfficeCodeCatalog.Usenet}");
+
+            Assert.True(result.Attempted);
+            Assert.True(result.Succeeded);
+            Assert.True(result.UsedCurrentSession);
+            Assert.Equal(1, result.PendingCountBefore);
+            Assert.Equal(0, result.PendingCountAfter);
+
+            var pushRequest =
+                Assert.Single(handler.PushRequests);
+            Assert.Equal(
+                usenetItemId,
+                Assert.Single(pushRequest.Items).Id);
+            Assert.DoesNotContain(
+                pushRequest.Items,
+                item => item.Id == itworldItemId);
+
+            var pushedStock =
+                Assert.Single(
+                    pushRequest.ItemWarehouseStocks);
+            Assert.Equal(usenetItemId, pushedStock.ItemId);
+            Assert.Equal(
+                DomainConstants.WarehouseUsenetMain,
+                pushedStock.WarehouseCode);
+            Assert.Equal(15m, pushedStock.Quantity);
+            Assert.DoesNotContain(
+                pushRequest.ItemWarehouseStocks,
+                stock => stock.ItemId == itworldItemId);
+
+            Assert.Empty(
+                pushRequest
+                    .ItemWarehouseStockSnapshotMarkers);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "GEORAEPLAN_APP_ROOT",
+                null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static SessionState CreateAdminSession()
     {
         var session = new SessionState();
@@ -784,6 +1518,55 @@ public sealed class SyncItemWarehouseStockPullTests
                 TenantCode = TenantScopeCatalog.UsenetGroup,
                 OfficeCode = OfficeCodeCatalog.Usenet,
                 ScopeType = TenantScopeCatalog.ScopeAdmin
+            },
+            DateTime.UtcNow.AddDays(1));
+        return session;
+    }
+
+    private static async Task<decimal> ReadWarehouseQuantityAsync(
+        LocalDbContext db,
+        Guid itemId,
+        string warehouseCode)
+        => await db.ItemWarehouseStocks
+               .AsNoTracking()
+               .Where(stock =>
+                   stock.ItemId == itemId &&
+                   stock.WarehouseCode == warehouseCode)
+               .Select(stock => (decimal?)stock.Quantity)
+               .SingleOrDefaultAsync() ??
+           0m;
+
+    private static async Task<decimal> ReadLayerRemainingQuantityAsync(
+        LocalDbContext db,
+        Guid itemId,
+        string warehouseCode)
+        => (await db.StockLayers
+                .AsNoTracking()
+                .Where(layer =>
+                    layer.ItemId == itemId &&
+                    layer.WarehouseCode == warehouseCode)
+                .Select(layer => layer.RemainingQuantity)
+                .ToListAsync())
+            .Sum();
+
+    private static SessionState
+        CreateOnlineOfficeItemEditorSession(
+            string officeCode)
+    {
+        var session = new SessionState();
+        session.SetSession(
+            "test-token",
+            new UserSessionDto
+            {
+                UserId = Guid.NewGuid(),
+                Username =
+                    $"{officeCode.ToLowerInvariant()}-item-editor",
+                Role = DomainConstants.RoleUser,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = officeCode,
+                ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+                Permissions =
+                    [AppPermissionNames.ItemEdit]
             },
             DateTime.UtcNow.AddDays(1));
         return session;
@@ -822,6 +1605,33 @@ public sealed class SyncItemWarehouseStockPullTests
         return new SyncService(db, local, rental, api, session, dispatcher, diagnostics);
     }
 
+    private static SyncService CreateSyncService(
+        LocalDbContext db,
+        SessionState session,
+        HttpClient httpClient)
+    {
+        var dispatcher = new SyncRequestDispatcher();
+        var local =
+            new LocalStateService(
+                db,
+                new OfficeAccessService(),
+                dispatcher,
+                session);
+        var rental = new RentalStateService(db, local);
+        var diagnostics =
+            new SyncDiagnosticsService(session);
+        var api =
+            new ErpApiClient(httpClient, session);
+        return new SyncService(
+            db,
+            local,
+            rental,
+            api,
+            session,
+            dispatcher,
+            diagnostics);
+    }
+
     private static Task InvokeApplyPullAsync(SyncService sync, SyncPullResponse pull)
     {
         var method = typeof(SyncService).GetMethod("ApplyPullAsync", BindingFlags.Instance | BindingFlags.NonPublic)
@@ -848,5 +1658,88 @@ public sealed class SyncItemWarehouseStockPullTests
         var method = typeof(SyncService).GetMethod("LoadInventoryTrackedItemWarehouseStocksForPushAsync", BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new MissingMethodException(nameof(SyncService), "LoadInventoryTrackedItemWarehouseStocksForPushAsync");
         return await (Task<List<LocalItemWarehouseStock>>)method.Invoke(sync, [CancellationToken.None])!;
+    }
+
+    private sealed class CaptureSelectedOfficeStockPushHandler
+        : HttpMessageHandler
+    {
+        public List<SyncPushRequest> PushRequests { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (!request.RequestUri!.AbsolutePath.Equals(
+                    "/sync/push",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return new HttpResponseMessage(
+                    System.Net.HttpStatusCode.NotFound);
+            }
+
+            var pushRequest =
+                await request.Content!
+                    .ReadFromJsonAsync<SyncPushRequest>(
+                        cancellationToken:
+                            cancellationToken);
+            if (pushRequest is null)
+            {
+                throw new InvalidOperationException(
+                    "Expected a sync push request.");
+            }
+
+            PushRequests.Add(pushRequest);
+            var acceptedAtUtc =
+                new DateTime(
+                    2026,
+                    7,
+                    30,
+                    12,
+                    31,
+                    0,
+                    DateTimeKind.Utc);
+            return new HttpResponseMessage(
+                System.Net.HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(
+                    new SyncPushResult
+                    {
+                        AcceptedCount =
+                            pushRequest.Items.Count,
+                        CurrentServerRevision = 20,
+                        AcceptedRevisions =
+                            pushRequest.Items
+                                .Select(
+                                    item =>
+                                        new SyncAcceptedRevisionDto
+                                        {
+                                            EntityName =
+                                                nameof(LocalItem),
+                                            EntityId = item.Id,
+                                            Revision =
+                                                Math.Max(
+                                                    20,
+                                                    item.Revision +
+                                                    1),
+                                            UpdatedAtUtc =
+                                                acceptedAtUtc
+                                        })
+                                .ToList(),
+                        AcceptedItemWarehouseStockKeys =
+                            pushRequest
+                                .ItemWarehouseStocks
+                                .Select(
+                                    stock =>
+                                        new SyncAcceptedItemWarehouseStockKeyDto
+                                        {
+                                            ItemId =
+                                                stock.ItemId,
+                                            WarehouseCode =
+                                                stock.WarehouseCode
+                                        })
+                                .ToList()
+                    })
+            };
+        }
     }
 }

@@ -2,11 +2,31 @@
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.IO;
 using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
+
+public sealed class AmbiguousMutationOutcomeException : HttpRequestException
+{
+    public AmbiguousMutationOutcomeException(
+        string operationName,
+        Exception innerException,
+        HttpStatusCode? responseStatusCode = null)
+        : base(
+            $"{operationName}: 요청을 한 번 전송했지만 서버 반영 결과를 확정할 수 없습니다.",
+            innerException,
+            responseStatusCode)
+    {
+        OperationName = operationName;
+        ResponseStatusCode = responseStatusCode;
+    }
+
+    public string OperationName { get; }
+    public HttpStatusCode? ResponseStatusCode { get; }
+}
 
 /// <summary>
 /// Thin wrapper around the 거래플랜 server REST API.
@@ -22,13 +42,23 @@ public sealed class ErpApiClient
 
     private readonly HttpClient _http;
     private readonly SessionState _session;
+    private readonly LocalStateService? _localState;
+    private readonly IDesktopUpgradeRequiredObserver? _upgradeObserver;
     private readonly SemaphoreSlim _sessionRefreshLock = new(1, 1);
     private DateTime _lastSessionRefreshFailureAtUtc = DateTime.MinValue;
 
-    public ErpApiClient(HttpClient http, SessionState session)
+    public ErpApiClient(
+        HttpClient http,
+        SessionState session,
+        LocalStateService? localState = null,
+        DesktopClientIdentityProvider? clientIdentityProvider = null,
+        IDesktopUpgradeRequiredObserver? upgradeObserver = null)
     {
         _http = http;
         _session = session;
+        _localState = localState;
+        _upgradeObserver = upgradeObserver;
+        (clientIdentityProvider ?? new DesktopClientIdentityProvider()).Apply(_http);
 
         if (_http.Timeout != Timeout.InfiniteTimeSpan)
             _http.Timeout = Timeout.InfiniteTimeSpan;
@@ -68,6 +98,12 @@ public sealed class ErpApiClient
 
     // ── Auth ──────────────────────────────────────────────────────────────────
     public async Task<LoginResponse?> LoginAsync(string username, string password, CancellationToken ct = default)
+        => (await LoginWithOutcomeAsync(username, password, ct)).Response;
+
+    internal async Task<LoginAttemptOutcome> LoginWithOutcomeAsync(
+        string username,
+        string password,
+        CancellationToken ct = default)
     {
         const string operationName = "로그인(auth/login)";
         Exception? lastException = null;
@@ -86,10 +122,20 @@ public sealed class ErpApiClient
                     timeoutCts.Token);
 
                 if (response.IsSuccessStatusCode)
-                    return await response.Content.ReadFromJsonAsync<LoginResponse>(timeoutCts.Token);
+                    return new LoginAttemptOutcome(
+                        await response.Content.ReadFromJsonAsync<LoginResponse>(timeoutCts.Token),
+                        response.StatusCode);
 
                 if (response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-                    return null;
+                    return new LoginAttemptOutcome(null, response.StatusCode);
+
+                if (response.StatusCode == HttpStatusCode.UpgradeRequired)
+                {
+                    throw await CreateFailureExceptionAsync(
+                        operationName,
+                        response,
+                        timeoutCts.Token);
+                }
 
                 var message = await BuildFailureMessageAsync(response, timeoutCts.Token);
                 var retryable = ShouldRetry(response.StatusCode) && attempt < MaxRetryCount;
@@ -99,6 +145,11 @@ public sealed class ErpApiClient
                 AppLogger.Warn("API", $"{operationName} 재시도 {attempt}/{MaxRetryCount}: {message}");
                 await Task.Delay(delay, ct);
                 delay += delay;
+            }
+            catch (OperationCanceledException) when (
+                ct.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex) when (IsTransient(ex, ct) && attempt < MaxRetryCount)
             {
@@ -114,7 +165,9 @@ public sealed class ErpApiClient
             }
         }
 
-        if (lastException is ExpectedRevisionConflictException)
+        if (lastException is
+            ExpectedRevisionConflictException or
+            DesktopClientUpgradeRequiredException)
             ExceptionDispatchInfo.Capture(lastException).Throw();
 
         throw new HttpRequestException(
@@ -122,6 +175,10 @@ public sealed class ErpApiClient
             lastException,
             ResolveHttpStatusCode(lastException));
     }
+
+    internal sealed record LoginAttemptOutcome(
+        LoginResponse? Response,
+        HttpStatusCode? StatusCode);
 
     public async Task<LoginResponse?> RefreshSessionAsync(CancellationToken ct = default)
     {
@@ -148,6 +205,14 @@ public sealed class ErpApiClient
                 if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
                     return null;
 
+                if (response.StatusCode == HttpStatusCode.UpgradeRequired)
+                {
+                    throw await CreateFailureExceptionAsync(
+                        operationName,
+                        response,
+                        timeoutCts.Token);
+                }
+
                 var message = await BuildFailureMessageAsync(response, timeoutCts.Token);
                 var retryable = ShouldRetry(response.StatusCode) && attempt < MaxRetryCount;
                 if (!retryable)
@@ -156,6 +221,10 @@ public sealed class ErpApiClient
                 AppLogger.Warn("AUTH", $"{operationName} 재시도 {attempt}/{MaxRetryCount}: {message}");
                 await Task.Delay(delay, ct);
                 delay += delay;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex) when (IsTransient(ex, ct) && attempt < MaxRetryCount)
             {
@@ -170,6 +239,9 @@ public sealed class ErpApiClient
                 break;
             }
         }
+
+        if (lastException is DesktopClientUpgradeRequiredException)
+            ExceptionDispatchInfo.Capture(lastException).Throw();
 
         throw new HttpRequestException(
             $"{operationName} 실패 (최대 재시도 {MaxRetryCount}회): {lastException?.Message}",
@@ -194,33 +266,38 @@ public sealed class ErpApiClient
 
     public async Task<UserAccountDto?> CreateUserAsync(CreateUserRequest request, CancellationToken ct = default)
     {
-        return await ExecuteWithRetryAsync(
+        return await ExecuteNonIdempotentSingleDispatchAsync(
             operationName: "사용자 생성(users)",
             sendAsync: async token =>
             {
                 SetAuthHeader(includeBusinessDatabaseHeader: false);
                 return await _http.PostAsJsonAsync("users", request, token);
             },
-            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<UserAccountDto>(token),
+            readAsync: async (resp, token) => ValidateCreatedUserResponse(
+                await resp.Content.ReadFromJsonAsync<UserAccountDto>(token),
+                request),
             ct);
     }
 
     public async Task<UserAccountDto?> UpdateUserAsync(Guid userId, UpdateUserRequest request, CancellationToken ct = default)
     {
-        return await ExecuteWithRetryAsync(
+        return await ExecuteNonIdempotentSingleDispatchAsync(
             operationName: "사용자 수정(users)",
             sendAsync: async token =>
             {
                 SetAuthHeader(includeBusinessDatabaseHeader: false);
                 return await _http.PutAsJsonAsync($"users/{userId}", request, token);
             },
-            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<UserAccountDto>(token),
+            readAsync: async (resp, token) => ValidateUpdatedUserResponse(
+                await resp.Content.ReadFromJsonAsync<UserAccountDto>(token),
+                userId,
+                request),
             ct);
     }
 
     public async Task UpdateUserPasswordAsync(Guid userId, UpdateUserPasswordRequest request, CancellationToken ct = default)
     {
-        await ExecuteWithRetryAsync(
+        await ExecuteNonIdempotentSingleDispatchAsync(
             operationName: "사용자 비밀번호 수정(users/password)",
             sendAsync: async token =>
             {
@@ -233,7 +310,7 @@ public sealed class ErpApiClient
 
     public async Task DeleteUserAsync(Guid userId, long? expectedRevision = null, CancellationToken ct = default)
     {
-        await ExecuteWithRetryAsync(
+        await ExecuteNonIdempotentSingleDispatchAsync(
             operationName: "사용자 삭제(users)",
             sendAsync: async token =>
             {
@@ -244,81 +321,214 @@ public sealed class ErpApiClient
             ct);
     }
 
-    public async Task<TenantConfigurationSnapshotDto?> GetTenantConfigurationAsync(CancellationToken ct = default)
+    private static UserAccountDto ValidateCreatedUserResponse(
+        UserAccountDto? response,
+        CreateUserRequest request)
+    {
+        if (response is null ||
+            response.Id == Guid.Empty ||
+            response.Revision <= 0 ||
+            !UserResponseFieldsMatch(
+                response,
+                request.Username,
+                request.Role,
+                request.TenantCode,
+                request.OfficeCode,
+                request.ScopeType,
+                request.IsActive,
+                request.Permissions))
+        {
+            throw new InvalidDataException(
+                "사용자 생성 응답의 ID, revision 또는 사용자 필드가 요청과 일치하지 않습니다.");
+        }
+
+        return response;
+    }
+
+    private static UserAccountDto ValidateUpdatedUserResponse(
+        UserAccountDto? response,
+        Guid expectedUserId,
+        UpdateUserRequest request)
+    {
+        if (response is null ||
+            response.Id != expectedUserId ||
+            response.Revision <= request.ExpectedRevision ||
+            !UserResponseFieldsMatch(
+                response,
+                request.Username,
+                request.Role,
+                request.TenantCode,
+                request.OfficeCode,
+                request.ScopeType,
+                request.IsActive,
+                request.Permissions))
+        {
+            throw new InvalidDataException(
+                "사용자 수정 응답의 ID, revision 또는 사용자 필드가 요청과 일치하지 않습니다.");
+        }
+
+        return response;
+    }
+
+    private static bool UserResponseFieldsMatch(
+        UserAccountDto response,
+        string username,
+        string role,
+        string tenantCode,
+        string officeCode,
+        string scopeType,
+        bool isActive,
+        IEnumerable<string> permissions)
+    {
+        if (!TenantScopeCatalog.TryNormalizeTenantCode(response.TenantCode, out var actualTenantCode) ||
+            !OfficeCodeCatalog.TryNormalizeOfficeCode(response.OfficeCode, out var actualOfficeCode) ||
+            !OfficeCodeCatalog.TryNormalizeOfficeCode(officeCode, out var expectedOfficeCode) ||
+            !TenantScopeCatalog.TryNormalizeScopeType(response.ScopeType, out var actualScopeType) ||
+            !TenantScopeCatalog.TryNormalizeScopeType(scopeType, out var expectedScopeType))
+        {
+            return false;
+        }
+
+        var expectedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            tenantCode,
+            officeCode);
+        var expectedRole = string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase)
+            ? "Admin"
+            : "User";
+        var expectedPermissions = permissions
+            .Where(permission => !string.IsNullOrWhiteSpace(permission))
+            .Select(permission => permission.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var actualPermissions = response.Permissions?
+            .Where(permission => !string.IsNullOrWhiteSpace(permission))
+            .Select(permission => permission.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return string.Equals(response.Username, username.Trim(), StringComparison.Ordinal) &&
+               string.Equals(response.Role, expectedRole, StringComparison.Ordinal) &&
+               response.IsActive == isActive &&
+               string.Equals(actualTenantCode, expectedTenantCode, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(actualOfficeCode, expectedOfficeCode, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(actualScopeType, expectedScopeType, StringComparison.OrdinalIgnoreCase) &&
+               actualPermissions is not null &&
+               actualPermissions.SetEquals(expectedPermissions);
+    }
+
+    public async Task<TenantConfigurationSnapshotDto?> GetTenantConfigurationAsync(
+        bool includeInactive = false,
+        CancellationToken ct = default)
     {
         return await ExecuteWithRetryAsync(
             operationName: "업체/데이터 권한 조회(tenant-settings)",
             sendAsync: async token =>
             {
                 SetAuthHeader(includeBusinessDatabaseHeader: false);
-                return await _http.GetAsync("tenant-settings", token);
+                var path = includeInactive
+                    ? "tenant-settings?includeInactive=true"
+                    : "tenant-settings";
+                return await _http.GetAsync(path, token);
             },
-            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<TenantConfigurationSnapshotDto>(token),
+            readAsync: static (resp, token) => ReadRequiredJsonAsync<TenantConfigurationSnapshotDto>(
+                resp,
+                token,
+                "업체/데이터 권한 조회(tenant-settings)"),
             ct);
     }
 
     public async Task<TenantDefinitionDto?> UpdateTenantDefinitionAsync(string tenantCode, UpdateTenantDefinitionRequest request, CancellationToken ct = default)
     {
-        return await ExecuteWithRetryAsync(
+        var canonicalTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(tenantCode);
+        return await ExecuteNonIdempotentSingleDispatchAsync(
             operationName: "업체권역 저장(tenant-settings/tenants)",
             sendAsync: async token =>
             {
                 SetAuthHeader(includeBusinessDatabaseHeader: false);
-                return await _http.PutAsJsonAsync($"tenant-settings/tenants/{Uri.EscapeDataString(tenantCode)}", request, token);
+                return await _http.PutAsJsonAsync($"tenant-settings/tenants/{Uri.EscapeDataString(canonicalTenantCode)}", request, token);
             },
-            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<TenantDefinitionDto>(token),
+            readAsync: async (resp, token) => ValidateTenantMutationResponse(
+                (await ReadRequiredJsonAsync<TenantDefinitionDto>(
+                    resp,
+                    token,
+                    "업체권역 저장(tenant-settings/tenants)"))!,
+                canonicalTenantCode,
+                request),
             ct);
     }
 
     public async Task<TenantOfficeDefinitionDto?> UpdateTenantOfficeDefinitionAsync(string officeCode, UpdateTenantOfficeDefinitionRequest request, CancellationToken ct = default)
     {
-        return await ExecuteWithRetryAsync(
+        var canonicalOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode);
+        return await ExecuteNonIdempotentSingleDispatchAsync(
             operationName: "지점 정의 저장(tenant-settings/offices)",
             sendAsync: async token =>
             {
                 SetAuthHeader(includeBusinessDatabaseHeader: false);
-                return await _http.PutAsJsonAsync($"tenant-settings/offices/{Uri.EscapeDataString(officeCode)}", request, token);
+                return await _http.PutAsJsonAsync($"tenant-settings/offices/{Uri.EscapeDataString(canonicalOfficeCode)}", request, token);
             },
-            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<TenantOfficeDefinitionDto>(token),
+            readAsync: async (resp, token) => ValidateOfficeMutationResponse(
+                (await ReadRequiredJsonAsync<TenantOfficeDefinitionDto>(
+                    resp,
+                    token,
+                    "지점 정의 저장(tenant-settings/offices)"))!,
+                canonicalOfficeCode,
+                request),
             ct);
     }
 
     public async Task<DataSharingPolicyDto?> CreateSharingPolicyAsync(UpsertDataSharingPolicyRequest request, CancellationToken ct = default)
     {
-        return await ExecuteWithRetryAsync(
+        return await ExecuteNonIdempotentSingleDispatchAsync(
             operationName: "연동 정책 생성(tenant-settings/sharing-policies)",
             sendAsync: async token =>
             {
                 SetAuthHeader(includeBusinessDatabaseHeader: false);
                 return await _http.PostAsJsonAsync("tenant-settings/sharing-policies", request, token);
             },
-            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<DataSharingPolicyDto>(token),
+            readAsync: async (resp, token) => ValidateSharingPolicyMutationResponse(
+                (await ReadRequiredJsonAsync<DataSharingPolicyDto>(
+                    resp,
+                    token,
+                    "연동 정책 생성(tenant-settings/sharing-policies)"))!,
+                expectedPolicyId: null,
+                request),
             ct);
     }
 
     public async Task<DataSharingPolicyDto?> UpdateSharingPolicyAsync(Guid policyId, UpsertDataSharingPolicyRequest request, CancellationToken ct = default)
     {
-        return await ExecuteWithRetryAsync(
+        return await ExecuteNonIdempotentSingleDispatchAsync(
             operationName: "연동 정책 저장(tenant-settings/sharing-policies)",
             sendAsync: async token =>
             {
                 SetAuthHeader(includeBusinessDatabaseHeader: false);
                 return await _http.PutAsJsonAsync($"tenant-settings/sharing-policies/{policyId}", request, token);
             },
-            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<DataSharingPolicyDto>(token),
+            readAsync: async (resp, token) => ValidateSharingPolicyMutationResponse(
+                (await ReadRequiredJsonAsync<DataSharingPolicyDto>(
+                    resp,
+                    token,
+                    "연동 정책 저장(tenant-settings/sharing-policies)"))!,
+                policyId,
+                request),
             ct);
     }
 
     public async Task DeleteSharingPolicyAsync(Guid policyId, long? expectedRevision = null, CancellationToken ct = default)
     {
-        await ExecuteWithRetryAsync(
+        await ExecuteNonIdempotentSingleDispatchAsync(
             operationName: "연동 정책 삭제(tenant-settings/sharing-policies)",
             sendAsync: async token =>
             {
                 SetAuthHeader(includeBusinessDatabaseHeader: false);
                 return await _http.DeleteAsync(WithExpectedRevision($"tenant-settings/sharing-policies/{policyId}", expectedRevision), token);
             },
-            readAsync: static (_, _) => Task.FromResult<object?>(new object()),
+            readAsync: async (resp, token) => ValidateDeletedSharingPolicyResponse(
+                (await ReadRequiredJsonAsync<DataSharingPolicyDto>(
+                    resp,
+                    token,
+                    "연동 정책 삭제(tenant-settings/sharing-policies)"))!,
+                policyId,
+                expectedRevision),
             ct);
     }
 
@@ -379,6 +589,43 @@ public sealed class ErpApiClient
                 token,
                 "동기화 업로드(sync/push)"),
             ct);
+    }
+
+    public async Task<ItemDuplicateMergePreviewDto?> PreviewItemDuplicateMergeAsync(
+        ItemDuplicateMergePreviewRequestDto request,
+        CancellationToken ct = default)
+    {
+        return await ExecuteWithRetryAsync(
+            operationName: "품목 중복 병합 사전검증(items/duplicate-merge/preview)",
+            sendAsync: async token =>
+            {
+                SetAuthHeader(includeBusinessDatabaseHeader: true);
+                return await _http.PostAsJsonAsync("items/duplicate-merge/preview", request, token);
+            },
+            readAsync: static (resp, token) => ReadRequiredJsonAsync<ItemDuplicateMergePreviewDto>(
+                resp,
+                token,
+                "품목 중복 병합 사전검증(items/duplicate-merge/preview)"),
+            ct);
+    }
+
+    public async Task<ItemDuplicateMergeResultDto?> ExecuteItemDuplicateMergeAsync(
+        ItemDuplicateMergeRequestDto request,
+        CancellationToken ct = default)
+    {
+        return await ExecuteWithRetryAsync(
+            operationName: "품목 중복 병합(items/duplicate-merge)",
+            sendAsync: async token =>
+            {
+                SetAuthHeader(includeBusinessDatabaseHeader: true);
+                return await _http.PostAsJsonAsync("items/duplicate-merge", request, token);
+            },
+            readAsync: static (resp, token) => ReadRequiredJsonAsync<ItemDuplicateMergeResultDto>(
+                resp,
+                token,
+                "품목 중복 병합(items/duplicate-merge)"),
+            ct,
+            preserveAmbiguousDispatch: true);
     }
 
     public async Task<SyncStatusDto?> GetSyncStatusAsync(CancellationToken ct = default)
@@ -629,19 +876,124 @@ public sealed class ErpApiClient
         string? businessDatabaseNameOverride,
         CancellationToken ct = default)
     {
-        return await ExecuteWithRetryAsync(
+        ArgumentNullException.ThrowIfNull(items);
+        var requestItems = items
+            .Select(item => new RecycleBinMutationTargetDto
+            {
+                EntityId = item.EntityId,
+                Kind = item.Kind,
+                ExpectedRevision = item.ExpectedRevision
+            })
+            .ToList();
+
+        return await ExecuteNonIdempotentSingleDispatchAsync(
             operationName: "휴지통 복원(recycle-bin/restore)",
             sendAsync: async token =>
             {
                 SetAuthHeader(includeBusinessDatabaseHeader: true, businessDatabaseNameOverride);
                 return await _http.PostAsJsonAsync(
                     "recycle-bin/restore",
-                    new RecycleBinMutationRequest { Items = items.ToList() },
+                    new RecycleBinMutationRequest { Items = requestItems },
                     token);
             },
-            readAsync: static (resp, token) => resp.Content.ReadFromJsonAsync<RecycleBinMutationResultDto>(token),
+            readAsync: async (resp, token) =>
+            {
+                var result = await resp.Content.ReadFromJsonAsync<RecycleBinMutationResultDto>(token);
+                EnsureDefinitiveRecycleBinRestoreReceipt(requestItems, result);
+                return result;
+            },
             ct);
     }
+
+    private static void EnsureDefinitiveRecycleBinRestoreReceipt(
+        IReadOnlyList<RecycleBinMutationTargetDto> requestItems,
+        RecycleBinMutationResultDto? result)
+    {
+        if (result is null ||
+            result.Results is null ||
+            result.Messages is null)
+        {
+            throw new InvalidDataException(
+                "휴지통 복원 응답의 항목별 처리 결과 구조가 비어 있습니다.");
+        }
+
+        var expectedKeys = new HashSet<(Guid EntityId, string Kind)>();
+        foreach (var requestItem in requestItems)
+        {
+            var key = (
+                EntityId: requestItem.EntityId,
+                Kind: NormalizeRecycleBinMutationKind(requestItem.Kind));
+            if (key.EntityId == Guid.Empty ||
+                string.IsNullOrWhiteSpace(key.Kind) ||
+                !expectedKeys.Add(key))
+            {
+                throw new InvalidDataException(
+                    "휴지통 복원 요청의 항목 식별자가 유효하거나 고유하지 않습니다.");
+            }
+        }
+
+        if (result.RequestedCount != requestItems.Count ||
+            result.Results.Count != requestItems.Count)
+        {
+            throw new InvalidDataException(
+                "휴지통 복원 응답의 요청/항목별 처리 건수가 일치하지 않습니다.");
+        }
+
+        var reportedKeys = new HashSet<(Guid EntityId, string Kind)>();
+        var reportedSuccessCount = 0;
+        foreach (var itemResult in result.Results)
+        {
+            if (itemResult is null)
+            {
+                throw new InvalidDataException(
+                    "휴지통 복원 응답에 비어 있는 항목별 처리 결과가 포함되어 있습니다.");
+            }
+
+            var key = (
+                EntityId: itemResult.EntityId,
+                Kind: NormalizeRecycleBinMutationKind(itemResult.Kind));
+            if (key.EntityId == Guid.Empty ||
+                string.IsNullOrWhiteSpace(key.Kind) ||
+                itemResult.Message is null ||
+                !reportedKeys.Add(key))
+            {
+                throw new InvalidDataException(
+                    "휴지통 복원 응답의 항목 식별자가 유효하거나 고유하지 않습니다.");
+            }
+
+            if (itemResult.Success)
+                reportedSuccessCount++;
+        }
+
+        if (!reportedKeys.SetEquals(expectedKeys) ||
+            result.SucceededCount != reportedSuccessCount)
+        {
+            throw new InvalidDataException(
+                "휴지통 복원 응답의 항목별 처리 결과가 요청 대상 또는 성공 건수와 일치하지 않습니다.");
+        }
+    }
+
+    private static string NormalizeRecycleBinMutationKind(string? kind)
+        => (kind ?? string.Empty).Trim().ToLowerInvariant() switch
+        {
+            "customer" => "customer",
+            "contract" => "contract",
+            "item" => "item",
+            "companyprofile" or "company-profile" => "company-profile",
+            "customercategory" or "customer-category" => "customer-category",
+            "pricegradeoption" or "price-grade-option" => "price-grade-option",
+            "tradetypeoption" or "trade-type-option" => "trade-type-option",
+            "itemcategoryoption" or "item-category-option" => "item-category-option",
+            "invoice" => "invoice",
+            "payment" => "payment",
+            "transaction" => "transaction",
+            "inventorytransfer" or "inventory-transfer" => "inventory-transfer",
+            "rentalmanagementcompany" or "rental-management-company" => "rental-management-company",
+            "rentalbillingprofile" or "rental-billing-profile" => "rental-billing-profile",
+            "rentalasset" or "rental-asset" => "rental-asset",
+            "rentalbillinglog" or "rental-billing-log" => "rental-billing-log",
+            _ => string.Empty
+        };
 
     public async Task<RecycleBinMutationResultDto?> PurgeRecycleBinAsync(
         IReadOnlyList<RecycleBinMutationTargetDto> items,
@@ -740,14 +1092,29 @@ public sealed class ErpApiClient
                 return;
 
             var refreshed = await RefreshSessionAsync(ct);
-            if (TryApplyRefreshedSession(refreshed))
+            if (await TryApplyRefreshedSessionAsync(refreshed))
             {
                 _lastSessionRefreshFailureAtUtc = DateTime.MinValue;
                 AppLogger.Info("AUTH", $"로그인 세션 자동 갱신 완료: 만료 예정 {FormatTokenExpiryForLog()}");
                 return;
             }
 
-            MarkSessionRefreshFailure("로그인 세션 자동 갱신 실패: 서버가 갱신 가능한 세션을 반환하지 않았습니다.");
+            await ClearSessionAfterRejectedRefreshAsync(
+                "로그인 세션 자동 갱신이 서버에서 거부되었습니다. 세션 만료 또는 권한/담당지점/사업 범위 변경으로 다시 로그인이 필요합니다.");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (DesktopClientUpgradeRequiredException)
+        {
+            throw;
+        }
+        catch (LocalStateService.AuthenticationCachePersistenceException ex)
+            when (!ex.OfflineFallbackBlocked)
+        {
+            _session.Clear();
+            throw;
         }
         catch (Exception ex)
         {
@@ -768,15 +1135,30 @@ public sealed class ErpApiClient
         try
         {
             var refreshed = await RefreshSessionAsync(ct);
-            if (TryApplyRefreshedSession(refreshed))
+            if (await TryApplyRefreshedSessionAsync(refreshed))
             {
                 _lastSessionRefreshFailureAtUtc = DateTime.MinValue;
                 AppLogger.Info("AUTH", $"401 응답 후 로그인 세션 갱신 완료: 만료 예정 {FormatTokenExpiryForLog()}");
                 return true;
             }
 
-            ClearSessionAfterRejectedRefresh("401 응답 후 로그인 세션 갱신이 서버에서 거부되었습니다. 세션 만료 또는 권한/담당지점/사업 범위 변경으로 다시 로그인이 필요합니다.");
+            await ClearSessionAfterRejectedRefreshAsync(
+                "401 응답 후 로그인 세션 갱신이 서버에서 거부되었습니다. 세션 만료 또는 권한/담당지점/사업 범위 변경으로 다시 로그인이 필요합니다.");
             return false;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (DesktopClientUpgradeRequiredException)
+        {
+            throw;
+        }
+        catch (LocalStateService.AuthenticationCachePersistenceException ex)
+            when (!ex.OfflineFallbackBlocked)
+        {
+            _session.Clear();
+            throw;
         }
         catch (Exception ex)
         {
@@ -789,10 +1171,101 @@ public sealed class ErpApiClient
         }
     }
 
-    private bool TryApplyRefreshedSession(LoginResponse? response)
+    private async Task<bool> TryApplyRefreshedSessionAsync(LoginResponse? response)
     {
         if (response is null || string.IsNullOrWhiteSpace(response.Token) || response.User is null)
             return false;
+
+        var previousUsername = _session.User?.Username;
+        if (string.IsNullOrWhiteSpace(previousUsername))
+            return false;
+
+        if (!string.Equals(
+                previousUsername.Trim(),
+                response.User.Username?.Trim(),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            LocalStateService.AuthenticationCachePersistenceException? fatalFailure = null;
+            if (_localState is not null)
+            {
+                foreach (var username in new[] { previousUsername, response.User.Username }
+                             .Where(username => !string.IsNullOrWhiteSpace(username))
+                             .Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        await _localState.RevokeRejectedAuthenticationCacheAsync(
+                            username,
+                            officeCode: null,
+                            CancellationToken.None);
+                    }
+                    catch (LocalStateService.AuthenticationCachePersistenceException ex)
+                        when (ex.OfflineFallbackBlocked)
+                    {
+                        AppLogger.Error(
+                            "AUTH",
+                            $"세션 사용자 불일치 계정의 캐시 데이터 제거는 실패했지만 오프라인 인증은 차단했습니다: {username}",
+                            ex);
+                    }
+                    catch (LocalStateService.AuthenticationCachePersistenceException ex)
+                    {
+                        fatalFailure ??= ex;
+                        AppLogger.Error(
+                            "AUTH",
+                            $"세션 사용자 불일치 계정의 영속 오프라인 인증 차단이 완전히 실패했습니다: {username}",
+                            ex);
+                    }
+                    catch (Exception ex)
+                    {
+                        AppLogger.Error(
+                            "AUTH",
+                            $"세션 사용자 불일치 계정의 오프라인 인증 차단에 실패했습니다: {username}",
+                            ex);
+                    }
+                }
+            }
+
+            _session.Clear();
+            AppLogger.Warn(
+                "AUTH",
+                "세션 갱신 응답의 사용자가 기존 로그인 사용자와 달라 응답을 거부하고 두 사용자 캐시를 폐기했습니다.");
+            if (fatalFailure is not null)
+                throw fatalFailure;
+            return false;
+        }
+
+        if (_localState is not null && !string.IsNullOrWhiteSpace(previousUsername))
+        {
+            try
+            {
+                await _localState.RefreshCachedSessionAfterOnlineValidationAsync(
+                    previousUsername,
+                    response.User,
+                    CancellationToken.None);
+            }
+            catch (LocalStateService.AuthenticationCachePersistenceException ex)
+                when (ex.OfflineFallbackBlocked)
+            {
+                AppLogger.Error(
+                    "AUTH",
+                    "갱신된 권한의 캐시 데이터 저장은 실패했지만 오프라인 인증은 차단되어 온라인 세션을 계속합니다.",
+                    ex);
+            }
+            catch (LocalStateService.AuthenticationCachePersistenceException)
+            {
+                _session.Clear();
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _session.Clear();
+                AppLogger.Error(
+                    "AUTH",
+                    "갱신된 로그인 권한의 오프라인 차단 상태를 보장할 수 없어 온라인 세션도 해제했습니다.",
+                    ex);
+                return false;
+            }
+        }
 
         _session.RefreshSession(response.Token, response.User, response.ExpiresAtUtc);
         return true;
@@ -808,11 +1281,31 @@ public sealed class ErpApiClient
         AppLogger.Warn("AUTH", message);
     }
 
-    private void ClearSessionAfterRejectedRefresh(string message)
+    private async Task ClearSessionAfterRejectedRefreshAsync(string message)
     {
         var username = _session.User?.Username;
+        var officeCode = _session.User?.OfficeCode;
         _lastSessionRefreshFailureAtUtc = DateTime.MinValue;
         _session.Clear();
+
+        if (_localState is not null && !string.IsNullOrWhiteSpace(username))
+        {
+            try
+            {
+                await _localState.RevokeRejectedAuthenticationCacheAsync(
+                    username,
+                    officeCode,
+                    CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error(
+                    "AUTH",
+                    "서버에서 거부된 로그인 세션의 오프라인 인증 캐시 제거에 실패했습니다.",
+                    ex);
+            }
+        }
+
         AppLogger.Warn(
             "AUTH",
             string.IsNullOrWhiteSpace(username)
@@ -825,15 +1318,225 @@ public sealed class ErpApiClient
             ? "알 수 없음"
             : $"{_session.TokenExpiresAtUtc.Value.ToLocalTime():yyyy-MM-dd HH:mm:ss}";
 
-    private async Task<T?> ExecuteWithRetryAsync<T>(
+    private async Task<T?> ExecuteNonIdempotentSingleDispatchAsync<T>(
         string operationName,
         Func<CancellationToken, Task<HttpResponseMessage>> sendAsync,
         Func<HttpResponseMessage, CancellationToken, Task<T?>> readAsync,
         CancellationToken ct)
     {
         await EnsureFreshTokenAsync(ct);
+        ct.ThrowIfCancellationRequested();
+
+        using var timeoutCts = CreateOperationTimeoutTokenSource(operationName, ct);
+        HttpResponseMessage response;
+        try
+        {
+            response = await sendAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (DesktopClientUpgradeRequiredException)
+        {
+            throw;
+        }
+        catch (ExpectedRevisionConflictException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw new AmbiguousMutationOutcomeException(operationName, ex);
+        }
+
+        using (response)
+        {
+            if (response.IsSuccessStatusCode)
+            {
+                try
+                {
+                    return await readAsync(response, timeoutCts.Token);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (AmbiguousMutationOutcomeException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    throw new AmbiguousMutationOutcomeException(
+                        operationName,
+                        ex,
+                        response.StatusCode);
+                }
+            }
+
+            if (ShouldRetry(response.StatusCode))
+            {
+                string detail;
+                try
+                {
+                    detail = await BuildFailureMessageAsync(response, timeoutCts.Token);
+                }
+                catch (Exception ex)
+                {
+                    detail = $"응답 본문을 확인하지 못했습니다: {ex.Message}";
+                }
+
+                throw new AmbiguousMutationOutcomeException(
+                    operationName,
+                    new HttpRequestException(
+                        $"HTTP {((int)response.StatusCode)}: {detail}",
+                        inner: null,
+                        response.StatusCode),
+                    response.StatusCode);
+            }
+
+            Exception definitiveFailure;
+            try
+            {
+                definitiveFailure = await CreateFailureExceptionAsync(
+                    operationName,
+                    response,
+                    timeoutCts.Token);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                definitiveFailure = new HttpRequestException(
+                    $"{operationName} 실패: HTTP {((int)response.StatusCode)} 응답을 받았지만 본문을 확인하지 못했습니다.",
+                    ex,
+                    response.StatusCode);
+            }
+
+            ExceptionDispatchInfo.Capture(definitiveFailure).Throw();
+            throw new InvalidOperationException("Unreachable.");
+        }
+    }
+
+    private static TenantDefinitionDto ValidateTenantMutationResponse(
+        TenantDefinitionDto response,
+        string canonicalTenantCode,
+        UpdateTenantDefinitionRequest request)
+    {
+        var expectedDisplayName = string.IsNullOrWhiteSpace(request.DisplayName)
+            ? TenantScopeCatalog.GetTenantDisplayName(canonicalTenantCode)
+            : request.DisplayName.Trim();
+        if (response.Id == Guid.Empty ||
+            !string.Equals(response.TenantCode, canonicalTenantCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(response.DisplayName, expectedDisplayName, StringComparison.Ordinal) ||
+            !string.Equals(
+                TenantScopeCatalog.NormalizeStorageModeOrDefault(response.StorageMode),
+                TenantScopeCatalog.NormalizeStorageModeOrDefault(request.StorageMode),
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(response.Description, request.Description?.Trim() ?? string.Empty, StringComparison.Ordinal) ||
+            response.IsActive != request.IsActive ||
+            response.IsDeleted == request.IsActive ||
+            response.Revision <= Math.Max(0, request.ExpectedRevision))
+        {
+            throw new InvalidDataException("업체권역 저장 응답의 키, 필드 또는 리비전이 요청과 일치하지 않습니다.");
+        }
+
+        return response;
+    }
+
+    private static TenantOfficeDefinitionDto ValidateOfficeMutationResponse(
+        TenantOfficeDefinitionDto response,
+        string canonicalOfficeCode,
+        UpdateTenantOfficeDefinitionRequest request)
+    {
+        var expectedTenantCode = TenantScopeCatalog.GetTenantCodeForOffice(canonicalOfficeCode);
+        var expectedDisplayName = string.IsNullOrWhiteSpace(request.DisplayName)
+            ? OfficeCodeCatalog.GetOfficeDisplayName(canonicalOfficeCode)
+            : request.DisplayName.Trim();
+        if (response.Id == Guid.Empty ||
+            !string.Equals(response.OfficeCode, canonicalOfficeCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(response.TenantCode, expectedTenantCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(response.DisplayName, expectedDisplayName, StringComparison.Ordinal) ||
+            response.IsHeadOffice != request.IsHeadOffice ||
+            response.IsActive != request.IsActive ||
+            response.IsDeleted == request.IsActive ||
+            response.Revision <= Math.Max(0, request.ExpectedRevision))
+        {
+            throw new InvalidDataException("지점 정의 저장 응답의 키, 범위, 필드 또는 리비전이 요청과 일치하지 않습니다.");
+        }
+
+        return response;
+    }
+
+    private static DataSharingPolicyDto ValidateSharingPolicyMutationResponse(
+        DataSharingPolicyDto response,
+        Guid? expectedPolicyId,
+        UpsertDataSharingPolicyRequest request)
+    {
+        var sourceOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(request.SourceOfficeCode);
+        var targetOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(request.TargetOfficeCode);
+        var sourceTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            request.SourceTenantCode,
+            sourceOfficeCode);
+        var targetTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            request.TargetTenantCode,
+            targetOfficeCode);
+        if (response.Id == Guid.Empty ||
+            (expectedPolicyId.HasValue && response.Id != expectedPolicyId.Value) ||
+            !string.Equals(response.SourceTenantCode, sourceTenantCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(response.SourceOfficeCode, sourceOfficeCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(response.TargetTenantCode, targetTenantCode, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(response.TargetOfficeCode, targetOfficeCode, StringComparison.OrdinalIgnoreCase) ||
+            response.ShareCustomers != request.ShareCustomers ||
+            response.ShareItems != request.ShareItems ||
+            response.ShareInvoices != request.ShareInvoices ||
+            response.SharePayments != request.SharePayments ||
+            response.ShareContracts != request.ShareContracts ||
+            response.ShareReports != request.ShareReports ||
+            response.ShareRentals != request.ShareRentals ||
+            response.ShareDeliveries != request.ShareDeliveries ||
+            response.AllowTargetWrite != request.AllowTargetWrite ||
+            response.IsActive != request.IsActive ||
+            response.IsDeleted == request.IsActive ||
+            !string.Equals(response.Note, request.Note?.Trim() ?? string.Empty, StringComparison.Ordinal) ||
+            response.Revision <= Math.Max(0, request.ExpectedRevision))
+        {
+            throw new InvalidDataException("연동 정책 저장 응답의 키, 범위, 필드 또는 리비전이 요청과 일치하지 않습니다.");
+        }
+
+        return response;
+    }
+
+    private static object ValidateDeletedSharingPolicyResponse(
+        DataSharingPolicyDto response,
+        Guid expectedPolicyId,
+        long? expectedRevision)
+    {
+        if (response.Id != expectedPolicyId ||
+            response.IsActive ||
+            !response.IsDeleted ||
+            response.Revision <= Math.Max(0, expectedRevision ?? 0))
+        {
+            throw new InvalidDataException("연동 정책 삭제 응답의 키, 상태 또는 리비전이 요청과 일치하지 않습니다.");
+        }
+
+        return response;
+    }
+
+    private async Task<T?> ExecuteWithRetryAsync<T>(
+        string operationName,
+        Func<CancellationToken, Task<HttpResponseMessage>> sendAsync,
+        Func<HttpResponseMessage, CancellationToken, Task<T?>> readAsync,
+        CancellationToken ct,
+        bool preserveAmbiguousDispatch = false)
+    {
+        await EnsureFreshTokenAsync(ct);
 
         Exception? lastException = null;
+        Exception? ambiguousDispatchException = null;
         var delay = InitialRetryDelay;
 
         for (var attempt = 1; attempt <= MaxRetryCount; attempt++)
@@ -854,7 +1557,22 @@ public sealed class ErpApiClient
                     continue;
                 }
 
+                if (response.StatusCode == HttpStatusCode.UpgradeRequired)
+                {
+                    throw await CreateFailureExceptionAsync(
+                        operationName,
+                        response,
+                        timeoutCts.Token);
+                }
+
                 var message = await BuildFailureMessageAsync(response, timeoutCts.Token);
+                if (preserveAmbiguousDispatch && IsAmbiguousMutationResponse(response.StatusCode))
+                {
+                    ambiguousDispatchException ??= new HttpRequestException(
+                        $"{operationName} 응답 {((int)response.StatusCode)} 이후 서버 반영 여부를 확정할 수 없습니다: {message}",
+                        inner: null,
+                        response.StatusCode);
+                }
                 var retryable = ShouldRetry(response.StatusCode) && attempt < MaxRetryCount;
                 if (!retryable)
                     throw await CreateFailureExceptionAsync(operationName, response, timeoutCts.Token);
@@ -863,9 +1581,16 @@ public sealed class ErpApiClient
                 await Task.Delay(delay, ct);
                 delay += delay;
             }
+            catch (OperationCanceledException) when (
+                ct.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex) when (IsTransient(ex, ct) && attempt < MaxRetryCount)
             {
                 lastException = ex;
+                if (preserveAmbiguousDispatch && IsAmbiguousDispatchFailure(ex, ct))
+                    ambiguousDispatchException ??= ex;
                 AppLogger.Warn("API", $"{operationName} 재시도 {attempt}/{MaxRetryCount}: {ex.Message}");
                 await Task.Delay(delay, ct);
                 delay += delay;
@@ -873,11 +1598,26 @@ public sealed class ErpApiClient
             catch (Exception ex)
             {
                 lastException = ex;
+                if (preserveAmbiguousDispatch && IsAmbiguousDispatchFailure(ex, ct))
+                    ambiguousDispatchException ??= ex;
                 break;
             }
         }
 
-        if (lastException is ExpectedRevisionConflictException)
+        if (ambiguousDispatchException is not null)
+        {
+            var history = ReferenceEquals(ambiguousDispatchException, lastException) || lastException is null
+                ? ambiguousDispatchException
+                : new AggregateException(ambiguousDispatchException, lastException);
+            throw new HttpRequestException(
+                $"{operationName} 실패: 요청 전송 후 응답을 확인하지 못한 이력이 있어 완료 여부를 확정할 수 없습니다. 마지막 오류: {lastException?.Message}",
+                history,
+                statusCode: null);
+        }
+
+        if (lastException is
+            ExpectedRevisionConflictException or
+            DesktopClientUpgradeRequiredException)
             ExceptionDispatchInfo.Capture(lastException).Throw();
 
         throw new HttpRequestException(
@@ -885,6 +1625,16 @@ public sealed class ErpApiClient
             lastException,
             ResolveHttpStatusCode(lastException));
     }
+
+    private static bool IsAmbiguousDispatchFailure(Exception exception, CancellationToken ct)
+        => ResolveHttpStatusCode(exception) is null && IsTransient(exception, ct);
+
+    private static bool IsAmbiguousMutationResponse(HttpStatusCode statusCode)
+        => statusCode is
+            HttpStatusCode.InternalServerError or
+            HttpStatusCode.BadGateway or
+            HttpStatusCode.ServiceUnavailable or
+            HttpStatusCode.GatewayTimeout;
 
     private static HttpStatusCode? ResolveHttpStatusCode(Exception? exception)
     {
@@ -961,6 +1711,35 @@ public sealed class ErpApiClient
 
     private async Task<Exception> CreateFailureExceptionAsync(string operationName, HttpResponseMessage response, CancellationToken ct)
     {
+        if (response.StatusCode == HttpStatusCode.UpgradeRequired)
+        {
+            var exception =
+                await DesktopUpgradeRequiredResponseParser
+                .CreateExceptionAsync(
+                    response.RequestMessage?.RequestUri?.PathAndQuery ??
+                    operationName,
+                    response.Content,
+                    ct);
+            if (_upgradeObserver is not null)
+            {
+                try
+                {
+                    await _upgradeObserver.ObserveAsync(
+                        exception,
+                        CancellationToken.None);
+                }
+                catch (Exception observerException)
+                {
+                    AppLogger.Error(
+                        "UPDATE",
+                        "Desktop 426 observer failed; preserving the original typed exception.",
+                        observerException);
+                }
+            }
+
+            return exception;
+        }
+
         var body = await response.Content.ReadAsStringAsync(ct);
 
         if (response.StatusCode == HttpStatusCode.Conflict)

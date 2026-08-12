@@ -78,11 +78,65 @@ public static class MobileSessionScopeFilter
                allowSharedOffice: false);
 
     public static bool CanAccessInventoryTransfer(SessionSnapshot snapshot, InventoryTransferDto? transfer)
-        => transfer is not null &&
-           (CanAccessWarehouse(snapshot, transfer.FromWarehouseCode) ||
-            CanAccessWarehouse(snapshot, transfer.ToWarehouseCode) ||
-            CanAccessOperationalScope(snapshot, transfer.SourceOfficeCode, transfer.TenantCode) ||
-            CanAccessOperationalScope(snapshot, transfer.TargetOfficeCode, transfer.TenantCode));
+    {
+        if (transfer is null || !snapshot.IsAuthenticated)
+            return false;
+
+        if (IsGlobalAdminScope(snapshot))
+            return true;
+
+        if (!TryResolveTransferOfficeCode(
+                transfer.SourceOfficeCode,
+                transfer.FromWarehouseCode,
+                out var sourceOfficeCode) ||
+            !TryResolveTransferOfficeCode(
+                transfer.TargetOfficeCode,
+                transfer.ToWarehouseCode,
+                out var targetOfficeCode) ||
+            !TenantScopeCatalog.TryNormalizeTenantCode(
+                transfer.TenantCode,
+                out var transferTenantCode) ||
+            !TenantScopeCatalog.TenantContainsOffice(
+                transferTenantCode,
+                sourceOfficeCode) ||
+            !TenantScopeCatalog.TenantContainsOffice(
+                transferTenantCode,
+                targetOfficeCode))
+        {
+            return false;
+        }
+
+        var sessionOfficeCode =
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+                snapshot.OfficeCode);
+        var sessionTenantCode =
+            TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                snapshot.TenantCode,
+                sessionOfficeCode);
+        if (!string.Equals(
+                transferTenantCode,
+                sessionTenantCode,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return
+            CanAccessWarehouse(
+                snapshot,
+                transfer.FromWarehouseCode) ||
+            CanAccessWarehouse(
+                snapshot,
+                transfer.ToWarehouseCode) ||
+            CanAccessOperationalScope(
+                snapshot,
+                sourceOfficeCode,
+                transferTenantCode) ||
+            CanAccessOperationalScope(
+                snapshot,
+                targetOfficeCode,
+                transferTenantCode);
+    }
 
     public static bool CanAccessWarehouse(SessionSnapshot snapshot, string? warehouseCode)
     {
@@ -108,16 +162,47 @@ public static class MobileSessionScopeFilter
         if (IsGlobalAdminScope(snapshot))
             return true;
 
-        if (OfficeCodeCatalog.IsSharedOfficeCode(responsibleOfficeCode) ||
-            OfficeCodeCatalog.IsSharedOfficeCode(fallbackOfficeCode))
+        if (!IsExplicitTenantCompatibleWithAccessOffice(
+                tenantCode,
+                responsibleOfficeCode,
+                fallbackOfficeCode))
+        {
+            return false;
+        }
+
+        var sessionOfficeCode =
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+                snapshot.OfficeCode);
+        var sessionTenantCode =
+            TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                snapshot.TenantCode,
+                sessionOfficeCode);
+        var hasSpecificResponsibleOffice =
+            OfficeCodeCatalog.TryNormalizeOfficeCode(
+                responsibleOfficeCode,
+                out _);
+        var usesSharedOffice =
+            OfficeCodeCatalog.IsSharedOfficeCode(
+                responsibleOfficeCode) ||
+            (!hasSpecificResponsibleOffice &&
+             OfficeCodeCatalog.IsSharedOfficeCode(
+                 fallbackOfficeCode));
+        if (usesSharedOffice)
         {
             if (!allowSharedOffice)
                 return false;
 
-            var sessionOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(snapshot.OfficeCode);
-            var sessionTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(snapshot.TenantCode, sessionOfficeCode);
-            var entityTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantCode, responsibleOfficeCode, fallbackOfficeCode: fallbackOfficeCode);
-            return string.Equals(entityTenantCode, sessionTenantCode, StringComparison.OrdinalIgnoreCase);
+            var sharedEntityTenantCode =
+                TenantScopeCatalog
+                    .NormalizeTenantCodeForOfficeOrDefault(
+                        tenantCode,
+                        responsibleOfficeCode,
+                        sessionTenantCode,
+                        fallbackOfficeCode);
+            return string.Equals(
+                sharedEntityTenantCode,
+                sessionTenantCode,
+                StringComparison.OrdinalIgnoreCase);
         }
 
         if (!TryResolveOfficeCode(responsibleOfficeCode, fallbackOfficeCode, out var resolvedOfficeCode))
@@ -126,14 +211,14 @@ public static class MobileSessionScopeFilter
         if (!GetReadableOfficeCodes(snapshot).Contains(resolvedOfficeCode))
             return false;
 
-        if (string.Equals(GetNormalizedScopeType(snapshot), TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
-        {
-            var sessionTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(snapshot.TenantCode, snapshot.OfficeCode);
-            var entityTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(tenantCode, resolvedOfficeCode);
-            return string.Equals(entityTenantCode, sessionTenantCode, StringComparison.OrdinalIgnoreCase);
-        }
-
-        return true;
+        var entityTenantCode =
+            TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                tenantCode,
+                resolvedOfficeCode);
+        return string.Equals(
+            entityTenantCode,
+            sessionTenantCode,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     public static HashSet<string> GetReadableOfficeCodes(SessionSnapshot snapshot)
@@ -164,7 +249,54 @@ public static class MobileSessionScopeFilter
     private static string GetNormalizedScopeType(SessionSnapshot snapshot)
         => TenantScopeCatalog.NormalizeScopeTypeOrDefault(
             snapshot.ScopeType,
-            snapshot.IsAdmin ? TenantScopeCatalog.ScopeAdmin : TenantScopeCatalog.ScopeOfficeOnly);
+            TenantScopeCatalog.ScopeOfficeOnly);
+
+    private static bool IsExplicitTenantCompatibleWithAccessOffice(
+        string? tenantCode,
+        string? officeCode,
+        string? fallbackOfficeCode)
+    {
+        if (!TenantScopeCatalog.TryNormalizeTenantCode(
+                tenantCode,
+                out var normalizedTenantCode))
+        {
+            return true;
+        }
+
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(
+                officeCode,
+                out var normalizedOfficeCode))
+        {
+            return TenantScopeCatalog.TenantContainsOffice(
+                normalizedTenantCode,
+                normalizedOfficeCode);
+        }
+
+        if (OfficeCodeCatalog.IsSharedOfficeCode(officeCode))
+        {
+            if (OfficeCodeCatalog.TryNormalizeOfficeCode(
+                    fallbackOfficeCode,
+                    out var normalizedFallbackOfficeCode))
+            {
+                return TenantScopeCatalog.TenantContainsOffice(
+                    normalizedTenantCode,
+                    normalizedFallbackOfficeCode);
+            }
+
+            return true;
+        }
+
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(
+                fallbackOfficeCode,
+                out var fallbackOffice))
+        {
+            return TenantScopeCatalog.TenantContainsOffice(
+                normalizedTenantCode,
+                fallbackOffice);
+        }
+
+        return true;
+    }
 
     private static bool TryResolveOfficeCode(string? officeCode, string? fallbackOfficeCode, out string resolvedOfficeCode)
     {
@@ -211,5 +343,22 @@ public static class MobileSessionScopeFilter
 
         officeCode = string.Empty;
         return false;
+    }
+
+    private static bool TryResolveTransferOfficeCode(
+        string? officeCode,
+        string? warehouseCode,
+        out string resolvedOfficeCode)
+    {
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(
+                officeCode,
+                out resolvedOfficeCode))
+        {
+            return true;
+        }
+
+        return TryResolveOfficeCodeFromWarehouse(
+            warehouseCode,
+            out resolvedOfficeCode);
     }
 }

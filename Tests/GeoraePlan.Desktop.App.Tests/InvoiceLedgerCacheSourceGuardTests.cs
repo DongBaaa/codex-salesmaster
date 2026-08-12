@@ -28,7 +28,10 @@ public sealed class InvoiceLedgerCacheSourceGuardTests
         Assert.Contains("InvoiceLedgerCacheStore.Set(_invoiceRowCache, rowCacheKey, rows);", mainSource, StringComparison.Ordinal);
         Assert.Contains("InvoiceLedgerCacheStore.Set(_invoiceRowCache, rowCacheKey, rows);", lookupSource, StringComparison.Ordinal);
         Assert.Contains("private async Task LoadInvoiceListAsync()\n        => await ReloadInvoiceListAsync();", mainSource, StringComparison.Ordinal);
-        Assert.Contains("await LoadInvoiceListCachedAsync();", mainSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "await LoadInvoiceListCoreAsync(\n                forceReload: false,\n                cancellationToken: ct,\n                dataGateAlreadyHeld: true);",
+            mainSource,
+            StringComparison.Ordinal);
         Assert.Contains("if (_dashboardMetricsLoaded && !forceReload)", mainSource, StringComparison.Ordinal);
         Assert.Contains("_dashboardMetricsLoaded = false;", mainSource, StringComparison.Ordinal);
     }

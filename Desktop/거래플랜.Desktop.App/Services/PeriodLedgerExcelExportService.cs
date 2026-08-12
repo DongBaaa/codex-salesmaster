@@ -8,6 +8,18 @@ namespace 거래플랜.Desktop.App.Services;
 public sealed class PeriodLedgerExcelExportService
 {
     private const int BlockLedgerColumnCount = 10;
+    private readonly Action<string> _opener;
+
+    public PeriodLedgerExcelExportService()
+        : this(OpenWithShell)
+    {
+    }
+
+    internal PeriodLedgerExcelExportService(Action<string> opener)
+    {
+        ArgumentNullException.ThrowIfNull(opener);
+        _opener = opener;
+    }
 
     public async Task<string> ExportAsync(
         PeriodLedgerBuildResult data,
@@ -44,7 +56,7 @@ public sealed class PeriodLedgerExcelExportService
 
         await Task.Run(() => workbook.SaveAs(filePath), ct);
 
-        OpenWithShell(filePath);
+        TryOpenExportedFile(filePath);
         progress?.Report($"완료: {Path.GetFileName(filePath)}");
 
         return filePath;
@@ -461,20 +473,24 @@ public sealed class PeriodLedgerExcelExportService
         return new string(chars);
     }
 
-    private static void OpenWithShell(string path)
+    private void TryOpenExportedFile(string path)
     {
         try
         {
-            Process.Start(new ProcessStartInfo(path)
-            {
-                UseShellExecute = true
-            });
+            _opener(path);
         }
         catch
         {
             // 파일 저장은 완료되었으므로, 기본 연결 프로그램 실행 실패는 집계 실패로 처리하지 않습니다.
         }
     }
-}
 
+    private static void OpenWithShell(string path)
+    {
+        Process.Start(new ProcessStartInfo(path)
+        {
+            UseShellExecute = true
+        });
+    }
+}
 

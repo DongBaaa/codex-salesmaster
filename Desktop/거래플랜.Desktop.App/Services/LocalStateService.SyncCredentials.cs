@@ -30,10 +30,26 @@ public sealed partial class LocalStateService
         if (string.IsNullOrWhiteSpace(normalizedOfficeCode))
             return;
 
-        await SetSettingAsync(GetSyncCredentialSettingKey(normalizedOfficeCode, SyncOfficeCredentialUsernameSuffix), normalizedUsername, ct);
-        await SetSettingAsync(GetSyncCredentialSettingKey(normalizedOfficeCode, SyncOfficeCredentialTenantSuffix), normalizedTenantCode, ct);
-        await SetSettingAsync(GetSyncCredentialSettingKey(normalizedOfficeCode, SyncOfficeCredentialPasswordSuffix), ProtectSyncCredential(normalizedPassword), ct);
-        await SetSettingAsync(GetSyncCredentialSettingKey(normalizedOfficeCode, SyncOfficeCredentialSavedAtSuffix), DateTime.UtcNow.ToString("O"), ct);
+        await SaveSettingsIndependentAsync(
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                [GetSyncCredentialSettingKey(
+                    normalizedOfficeCode,
+                    SyncOfficeCredentialUsernameSuffix)] = normalizedUsername,
+                [GetSyncCredentialSettingKey(
+                    normalizedOfficeCode,
+                    SyncOfficeCredentialTenantSuffix)] = normalizedTenantCode,
+                [GetSyncCredentialSettingKey(
+                    normalizedOfficeCode,
+                    SyncOfficeCredentialPasswordSuffix)] =
+                    ProtectSyncCredential(normalizedPassword),
+                [GetSyncCredentialSettingKey(
+                    normalizedOfficeCode,
+                    SyncOfficeCredentialSavedAtSuffix)] =
+                    DateTime.UtcNow.ToString("O")
+            },
+            ct,
+            normalizedUsername);
     }
 
     public async Task<StoredSyncCredential?> GetStoredSyncCredentialAsync(
@@ -270,11 +286,37 @@ public sealed partial class LocalStateService
 
         foreach (var transfer in await _db.InventoryTransfers.IgnoreQueryFilters()
                      .Where(entity => entity.IsDirty)
-                     .Select(entity => new { entity.FromWarehouseCode, entity.ToWarehouseCode })
+                     .Select(entity => new
+                     {
+                         entity.FromWarehouseCode,
+                         entity.ToWarehouseCode,
+                         entity.TransferStatus,
+                         entity.ReceivedByUsername,
+                         entity.ReceivedAtUtc,
+                         entity.RejectedByUsername,
+                         entity.RejectedAtUtc,
+                         entity.IsDeleted,
+                         entity.Revision
+                     })
                      .ToListAsync(ct))
         {
-            AddCount(ResolveOfficeCodeFromWarehouseCode(transfer.FromWarehouseCode), null);
-            AddCount(ResolveOfficeCodeFromWarehouseCode(transfer.ToWarehouseCode), null);
+            var localTransfer = new LocalInventoryTransfer
+            {
+                FromWarehouseCode = transfer.FromWarehouseCode,
+                ToWarehouseCode = transfer.ToWarehouseCode,
+                TransferStatus = transfer.TransferStatus,
+                ReceivedByUsername = transfer.ReceivedByUsername,
+                ReceivedAtUtc = transfer.ReceivedAtUtc,
+                 RejectedByUsername = transfer.RejectedByUsername,
+                 RejectedAtUtc = transfer.RejectedAtUtc,
+                 IsDeleted = transfer.IsDeleted,
+                 Revision = transfer.Revision
+             };
+            foreach (var officeCode in
+                     ResolveInventoryTransferMutationOfficeCodes(localTransfer))
+            {
+                AddCount(officeCode, null);
+            }
         }
 
         foreach (var profile in await _db.RentalBillingProfiles.IgnoreQueryFilters()

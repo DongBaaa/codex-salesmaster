@@ -60,6 +60,34 @@ public sealed class MobileAndroidBuildConfigTests
             "모바일 APK 빌드는 시스템 dotnet보다 프로젝트/전용 dotnet 후보를 먼저 확인해야 합니다.");
     }
 
+    [Fact]
+    public void AndroidSigningPasswordsUseHeldPrivateFilesAndNeverDotnetArguments()
+    {
+        var source = ReadRepositoryFile(
+            "tools",
+            "mobile",
+            "Build-GeoraePlanAndroidApk.ps1");
+
+        Assert.DoesNotContain(
+            "-p:AndroidSigningStorePass=$StorePass",
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "-p:AndroidSigningKeyPass=$KeyPass",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains("[IO.FileMode]::CreateNew", source, StringComparison.Ordinal);
+        Assert.Contains("[IO.FileShare]::Read", source, StringComparison.Ordinal);
+        Assert.Contains("[IO.FileOptions]::WriteThrough", source, StringComparison.Ordinal);
+        Assert.Contains("$security.SetAccessRuleProtection($true, $false)", source, StringComparison.Ordinal);
+        Assert.Contains("$stream.Flush($true)", source, StringComparison.Ordinal);
+        Assert.Contains("[Array]::Clear($bytes, 0, $bytes.Length)", source, StringComparison.Ordinal);
+        Assert.Contains("AndroidSigningStorePass=file:", source, StringComparison.Ordinal);
+        Assert.Contains("AndroidSigningKeyPass=file:", source, StringComparison.Ordinal);
+        Assert.Contains("Remove-AndroidSigningSecretPair", source, StringComparison.Ordinal);
+        Assert.Contains("[IO.File]::Delete($entry.Path)", source, StringComparison.Ordinal);
+    }
+
     private static string ReadRepositoryFile(params string[] pathParts)
         => File.ReadAllText(Path.Combine([FindRepositoryRoot(), .. pathParts]));
 

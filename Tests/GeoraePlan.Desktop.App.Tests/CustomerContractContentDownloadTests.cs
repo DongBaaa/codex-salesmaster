@@ -123,7 +123,20 @@ public sealed class CustomerContractContentDownloadTests
             var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
             var contract = await db.CustomerContracts.AsNoTracking().SingleAsync(current => current.Id == contractId);
 
-            var resolved = await CustomerContractContentService.EnsureContentAsync(contract, local, session, api);
+            Task<LocalCustomerContract> resolveTask;
+            await local.OwnerScopeDataGate.WaitAsync();
+            try
+            {
+                resolveTask = CustomerContractContentService.EnsureContentAsync(contract, local, session, api);
+                await handler.RequestReceived.WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.False(resolveTask.IsCompleted);
+            }
+            finally
+            {
+                local.OwnerScopeDataGate.Release();
+            }
+
+            var resolved = await resolveTask.WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Equal(content, resolved.FileContent);
             db.ChangeTracker.Clear();
@@ -293,10 +306,15 @@ public sealed class CustomerContractContentDownloadTests
         }
 
         public List<HttpRequestMessage> Requests { get; } = new();
+        public Task RequestReceived => _requestReceived.Task;
+
+        private readonly TaskCompletionSource _requestReceived = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Requests.Add(request);
+            _requestReceived.TrySetResult();
             return Task.FromResult(_respond(request, cancellationToken));
         }
     }

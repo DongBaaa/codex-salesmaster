@@ -1,5 +1,6 @@
 ﻿using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
@@ -10,6 +11,13 @@ namespace 거래플랜.Desktop.App.Services;
 /// </summary>
 public sealed class SessionState
 {
+    [ThreadStatic]
+    private static Dictionary<SessionState, int>?
+        s_syncScopeSynchronousCallbackDepths;
+
+    private readonly SemaphoreSlim _syncScopeMutationGate = new(1, 1);
+    private long _syncScopeEpoch;
+
     public string? Token { get; private set; }
     public DateTime? TokenExpiresAtUtc { get; private set; }
     public UserSessionDto? User { get; private set; }
@@ -23,6 +31,7 @@ public sealed class SessionState
     public string SelectedBusinessDatabaseLabel => TenantScopeCatalog.FormatBusinessDatabaseLabel(SelectedBusinessDatabaseDisplayName, SelectedBusinessDatabaseName);
     public bool IsOfflineMode { get; private set; }
     public Guid SessionId { get; private set; } = Guid.NewGuid();
+    public long SyncScopeEpoch => Interlocked.Read(ref _syncScopeEpoch);
     public bool IsLoggedIn => User is not null;
     public bool IsTokenExpired => TokenExpiresAtUtc is not null && DateTime.UtcNow >= TokenExpiresAtUtc.Value;
     public bool ShouldRefreshToken(TimeSpan leadTime)
@@ -40,14 +49,42 @@ public sealed class SessionState
 
     public void SetSession(string token, UserSessionDto user, DateTime? expiresAtUtc = null)
     {
-        SessionId = Guid.NewGuid();
-        ApplyOnlineSession(token, user, expiresAtUtc, preserveBusinessDatabaseSelection: false);
+        bool businessDatabaseChanged;
+        using (AcquireSyncScopeWriteLease())
+        {
+            SessionId = Guid.NewGuid();
+            Interlocked.Increment(ref _syncScopeEpoch);
+            businessDatabaseChanged = ApplyOnlineSession(
+                token,
+                user,
+                expiresAtUtc,
+                preserveBusinessDatabaseSelection: false);
+        }
+
+        if (businessDatabaseChanged)
+            BusinessDatabaseChanged?.Invoke(this, EventArgs.Empty);
     }
 
     public void RefreshSession(string token, UserSessionDto user, DateTime? expiresAtUtc = null)
-        => ApplyOnlineSession(token, user, expiresAtUtc, preserveBusinessDatabaseSelection: true);
+    {
+        bool businessDatabaseChanged;
+        using (AcquireSyncScopeWriteLease())
+        {
+            var before = CaptureSyncScopeIdentity();
+            businessDatabaseChanged = ApplyOnlineSession(
+                token,
+                user,
+                expiresAtUtc,
+                preserveBusinessDatabaseSelection: true);
+            if (before != CaptureSyncScopeIdentity())
+                Interlocked.Increment(ref _syncScopeEpoch);
+        }
 
-    private void ApplyOnlineSession(
+        if (businessDatabaseChanged)
+            BusinessDatabaseChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private bool ApplyOnlineSession(
         string token,
         UserSessionDto user,
         DateTime? expiresAtUtc,
@@ -68,50 +105,78 @@ public sealed class SessionState
 
         if (preserveBusinessDatabaseSelection && HasSystemConfigurationScope)
         {
-            SetBusinessDatabase(previousBusinessDatabaseName, previousBusinessDatabaseDisplayName);
-            return;
+            return SetBusinessDatabaseCore(
+                previousBusinessDatabaseName,
+                previousBusinessDatabaseDisplayName);
         }
 
-        ResetBusinessDatabaseSelection();
+        return ResetBusinessDatabaseSelection();
     }
 
     public void SetOfflineSession(UserSessionDto user)
     {
-        SessionId = Guid.NewGuid();
-        Token = null;
-        TokenExpiresAtUtc = null;
-        User = user;
-        IsOfflineMode = true;
-        AuthenticatedTenantCode = ResolveTenantCode(user.TenantCode, user.OfficeCode);
-        TenantCode = AuthenticatedTenantCode;
-        OfficeCode = ResolveOfficeCode(user.OfficeCode, user.Role);
-        BusinessOfficeCode = ResolveBusinessOfficeCode(TenantCode);
-        ScopeType = ResolveScopeType(user.ScopeType, user.Role, OfficeCode);
-        ResetBusinessDatabaseSelection();
+        bool businessDatabaseChanged;
+        using (AcquireSyncScopeWriteLease())
+        {
+            SessionId = Guid.NewGuid();
+            Interlocked.Increment(ref _syncScopeEpoch);
+            Token = null;
+            TokenExpiresAtUtc = null;
+            User = user;
+            IsOfflineMode = true;
+            AuthenticatedTenantCode = ResolveTenantCode(user.TenantCode, user.OfficeCode);
+            TenantCode = AuthenticatedTenantCode;
+            OfficeCode = ResolveOfficeCode(user.OfficeCode, user.Role);
+            BusinessOfficeCode = ResolveBusinessOfficeCode(TenantCode);
+            ScopeType = ResolveScopeType(user.ScopeType, user.Role, OfficeCode);
+            businessDatabaseChanged = ResetBusinessDatabaseSelection();
+        }
+
+        if (businessDatabaseChanged)
+            BusinessDatabaseChanged?.Invoke(this, EventArgs.Empty);
     }
 
     public void SetOfficeCode(string? officeCode)
     {
+        using var scopeWriteLease = AcquireSyncScopeWriteLease();
         if (string.IsNullOrWhiteSpace(officeCode))
             return;
 
+        var before = CaptureSyncScopeIdentity();
         OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, OfficeCode);
         AuthenticatedTenantCode = ResolveTenantCode(AuthenticatedTenantCode, OfficeCode);
         if (!HasAdministrativePrivileges)
         {
             TenantCode = AuthenticatedTenantCode;
             BusinessOfficeCode = ResolveBusinessOfficeCode(TenantCode);
-            ResetBusinessDatabaseSelection(raiseChanged: false);
+            _ = ResetBusinessDatabaseSelection();
         }
+
+        if (before != CaptureSyncScopeIdentity())
+            Interlocked.Increment(ref _syncScopeEpoch);
     }
 
     public void SetBusinessDatabase(string? databaseName, string? displayName = null)
     {
-        if (!HasSystemConfigurationScope)
+        bool businessDatabaseChanged;
+        using (AcquireSyncScopeWriteLease())
         {
-            ResetBusinessDatabaseSelection();
-            return;
+            var before = CaptureSyncScopeIdentity();
+            businessDatabaseChanged = SetBusinessDatabaseCore(databaseName, displayName);
+            if (before != CaptureSyncScopeIdentity())
+                Interlocked.Increment(ref _syncScopeEpoch);
         }
+
+        if (businessDatabaseChanged)
+            BusinessDatabaseChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private bool SetBusinessDatabaseCore(
+        string? databaseName,
+        string? displayName)
+    {
+        if (!HasSystemConfigurationScope)
+            return ResetBusinessDatabaseSelection();
 
         var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(databaseName, AuthenticatedTenantCode);
         var normalizedDatabaseName = TenantScopeCatalog.GetDatabaseName(databaseName);
@@ -127,25 +192,30 @@ public sealed class SessionState
         BusinessOfficeCode = ResolveBusinessOfficeCode(TenantCode);
         SelectedBusinessDatabaseName = normalizedDatabaseName;
         SelectedBusinessDatabaseDisplayName = normalizedDisplayName;
-
-        if (changed)
-            BusinessDatabaseChanged?.Invoke(this, EventArgs.Empty);
+        return changed;
     }
 
     public void Clear()
     {
-        SessionId = Guid.NewGuid();
-        Token = null;
-        TokenExpiresAtUtc = null;
-        User = null;
-        IsOfflineMode = false;
-        AuthenticatedTenantCode = TenantScopeCatalog.UsenetGroup;
-        TenantCode = TenantScopeCatalog.UsenetGroup;
-        OfficeCode = DomainConstants.OfficeUsenet;
-        BusinessOfficeCode = DomainConstants.OfficeUsenet;
-        ScopeType = TenantScopeCatalog.ScopeOfficeOnly;
-        SelectedBusinessDatabaseName = TenantScopeCatalog.GetDatabaseName(TenantScopeCatalog.UsenetGroup);
-        SelectedBusinessDatabaseDisplayName = TenantScopeCatalog.GetBusinessDatabaseDisplayName(TenantScopeCatalog.UsenetGroup);
+        bool businessDatabaseChanged;
+        using (AcquireSyncScopeWriteLease())
+        {
+            SessionId = Guid.NewGuid();
+            Interlocked.Increment(ref _syncScopeEpoch);
+            Token = null;
+            TokenExpiresAtUtc = null;
+            User = null;
+            IsOfflineMode = false;
+            AuthenticatedTenantCode = TenantScopeCatalog.UsenetGroup;
+            TenantCode = TenantScopeCatalog.UsenetGroup;
+            OfficeCode = DomainConstants.OfficeUsenet;
+            BusinessOfficeCode = DomainConstants.OfficeUsenet;
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly;
+            businessDatabaseChanged = ResetBusinessDatabaseSelection();
+        }
+
+        if (businessDatabaseChanged)
+            BusinessDatabaseChanged?.Invoke(this, EventArgs.Empty);
     }
 
     public bool HasPermission(string permissionName)
@@ -256,7 +326,86 @@ public sealed class SessionState
         }
     }
 
-    private void ResetBusinessDatabaseSelection(bool raiseChanged = true)
+    internal IDisposable AcquireSyncScopeSnapshotLease()
+        => AcquireSyncScopeWriteLease();
+
+    internal async ValueTask<IDisposable> AcquireSyncScopeCommitLeaseAsync(
+        CancellationToken ct = default)
+    {
+        await _syncScopeMutationGate.WaitAsync(ct);
+        return new SyncScopeLease(_syncScopeMutationGate);
+    }
+
+    /// <summary>
+    /// Allows a synchronous notification invoked while a sync-scope commit lease is held
+    /// to change the session on the same thread without re-entering the non-reentrant
+    /// semaphore. The caller must revalidate its captured owner immediately after each
+    /// callback and stop publishing when the owner changed.
+    /// </summary>
+    internal IDisposable EnterSyncScopeSynchronousCallback()
+    {
+        var depths = s_syncScopeSynchronousCallbackDepths ??= [];
+        depths.TryGetValue(this, out var depth);
+        depths[this] = depth + 1;
+        return new SyncScopeSynchronousCallbackLease(this);
+    }
+
+    private IDisposable AcquireSyncScopeWriteLease()
+    {
+        if (IsSyncScopeSynchronousCallbackActive())
+            return NoopSyncScopeLease.Instance;
+
+        _syncScopeMutationGate.Wait();
+        return new SyncScopeLease(_syncScopeMutationGate);
+    }
+
+    private bool IsSyncScopeSynchronousCallbackActive()
+        => s_syncScopeSynchronousCallbackDepths is { } depths
+           && depths.TryGetValue(this, out var depth)
+           && depth > 0;
+
+    private void ExitSyncScopeSynchronousCallback()
+    {
+        if (s_syncScopeSynchronousCallbackDepths is not { } depths ||
+            !depths.TryGetValue(this, out var depth))
+        {
+            return;
+        }
+
+        if (depth <= 1)
+            depths.Remove(this);
+        else
+            depths[this] = depth - 1;
+    }
+
+    private SyncScopeIdentity CaptureSyncScopeIdentity()
+        => new(
+            SessionId,
+            User?.UserId ?? Guid.Empty,
+            User?.Username ?? string.Empty,
+            User?.Role ?? string.Empty,
+            BuildPermissionIdentity(User?.Permissions),
+            AuthenticatedTenantCode,
+            TenantCode,
+            OfficeCode,
+            BusinessOfficeCode,
+            ScopeType,
+            SelectedBusinessDatabaseName,
+            IsOfflineMode,
+            HasGlobalDataScope,
+            HasSystemConfigurationScope);
+
+    private static string BuildPermissionIdentity(
+        IEnumerable<string>? permissions)
+        => string.Join(
+            "\u001F",
+            (permissions ?? [])
+            .Where(permission => !string.IsNullOrWhiteSpace(permission))
+            .Select(permission => permission.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(permission => permission, StringComparer.OrdinalIgnoreCase));
+
+    private bool ResetBusinessDatabaseSelection()
     {
         var normalizedDatabaseName = TenantScopeCatalog.GetDatabaseName(AuthenticatedTenantCode);
         var normalizedDisplayName = TenantScopeCatalog.GetBusinessDatabaseDisplayName(normalizedDatabaseName);
@@ -268,9 +417,59 @@ public sealed class SessionState
         BusinessOfficeCode = ResolveBusinessOfficeCode(TenantCode);
         SelectedBusinessDatabaseName = normalizedDatabaseName;
         SelectedBusinessDatabaseDisplayName = normalizedDisplayName;
+        return changed;
+    }
 
-        if (raiseChanged && changed)
-            BusinessDatabaseChanged?.Invoke(this, EventArgs.Empty);
+    private sealed record SyncScopeIdentity(
+        Guid SessionId,
+        Guid UserId,
+        string Username,
+        string Role,
+        string PermissionIdentity,
+        string AuthenticatedTenantCode,
+        string TenantCode,
+        string OfficeCode,
+        string BusinessOfficeCode,
+        string ScopeType,
+        string BusinessDatabaseName,
+        bool IsOfflineMode,
+        bool HasGlobalDataScope,
+        bool HasSystemConfigurationScope);
+
+    private sealed class SyncScopeLease : IDisposable
+    {
+        private SemaphoreSlim? _gate;
+
+        public SyncScopeLease(SemaphoreSlim gate)
+        {
+            _gate = gate;
+        }
+
+        public void Dispose()
+            => Interlocked.Exchange(ref _gate, null)?.Release();
+    }
+
+    private sealed class SyncScopeSynchronousCallbackLease : IDisposable
+    {
+        private SessionState? _session;
+
+        public SyncScopeSynchronousCallbackLease(SessionState session)
+        {
+            _session = session;
+        }
+
+        public void Dispose()
+            => Interlocked.Exchange(ref _session, null)?
+                .ExitSyncScopeSynchronousCallback();
+    }
+
+    private sealed class NoopSyncScopeLease : IDisposable
+    {
+        public static NoopSyncScopeLease Instance { get; } = new();
+
+        public void Dispose()
+        {
+        }
     }
 
     private bool TryReadBooleanTokenClaim(string claimName)

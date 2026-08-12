@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Threading;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http;
 using 거래플랜.Desktop.App.Infrastructure;
@@ -16,6 +17,7 @@ public sealed class EntityEditSessionMonitor : IDisposable
 {
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan UnavailableSubjectSuppressionDuration = TimeSpan.FromMinutes(2);
+    private static readonly ConcurrentDictionary<Guid, EditSessionSubject> ActiveLocalSubjects = new();
 
     private readonly Window _owner;
     private readonly ErpApiClient _api;
@@ -52,7 +54,7 @@ public sealed class EntityEditSessionMonitor : IDisposable
             Interval = HeartbeatInterval
         };
         _timer.Tick += (_, _) => UiTaskHelper.Forget(
-            SendHeartbeatAsync(CancellationToken.None),
+            () => SendHeartbeatAsync(CancellationToken.None),
             "EDIT-SESSION",
             $"{screenName} 편집 세션 하트비트",
             ex => AppLogger.Warn("EDIT-SESSION", $"{screenName} 편집 세션 하트비트 실패: {ex.Message}"));
@@ -79,13 +81,17 @@ public sealed class EntityEditSessionMonitor : IDisposable
 
     public void Start()
     {
-        if (_disposed || _started || !_session.IsLoggedIn || _session.IsOfflineMode)
+        if (_disposed || _started)
             return;
 
         _started = true;
+        RefreshSubject();
+        if (!_session.IsLoggedIn || _session.IsOfflineMode)
+            return;
+
         _timer.Start();
         UiTaskHelper.Forget(
-            SendHeartbeatAsync(CancellationToken.None),
+            () => SendHeartbeatAsync(CancellationToken.None),
             "EDIT-SESSION",
             $"{_screenName} 편집 세션 시작",
             ex => AppLogger.Warn("EDIT-SESSION", $"{_screenName} 편집 세션 시작 실패: {ex.Message}"));
@@ -97,16 +103,77 @@ public sealed class EntityEditSessionMonitor : IDisposable
             return;
 
         _disposed = true;
+        ActiveLocalSubjects.TryRemove(_editSessionId, out _);
         _timer.Stop();
         RestoreWindowTitle();
 
         if (!_session.IsOfflineMode && _session.IsLoggedIn && _hasRegisteredSession)
         {
             UiTaskHelper.Forget(
-                ReleaseRegisteredSessionAsync(CancellationToken.None),
+                () => ReleaseRegisteredSessionAsync(CancellationToken.None),
                 "EDIT-SESSION",
                 $"{_screenName} 편집 세션 종료",
                 ex => AppLogger.Warn("EDIT-SESSION", $"{_screenName} 편집 세션 종료 실패: {ex.Message}"));
+        }
+    }
+
+    public void RefreshSubject()
+    {
+        if (_disposed)
+            return;
+
+        var subject = _subjectAccessor();
+        if (subject is null ||
+            string.IsNullOrWhiteSpace(subject.EntityType) ||
+            string.IsNullOrWhiteSpace(subject.EntityId))
+        {
+            ActiveLocalSubjects.TryRemove(_editSessionId, out _);
+            return;
+        }
+
+        ActiveLocalSubjects[_editSessionId] = new EditSessionSubject(
+            subject.EntityType.Trim(),
+            subject.EntityId.Trim(),
+            subject.DisplayName?.Trim() ?? string.Empty);
+    }
+
+    internal static IReadOnlyList<EditSessionSubject> FindActiveLocalSubjects(
+        string entityType,
+        IReadOnlyCollection<Guid> entityIds)
+    {
+        if (string.IsNullOrWhiteSpace(entityType) || entityIds.Count == 0)
+            return Array.Empty<EditSessionSubject>();
+
+        var idSet = entityIds
+            .Where(id => id != Guid.Empty)
+            .Select(id => id.ToString("D"))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return ActiveLocalSubjects.Values
+            .Where(subject =>
+                string.Equals(subject.EntityType, entityType, StringComparison.OrdinalIgnoreCase) &&
+                idSet.Contains(subject.EntityId))
+            .Distinct()
+            .ToList();
+    }
+
+    internal static IDisposable TestOnlyRegisterLocalSubject(EditSessionSubject subject)
+    {
+        var registrationId = Guid.NewGuid();
+        ActiveLocalSubjects[registrationId] = subject;
+        return new LocalSubjectRegistration(registrationId);
+    }
+
+    private sealed class LocalSubjectRegistration(Guid registrationId) : IDisposable
+    {
+        private bool _disposed;
+
+        public void Dispose()
+        {
+            if (_disposed)
+                return;
+
+            _disposed = true;
+            ActiveLocalSubjects.TryRemove(registrationId, out _);
         }
     }
 
@@ -119,6 +186,7 @@ public sealed class EntityEditSessionMonitor : IDisposable
         try
         {
             var subject = _subjectAccessor();
+            RefreshSubject();
             if (subject is null ||
                 string.IsNullOrWhiteSpace(subject.EntityType) ||
                 string.IsNullOrWhiteSpace(subject.EntityId))

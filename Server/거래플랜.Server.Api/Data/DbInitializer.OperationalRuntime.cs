@@ -46,7 +46,7 @@ public static partial class DbInitializer
                 """
                 CREATE TABLE IF NOT EXISTS "ProcessedSyncMutations" (
                     "Id" TEXT NOT NULL CONSTRAINT "PK_ProcessedSyncMutations" PRIMARY KEY,
-                    "MutationId" TEXT NOT NULL DEFAULT '',
+                    "MutationId" TEXT COLLATE NOCASE NOT NULL DEFAULT '',
                     "DeviceId" TEXT NOT NULL DEFAULT '',
                     "EntityName" TEXT NOT NULL DEFAULT '',
                     "EntityId" TEXT NOT NULL DEFAULT '',
@@ -216,6 +216,22 @@ public static partial class DbInitializer
         }
 
         await EnsureRuntimeColumnAsync(dbContext, "ProcessedSyncMutations", "PayloadHash", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await using var canonicalizationTransaction = dbContext.Database.CurrentTransaction is null
+            ? await dbContext.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        await CanonicalizeLegacyMutationIdsAsync(dbContext, cancellationToken);
+        var canonicalMutationIdIndexSql = providerName.Contains("Npgsql", StringComparison.OrdinalIgnoreCase)
+            ? """
+              CREATE UNIQUE INDEX IF NOT EXISTS "UX_ProcessedSyncMutations_MutationId_TrimmedCanonical"
+              ON "ProcessedSyncMutations" (lower(btrim("MutationId")));
+              """
+            : """
+              CREATE UNIQUE INDEX IF NOT EXISTS "UX_ProcessedSyncMutations_MutationId_TrimmedCanonical"
+              ON "ProcessedSyncMutations" (lower(trim("MutationId")));
+              """;
+        await dbContext.Database.ExecuteSqlRawAsync(canonicalMutationIdIndexSql, cancellationToken);
+        if (canonicalizationTransaction is not null)
+            await canonicalizationTransaction.CommitAsync(cancellationToken);
         await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "OfficeCode", "TEXT NOT NULL DEFAULT 'SHARED'", "text NOT NULL DEFAULT 'SHARED'", cancellationToken);
         await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "BillingProfileDisplay", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
         await EnsureRuntimeColumnAsync(dbContext, "RentalAssetAssignmentHistories", "ItemName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
@@ -251,6 +267,7 @@ public static partial class DbInitializer
         foreach (var sql in new[]
                  {
                      "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_ProcessedSyncMutations_MutationId\" ON \"ProcessedSyncMutations\" (\"MutationId\");",
+                     "CREATE INDEX IF NOT EXISTS \"IX_AuditLogs_EntityName_EntityId_CreatedAtUtc\" ON \"AuditLogs\" (\"EntityName\", \"EntityId\", \"CreatedAtUtc\");",
                      "CREATE INDEX IF NOT EXISTS \"IX_ConflictLogs_Status_CreatedAtUtc\" ON \"ConflictLogs\" (\"Status\", \"CreatedAtUtc\");",
                      "CREATE INDEX IF NOT EXISTS \"IX_ConflictLogs_EntityName_EntityId_Status\" ON \"ConflictLogs\" (\"EntityName\", \"EntityId\", \"Status\");",
                      "CREATE INDEX IF NOT EXISTS \"IX_ConflictLogs_ResolvedAtUtc\" ON \"ConflictLogs\" (\"ResolvedAtUtc\");",
@@ -275,6 +292,92 @@ public static partial class DbInitializer
         }
         }
     }
+
+    private static async Task CanonicalizeLegacyMutationIdsAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var receipts = await dbContext.ProcessedSyncMutations
+            .AsNoTracking()
+            .Select(receipt => new LegacyMutationReceipt(
+                receipt.Id,
+                receipt.MutationId,
+                receipt.ProcessedAtUtc))
+            .ToListAsync(cancellationToken);
+        var usedMutationIds = new HashSet<string>(
+            receipts.Select(receipt => NormalizeLegacyMutationId(receipt.MutationId)),
+            StringComparer.Ordinal);
+
+        foreach (var group in receipts
+                     .GroupBy(
+                         receipt => NormalizeLegacyMutationId(receipt.MutationId),
+                         StringComparer.Ordinal))
+        {
+            var orderedReceipts = group
+                .OrderBy(receipt => receipt.ProcessedAtUtc)
+                .ThenBy(receipt => receipt.Id)
+                .ToList();
+            var canonicalMutationId = group.Key;
+
+            foreach (var duplicate in orderedReceipts.Skip(1))
+            {
+                var sentinelMutationId = CreateLegacyMutationSentinel(
+                    duplicate,
+                    usedMutationIds);
+                await UpdateLegacyMutationIdAsync(
+                    dbContext,
+                    duplicate.Id,
+                    sentinelMutationId,
+                    cancellationToken);
+                usedMutationIds.Add(sentinelMutationId);
+            }
+
+            // Keep the retained receipt's original spelling. Historical non-empty
+            // payload hashes include the trimmed mutation-id casing, so rewriting
+            // the id would make an identical post-upgrade replay look like a conflict.
+            usedMutationIds.Add(canonicalMutationId);
+        }
+    }
+
+    private static string NormalizeLegacyMutationId(string? mutationId)
+        => string.IsNullOrWhiteSpace(mutationId)
+            ? string.Empty
+            : mutationId.Trim().ToLowerInvariant();
+
+    private static string CreateLegacyMutationSentinel(
+        LegacyMutationReceipt duplicate,
+        ISet<string> usedMutationIds)
+    {
+        var baseSentinel =
+            $"__legacy_duplicate__:{duplicate.Id:N}:{NormalizeLegacyMutationId(duplicate.MutationId)}";
+        var sentinel = baseSentinel;
+        var collisionSuffix = 0;
+        while (usedMutationIds.Contains(sentinel))
+        {
+            collisionSuffix++;
+            sentinel = $"{baseSentinel}:{collisionSuffix}";
+        }
+
+        return sentinel;
+    }
+
+    private static Task<int> UpdateLegacyMutationIdAsync(
+        AppDbContext dbContext,
+        Guid receiptId,
+        string mutationId,
+        CancellationToken cancellationToken)
+        => dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+             UPDATE "ProcessedSyncMutations"
+             SET "MutationId" = {mutationId}
+             WHERE "Id" = {receiptId};
+             """,
+            cancellationToken);
+
+    private sealed record LegacyMutationReceipt(
+        Guid Id,
+        string MutationId,
+        DateTime ProcessedAtUtc);
 
     private static async Task EnsureOperationalPermissionDefaultsAsync(AppDbContext dbContext, CancellationToken cancellationToken)
     {

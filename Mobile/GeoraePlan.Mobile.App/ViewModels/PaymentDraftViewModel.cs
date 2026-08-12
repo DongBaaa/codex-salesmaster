@@ -13,6 +13,7 @@ public sealed class PaymentDraftViewModel : ObservableObject
     private readonly MobileRefreshCoordinator _refreshCoordinator;
     private readonly PaymentAttachmentDraftStore _attachmentStore;
     private readonly SessionStore _sessionStore;
+    private readonly MobileOwnerOperationGate _ownerOperations;
 
     private InvoiceDto? _selectedInvoice;
     private MobilePaymentMethodOption? _selectedPaymentMethod;
@@ -35,12 +36,15 @@ public sealed class PaymentDraftViewModel : ObservableObject
         _refreshCoordinator = refreshCoordinator;
         _attachmentStore = attachmentStore;
         _sessionStore = sessionStore;
+        _ownerOperations = new MobileOwnerOperationGate(sessionStore);
+        _ownerOperations.EnsureCurrentOwner(() => { });
         LoadCommand = new AsyncCommand(LoadAsync);
         SaveDraftCommand = new AsyncCommand(SaveDraftAsync);
         RefreshPaymentMethodOptions();
     }
 
-    public event Func<Task>? SavedSuccessfully;
+    public event Func<MobileOwnerCallbackContext, Task>?
+        SavedSuccessfully;
 
     public ObservableCollection<InvoiceDto> Invoices { get; } = new();
     public ObservableCollection<PendingPaymentAttachmentRecord> Attachments { get; } = new();
@@ -149,56 +153,128 @@ public sealed class PaymentDraftViewModel : ObservableObject
 
     public async Task LoadAsync()
     {
-        if (IsBusy)
+        var sessionSnapshot = _sessionStore.GetSnapshot();
+        var owner = MobileSessionOwner.Capture(sessionSnapshot);
+        var operation = await _ownerOperations.TryBeginAsync(
+            owner,
+            ResetForOwner,
+            deferRefreshWhenBusy: true,
+            () => IsBusy = true);
+        if (operation is null)
             return;
-
-        if (!CanCreatePayments)
-        {
-            StatusMessage = "권한이 없어 수금/지급을 입력할 수 없습니다.";
-            return;
-        }
-
-        if (Invoices.Count > 0)
-        {
-            ApplyInitialInvoice();
-            return;
-        }
 
         try
         {
-            IsBusy = true;
-            StatusMessage = "수금/지급할 전표 목록을 불러오고 있습니다.";
+            _sessionStore.ThrowIfOwnerChanged(owner);
+            if (!sessionSnapshot.CanCreatePayments)
+            {
+                await _ownerOperations.TryCommitAsync(
+                    operation,
+                    () => StatusMessage = "권한이 없어 수금/지급을 입력할 수 없습니다.");
+                return;
+            }
+
+            if (Invoices.Count > 0)
+            {
+                var usedExistingInvoices = false;
+                if (!await _ownerOperations.TryCommitAsync(
+                        operation,
+                        () =>
+                        {
+                            if (Invoices.Count <= 0)
+                                return;
+
+                            ApplyInitialInvoice(sessionSnapshot);
+                            usedExistingInvoices = true;
+                        }))
+                {
+                    return;
+                }
+
+                if (usedExistingInvoices)
+                    return;
+            }
+
+            if (!await _ownerOperations.TryCommitAsync(
+                    operation,
+                    () => StatusMessage = "수금/지급할 전표 목록을 불러오고 있습니다."))
+            {
+                return;
+            }
             _ = RefreshSyncSnapshotInBackgroundAsync();
 
-            var snapshot = _sessionStore.GetSnapshot();
-            var invoices = (await _api.GetInvoicesAsync(null))
-                .Where(invoice => MobileSessionScopeFilter.CanAccessInvoice(snapshot, invoice))
+            var invoices = (await _api.GetInvoicesAsync(
+                    null,
+                    owner))
+                .Where(invoice => MobileSessionScopeFilter.CanAccessInvoice(sessionSnapshot, invoice))
                 .ToList();
-            var pendingState = await _syncCoordinator.LoadAsync();
+            _sessionStore.ThrowIfOwnerChanged(owner);
+            var pendingState = await _syncCoordinator.LoadAsync(owner);
+            _sessionStore.ThrowIfOwnerChanged(owner);
             pendingState.Normalize();
-            Invoices.Clear();
-            foreach (var invoice in invoices.OrderByDescending(x => x.InvoiceDate))
-                Invoices.Add(MergePendingPaymentsIntoInvoice(invoice, pendingState));
-
-            ApplyInitialInvoice();
-
-            StatusMessage = $"전표 {Invoices.Count:N0}건을 불러왔습니다. 수금/지급할 전표를 먼저 선택하세요.";
+            var mergedInvoices = invoices
+                .OrderByDescending(x => x.InvoiceDate)
+                .Select(invoice =>
+                    MergePendingPaymentsIntoInvoice(
+                        invoice,
+                        pendingState))
+                .ToList();
+            await _ownerOperations.TryCommitAsync(
+                operation,
+                () =>
+                {
+                    Invoices.Clear();
+                    foreach (var invoice in mergedInvoices)
+                        Invoices.Add(invoice);
+                    ApplyInitialInvoice(sessionSnapshot);
+                    StatusMessage = $"전표 {Invoices.Count:N0}건을 불러왔습니다. 수금/지급할 전표를 먼저 선택하세요.";
+                });
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            // The next owner operation owns the visible state.
         }
         catch (Exception ex)
         {
-            if (MobileRetryableNetworkFailure.IsRetryable(ex) &&
-                await TryLoadInvoicesFromSyncedStateAsync($"전표 목록 불러오기 실패: {ex.Message}"))
+            try
+            {
+                if (MobileRetryableNetworkFailure.IsRetryable(ex) &&
+                    await TryLoadInvoicesFromSyncedStateAsync(
+                        owner,
+                        sessionSnapshot,
+                        operation,
+                        $"전표 목록 불러오기 실패: {ex.Message}"))
+                {
+                    return;
+                }
+            }
+            catch (StaleMobileSessionOwnerException)
             {
                 return;
             }
 
-            Invoices.Clear();
-            SelectedInvoice = null;
-            StatusMessage = $"전표 목록 불러오기 실패: {ex.Message}";
+            await _ownerOperations.TryCommitAsync(
+                operation,
+                () =>
+                {
+                    Invoices.Clear();
+                    SelectedInvoice = null;
+                    StatusMessage =
+                        $"전표 목록 불러오기 실패: {ex.Message}";
+                });
         }
         finally
         {
-            IsBusy = false;
+            var refreshAgain = false;
+            await _ownerOperations.CompleteAsync(
+                operation,
+                shouldRefresh =>
+                {
+                    IsBusy = false;
+                    refreshAgain = shouldRefresh;
+                });
+            if (refreshAgain)
+                _ = LoadAsync();
         }
     }
 
@@ -214,12 +290,18 @@ public sealed class PaymentDraftViewModel : ObservableObject
         }
     }
 
-    private void ApplyInitialInvoice()
+    private void ApplyInitialInvoice(
+        SessionSnapshot? sessionSnapshot = null)
     {
         if (_initialInvoice is null)
             return;
 
-        if (!MobileSessionScopeFilter.CanAccessInvoice(_sessionStore.GetSnapshot(), _initialInvoice))
+        var snapshot =
+            sessionSnapshot ??
+            _sessionStore.GetSnapshot();
+        if (!MobileSessionScopeFilter.CanAccessInvoice(
+                snapshot,
+                _initialInvoice))
         {
             StatusMessage = "선택한 전표는 현재 로그인 담당지점/업체 범위 밖입니다.";
             return;
@@ -236,12 +318,19 @@ public sealed class PaymentDraftViewModel : ObservableObject
         StatusMessage = $"{PaymentActionText}할 전표가 선택되었습니다. 방식과 금액을 확인한 뒤 마지막 저장 버튼을 누르세요.";
     }
 
-    private async Task<bool> TryLoadInvoicesFromSyncedStateAsync(string reason)
+    private async Task<bool> TryLoadInvoicesFromSyncedStateAsync(
+        MobileSessionOwner owner,
+        SessionSnapshot sessionSnapshot,
+        MobileOwnerUiOperation operation,
+        string reason)
     {
-        var state = await _syncCoordinator.LoadAsync();
+        var state = await _syncCoordinator.LoadAsync(owner);
+        _sessionStore.ThrowIfOwnerChanged(owner);
         state.Normalize();
 
-        var invoices = BuildSyncedInvoiceSnapshots(state)
+        var invoices = BuildSyncedInvoiceSnapshots(
+                state,
+                sessionSnapshot)
             .OrderByDescending(invoice => invoice.InvoiceDate)
             .ThenByDescending(invoice => invoice.UpdatedAtUtc)
             .Take(100)
@@ -250,24 +339,28 @@ public sealed class PaymentDraftViewModel : ObservableObject
         if (invoices.Count == 0 && _initialInvoice is null)
             return false;
 
-        Invoices.Clear();
-        foreach (var invoice in invoices)
-            Invoices.Add(invoice);
-
-        ApplyInitialInvoice();
-
-        if (Invoices.Count == 0)
-            return false;
-
-        StatusMessage = $"{reason} / 동기화 캐시 전표 {Invoices.Count:N0}건을 표시합니다. 수금/지급할 전표를 먼저 선택하세요.";
-        return true;
+        var displayed = false;
+        var committed = await _ownerOperations.TryCommitAsync(
+            operation,
+            () =>
+            {
+                Invoices.Clear();
+                foreach (var invoice in invoices)
+                    Invoices.Add(invoice);
+                ApplyInitialInvoice(sessionSnapshot);
+                displayed = Invoices.Count > 0;
+                if (displayed)
+                {
+                    StatusMessage = $"{reason} / 동기화 캐시 전표 {Invoices.Count:N0}건을 표시합니다. 수금/지급할 전표를 먼저 선택하세요.";
+                }
+            });
+        return committed && displayed;
     }
 
     public async Task AddPdfAttachmentAsync()
     {
-        try
-        {
-            var file = await FilePicker.Default.PickAsync(new PickOptions
+        await AddAttachmentFromExternalPickerAsync(
+            () => FilePicker.Default.PickAsync(new PickOptions
             {
                 PickerTitle = "PDF 파일 선택",
                 FileTypes = new FilePickerFileType(new Dictionary<DevicePlatform, IEnumerable<string>>
@@ -277,20 +370,10 @@ public sealed class PaymentDraftViewModel : ObservableObject
                     [DevicePlatform.iOS] = ["com.adobe.pdf"],
                     [DevicePlatform.MacCatalyst] = ["pdf"]
                 })
-            });
-
-            if (file is null)
-                return;
-
-            var attachment = await _attachmentStore.ImportAsync(file, "PDF", $"{PaymentActionText} 첨부", CancellationToken.None);
-            Attachments.Add(attachment);
-            OnPropertyChanged(nameof(AttachmentSummary));
-            StatusMessage = $"첨부 추가: {attachment.FileName}";
-        }
-        catch (Exception ex)
-        {
-            StatusMessage = $"PDF 첨부 실패: {ex.Message}";
-        }
+            }),
+            "PDF",
+            "첨부 추가",
+            "PDF 첨부 실패");
     }
 
     public async Task CaptureAttachmentAsync()
@@ -303,18 +386,16 @@ public sealed class PaymentDraftViewModel : ObservableObject
                 return;
             }
 
-            var photo = await MediaPicker.Default.CapturePhotoAsync(new MediaPickerOptions
-            {
-                Title = $"{PaymentActionText} 내역 촬영"
-            });
-
-            if (photo is null)
-                return;
-
-            var attachment = await _attachmentStore.ImportAsync(photo, "카메라", $"{PaymentActionText} 첨부", CancellationToken.None);
-            Attachments.Add(attachment);
-            OnPropertyChanged(nameof(AttachmentSummary));
-            StatusMessage = $"촬영 이미지 첨부: {attachment.FileName}";
+            await AddAttachmentFromExternalPickerAsync(
+                () => MediaPicker.Default.CapturePhotoAsync(
+                    new MediaPickerOptions
+                    {
+                        Title =
+                            $"{PaymentActionText} 내역 촬영"
+                    }),
+                "카메라",
+                "촬영 이미지 첨부",
+                "카메라 첨부 실패");
         }
         catch (Exception ex)
         {
@@ -322,9 +403,108 @@ public sealed class PaymentDraftViewModel : ObservableObject
         }
     }
 
+    internal async Task AddAttachmentFromExternalPickerAsync(
+        Func<Task<FileResult?>> pickAsync,
+        string attachmentType,
+        string successPrefix,
+        string failurePrefix)
+    {
+        ArgumentNullException.ThrowIfNull(pickAsync);
+        var owner = _sessionStore.CaptureOwner();
+        var operation = await _ownerOperations.TryBeginAsync(
+            owner,
+            ResetForOwner,
+            deferRefreshWhenBusy: false,
+            () => IsBusy = true);
+        if (operation is null)
+            return;
+
+        PendingPaymentAttachmentRecord? imported = null;
+        try
+        {
+            var paymentActionText = PaymentActionText;
+            var file = await _ownerOperations
+                .AwaitExternalResultAsync(
+                    operation,
+                    pickAsync);
+            if (file is null)
+                return;
+
+            imported = await _attachmentStore.ImportAsync(
+                owner,
+                file,
+                attachmentType,
+                $"{paymentActionText} 첨부",
+                CancellationToken.None);
+            _sessionStore.ThrowIfOwnerChanged(owner);
+
+            var committed = await _ownerOperations.TryCommitAsync(
+                operation,
+                () =>
+                {
+                    Attachments.Add(imported);
+                    OnPropertyChanged(
+                        nameof(AttachmentSummary));
+                    StatusMessage =
+                        $"{successPrefix}: {imported.FileName}";
+                });
+            if (!committed)
+            {
+                await TryRemoveImportedAttachmentAsync(
+                    owner,
+                    imported);
+            }
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            // The old owner's draft never enters the new owner's namespace
+            // or UI. Owner-scoped orphan cleanup handles any completed import.
+        }
+        catch (Exception ex)
+        {
+            if (imported is not null)
+            {
+                await TryRemoveImportedAttachmentAsync(
+                    owner,
+                    imported);
+            }
+
+            await _ownerOperations.TryCommitAsync(
+                operation,
+                () => StatusMessage =
+                    $"{failurePrefix}: {ex.Message}");
+        }
+        finally
+        {
+            await _ownerOperations.CompleteAsync(
+                operation,
+                _ => IsBusy = false);
+        }
+    }
+
+    private async Task TryRemoveImportedAttachmentAsync(
+        MobileSessionOwner owner,
+        PendingPaymentAttachmentRecord attachment)
+    {
+        if (!_sessionStore.IsOwnerCurrent(owner))
+            return;
+
+        try
+        {
+            await _attachmentStore.RemoveAsync(
+                owner,
+                attachment,
+                CancellationToken.None);
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            // A subsequent owner change leaves only an old-owner orphan.
+        }
+    }
+
     public async Task OpenAttachmentAsync(PendingPaymentAttachmentRecord attachment)
     {
-        if (attachment is null || string.IsNullOrWhiteSpace(attachment.StoredPath) || !File.Exists(attachment.StoredPath))
+        if (attachment is null)
         {
             StatusMessage = "첨부 파일을 찾을 수 없습니다.";
             return;
@@ -332,7 +512,24 @@ public sealed class PaymentDraftViewModel : ObservableObject
 
         try
         {
-            await Launcher.Default.OpenAsync(new OpenFileRequest(attachment.FileName, new ReadOnlyFile(attachment.StoredPath)));
+            var owner = _sessionStore.CaptureOwner();
+            var storedPath =
+                await _attachmentStore.ResolveOwnedPathAsync(
+                    owner,
+                    attachment,
+                    CancellationToken.None);
+            _sessionStore.ThrowIfOwnerChanged(owner);
+            if (string.IsNullOrWhiteSpace(storedPath) ||
+                !File.Exists(storedPath))
+            {
+                StatusMessage = "첨부 파일을 찾을 수 없습니다.";
+                return;
+            }
+
+            await Launcher.Default.OpenAsync(
+                new OpenFileRequest(
+                    attachment.FileName,
+                    new ReadOnlyFile(storedPath)));
             StatusMessage = $"첨부 파일 열기: {attachment.FileName}";
         }
         catch (Exception ex)
@@ -343,97 +540,182 @@ public sealed class PaymentDraftViewModel : ObservableObject
 
     public async Task RemoveAttachmentAsync(PendingPaymentAttachmentRecord attachment)
     {
+        var owner = _sessionStore.CaptureOwner();
+        await _attachmentStore.RemoveAsync(
+            owner,
+            attachment,
+            CancellationToken.None);
+        _sessionStore.ThrowIfOwnerChanged(owner);
         Attachments.Remove(attachment);
-        await _attachmentStore.RemoveAsync(attachment, CancellationToken.None);
         OnPropertyChanged(nameof(AttachmentSummary));
         StatusMessage = $"첨부 삭제: {attachment.FileName}";
     }
 
     public async Task SaveDraftAsync()
     {
-        if (IsBusy)
+        var sessionSnapshot = _sessionStore.GetSnapshot();
+        var owner = MobileSessionOwner.Capture(sessionSnapshot);
+        var operation = await _ownerOperations.TryBeginAsync(
+            owner,
+            ResetForOwner,
+            deferRefreshWhenBusy: false,
+            () => IsBusy = true);
+        if (operation is null)
             return;
-
-        if (!CanCreatePayments)
-        {
-            StatusMessage = "권한이 없어 수금/지급을 저장할 수 없습니다.";
-            return;
-        }
-
-        if (SelectedInvoice is null)
-        {
-            StatusMessage = "전표를 선택하세요.";
-            return;
-        }
-
-        var selectedPaymentMethod = SelectedPaymentMethod;
-        if (selectedPaymentMethod is null)
-        {
-            StatusMessage = $"{PaymentMethodLabelText}을 선택하세요.";
-            return;
-        }
-
-        if (!decimal.TryParse(AmountText, out var amount) || amount <= 0)
-        {
-            StatusMessage = "금액을 올바르게 입력하세요.";
-            return;
-        }
 
         try
         {
-            IsBusy = true;
-            StatusMessage = "최신 전표 잔액을 확인하고 있습니다.";
+            _sessionStore.ThrowIfOwnerChanged(owner);
+            var selectedInvoice = SelectedInvoice is null
+                ? null
+                : CloneInvoiceForPaymentDraft(
+                    SelectedInvoice,
+                    BuildEffectivePaymentsForInvoice(
+                        SelectedInvoice.Id,
+                        SelectedInvoice.Payments,
+                        null));
+            var selectedPaymentMethod = SelectedPaymentMethod is null
+                ? null
+                : ClonePaymentMethod(SelectedPaymentMethod);
+            var paymentDate = PaymentDate;
+            var amountText = AmountText;
+            var note = Note;
+            var attachments = Attachments
+                .Select(ClonePendingPaymentAttachment)
+                .ToList();
+            _sessionStore.ThrowIfOwnerChanged(owner);
+            var paymentActionText =
+                MobileVoucherTypeRules.IsPaymentVoucher(
+                    selectedInvoice?.VoucherType)
+                    ? "지급"
+                    : "수금";
+            var paymentMethodLabelText =
+                MobileVoucherTypeRules.IsPaymentVoucher(
+                    selectedInvoice?.VoucherType)
+                    ? "지급방법"
+                    : "수금방식";
 
-            var selectedInvoiceRevision = SelectedInvoice.Revision;
+            if (!sessionSnapshot.CanCreatePayments)
+            {
+                await _ownerOperations.TryCommitAsync(
+                    operation,
+                    () => StatusMessage = "권한이 없어 수금/지급을 저장할 수 없습니다.");
+                return;
+            }
+
+            if (selectedInvoice is null)
+            {
+                await _ownerOperations.TryCommitAsync(
+                    operation,
+                    () => StatusMessage = "전표를 선택하세요.");
+                return;
+            }
+
+            if (selectedPaymentMethod is null)
+            {
+                await _ownerOperations.TryCommitAsync(
+                    operation,
+                    () => StatusMessage = $"{paymentMethodLabelText}을 선택하세요.");
+                return;
+            }
+
+            if (!decimal.TryParse(amountText, out var amount) ||
+                amount <= 0)
+            {
+                await _ownerOperations.TryCommitAsync(
+                    operation,
+                    () => StatusMessage = "금액을 올바르게 입력하세요.");
+                return;
+            }
+
+            if (!await _ownerOperations.TryCommitAsync(
+                    operation,
+                    () => StatusMessage = "최신 전표 잔액을 확인하고 있습니다."))
+            {
+                return;
+            }
+
+            var selectedInvoiceRevision = selectedInvoice.Revision;
             InvoiceDto? latestInvoice;
             try
             {
-                latestInvoice = await RefreshSelectedInvoiceForSaveAsync(SelectedInvoice);
+                latestInvoice = await RefreshSelectedInvoiceForSaveAsync(
+                    selectedInvoice,
+                    owner,
+                    sessionSnapshot);
+                _sessionStore.ThrowIfOwnerChanged(owner);
             }
             catch (Exception ex) when (CanQueuePaymentWithSelectedInvoiceAfterRefreshFailure(ex))
             {
-                latestInvoice = SelectedInvoice;
-                StatusMessage = $"최신 전표 확인 지연으로 현재 화면 전표 기준 {PaymentActionText}을 동기화 대기로 저장합니다.";
+                _sessionStore.ThrowIfOwnerChanged(owner);
+                latestInvoice = selectedInvoice;
+                if (!await _ownerOperations.TryCommitAsync(
+                        operation,
+                        () => StatusMessage =
+                            $"최신 전표 확인 지연으로 현재 화면 전표 기준 {paymentActionText}을 동기화 대기로 저장합니다."))
+                {
+                    return;
+                }
             }
 
             if (latestInvoice is null)
             {
-                StatusMessage = "선택한 전표가 최신 데이터에서 확인되지 않습니다. 전표 목록을 다시 조회한 뒤 시도하세요.";
-                _refreshCoordinator.MarkInvoicesChanged();
+                await _ownerOperations.TryCommitAsync(
+                    operation,
+                    () =>
+                    {
+                        StatusMessage = "선택한 전표가 최신 데이터에서 확인되지 않습니다. 전표 목록을 다시 조회한 뒤 시도하세요.";
+                        _refreshCoordinator.MarkInvoicesChanged();
+                    });
                 return;
             }
 
             if (selectedInvoiceRevision > 0 && latestInvoice.Revision != selectedInvoiceRevision)
             {
-                ReplaceInvoiceSnapshot(latestInvoice);
-                _refreshCoordinator.MarkInvoicesChanged();
-                StatusMessage = $"{PaymentActionText}이 저장되지 않았습니다. 전표 최신값이 변경되었습니다. 전표 내용을 확인한 뒤 다시 시도하세요.";
+                await _ownerOperations.TryCommitAsync(
+                    operation,
+                    () =>
+                    {
+                        ReplaceInvoiceSnapshot(latestInvoice);
+                        _refreshCoordinator.MarkInvoicesChanged();
+                        StatusMessage = $"{paymentActionText}이 저장되지 않았습니다. 전표 최신값이 변경되었습니다. 전표 내용을 확인한 뒤 다시 시도하세요.";
+                    });
                 return;
             }
 
-            if (!MobileSessionScopeFilter.CanAccessInvoice(_sessionStore.GetSnapshot(), latestInvoice))
+            if (!MobileSessionScopeFilter.CanAccessInvoice(sessionSnapshot, latestInvoice))
             {
-                StatusMessage = "선택한 전표는 현재 로그인 담당지점/업체 범위 밖이라 수금/지급을 저장할 수 없습니다.";
-                _refreshCoordinator.MarkInvoicesChanged();
+                await _ownerOperations.TryCommitAsync(
+                    operation,
+                    () =>
+                    {
+                        StatusMessage = "선택한 전표는 현재 로그인 담당지점/업체 범위 밖이라 수금/지급을 저장할 수 없습니다.";
+                        _refreshCoordinator.MarkInvoicesChanged();
+                    });
                 return;
             }
 
             var outstandingAmount = CalculateOutstandingAmount(latestInvoice);
             if (amount > outstandingAmount)
             {
-                StatusMessage = $"입력 금액이 최신 잔액보다 {(amount - outstandingAmount):N0}원 많습니다. 금액을 다시 확인하세요.";
-                _refreshCoordinator.MarkInvoicesChanged();
+                await _ownerOperations.TryCommitAsync(
+                    operation,
+                    () =>
+                    {
+                        StatusMessage = $"입력 금액이 최신 잔액보다 {(amount - outstandingAmount):N0}원 많습니다. 금액을 다시 확인하세요.";
+                        _refreshCoordinator.MarkInvoicesChanged();
+                    });
                 return;
             }
 
             var now = DateTime.UtcNow;
             var paymentId = Guid.NewGuid();
-            var paymentNote = BuildPaymentNote(selectedPaymentMethod, Note);
+            var paymentNote = BuildPaymentNote(selectedPaymentMethod, note);
             var payment = new PaymentDto
             {
                 Id = paymentId,
                 InvoiceId = latestInvoice.Id,
-                PaymentDate = DateOnly.FromDateTime(PaymentDate),
+                PaymentDate = DateOnly.FromDateTime(paymentDate),
                 Amount = amount,
                 Note = paymentNote,
                 CreatedAtUtc = now,
@@ -449,75 +731,120 @@ public sealed class PaymentDraftViewModel : ObservableObject
                 latestInvoice,
                 selectedPaymentMethod,
                 amount,
-                DateOnly.FromDateTime(PaymentDate),
+                DateOnly.FromDateTime(paymentDate),
                 paymentNote,
                 now);
 
-            StatusMessage = $"{PaymentActionText} 정보를 {selectedPaymentMethod.DisplayName}으로 저장하고 있습니다.";
+            if (!await _ownerOperations.TryCommitAsync(
+                    operation,
+                    () => StatusMessage =
+                        $"{paymentActionText} 정보를 {selectedPaymentMethod.DisplayName}으로 저장하고 있습니다."))
+            {
+                return;
+            }
 
-            foreach (var attachment in Attachments)
+            foreach (var attachment in attachments)
                 attachment.PaymentId = payment.Id;
 
-            var state = await _syncCoordinator.SavePaymentImmediatelyAsync(payment, Attachments, linkedTransaction);
-            if (state.PendingPaymentCount > 0)
-                ReplaceInvoiceSnapshot(MergePendingPaymentsIntoInvoice(latestInvoice, state));
-            if (SyncCoordinator.IsConcurrencyConflictState(state))
+            var saveResult =
+                await _syncCoordinator
+                    .SavePaymentWithOutcomeImmediatelyAsync(
+                        payment,
+                        owner,
+                        attachments,
+                        linkedTransaction);
+            var state = saveResult.State;
+            _sessionStore.ThrowIfOwnerChanged(owner);
+            var isAccepted =
+                saveResult.PaymentAccepted;
+            var isRejected =
+                saveResult.PaymentRejected;
+            var statusMessage =
+                saveResult.BuildStatusMessage(
+                    paymentActionText);
+            var mergedInvoice =
+                state.PendingPaymentCount > 0
+                    ? MergePendingPaymentsIntoInvoice(
+                        latestInvoice,
+                        state)
+                    : null;
+            if (!await _ownerOperations.TryCommitAsync(
+                    operation,
+                    () =>
+                    {
+                        if (mergedInvoice is not null)
+                            ReplaceInvoiceSnapshot(mergedInvoice);
+                        if (isAccepted)
+                            _refreshCoordinator.MarkInvoicesChanged();
+                        StatusMessage = statusMessage;
+                    }))
             {
-                _refreshCoordinator.MarkInvoicesChanged();
-                StatusMessage = $"{PaymentActionText}이 저장되지 않았습니다. {state.LastError}";
                 return;
             }
 
-            if (state.PendingPaymentCount == 0 &&
-                SyncCoordinator.IsFailedImmediateSaveWithoutServerAcceptance(state))
-            {
-                StatusMessage = $"{PaymentActionText}이 저장되지 않았습니다. {state.LastError}";
+            if (isRejected)
                 return;
-            }
-
-            if (state.PendingPaymentCount == 0)
+            if (saveResult.CanInvokeSuccessCallback)
             {
-                _refreshCoordinator.MarkInvoicesChanged();
-                StatusMessage = state.PendingPaymentAttachmentCount == 0
-                    ? string.IsNullOrWhiteSpace(state.LastError)
-                        ? $"{PaymentActionText} 저장 및 서버 반영 완료"
-                        : $"{PaymentActionText} 저장 완료 / 최신 데이터 새로고침 대기: {state.LastError}"
-                    : $"{PaymentActionText} 저장 완료 / 첨부 {state.PendingPaymentAttachmentCount:N0}건은 네트워크 복구 후 자동 업로드됩니다.";
-
-                if (SavedSuccessfully is not null)
-                    await SavedSuccessfully.Invoke();
+                var callbackContext =
+                    _ownerOperations.CreateCallbackContext(
+                        operation);
+                var callbackTask =
+                    await _ownerOperations.TryStartCallbackAsync(
+                        operation,
+                        () => SavedSuccessfully?.Invoke(
+                                  callbackContext) ??
+                              Task.CompletedTask);
+                if (callbackTask is not null)
+                    await callbackTask;
             }
-            else
-            {
-                StatusMessage = $"{PaymentActionText} 저장 완료(동기화/첨부 대기): {state.LastError}";
-            }
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            // A previous authenticated generation cannot alter the currently
+            // visible owner's draft, status, callback, or busy state.
         }
         catch (Exception ex)
         {
-            StatusMessage = $"{PaymentActionText} 저장 실패: {ex.Message}";
+            await _ownerOperations.TryCommitAsync(
+                operation,
+                () => StatusMessage =
+                    $"수금/지급 저장 실패: {ex.Message}");
         }
         finally
         {
-            IsBusy = false;
+            await _ownerOperations.CompleteAsync(
+                operation,
+                _ => IsBusy = false);
         }
     }
 
     internal static bool CanQueuePaymentWithSelectedInvoiceAfterRefreshFailure(Exception ex)
         => MobileRetryableNetworkFailure.IsRetryable(ex);
 
-    private async Task<InvoiceDto?> RefreshSelectedInvoiceForSaveAsync(InvoiceDto invoice)
+    private async Task<InvoiceDto?> RefreshSelectedInvoiceForSaveAsync(
+        InvoiceDto invoice,
+        MobileSessionOwner owner,
+        SessionSnapshot sessionSnapshot)
     {
-        var latest = await _api.GetInvoiceByIdAsync(invoice.Id);
+        var latest = await _api.GetInvoiceByIdAsync(
+            invoice.Id,
+            owner);
+        _sessionStore.ThrowIfOwnerChanged(owner);
         if (latest is null || latest.IsDeleted)
             return null;
 
-        if (!MobileSessionScopeFilter.CanAccessInvoice(_sessionStore.GetSnapshot(), latest))
+        if (!MobileSessionScopeFilter.CanAccessInvoice(
+                sessionSnapshot,
+                latest))
+        {
             return null;
+        }
 
-        var pendingState = await _syncCoordinator.LoadAsync();
+        var pendingState = await _syncCoordinator.LoadAsync(owner);
+        _sessionStore.ThrowIfOwnerChanged(owner);
         pendingState.Normalize();
         latest = MergePendingPaymentsIntoInvoice(latest, pendingState);
-        ReplaceInvoiceSnapshot(latest);
         return latest;
     }
 
@@ -537,12 +864,15 @@ public sealed class PaymentDraftViewModel : ObservableObject
         SelectedInvoice = latest;
     }
 
-    private IReadOnlyList<InvoiceDto> BuildSyncedInvoiceSnapshots(Models.MobileSyncState state)
+    private static IReadOnlyList<InvoiceDto> BuildSyncedInvoiceSnapshots(
+        Models.MobileSyncState state,
+        SessionSnapshot sessionSnapshot)
     {
-        var snapshot = _sessionStore.GetSnapshot();
         return state.SyncedInvoices
             .Where(invoice => !invoice.IsDeleted)
-            .Where(invoice => MobileSessionScopeFilter.CanAccessInvoice(snapshot, invoice))
+            .Where(invoice => MobileSessionScopeFilter.CanAccessInvoice(
+                sessionSnapshot,
+                invoice))
             .Select(invoice =>
             {
                 var payments = BuildEffectivePaymentsForInvoice(invoice.Id, state.SyncedPayments, state.PendingPush.Payments);
@@ -701,6 +1031,46 @@ public sealed class PaymentDraftViewModel : ObservableObject
             UploadedAtUtc = attachment.UploadedAtUtc,
             FileContent = attachment.FileContent
         };
+
+    private static PendingPaymentAttachmentRecord ClonePendingPaymentAttachment(
+        PendingPaymentAttachmentRecord attachment)
+        => new()
+        {
+            LocalId = attachment.LocalId,
+            PaymentId = attachment.PaymentId,
+            AttachmentType = attachment.AttachmentType,
+            Description = attachment.Description,
+            FileName = attachment.FileName,
+            StoredPath = attachment.StoredPath,
+            MimeType = attachment.MimeType,
+            FileSize = attachment.FileSize,
+            FileHash = attachment.FileHash,
+            CreatedAtUtc = attachment.CreatedAtUtc
+        };
+
+    private static MobilePaymentMethodOption ClonePaymentMethod(
+        MobilePaymentMethodOption method)
+        => new()
+        {
+            DisplayName = method.DisplayName,
+            TransactionKind = method.TransactionKind,
+            BucketKey = method.BucketKey,
+            IsPurchase = method.IsPurchase
+        };
+
+    private void ResetForOwner()
+    {
+        Invoices.Clear();
+        Attachments.Clear();
+        _initialInvoice = null;
+        SelectedInvoice = null;
+        AmountText = "0";
+        Note = string.Empty;
+        PaymentDate = DateTime.Today;
+        StatusMessage = "현재 로그인 소유자의 전표를 다시 불러오세요.";
+        IsBusy = false;
+        OnPropertyChanged(nameof(AttachmentSummary));
+    }
 
     private static decimal CalculateOutstandingAmount(InvoiceDto? invoice)
     {

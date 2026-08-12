@@ -9,6 +9,7 @@ using 거래플랜.Shared.Contracts;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Npgsql;
 using Xunit;
 
 namespace GeoraePlan.Server.Api.Tests;
@@ -39,6 +40,130 @@ public sealed class DbInitializerRegressionTests : IDisposable
 
         _dbContext = new AppDbContext(options, currentUser, revisionClock);
         _dbContext.Database.EnsureCreated();
+    }
+
+    [Fact]
+    public void SeedUsersOptions_UpdateExistingAdminPassword_DefaultsToFalse()
+    {
+        var options = new SeedUsersOptions();
+        Assert.False(options.AdminOnlyBootstrap);
+        Assert.False(options.UpdateExistingAdminPassword);
+    }
+
+    [Fact]
+    public async Task EnsureConfiguredSeedUsersAsync_AdminOnlyBootstrapChangesOnlyAdminHash()
+    {
+        static UserAccount CreateUser(string username, string password) => new()
+        {
+            Username = username,
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword(password),
+            Role = string.Equals(username, "admin", StringComparison.Ordinal) ? "Admin" : "User",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = string.Equals(username, "admin", StringComparison.Ordinal)
+                ? TenantScopeCatalog.ScopeAdmin
+                : TenantScopeCatalog.ScopeOfficeOnly,
+            IsActive = true
+        };
+
+        var admin = CreateUser("admin", "Original-Admin!9aA");
+        var user = CreateUser("user", "Original-User!9aA");
+        var itw = CreateUser("itw", "Original-Itw!9aA");
+        var usenet = CreateUser("usenet", "Original-Usenet!9aA");
+        _dbContext.Users.AddRange(admin, user, itw, usenet);
+        await _dbContext.SaveChangesAsync();
+        var unrelatedHashes = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [user.Username] = user.PasswordHash,
+            [itw.Username] = itw.PasswordHash,
+            [usenet.Username] = usenet.PasswordHash
+        };
+
+        var options = new SeedUsersOptions
+        {
+            AdminOnlyBootstrap = true,
+            UpdateExistingAdminPassword = true,
+            AdminPassword = "Ephemeral-Admin!9aA",
+            UserPassword = "Inherited-User!9aA",
+            ItwPassword = "Inherited-Itw!9aA",
+            UpdateExistingItwPassword = true,
+            UsenetUsername = "inherited-extra-admin",
+            UsenetPassword = "Inherited-Extra!9aA",
+            UpdateExistingUsenetPassword = true
+        };
+        var method = typeof(DbInitializer).GetMethod(
+            "EnsureConfiguredSeedUsersAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var invocation = method!.Invoke(
+            null,
+            [_dbContext, NullLogger.Instance, options, CancellationToken.None]);
+        await Assert.IsAssignableFrom<Task>(invocation);
+
+        Assert.True(BCrypt.Net.BCrypt.Verify("Ephemeral-Admin!9aA", admin.PasswordHash));
+        Assert.All(
+            new[] { user, itw, usenet },
+            account => Assert.Equal(unrelatedHashes[account.Username], account.PasswordHash));
+        Assert.DoesNotContain(
+            _dbContext.Users.Local,
+            account => string.Equals(
+                account.Username,
+                "inherited-extra-admin",
+                StringComparison.OrdinalIgnoreCase));
+        Assert.Null(options.AdminPassword);
+    }
+
+    [Fact]
+    public async Task EnsureSeedUserAsync_ExistingAdminPasswordChangesOnlyWhenExplicitlyEnabled()
+    {
+        const string originalPassword = "Original-Admin-Password!9aA";
+        const string replacementPassword = "Ephemeral-Admin-Password!9aA";
+        var originalHash = BCrypt.Net.BCrypt.HashPassword(originalPassword);
+        var admin = new UserAccount
+        {
+            Username = "admin",
+            PasswordHash = originalHash,
+            Role = "Admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsActive = true
+        };
+        _dbContext.Users.Add(admin);
+        await _dbContext.SaveChangesAsync();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "EnsureSeedUserAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        async Task InvokeAsync(bool updatePasswordIfExists)
+        {
+            var invocation = method!.Invoke(
+                null,
+                [
+                    _dbContext,
+                    NullLogger.Instance,
+                    "admin",
+                    replacementPassword,
+                    "Admin",
+                    TenantScopeCatalog.UsenetGroup,
+                    OfficeCodeCatalog.Usenet,
+                    TenantScopeCatalog.ScopeAdmin,
+                    true,
+                    updatePasswordIfExists,
+                    CancellationToken.None
+                ]);
+            await Assert.IsAssignableFrom<Task>(invocation);
+        }
+
+        await InvokeAsync(updatePasswordIfExists: false);
+        Assert.Equal(originalHash, admin.PasswordHash);
+        Assert.True(BCrypt.Net.BCrypt.Verify(originalPassword, admin.PasswordHash));
+
+        await InvokeAsync(updatePasswordIfExists: true);
+        Assert.NotEqual(originalHash, admin.PasswordHash);
+        Assert.True(BCrypt.Net.BCrypt.Verify(replacementPassword, admin.PasswordHash));
     }
 
     [Fact]
@@ -333,6 +458,1509 @@ public sealed class DbInitializerRegressionTests : IDisposable
     }
 
     [Fact]
+    public async Task BackfillCustomerScopeFieldsAsync_UsesPersistedRevisionForConcurrencyCheck()
+    {
+        var customer = CreateDuplicateMergeCustomer(
+            Guid.NewGuid(),
+            "123-45-67890");
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+        var persistedRevision = customer.Revision;
+        Assert.True(persistedRevision > 0);
+
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+             UPDATE "Customers"
+             SET "OfficeCode" = {string.Empty}, "TenantCode" = {string.Empty}
+             WHERE "Id" = {customer.Id};
+             """);
+        _dbContext.ChangeTracker.Clear();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "BackfillCustomerScopeFieldsAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var task = Assert.IsAssignableFrom<Task>(
+            method!.Invoke(null, [_dbContext, CancellationToken.None]));
+
+        await task;
+
+        _dbContext.ChangeTracker.Clear();
+        var repaired = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == customer.Id);
+        Assert.Equal(OfficeCodeCatalog.Shared, repaired.OfficeCode);
+        Assert.Equal(TenantScopeCatalog.UsenetGroup, repaired.TenantCode);
+        Assert.True(repaired.Revision >= persistedRevision);
+    }
+
+    [Fact]
+    public async Task EnsureInvoiceVersionColumnsAsync_UsesPersistedRevisionForStubUpdates()
+    {
+        var customer = CreateDuplicateMergeCustomer(
+            Guid.NewGuid(),
+            "987-65-43210");
+        var versionGroupId = Guid.NewGuid();
+        var older = CreateInitializerInvoice(
+            Guid.NewGuid(),
+            customer.Id,
+            "REVISION-STUB-OLD");
+        older.VersionGroupId = versionGroupId;
+        older.VersionNumber = 1;
+        older.IsLatestVersion = true;
+        older.UpdatedAtUtc = new DateTime(2026, 7, 22, 1, 0, 0, DateTimeKind.Utc);
+        var latest = CreateInitializerInvoice(
+            Guid.NewGuid(),
+            customer.Id,
+            "REVISION-STUB-NEW");
+        latest.VersionGroupId = versionGroupId;
+        latest.VersionNumber = 2;
+        latest.IsLatestVersion = true;
+        latest.UpdatedAtUtc = new DateTime(2026, 7, 22, 2, 0, 0, DateTimeKind.Utc);
+        _dbContext.AddRange(customer, older, latest);
+        await _dbContext.SaveChangesAsync();
+        Assert.True(older.Revision > 0);
+        Assert.True(latest.Revision > 0);
+        _dbContext.ChangeTracker.Clear();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "EnsureInvoiceVersionColumnsAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var task = Assert.IsAssignableFrom<Task>(
+            method!.Invoke(null, [_dbContext, CancellationToken.None]));
+
+        await task;
+
+        _dbContext.ChangeTracker.Clear();
+        var versions = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Where(current => current.VersionGroupId == versionGroupId)
+            .OrderBy(current => current.VersionNumber)
+            .ToListAsync();
+        Assert.Collection(
+            versions,
+            first => Assert.False(first.IsLatestVersion),
+            second => Assert.True(second.IsLatestVersion));
+    }
+
+    [Fact]
+    public async Task EnsureInvoiceVersionColumnsAsync_NormalizesLatestVersionPerOperationalScope()
+    {
+        var primaryCustomer = CreateDuplicateMergeCustomer(
+            Guid.NewGuid(),
+            "111-22-33333");
+        var otherCustomer = CreateDuplicateMergeCustomer(
+            Guid.NewGuid(),
+            "444-55-66666");
+        otherCustomer.NameOriginal = "OTHER SCOPE CUSTOMER";
+        otherCustomer.NameMatchKey = "OTHERSCOPECUSTOMER";
+
+        var versionGroupId = Guid.NewGuid();
+        var legacyScopeOlder = CreateVersion(
+            primaryCustomer.Id,
+            "SCOPE-LEGACY-OLDER",
+            1,
+            tenantCode: string.Empty,
+            officeCode: string.Empty,
+            responsibleOfficeCode: string.Empty,
+            isLatestVersion: true);
+        var legacyScopeLatest = CreateVersion(
+            primaryCustomer.Id,
+            "SCOPE-LEGACY-LATEST",
+            2,
+            TenantScopeCatalog.UsenetGroup,
+            OfficeCodeCatalog.Usenet,
+            OfficeCodeCatalog.Usenet,
+            isLatestVersion: false);
+        var legacyScopeDeleted = CreateVersion(
+            primaryCustomer.Id,
+            "SCOPE-LEGACY-DELETED",
+            11,
+            TenantScopeCatalog.UsenetGroup,
+            OfficeCodeCatalog.Usenet,
+            OfficeCodeCatalog.Usenet,
+            isLatestVersion: true,
+            isDeleted: true);
+
+        var responsibleScopeOlder = CreateVersion(
+            primaryCustomer.Id,
+            "SCOPE-RESPONSIBLE-OLDER",
+            3,
+            TenantScopeCatalog.UsenetGroup,
+            OfficeCodeCatalog.Usenet,
+            OfficeCodeCatalog.Yeonsu,
+            isLatestVersion: true);
+        var responsibleScopeLatest = CreateVersion(
+            primaryCustomer.Id,
+            "SCOPE-RESPONSIBLE-LATEST",
+            4,
+            TenantScopeCatalog.UsenetGroup,
+            OfficeCodeCatalog.Usenet,
+            OfficeCodeCatalog.Yeonsu,
+            isLatestVersion: false);
+
+        var owningScopeOlder = CreateVersion(
+            primaryCustomer.Id,
+            "SCOPE-OWNER-OLDER",
+            5,
+            TenantScopeCatalog.UsenetGroup,
+            OfficeCodeCatalog.Shared,
+            OfficeCodeCatalog.Usenet,
+            isLatestVersion: true);
+        var owningScopeLatest = CreateVersion(
+            primaryCustomer.Id,
+            "SCOPE-OWNER-LATEST",
+            6,
+            TenantScopeCatalog.UsenetGroup,
+            OfficeCodeCatalog.Shared,
+            OfficeCodeCatalog.Usenet,
+            isLatestVersion: false);
+
+        var tenantScopeOlder = CreateVersion(
+            primaryCustomer.Id,
+            "SCOPE-TENANT-OLDER",
+            7,
+            TenantScopeCatalog.Itworld,
+            OfficeCodeCatalog.Shared,
+            OfficeCodeCatalog.Usenet,
+            isLatestVersion: true);
+        var tenantScopeLatest = CreateVersion(
+            primaryCustomer.Id,
+            "SCOPE-TENANT-LATEST",
+            8,
+            TenantScopeCatalog.Itworld,
+            OfficeCodeCatalog.Shared,
+            OfficeCodeCatalog.Usenet,
+            isLatestVersion: false);
+
+        var customerScopeOlder = CreateVersion(
+            otherCustomer.Id,
+            "SCOPE-CUSTOMER-OLDER",
+            9,
+            TenantScopeCatalog.UsenetGroup,
+            OfficeCodeCatalog.Usenet,
+            OfficeCodeCatalog.Usenet,
+            isLatestVersion: true);
+        var customerScopeLatest = CreateVersion(
+            otherCustomer.Id,
+            "SCOPE-CUSTOMER-LATEST",
+            10,
+            TenantScopeCatalog.UsenetGroup,
+            OfficeCodeCatalog.Usenet,
+            OfficeCodeCatalog.Usenet,
+            isLatestVersion: false);
+
+        _dbContext.AddRange(
+            primaryCustomer,
+            otherCustomer,
+            legacyScopeOlder,
+            legacyScopeLatest,
+            legacyScopeDeleted,
+            responsibleScopeOlder,
+            responsibleScopeLatest,
+            owningScopeOlder,
+            owningScopeLatest,
+            tenantScopeOlder,
+            tenantScopeLatest,
+            customerScopeOlder,
+            customerScopeLatest);
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "EnsureInvoiceVersionColumnsAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var task = Assert.IsAssignableFrom<Task>(
+            method!.Invoke(null, [_dbContext, CancellationToken.None]));
+
+        await task;
+
+        _dbContext.ChangeTracker.Clear();
+        var latestFlags = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Where(current => current.VersionGroupId == versionGroupId)
+            .ToDictionaryAsync(current => current.Id, current => current.IsLatestVersion);
+
+        Assert.False(latestFlags[legacyScopeOlder.Id]);
+        Assert.True(latestFlags[legacyScopeLatest.Id]);
+        Assert.False(latestFlags[legacyScopeDeleted.Id]);
+        Assert.False(latestFlags[responsibleScopeOlder.Id]);
+        Assert.True(latestFlags[responsibleScopeLatest.Id]);
+        Assert.False(latestFlags[owningScopeOlder.Id]);
+        Assert.True(latestFlags[owningScopeLatest.Id]);
+        Assert.False(latestFlags[tenantScopeOlder.Id]);
+        Assert.True(latestFlags[tenantScopeLatest.Id]);
+        Assert.False(latestFlags[customerScopeOlder.Id]);
+        Assert.True(latestFlags[customerScopeLatest.Id]);
+
+        Invoice CreateVersion(
+            Guid customerId,
+            string invoiceNumber,
+            int versionNumber,
+            string tenantCode,
+            string officeCode,
+            string responsibleOfficeCode,
+            bool isLatestVersion,
+            bool isDeleted = false)
+        {
+            var invoice = CreateInitializerInvoice(Guid.NewGuid(), customerId, invoiceNumber);
+            invoice.VersionGroupId = versionGroupId;
+            invoice.VersionNumber = versionNumber;
+            invoice.IsLatestVersion = isLatestVersion;
+            invoice.IsDeleted = isDeleted;
+            invoice.TenantCode = tenantCode;
+            invoice.OfficeCode = officeCode;
+            invoice.ResponsibleOfficeCode = responsibleOfficeCode;
+            invoice.UpdatedAtUtc = new DateTime(2026, 7, 30, versionNumber, 0, 0, DateTimeKind.Utc);
+            return invoice;
+        }
+    }
+
+    [Fact]
+    public async Task BackfillOperationalOfficeOwnershipThenEnsureInvoiceVersions_ExplicitTenantMismatchRawCollision_PreservesIndependentLatestStockAndRentalState()
+    {
+        var customer = CreateDuplicateMergeCustomer(
+            Guid.NewGuid(),
+            "555-66-77777");
+        customer.ResponsibleOfficeCode = OfficeCodeCatalog.Itworld;
+
+        var mismatchedItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "MISMATCHED TENANT CHAIN STOCK",
+            NameMatchKey = "MISMATCHEDTENANTCHAINSTOCK",
+            SpecificationOriginal = "EA",
+            SpecificationMatchKey = "EA",
+            Unit = "EA",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 13m
+        };
+        var canonicalItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "CANONICAL TENANT CHAIN STOCK",
+            NameMatchKey = "CANONICALTENANTCHAINSTOCK",
+            SpecificationOriginal = "EA",
+            SpecificationMatchKey = "EA",
+            Unit = "EA",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 23m
+        };
+        var canonicalProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "CANONICAL-COLLISION-RENTAL",
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            MonthlyAmount = 700m,
+            BillingMethod = "CASH",
+            BillingStatus = "COMPLETED",
+            SettlementStatus = "SETTLED",
+            CompletionStatus = "COMPLETED",
+            SettledAmount = 200m,
+            OutstandingAmount = 0m,
+            BillingRunsJson = "[]",
+            IsActive = true
+        };
+
+        var versionGroupId = Guid.NewGuid();
+        var mismatchedOlder = CreateStockVersion(
+            "MISMATCHED-COLLISION-V1",
+            1,
+            TenantScopeCatalog.Itworld,
+            mismatchedItem.Id,
+            2m,
+            200m);
+        var mismatchedLatest = CreateStockVersion(
+            "MISMATCHED-COLLISION-V2",
+            2,
+            TenantScopeCatalog.Itworld,
+            mismatchedItem.Id,
+            5m,
+            500m);
+        var canonicalLatest = CreateStockVersion(
+            "CANONICAL-COLLISION-V1",
+            1,
+            TenantScopeCatalog.UsenetGroup,
+            canonicalItem.Id,
+            7m,
+            700m);
+        canonicalLatest.LinkedRentalBillingProfileId = canonicalProfile.Id;
+        canonicalLatest.LinkedRentalBillingRunId = Guid.NewGuid();
+
+        _dbContext.AddRange(
+            customer,
+            mismatchedItem,
+            canonicalItem,
+            canonicalProfile,
+            mismatchedOlder,
+            mismatchedLatest,
+            canonicalLatest,
+            new ItemWarehouseStock
+            {
+                ItemId = mismatchedItem.Id,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 13m
+            },
+            new ItemWarehouseStock
+            {
+                ItemId = canonicalItem.Id,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 23m
+            });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var beforeCanonicalInvoice = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(invoice => invoice.Id == canonicalLatest.Id)
+            .Select(invoice => new
+            {
+                invoice.TenantCode,
+                invoice.OfficeCode,
+                invoice.ResponsibleOfficeCode,
+                invoice.IsLatestVersion,
+                invoice.IsDeleted,
+                invoice.Revision,
+                invoice.UpdatedAtUtc
+            })
+            .SingleAsync();
+        var beforeCanonicalStock = await _dbContext.ItemWarehouseStocks
+            .AsNoTracking()
+            .Where(stock =>
+                stock.ItemId == canonicalItem.Id &&
+                stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => new { stock.Quantity, stock.Revision })
+            .SingleAsync();
+        var beforeCanonicalItem = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => item.Id == canonicalItem.Id)
+            .Select(item => new { item.CurrentStock, item.Revision })
+            .SingleAsync();
+        var beforeCanonicalProfile = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(profile => profile.Id == canonicalProfile.Id)
+            .Select(profile => new
+            {
+                profile.BillingStatus,
+                profile.SettlementStatus,
+                profile.CompletionStatus,
+                profile.SettledAmount,
+                profile.OutstandingAmount,
+                profile.BillingRunsJson,
+                profile.Revision
+            })
+            .SingleAsync();
+
+        await InvokeBackfillOperationalOfficeOwnershipAsync();
+        await InvokeEnsureInvoiceVersionColumnsAsync();
+
+        _dbContext.ChangeTracker.Clear();
+        var firstRunInvoices = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(invoice => invoice.VersionGroupId == versionGroupId)
+            .ToDictionaryAsync(invoice => invoice.Id);
+        Assert.False(firstRunInvoices[mismatchedOlder.Id].IsLatestVersion);
+        Assert.True(firstRunInvoices[mismatchedLatest.Id].IsLatestVersion);
+        Assert.True(firstRunInvoices[canonicalLatest.Id].IsLatestVersion);
+        Assert.Equal(TenantScopeCatalog.Itworld, firstRunInvoices[mismatchedOlder.Id].TenantCode);
+        Assert.Equal(TenantScopeCatalog.Itworld, firstRunInvoices[mismatchedLatest.Id].TenantCode);
+        Assert.Equal(TenantScopeCatalog.UsenetGroup, firstRunInvoices[canonicalLatest.Id].TenantCode);
+        Assert.Equal(
+            beforeCanonicalInvoice,
+            await _dbContext.Invoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(invoice => invoice.Id == canonicalLatest.Id)
+                .Select(invoice => new
+                {
+                    invoice.TenantCode,
+                    invoice.OfficeCode,
+                    invoice.ResponsibleOfficeCode,
+                    invoice.IsLatestVersion,
+                    invoice.IsDeleted,
+                    invoice.Revision,
+                    invoice.UpdatedAtUtc
+                })
+                .SingleAsync());
+
+        Assert.Equal(
+            15m,
+            await _dbContext.ItemWarehouseStocks
+                .AsNoTracking()
+                .Where(stock =>
+                    stock.ItemId == mismatchedItem.Id &&
+                    stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+        Assert.Equal(
+            15m,
+            await _dbContext.Items
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(item => item.Id == mismatchedItem.Id)
+                .Select(item => item.CurrentStock)
+                .SingleAsync());
+        Assert.Equal(
+            beforeCanonicalStock,
+            await _dbContext.ItemWarehouseStocks
+                .AsNoTracking()
+                .Where(stock =>
+                    stock.ItemId == canonicalItem.Id &&
+                    stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => new { stock.Quantity, stock.Revision })
+                .SingleAsync());
+        Assert.Equal(
+            beforeCanonicalItem,
+            await _dbContext.Items
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(item => item.Id == canonicalItem.Id)
+                .Select(item => new { item.CurrentStock, item.Revision })
+                .SingleAsync());
+        Assert.Equal(
+            beforeCanonicalProfile,
+            await _dbContext.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(profile => profile.Id == canonicalProfile.Id)
+                .Select(profile => new
+                {
+                    profile.BillingStatus,
+                    profile.SettlementStatus,
+                    profile.CompletionStatus,
+                    profile.SettledAmount,
+                    profile.OutstandingAmount,
+                    profile.BillingRunsJson,
+                    profile.Revision
+                })
+                .SingleAsync());
+
+        var firstRunRevisions = firstRunInvoices.ToDictionary(
+            current => current.Key,
+            current => current.Value.Revision);
+        var firstRunStocks = await _dbContext.ItemWarehouseStocks
+            .AsNoTracking()
+            .Where(stock =>
+                stock.ItemId == mismatchedItem.Id ||
+                stock.ItemId == canonicalItem.Id)
+            .ToDictionaryAsync(
+                stock => (stock.ItemId, stock.WarehouseCode),
+                stock => (stock.Quantity, stock.Revision));
+
+        await InvokeBackfillOperationalOfficeOwnershipAsync();
+        await InvokeEnsureInvoiceVersionColumnsAsync();
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(
+            firstRunRevisions,
+            await _dbContext.Invoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(invoice => invoice.VersionGroupId == versionGroupId)
+                .ToDictionaryAsync(invoice => invoice.Id, invoice => invoice.Revision));
+        Assert.Equal(
+            firstRunStocks,
+            await _dbContext.ItemWarehouseStocks
+                .AsNoTracking()
+                .Where(stock =>
+                    stock.ItemId == mismatchedItem.Id ||
+                    stock.ItemId == canonicalItem.Id)
+                .ToDictionaryAsync(
+                    stock => (stock.ItemId, stock.WarehouseCode),
+                    stock => (stock.Quantity, stock.Revision)));
+        Assert.Equal(
+            beforeCanonicalProfile,
+            await _dbContext.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(profile => profile.Id == canonicalProfile.Id)
+                .Select(profile => new
+                {
+                    profile.BillingStatus,
+                    profile.SettlementStatus,
+                    profile.CompletionStatus,
+                    profile.SettledAmount,
+                    profile.OutstandingAmount,
+                    profile.BillingRunsJson,
+                    profile.Revision
+                })
+                .SingleAsync());
+
+        Invoice CreateStockVersion(
+            string invoiceNumber,
+            int versionNumber,
+            string tenantCode,
+            Guid itemId,
+            decimal quantity,
+            decimal totalAmount)
+        {
+            var invoice = CreateInitializerInvoice(
+                Guid.NewGuid(),
+                customer.Id,
+                invoiceNumber);
+            invoice.TenantCode = tenantCode;
+            invoice.OfficeCode = OfficeCodeCatalog.Usenet;
+            invoice.ResponsibleOfficeCode = OfficeCodeCatalog.Itworld;
+            invoice.VersionGroupId = versionGroupId;
+            invoice.VersionNumber = versionNumber;
+            invoice.IsLatestVersion = true;
+            invoice.SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse;
+            invoice.TotalAmount = totalAmount;
+            invoice.SupplyAmount = totalAmount;
+            invoice.Lines.Add(new InvoiceLine
+            {
+                Id = Guid.NewGuid(),
+                ItemId = itemId,
+                ItemNameOriginal = invoiceNumber,
+                SpecificationOriginal = "EA",
+                Unit = "EA",
+                Quantity = quantity,
+                UnitPrice = totalAmount / quantity,
+                LineAmount = totalAmount,
+                ItemTrackingType = ItemTrackingTypes.Stock
+            });
+            return invoice;
+        }
+    }
+
+    [Fact]
+    public async Task StartupScopeBackfill_NormalizesLegacyInvoiceChainAgainstCustomerScope_AndIsIdempotent()
+    {
+        var customer = CreateDuplicateMergeCustomer(
+            Guid.NewGuid(),
+            "777-88-99999");
+        customer.TenantCode = " itworld ";
+        customer.OfficeCode = " shared ";
+        customer.ResponsibleOfficeCode = " ITWORLD ";
+
+        var versionGroupId = Guid.NewGuid();
+        var legacyVersion = CreateInitializerInvoice(
+            Guid.NewGuid(),
+            customer.Id,
+            "STARTUP-SCOPE-LEGACY");
+        legacyVersion.VersionGroupId = versionGroupId;
+        legacyVersion.VersionNumber = 1;
+        legacyVersion.IsLatestVersion = true;
+        legacyVersion.TenantCode = string.Empty;
+        legacyVersion.OfficeCode = string.Empty;
+        legacyVersion.ResponsibleOfficeCode = string.Empty;
+        legacyVersion.UpdatedAtUtc = new DateTime(2026, 7, 30, 1, 0, 0, DateTimeKind.Utc);
+
+        var canonicalVersion = CreateInitializerInvoice(
+            Guid.NewGuid(),
+            customer.Id,
+            "STARTUP-SCOPE-CANONICAL");
+        canonicalVersion.VersionGroupId = versionGroupId;
+        canonicalVersion.VersionNumber = 2;
+        canonicalVersion.IsLatestVersion = false;
+        canonicalVersion.TenantCode = " usenet ";
+        canonicalVersion.OfficeCode = " shared ";
+        canonicalVersion.ResponsibleOfficeCode = " itworld ";
+        canonicalVersion.UpdatedAtUtc = new DateTime(2026, 7, 30, 2, 0, 0, DateTimeKind.Utc);
+
+        _dbContext.AddRange(customer, legacyVersion, canonicalVersion);
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        await InvokeStartupScopeRepairSequenceAsync();
+
+        _dbContext.ChangeTracker.Clear();
+        var firstRun = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Where(current => current.VersionGroupId == versionGroupId)
+            .OrderBy(current => current.VersionNumber)
+            .ToListAsync();
+        Assert.Collection(
+            firstRun,
+            first =>
+            {
+                Assert.False(first.IsLatestVersion);
+                Assert.Equal(TenantScopeCatalog.UsenetGroup, first.TenantCode);
+                Assert.Equal(OfficeCodeCatalog.Shared, first.OfficeCode);
+                Assert.Equal(OfficeCodeCatalog.Itworld, first.ResponsibleOfficeCode);
+            },
+            second =>
+            {
+                Assert.True(second.IsLatestVersion);
+                Assert.Equal(TenantScopeCatalog.UsenetGroup, second.TenantCode);
+                Assert.Equal(OfficeCodeCatalog.Shared, second.OfficeCode);
+                Assert.Equal(OfficeCodeCatalog.Itworld, second.ResponsibleOfficeCode);
+            });
+        Assert.Single(firstRun, current => current.IsLatestVersion);
+        var firstRunRevisions = firstRun.ToDictionary(current => current.Id, current => current.Revision);
+
+        await InvokeStartupScopeRepairSequenceAsync();
+
+        _dbContext.ChangeTracker.Clear();
+        var secondRun = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Where(current => current.VersionGroupId == versionGroupId)
+            .OrderBy(current => current.VersionNumber)
+            .ToListAsync();
+        Assert.Collection(
+            secondRun,
+            first => Assert.False(first.IsLatestVersion),
+            second => Assert.True(second.IsLatestVersion));
+        Assert.Equal(
+            firstRunRevisions,
+            secondRun.ToDictionary(current => current.Id, current => current.Revision));
+    }
+
+    [Fact]
+    public async Task EnsureInvoiceVersionColumnsAsync_PartialSchemaPreservesAvailableCustomerScope_AndIsIdempotent()
+    {
+        await _dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+        await _dbContext.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS \"InvoiceLines\";");
+        await _dbContext.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS \"Payments\";");
+        await _dbContext.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS \"Invoices\";");
+        await _dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE "Invoices" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_Invoices" PRIMARY KEY,
+                "CustomerId" TEXT NOT NULL,
+                "TenantCode" TEXT NOT NULL DEFAULT '',
+                "OfficeCode" TEXT NOT NULL DEFAULT '',
+                "VersionGroupId" TEXT NULL,
+                "VersionNumber" INTEGER NOT NULL DEFAULT 1,
+                "IsLatestVersion" INTEGER NOT NULL DEFAULT 1,
+                "IsDeleted" INTEGER NOT NULL DEFAULT 0,
+                "CreatedAtUtc" TEXT NOT NULL,
+                "UpdatedAtUtc" TEXT NOT NULL,
+                "Revision" INTEGER NOT NULL DEFAULT 0
+            );
+            """);
+        await _dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+
+        var versionGroupId = Guid.NewGuid();
+        var firstCustomerId = Guid.NewGuid();
+        var secondCustomerId = Guid.NewGuid();
+        var firstInvoiceId = Guid.NewGuid();
+        var secondInvoiceId = Guid.NewGuid();
+        var createdAt = new DateTime(2026, 7, 30, 3, 0, 0, DateTimeKind.Utc);
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+             INSERT INTO "Invoices"
+                 ("Id", "CustomerId", "TenantCode", "OfficeCode", "VersionGroupId", "VersionNumber",
+                  "IsLatestVersion", "IsDeleted", "CreatedAtUtc", "UpdatedAtUtc", "Revision")
+             VALUES
+                 ({firstInvoiceId.ToString()}, {firstCustomerId.ToString()}, {TenantScopeCatalog.UsenetGroup},
+                  {OfficeCodeCatalog.Usenet}, {versionGroupId.ToString()}, 1, 1, 0, {createdAt}, {createdAt}, 1),
+                 ({secondInvoiceId.ToString()}, {secondCustomerId.ToString()}, {TenantScopeCatalog.UsenetGroup},
+                  {OfficeCodeCatalog.Usenet}, {versionGroupId.ToString()}, 2, 1, 0, {createdAt}, {createdAt.AddMinutes(1)}, 2);
+             """);
+
+        await InvokeEnsureInvoiceVersionColumnsAsync();
+
+        var firstRun = await ReadPartialInvoiceLatestFlagsAsync();
+        Assert.True(firstRun[firstInvoiceId]);
+        Assert.True(firstRun[secondInvoiceId]);
+
+        await InvokeEnsureInvoiceVersionColumnsAsync();
+
+        Assert.Equal(firstRun, await ReadPartialInvoiceLatestFlagsAsync());
+
+        async Task<Dictionary<Guid, bool>> ReadPartialInvoiceLatestFlagsAsync()
+        {
+            var result = new Dictionary<Guid, bool>();
+            await using var command = _connection.CreateCommand();
+            command.CommandText = "SELECT \"Id\", \"IsLatestVersion\" FROM \"Invoices\" ORDER BY \"Id\";";
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                result[Guid.Parse(reader.GetString(0))] = reader.GetInt64(1) != 0;
+            }
+
+            return result;
+        }
+    }
+
+    [Fact]
+    public async Task EnsureInvoiceVersionColumnsAsync_PartialSideEffectSchema_SkipsDuplicateLatestRepairAtomically()
+    {
+        var customer = CreateDuplicateMergeCustomer(
+            Guid.NewGuid(),
+            "999-00-11111");
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "PARTIAL SIDE EFFECT STOCK",
+            NameMatchKey = "PARTIALSIDEEFFECTSTOCK",
+            SpecificationOriginal = "EA",
+            SpecificationMatchKey = "EA",
+            Unit = "EA",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 13m
+        };
+        var versionGroupId = Guid.NewGuid();
+        var firstVersion = CreateInitializerInvoice(
+            Guid.NewGuid(),
+            customer.Id,
+            "PARTIAL-SIDE-EFFECT-V1");
+        firstVersion.VersionGroupId = versionGroupId;
+        firstVersion.VersionNumber = 1;
+        firstVersion.IsLatestVersion = true;
+        firstVersion.SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse;
+        firstVersion.Lines.Add(new InvoiceLine
+        {
+            ItemId = item.Id,
+            ItemNameOriginal = item.NameOriginal,
+            SpecificationOriginal = "EA",
+            Unit = "EA",
+            Quantity = 2m,
+            UnitPrice = 100m,
+            LineAmount = 200m,
+            ItemTrackingType = ItemTrackingTypes.Stock
+        });
+        var secondVersion = CreateInitializerInvoice(
+            Guid.NewGuid(),
+            customer.Id,
+            "PARTIAL-SIDE-EFFECT-V2");
+        secondVersion.VersionGroupId = versionGroupId;
+        secondVersion.VersionNumber = 2;
+        secondVersion.IsLatestVersion = true;
+        secondVersion.SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse;
+        secondVersion.Lines.Add(new InvoiceLine
+        {
+            ItemId = item.Id,
+            ItemNameOriginal = item.NameOriginal,
+            SpecificationOriginal = "EA",
+            Unit = "EA",
+            Quantity = 5m,
+            UnitPrice = 100m,
+            LineAmount = 500m,
+            ItemTrackingType = ItemTrackingTypes.Stock
+        });
+        _dbContext.AddRange(
+            customer,
+            item,
+            firstVersion,
+            secondVersion,
+            new ItemWarehouseStock
+            {
+                ItemId = item.Id,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 13m
+            });
+        await _dbContext.SaveChangesAsync();
+        await new InventoryLedgerService(_dbContext).RebuildAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var beforeVersions = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(invoice => invoice.VersionGroupId == versionGroupId)
+            .ToDictionaryAsync(
+                invoice => invoice.Id,
+                invoice => (invoice.IsLatestVersion, invoice.Revision, invoice.UpdatedAtUtc));
+        var beforeStock = await _dbContext.ItemWarehouseStocks
+            .AsNoTracking()
+            .Where(stock =>
+                stock.ItemId == item.Id &&
+                stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => new { stock.Quantity, stock.Revision })
+            .SingleAsync();
+        var beforeItem = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => current.Id == item.Id)
+            .Select(current => new { current.CurrentStock, current.Revision })
+            .SingleAsync();
+        var beforeLedger = await _dbContext.InventoryLedgerEntries
+            .AsNoTracking()
+            .Where(entry => entry.ItemId == item.Id)
+            .OrderBy(entry => entry.SourceDocumentId)
+            .Select(entry => new
+            {
+                entry.Id,
+                entry.SourceDocumentId,
+                entry.SourceLineId,
+                entry.QuantityDelta
+            })
+            .ToListAsync();
+
+        await _dbContext.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"RentalBillingProfiles\" DROP COLUMN \"BillingRunsJson\";");
+
+        await InvokeEnsureInvoiceVersionColumnsAsync();
+
+        _dbContext.ChangeTracker.Clear();
+        var afterVersions = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(invoice => invoice.VersionGroupId == versionGroupId)
+            .ToDictionaryAsync(
+                invoice => invoice.Id,
+                invoice => (invoice.IsLatestVersion, invoice.Revision, invoice.UpdatedAtUtc));
+        var afterStock = await _dbContext.ItemWarehouseStocks
+            .AsNoTracking()
+            .Where(stock =>
+                stock.ItemId == item.Id &&
+                stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => new { stock.Quantity, stock.Revision })
+            .SingleAsync();
+        var afterItem = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => current.Id == item.Id)
+            .Select(current => new { current.CurrentStock, current.Revision })
+            .SingleAsync();
+        var afterLedger = await _dbContext.InventoryLedgerEntries
+            .AsNoTracking()
+            .Where(entry => entry.ItemId == item.Id)
+            .OrderBy(entry => entry.SourceDocumentId)
+            .Select(entry => new
+            {
+                entry.Id,
+                entry.SourceDocumentId,
+                entry.SourceLineId,
+                entry.QuantityDelta
+            })
+            .ToListAsync();
+
+        Assert.All(afterVersions.Values, version => Assert.True(version.IsLatestVersion));
+        Assert.Equal(beforeVersions, afterVersions);
+        Assert.Equal(beforeStock, afterStock);
+        Assert.Equal(beforeItem, afterItem);
+        Assert.Equal(beforeLedger, afterLedger);
+    }
+
+    [Fact]
+    public async Task EnsureInvoiceVersionColumnsAsync_AllDeletedAndTiedChains_AreDeterministic()
+    {
+        var customer = CreateDuplicateMergeCustomer(
+            Guid.NewGuid(),
+            "222-33-44444");
+        var allDeletedGroupId = Guid.NewGuid();
+        var deletedOlder = CreateInitializerInvoice(
+            Guid.NewGuid(),
+            customer.Id,
+            "ALL-DELETED-OLDER");
+        deletedOlder.VersionGroupId = allDeletedGroupId;
+        deletedOlder.VersionNumber = 1;
+        deletedOlder.IsDeleted = true;
+        deletedOlder.IsLatestVersion = true;
+        var deletedNewer = CreateInitializerInvoice(
+            Guid.NewGuid(),
+            customer.Id,
+            "ALL-DELETED-NEWER");
+        deletedNewer.VersionGroupId = allDeletedGroupId;
+        deletedNewer.VersionNumber = 2;
+        deletedNewer.IsDeleted = true;
+        deletedNewer.IsLatestVersion = true;
+
+        var tiedGroupId = Guid.NewGuid();
+        var lowerId = CreateInitializerInvoice(
+            Guid.Parse("10000000-0000-0000-0000-000000000001"),
+            customer.Id,
+            "TIED-LOWER-ID");
+        lowerId.VersionGroupId = tiedGroupId;
+        lowerId.VersionNumber = 5;
+        lowerId.UpdatedAtUtc = new DateTime(2026, 7, 30, 4, 0, 0, DateTimeKind.Utc);
+        lowerId.IsLatestVersion = true;
+        var higherId = CreateInitializerInvoice(
+            Guid.Parse("f0000000-0000-0000-0000-000000000001"),
+            customer.Id,
+            "TIED-HIGHER-ID");
+        higherId.VersionGroupId = tiedGroupId;
+        higherId.VersionNumber = 5;
+        higherId.UpdatedAtUtc = lowerId.UpdatedAtUtc;
+        higherId.IsLatestVersion = true;
+
+        _dbContext.AddRange(customer, deletedOlder, deletedNewer, lowerId, higherId);
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        await InvokeEnsureInvoiceVersionColumnsAsync();
+
+        _dbContext.ChangeTracker.Clear();
+        var invoices = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Where(current =>
+                current.VersionGroupId == allDeletedGroupId ||
+                current.VersionGroupId == tiedGroupId)
+            .ToDictionaryAsync(current => current.Id);
+        Assert.False(invoices[deletedOlder.Id].IsLatestVersion);
+        Assert.False(invoices[deletedNewer.Id].IsLatestVersion);
+        Assert.False(invoices[lowerId.Id].IsLatestVersion);
+        Assert.True(invoices[higherId.Id].IsLatestVersion);
+
+        var firstRunRevisions = invoices.ToDictionary(current => current.Key, current => current.Value.Revision);
+        var firstRunUpdatedAtUtc = invoices.ToDictionary(current => current.Key, current => current.Value.UpdatedAtUtc);
+
+        await InvokeEnsureInvoiceVersionColumnsAsync();
+
+        _dbContext.ChangeTracker.Clear();
+        var secondRunInvoices = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Where(current =>
+                current.VersionGroupId == allDeletedGroupId ||
+                current.VersionGroupId == tiedGroupId)
+            .ToDictionaryAsync(current => current.Id);
+        Assert.False(secondRunInvoices[deletedOlder.Id].IsLatestVersion);
+        Assert.False(secondRunInvoices[deletedNewer.Id].IsLatestVersion);
+        Assert.False(secondRunInvoices[lowerId.Id].IsLatestVersion);
+        Assert.True(secondRunInvoices[higherId.Id].IsLatestVersion);
+        Assert.Equal(
+            firstRunRevisions,
+            secondRunInvoices.ToDictionary(current => current.Key, current => current.Value.Revision));
+        Assert.Equal(
+            firstRunUpdatedAtUtc,
+            secondRunInvoices.ToDictionary(current => current.Key, current => current.Value.UpdatedAtUtc));
+    }
+
+    [Fact]
+    public async Task FullStartup_DuplicateLatestInvoiceVersions_ReconcilesStockLedgerAndRentalSettlement_Idempotently()
+    {
+        var customer = CreateDuplicateMergeCustomer(
+            Guid.NewGuid(),
+            "333-44-55555");
+        var salesItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "STARTUP SALES STOCK",
+            NameMatchKey = "STARTUPSALESSTOCK",
+            SpecificationOriginal = "EA",
+            SpecificationMatchKey = "EA",
+            Unit = "EA",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 13m
+        };
+        var purchaseItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "STARTUP PURCHASE STOCK",
+            NameMatchKey = "STARTUPPURCHASESTOCK",
+            SpecificationOriginal = "EA",
+            SpecificationMatchKey = "EA",
+            Unit = "EA",
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 10m
+        };
+        var rentalProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = "STARTUP-LATEST-PARITY",
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            MonthlyAmount = 500m,
+            BillingMethod = "\uD604\uAE08",
+            BillingStatus = "\uC644\uB8CC",
+            SettlementStatus = "\uC785\uAE08\uD655\uC778",
+            CompletionStatus = "\uC644\uB8CC",
+            SettledAmount = 200m,
+            OutstandingAmount = 0m,
+            BillingRunsJson = "[]",
+            IsActive = true
+        };
+        var rentalRunId = Guid.NewGuid();
+
+        var salesGroupId = Guid.NewGuid();
+        var olderSales = CreateStockInvoice(
+            "STARTUP-SALES-V1",
+            VoucherType.Sales,
+            salesGroupId,
+            versionNumber: 1,
+            salesItem.Id,
+            quantity: 2m,
+            warehouseCode: OfficeCodeCatalog.UsenetMainWarehouse,
+            totalAmount: 200m);
+        olderSales.LinkedRentalBillingProfileId = rentalProfile.Id;
+        olderSales.LinkedRentalBillingRunId = rentalRunId;
+        olderSales.UpdatedAtUtc = new DateTime(2026, 7, 31, 1, 0, 0, DateTimeKind.Utc);
+        var newerSales = CreateStockInvoice(
+            "STARTUP-SALES-V2",
+            VoucherType.Sales,
+            salesGroupId,
+            versionNumber: 2,
+            salesItem.Id,
+            quantity: 5m,
+            warehouseCode: OfficeCodeCatalog.UsenetMainWarehouse,
+            totalAmount: 500m);
+        newerSales.LinkedRentalBillingProfileId = rentalProfile.Id;
+        newerSales.LinkedRentalBillingRunId = rentalRunId;
+        newerSales.UpdatedAtUtc = new DateTime(2026, 7, 31, 2, 0, 0, DateTimeKind.Utc);
+
+        var purchaseGroupId = Guid.NewGuid();
+        var olderPurchase = CreateStockInvoice(
+            "STARTUP-PURCHASE-V1",
+            VoucherType.Purchase,
+            purchaseGroupId,
+            versionNumber: 1,
+            purchaseItem.Id,
+            quantity: 3m,
+            warehouseCode: OfficeCodeCatalog.UsenetMainWarehouse,
+            totalAmount: 300m);
+        olderPurchase.PurchaseReceivingStatus = InvoiceReceivingStatuses.Confirmed;
+        olderPurchase.UpdatedAtUtc = new DateTime(2026, 7, 31, 3, 0, 0, DateTimeKind.Utc);
+        var newerPurchase = CreateStockInvoice(
+            "STARTUP-PURCHASE-V2",
+            VoucherType.Purchase,
+            purchaseGroupId,
+            versionNumber: 2,
+            purchaseItem.Id,
+            quantity: 7m,
+            warehouseCode: OfficeCodeCatalog.YeonsuMainWarehouse,
+            totalAmount: 700m);
+        newerPurchase.PurchaseReceivingStatus = InvoiceReceivingStatuses.Confirmed;
+        newerPurchase.UpdatedAtUtc = new DateTime(2026, 7, 31, 4, 0, 0, DateTimeKind.Utc);
+
+        var olderPayment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = olderSales.Id,
+            PaymentDate = new DateOnly(2026, 7, 31),
+            Amount = 200m,
+            Note = "stale duplicate-latest settlement"
+        };
+        _dbContext.AddRange(
+            customer,
+            salesItem,
+            purchaseItem,
+            rentalProfile,
+            olderSales,
+            newerSales,
+            olderPurchase,
+            newerPurchase,
+            olderPayment,
+            new ItemWarehouseStock
+            {
+                ItemId = salesItem.Id,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 13m
+            },
+            new ItemWarehouseStock
+            {
+                ItemId = purchaseItem.Id,
+                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 3m
+            },
+            new ItemWarehouseStock
+            {
+                ItemId = purchaseItem.Id,
+                WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                Quantity = 7m
+            });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        await InvokeStartupScopeRepairSequenceAsync();
+
+        _dbContext.ChangeTracker.Clear();
+        var firstRunInvoices = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Where(invoice =>
+                invoice.VersionGroupId == salesGroupId ||
+                invoice.VersionGroupId == purchaseGroupId)
+            .OrderBy(invoice => invoice.InvoiceNumber)
+            .ToListAsync();
+        Assert.False(firstRunInvoices.Single(invoice => invoice.Id == olderSales.Id).IsLatestVersion);
+        Assert.True(firstRunInvoices.Single(invoice => invoice.Id == newerSales.Id).IsLatestVersion);
+        Assert.False(firstRunInvoices.Single(invoice => invoice.Id == olderPurchase.Id).IsLatestVersion);
+        Assert.True(firstRunInvoices.Single(invoice => invoice.Id == newerPurchase.Id).IsLatestVersion);
+
+        var firstRunStocks = await _dbContext.ItemWarehouseStocks
+            .AsNoTracking()
+            .Where(stock => stock.ItemId == salesItem.Id || stock.ItemId == purchaseItem.Id)
+            .ToDictionaryAsync(
+                stock => (stock.ItemId, stock.WarehouseCode),
+                stock => (stock.Quantity, stock.Revision));
+        Assert.Equal(
+            15m,
+            firstRunStocks[(salesItem.Id, OfficeCodeCatalog.UsenetMainWarehouse)].Quantity);
+        Assert.Equal(
+            0m,
+            firstRunStocks[(purchaseItem.Id, OfficeCodeCatalog.UsenetMainWarehouse)].Quantity);
+        Assert.Equal(
+            7m,
+            firstRunStocks[(purchaseItem.Id, OfficeCodeCatalog.YeonsuMainWarehouse)].Quantity);
+
+        var firstRunItems = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => item.Id == salesItem.Id || item.Id == purchaseItem.Id)
+            .ToDictionaryAsync(item => item.Id, item => (item.CurrentStock, item.Revision));
+        Assert.Equal(15m, firstRunItems[salesItem.Id].CurrentStock);
+        Assert.Equal(7m, firstRunItems[purchaseItem.Id].CurrentStock);
+
+        var firstRunLedger = await _dbContext.InventoryLedgerEntries
+            .AsNoTracking()
+            .Where(entry =>
+                entry.SourceDocumentId == olderSales.Id ||
+                entry.SourceDocumentId == newerSales.Id ||
+                entry.SourceDocumentId == olderPurchase.Id ||
+                entry.SourceDocumentId == newerPurchase.Id)
+            .OrderBy(entry => entry.SourceDocumentId)
+            .ToListAsync();
+        Assert.Collection(
+            firstRunLedger.OrderBy(entry => entry.QuantityDelta),
+            entry =>
+            {
+                Assert.Equal(newerSales.Id, entry.SourceDocumentId);
+                Assert.Equal(-5m, entry.QuantityDelta);
+            },
+            entry =>
+            {
+                Assert.Equal(newerPurchase.Id, entry.SourceDocumentId);
+                Assert.Equal(7m, entry.QuantityDelta);
+            });
+
+        var firstRunProfile = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == rentalProfile.Id);
+        Assert.Equal(0m, firstRunProfile.SettledAmount);
+        Assert.Equal(500m, firstRunProfile.OutstandingAmount);
+        Assert.Equal("\uD655\uC778\uB300\uAE30", firstRunProfile.SettlementStatus);
+        Assert.Equal("\uBBF8\uC644\uB8CC", firstRunProfile.CompletionStatus);
+        Assert.Equal("\uCCAD\uAD6C\uC911", firstRunProfile.BillingStatus);
+
+        var firstRunInvoiceRevisions = firstRunInvoices.ToDictionary(invoice => invoice.Id, invoice => invoice.Revision);
+        var firstRunLedgerIds = firstRunLedger.Select(entry => entry.Id).Order().ToArray();
+        var firstRunProfileRevision = firstRunProfile.Revision;
+
+        await InvokeStartupScopeRepairSequenceAsync();
+
+        _dbContext.ChangeTracker.Clear();
+        var secondRunStocks = await _dbContext.ItemWarehouseStocks
+            .AsNoTracking()
+            .Where(stock => stock.ItemId == salesItem.Id || stock.ItemId == purchaseItem.Id)
+            .ToDictionaryAsync(
+                stock => (stock.ItemId, stock.WarehouseCode),
+                stock => (stock.Quantity, stock.Revision));
+        var secondRunItems = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(item => item.Id == salesItem.Id || item.Id == purchaseItem.Id)
+            .ToDictionaryAsync(item => item.Id, item => (item.CurrentStock, item.Revision));
+        var secondRunInvoices = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(invoice =>
+                invoice.VersionGroupId == salesGroupId ||
+                invoice.VersionGroupId == purchaseGroupId)
+            .ToDictionaryAsync(invoice => invoice.Id, invoice => invoice.Revision);
+        var secondRunLedgerIds = await _dbContext.InventoryLedgerEntries
+            .AsNoTracking()
+            .Where(entry =>
+                entry.SourceDocumentId == newerSales.Id ||
+                entry.SourceDocumentId == newerPurchase.Id)
+            .Select(entry => entry.Id)
+            .OrderBy(id => id)
+            .ToArrayAsync();
+        var secondRunProfile = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == rentalProfile.Id);
+
+        Assert.Equal(firstRunStocks, secondRunStocks);
+        Assert.Equal(firstRunItems, secondRunItems);
+        Assert.Equal(firstRunInvoiceRevisions, secondRunInvoices);
+        Assert.Equal(firstRunLedgerIds, secondRunLedgerIds);
+        Assert.Equal(firstRunProfileRevision, secondRunProfile.Revision);
+        Assert.Equal(firstRunProfile.SettledAmount, secondRunProfile.SettledAmount);
+        Assert.Equal(firstRunProfile.OutstandingAmount, secondRunProfile.OutstandingAmount);
+        Assert.Equal(firstRunProfile.SettlementStatus, secondRunProfile.SettlementStatus);
+        Assert.Equal(firstRunProfile.CompletionStatus, secondRunProfile.CompletionStatus);
+        Assert.Equal(firstRunProfile.BillingStatus, secondRunProfile.BillingStatus);
+
+        Invoice CreateStockInvoice(
+            string invoiceNumber,
+            VoucherType voucherType,
+            Guid versionGroupId,
+            int versionNumber,
+            Guid itemId,
+            decimal quantity,
+            string warehouseCode,
+            decimal totalAmount)
+        {
+            var invoice = CreateInitializerInvoice(Guid.NewGuid(), customer.Id, invoiceNumber);
+            invoice.VoucherType = voucherType;
+            invoice.VersionGroupId = versionGroupId;
+            invoice.VersionNumber = versionNumber;
+            invoice.IsLatestVersion = true;
+            invoice.SourceWarehouseCode = warehouseCode;
+            invoice.TotalAmount = totalAmount;
+            invoice.SupplyAmount = totalAmount;
+            invoice.Lines.Add(new InvoiceLine
+            {
+                Id = Guid.NewGuid(),
+                ItemId = itemId,
+                ItemNameOriginal = invoiceNumber,
+                SpecificationOriginal = "EA",
+                Unit = "EA",
+                Quantity = quantity,
+                UnitPrice = totalAmount / quantity,
+                LineAmount = totalAmount,
+                ItemTrackingType = ItemTrackingTypes.Stock
+            });
+            return invoice;
+        }
+    }
+
+    [PostgreSqlFact]
+    public async Task BackfillOperationalOwnershipThenEnsureInvoiceVersions_PostgreSql_SeparatesExplicitTenantMismatchAndReconcilesStockIdempotently()
+    {
+        var configuredConnection = Environment.GetEnvironmentVariable(
+            PostgreSqlSyncPushMutationIdempotencyTests.ConnectionVariableName);
+        Assert.False(string.IsNullOrWhiteSpace(configuredConnection));
+
+        var databaseName = $"gpv1_{Guid.NewGuid():N}";
+        var maintenanceBuilder = new NpgsqlConnectionStringBuilder(configuredConnection)
+        {
+            Database = "postgres",
+            IncludeErrorDetail = false
+        };
+        var testDatabaseBuilder = new NpgsqlConnectionStringBuilder(maintenanceBuilder.ConnectionString)
+        {
+            Database = databaseName,
+            IncludeErrorDetail = false
+        };
+        var databaseCreated = false;
+
+        try
+        {
+            await using (var maintenanceConnection = new NpgsqlConnection(maintenanceBuilder.ConnectionString))
+            {
+                await maintenanceConnection.OpenAsync();
+                await using var createCommand = maintenanceConnection.CreateCommand();
+                createCommand.CommandText = $"CREATE DATABASE \"{databaseName}\";";
+                await createCommand.ExecuteNonQueryAsync();
+            }
+            databaseCreated = true;
+
+            var currentUser = new TestCurrentUserContext
+            {
+                Username = "admin",
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ScopeType = TenantScopeCatalog.ScopeAdmin,
+                IsAdmin = true
+            };
+            var options = new DbContextOptionsBuilder<AppDbContext>()
+                .UseNpgsql(testDatabaseBuilder.ConnectionString)
+                .Options;
+            await using var dbContext = new AppDbContext(options, currentUser, new RevisionClock());
+            await dbContext.Database.EnsureCreatedAsync();
+
+            var customer = CreateDuplicateMergeCustomer(Guid.NewGuid(), "666-77-88888");
+            var item = new Item
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "POSTGRES STARTUP PARITY",
+                NameMatchKey = "POSTGRESSTARTUPPARITY",
+                SpecificationOriginal = "EA",
+                SpecificationMatchKey = "EA",
+                Unit = "EA",
+                TrackingType = ItemTrackingTypes.Stock,
+                CurrentStock = 13m
+            };
+            var versionGroupId = Guid.NewGuid();
+            var firstVersion = CreateInitializerInvoice(
+                Guid.Parse("10000000-0000-0000-0000-000000000010"),
+                customer.Id,
+                "PG-STARTUP-V1");
+            firstVersion.VersionGroupId = versionGroupId;
+            firstVersion.VersionNumber = 1;
+            firstVersion.IsLatestVersion = true;
+            firstVersion.TenantCode = TenantScopeCatalog.Itworld;
+            firstVersion.OfficeCode = OfficeCodeCatalog.Usenet;
+            firstVersion.ResponsibleOfficeCode = OfficeCodeCatalog.Itworld;
+            firstVersion.SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse;
+            firstVersion.Lines.Add(new InvoiceLine
+            {
+                ItemId = item.Id,
+                ItemNameOriginal = item.NameOriginal,
+                SpecificationOriginal = "EA",
+                Unit = "EA",
+                Quantity = 2m,
+                UnitPrice = 100m,
+                LineAmount = 200m,
+                ItemTrackingType = ItemTrackingTypes.Stock
+            });
+            var secondVersion = CreateInitializerInvoice(
+                Guid.Parse("f0000000-0000-0000-0000-000000000010"),
+                customer.Id,
+                "PG-STARTUP-V2");
+            secondVersion.VersionGroupId = versionGroupId;
+            secondVersion.VersionNumber = 2;
+            secondVersion.IsLatestVersion = true;
+            secondVersion.TenantCode = TenantScopeCatalog.Itworld;
+            secondVersion.OfficeCode = OfficeCodeCatalog.Usenet;
+            secondVersion.ResponsibleOfficeCode = OfficeCodeCatalog.Itworld;
+            secondVersion.SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse;
+            secondVersion.Lines.Add(new InvoiceLine
+            {
+                ItemId = item.Id,
+                ItemNameOriginal = item.NameOriginal,
+                SpecificationOriginal = "EA",
+                Unit = "EA",
+                Quantity = 5m,
+                UnitPrice = 100m,
+                LineAmount = 500m,
+                ItemTrackingType = ItemTrackingTypes.Stock
+            });
+            var canonicalTenantVersion = CreateInitializerInvoice(
+                Guid.NewGuid(),
+                customer.Id,
+                "PG-CANONICAL-TENANT-V1");
+            canonicalTenantVersion.VersionGroupId = versionGroupId;
+            canonicalTenantVersion.VersionNumber = 1;
+            canonicalTenantVersion.IsLatestVersion = true;
+            canonicalTenantVersion.TenantCode = TenantScopeCatalog.UsenetGroup;
+            canonicalTenantVersion.OfficeCode = OfficeCodeCatalog.Usenet;
+            canonicalTenantVersion.ResponsibleOfficeCode = OfficeCodeCatalog.Itworld;
+            dbContext.AddRange(
+                customer,
+                item,
+                firstVersion,
+                secondVersion,
+                canonicalTenantVersion,
+                new ItemWarehouseStock
+                {
+                    ItemId = item.Id,
+                    WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 13m
+                });
+            await dbContext.SaveChangesAsync();
+            dbContext.ChangeTracker.Clear();
+
+            var operationalOwnershipMethod = typeof(DbInitializer).GetMethod(
+                "BackfillOperationalOfficeOwnershipAsync",
+                BindingFlags.NonPublic | BindingFlags.Static);
+            var initializerMethod = typeof(DbInitializer).GetMethod(
+                "EnsureInvoiceVersionColumnsAsync",
+                BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.NotNull(operationalOwnershipMethod);
+            Assert.NotNull(initializerMethod);
+            var firstOwnershipTask = Assert.IsAssignableFrom<Task>(
+                operationalOwnershipMethod!.Invoke(null, [dbContext, CancellationToken.None]));
+            await firstOwnershipTask;
+            var firstTask = Assert.IsAssignableFrom<Task>(
+                initializerMethod!.Invoke(null, [dbContext, CancellationToken.None]));
+            await firstTask;
+            dbContext.ChangeTracker.Clear();
+
+            var firstRunVersions = await dbContext.Invoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(invoice => invoice.VersionGroupId == versionGroupId)
+                .ToDictionaryAsync(invoice => invoice.Id);
+            Assert.False(firstRunVersions[firstVersion.Id].IsLatestVersion);
+            Assert.True(firstRunVersions[secondVersion.Id].IsLatestVersion);
+            Assert.True(firstRunVersions[canonicalTenantVersion.Id].IsLatestVersion);
+            Assert.Equal(TenantScopeCatalog.Itworld, firstRunVersions[firstVersion.Id].TenantCode);
+            Assert.Equal(TenantScopeCatalog.Itworld, firstRunVersions[secondVersion.Id].TenantCode);
+            Assert.Equal(
+                TenantScopeCatalog.UsenetGroup,
+                firstRunVersions[canonicalTenantVersion.Id].TenantCode);
+            Assert.Equal(
+                15m,
+                await dbContext.ItemWarehouseStocks
+                    .AsNoTracking()
+                    .Where(stock =>
+                        stock.ItemId == item.Id &&
+                        stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                    .Select(stock => stock.Quantity)
+                    .SingleAsync());
+            Assert.Equal(
+                15m,
+                await dbContext.Items
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .Where(current => current.Id == item.Id)
+                    .Select(current => current.CurrentStock)
+                    .SingleAsync());
+            var firstRunLedger = Assert.Single(
+                await dbContext.InventoryLedgerEntries
+                    .AsNoTracking()
+                    .Where(entry => entry.ItemId == item.Id)
+                    .ToListAsync());
+            Assert.Equal(secondVersion.Id, firstRunLedger.SourceDocumentId);
+            Assert.Equal(-5m, firstRunLedger.QuantityDelta);
+            var firstRunRevisions = firstRunVersions.ToDictionary(
+                current => current.Key,
+                current => current.Value.Revision);
+            var firstRunStockRevision = await dbContext.ItemWarehouseStocks
+                .AsNoTracking()
+                .Where(stock =>
+                    stock.ItemId == item.Id &&
+                    stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                .Select(stock => stock.Revision)
+                .SingleAsync();
+
+            var secondOwnershipTask = Assert.IsAssignableFrom<Task>(
+                operationalOwnershipMethod.Invoke(null, [dbContext, CancellationToken.None]));
+            await secondOwnershipTask;
+            var secondTask = Assert.IsAssignableFrom<Task>(
+                initializerMethod.Invoke(null, [dbContext, CancellationToken.None]));
+            await secondTask;
+            dbContext.ChangeTracker.Clear();
+
+            Assert.Equal(
+                firstRunRevisions,
+                await dbContext.Invoices
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .Where(invoice => invoice.VersionGroupId == versionGroupId)
+                    .ToDictionaryAsync(invoice => invoice.Id, invoice => invoice.Revision));
+            Assert.Equal(
+                firstRunStockRevision,
+                await dbContext.ItemWarehouseStocks
+                    .AsNoTracking()
+                    .Where(stock =>
+                        stock.ItemId == item.Id &&
+                        stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+                    .Select(stock => stock.Revision)
+                    .SingleAsync());
+            Assert.Equal(
+                firstRunLedger.Id,
+                await dbContext.InventoryLedgerEntries
+                    .AsNoTracking()
+                    .Where(entry => entry.ItemId == item.Id)
+                    .Select(entry => entry.Id)
+                    .SingleAsync());
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            if (databaseCreated)
+            {
+                await using var maintenanceConnection = new NpgsqlConnection(maintenanceBuilder.ConnectionString);
+                await maintenanceConnection.OpenAsync();
+                await using var dropCommand = maintenanceConnection.CreateCommand();
+                dropCommand.CommandText = $"DROP DATABASE IF EXISTS \"{databaseName}\" WITH (FORCE);";
+                await dropCommand.ExecuteNonQueryAsync();
+            }
+        }
+    }
+
+    [Fact]
     public async Task EnsureOperationalRuntimeSchemaAsync_DoesNotDispose_DbConnection()
     {
         var method = typeof(DbInitializer).GetMethod(
@@ -346,6 +1974,80 @@ public sealed class DbInitializerRegressionTests : IDisposable
         await task!;
 
         await _dbContext.Database.ExecuteSqlRawAsync("SELECT 1;");
+    }
+
+    [Fact]
+    public async Task EnsureBusinessDatabaseSchemaAsync_AddsOptionalItemCatalogColumnsToLegacySqlite_AndIsIdempotent()
+    {
+        var itemId = Guid.NewGuid();
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "LEGACY OPTIONAL CATALOG ITEM",
+            NameMatchKey = "LEGACYOPTIONALCATALOGITEM",
+            SpecificationOriginal = "LEGACY-SPEC",
+            SpecificationMatchKey = "LEGACYSPEC",
+            Unit = "EA",
+            BoxQuantity = 24m,
+            StorageLocation = "REMOVED-LEGACY-LOCATION",
+            CurrentStock = 12.5m,
+            SimpleMemo = "preserve existing item data",
+            LastPurchaseDate = new DateOnly(2026, 7, 1),
+            LastSaleDate = new DateOnly(2026, 7, 2)
+        });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        await _dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+        await _dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE \"Items\" DROP COLUMN \"BoxQuantity\";");
+        await _dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE \"Items\" DROP COLUMN \"StorageLocation\";");
+        await _dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE \"Items\" DROP COLUMN \"LastPurchaseDate\";");
+        await _dbContext.Database.ExecuteSqlRawAsync("ALTER TABLE \"Items\" DROP COLUMN \"LastSaleDate\";");
+        await _dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+
+        var legacyColumns = await ReadItemColumnNamesAsync();
+        Assert.DoesNotContain("BoxQuantity", legacyColumns);
+        Assert.DoesNotContain("StorageLocation", legacyColumns);
+        Assert.DoesNotContain("LastPurchaseDate", legacyColumns);
+        Assert.DoesNotContain("LastSaleDate", legacyColumns);
+
+        await InvokeEnsureBusinessDatabaseSchemaAsync();
+
+        var columnsAfterFirstRun = await ReadItemColumnNamesAsync();
+        Assert.Contains("BoxQuantity", columnsAfterFirstRun);
+        Assert.Contains("StorageLocation", columnsAfterFirstRun);
+        Assert.Contains("LastPurchaseDate", columnsAfterFirstRun);
+        Assert.Contains("LastSaleDate", columnsAfterFirstRun);
+
+        _dbContext.ChangeTracker.Clear();
+        var migrated = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .SingleAsync(item => item.Id == itemId);
+        Assert.Equal("LEGACY OPTIONAL CATALOG ITEM", migrated.NameOriginal);
+        Assert.Equal("LEGACY-SPEC", migrated.SpecificationOriginal);
+        Assert.Equal("EA", migrated.Unit);
+        Assert.Equal(12.5m, migrated.CurrentStock);
+        Assert.Equal("preserve existing item data", migrated.SimpleMemo);
+        Assert.Equal(0m, migrated.BoxQuantity);
+        Assert.Equal(string.Empty, migrated.StorageLocation);
+        Assert.Null(migrated.LastPurchaseDate);
+        Assert.Null(migrated.LastSaleDate);
+
+        await InvokeEnsureBusinessDatabaseSchemaAsync();
+
+        Assert.Equal(columnsAfterFirstRun, await ReadItemColumnNamesAsync());
+        _dbContext.ChangeTracker.Clear();
+        var migratedAfterSecondRun = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .SingleAsync(item => item.Id == itemId);
+        Assert.Equal("LEGACY OPTIONAL CATALOG ITEM", migratedAfterSecondRun.NameOriginal);
+        Assert.Equal(12.5m, migratedAfterSecondRun.CurrentStock);
+        Assert.Equal(0m, migratedAfterSecondRun.BoxQuantity);
+        Assert.Equal(string.Empty, migratedAfterSecondRun.StorageLocation);
+        Assert.Null(migratedAfterSecondRun.LastPurchaseDate);
+        Assert.Null(migratedAfterSecondRun.LastSaleDate);
     }
 
     [Fact]
@@ -387,7 +2089,154 @@ public sealed class DbInitializerRegressionTests : IDisposable
         var payloadHash = await command.ExecuteScalarAsync();
         Assert.Equal(string.Empty, Assert.IsType<string>(payloadHash));
 
+        var duplicateCaseException = await Assert.ThrowsAsync<SqliteException>(
+            () => _dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                 INSERT INTO "ProcessedSyncMutations"
+                     ("Id", "MutationId", "DeviceId", "EntityName", "EntityId",
+                      "ExpectedRevision", "PayloadHash", "ProcessedAtUtc")
+                 VALUES
+                     ({Guid.NewGuid().ToString()}, {"LEGACY-MUTATION"}, {"case-variant-device"}, {nameof(Customer)},
+                      {Guid.NewGuid().ToString()}, {3L}, {string.Empty}, {DateTime.UtcNow});
+                 """));
+        Assert.Equal(19, duplicateCaseException.SqliteErrorCode);
+
         await _dbContext.Database.ExecuteSqlRawAsync("SELECT 1;");
+    }
+
+    [Fact]
+    public async Task EnsureOperationalRuntimeSchemaAsync_AddsAuditActorLookupIndexToExistingDatabase()
+    {
+        const string indexName = "IX_AuditLogs_EntityName_EntityId_CreatedAtUtc";
+        await _dbContext.Database.ExecuteSqlRawAsync($"DROP INDEX IF EXISTS \"{indexName}\";");
+
+        await InvokeEnsureOperationalRuntimeSchemaAsync();
+
+        await using var command = _connection.CreateCommand();
+        command.CommandText = $"PRAGMA index_info('{indexName}');";
+        await using var reader = await command.ExecuteReaderAsync();
+        var indexedColumns = new List<string>();
+        while (await reader.ReadAsync())
+            indexedColumns.Add(reader.GetString(2));
+
+        Assert.Equal(
+            new[] { "EntityName", "EntityId", "CreatedAtUtc" },
+            indexedColumns);
+    }
+
+    [Fact]
+    public async Task EnsureOperationalRuntimeSchemaAsync_PreservesRetainedLegacyIds_AndSentinelsCanonicalDuplicates()
+    {
+        await _dbContext.Database.ExecuteSqlRawAsync("DROP TABLE IF EXISTS \"ProcessedSyncMutations\";");
+        await _dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE "ProcessedSyncMutations" (
+                "Id" TEXT NOT NULL PRIMARY KEY,
+                "MutationId" TEXT NOT NULL DEFAULT '',
+                "DeviceId" TEXT NOT NULL DEFAULT '',
+                "EntityName" TEXT NOT NULL DEFAULT '',
+                "EntityId" TEXT NOT NULL DEFAULT '',
+                "ExpectedRevision" INTEGER NOT NULL DEFAULT 0,
+                "PayloadHash" TEXT NOT NULL DEFAULT '',
+                "ProcessedAtUtc" TEXT NOT NULL
+            );
+            """);
+
+        var retainedId = Guid.Parse("00000000-0000-0000-0000-000000000002");
+        var duplicateId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var standaloneId = Guid.Parse("00000000-0000-0000-0000-000000000003");
+        var sentinelCollisionId = Guid.Parse("00000000-0000-0000-0000-000000000004");
+        var entityId = Guid.NewGuid();
+        var occupiedSentinel =
+            $"__legacy_duplicate__:{duplicateId:N}:legacy-case-receipt";
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+             INSERT INTO "ProcessedSyncMutations"
+                 ("Id", "MutationId", "DeviceId", "EntityName", "EntityId",
+                  "ExpectedRevision", "PayloadHash", "ProcessedAtUtc")
+             VALUES
+                 ({retainedId}, {"  Legacy-Case-Receipt  "}, {"first-device"}, {nameof(Customer)},
+                  {entityId.ToString("D")}, {7L}, {"retained-legacy-payload-hash"},
+                  {new DateTime(2026, 7, 10, 1, 0, 0, DateTimeKind.Utc)}),
+                 ({duplicateId}, {"LEGACY-CASE-RECEIPT"}, {"second-device"}, {nameof(Customer)},
+                  {entityId.ToString("D")}, {7L}, {"duplicate-legacy-payload-hash"},
+                  {new DateTime(2026, 7, 10, 2, 0, 0, DateTimeKind.Utc)}),
+                 ({standaloneId}, {"  Standalone-Legacy-Id  "}, {"standalone-device"}, {nameof(Customer)},
+                  {Guid.NewGuid().ToString("D")}, {2L}, {"standalone-legacy-payload-hash"},
+                  {new DateTime(2026, 7, 10, 3, 0, 0, DateTimeKind.Utc)}),
+                 ({sentinelCollisionId}, {occupiedSentinel}, {"sentinel-device"}, {nameof(Customer)},
+                  {Guid.NewGuid().ToString("D")}, {4L}, {"sentinel-payload-hash"},
+                  {new DateTime(2026, 7, 10, 4, 0, 0, DateTimeKind.Utc)});
+             """);
+
+        await InvokeEnsureOperationalRuntimeSchemaAsync();
+
+        _dbContext.ChangeTracker.Clear();
+        var migrated = await _dbContext.ProcessedSyncMutations
+            .AsNoTracking()
+            .OrderBy(receipt => receipt.ProcessedAtUtc)
+            .ToListAsync();
+        Assert.Collection(
+            migrated,
+            retained =>
+            {
+                Assert.Equal(retainedId, retained.Id);
+                Assert.Equal("  Legacy-Case-Receipt  ", retained.MutationId);
+                Assert.Equal("first-device", retained.DeviceId);
+                Assert.Equal(entityId.ToString("D"), retained.EntityId);
+                Assert.Equal(7, retained.ExpectedRevision);
+                Assert.Equal("retained-legacy-payload-hash", retained.PayloadHash);
+            },
+            duplicate =>
+            {
+                Assert.Equal(duplicateId, duplicate.Id);
+                Assert.Equal($"{occupiedSentinel}:1", duplicate.MutationId);
+                Assert.Equal("second-device", duplicate.DeviceId);
+                Assert.Equal(entityId.ToString("D"), duplicate.EntityId);
+                Assert.Equal(7, duplicate.ExpectedRevision);
+                Assert.Equal("duplicate-legacy-payload-hash", duplicate.PayloadHash);
+            },
+            standalone =>
+            {
+                Assert.Equal(standaloneId, standalone.Id);
+                Assert.Equal("  Standalone-Legacy-Id  ", standalone.MutationId);
+                Assert.Equal("standalone-device", standalone.DeviceId);
+                Assert.Equal(2, standalone.ExpectedRevision);
+                Assert.Equal("standalone-legacy-payload-hash", standalone.PayloadHash);
+            },
+            sentinel =>
+            {
+                Assert.Equal(sentinelCollisionId, sentinel.Id);
+                Assert.Equal(occupiedSentinel, sentinel.MutationId);
+                Assert.Equal("sentinel-device", sentinel.DeviceId);
+                Assert.Equal(4, sentinel.ExpectedRevision);
+                Assert.Equal("sentinel-payload-hash", sentinel.PayloadHash);
+            });
+
+        var mutationIdsAfterFirstRun = migrated
+            .Select(receipt => receipt.MutationId)
+            .ToArray();
+        await InvokeEnsureOperationalRuntimeSchemaAsync();
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(
+            mutationIdsAfterFirstRun,
+            await _dbContext.ProcessedSyncMutations
+                .AsNoTracking()
+                .OrderBy(receipt => receipt.ProcessedAtUtc)
+                .Select(receipt => receipt.MutationId)
+                .ToArrayAsync());
+
+        var duplicateWhitespaceCaseException = await Assert.ThrowsAsync<SqliteException>(
+            () => _dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                 INSERT INTO "ProcessedSyncMutations"
+                     ("Id", "MutationId", "DeviceId", "EntityName", "EntityId",
+                      "ExpectedRevision", "PayloadHash", "ProcessedAtUtc")
+                 VALUES
+                     ({Guid.NewGuid()}, {"  LEGACY-CASE-RECEIPT  "}, {"third-device"}, {nameof(Customer)},
+                      {entityId.ToString("D")}, {7L}, {string.Empty}, {DateTime.UtcNow});
+                 """));
+        Assert.Equal(19, duplicateWhitespaceCaseException.SqliteErrorCode);
     }
 
     [Fact]
@@ -572,12 +2421,14 @@ public sealed class DbInitializerRegressionTests : IDisposable
             CustomerId = customerId,
             CustomerName = "Server Initializer Customer",
             CurrentCustomerName = "Server Initializer Customer",
-            BillingProfileId = profileId,
+            BillingProfileId = null,
             ItemId = duplicateItemId,
             ItemName = "Server Duplicate Item",
             MonthlyFee = 15000m
         });
         await _dbContext.SaveChangesAsync();
+        var revisionBeforeMerge = await _dbContext.Items.IgnoreQueryFilters()
+            .MaxAsync(item => item.Revision);
 
         var method = typeof(DbInitializer).GetMethod(
             "MergeDuplicateItemsAsync",
@@ -590,7 +2441,10 @@ public sealed class DbInitializerRegressionTests : IDisposable
         await task!;
         await _dbContext.SaveChangesAsync();
 
-        Assert.False(await _dbContext.Items.IgnoreQueryFilters().AnyAsync(item => item.Id == duplicateItemId));
+        var duplicateTombstone = await _dbContext.Items.IgnoreQueryFilters()
+            .SingleAsync(item => item.Id == duplicateItemId);
+        Assert.True(duplicateTombstone.IsDeleted);
+        Assert.True(duplicateTombstone.Revision > revisionBeforeMerge);
         Assert.Equal(canonicalItemId, (await _dbContext.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == assetId)).ItemId);
 
         var storedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == profileId);
@@ -1123,6 +2977,7 @@ public sealed class DbInitializerRegressionTests : IDisposable
         var profileId = Guid.Parse("97777777-7777-7777-7777-777777777777");
         var firstAssetId = Guid.Parse("98888888-8888-8888-8888-888888888888");
         var secondAssetId = Guid.Parse("99999999-9999-9999-9999-999999999999");
+        var unlinkedAssetId = Guid.Parse("99999999-9999-9999-9999-999999999998");
 
         var templateJson = JsonSerializer.Serialize(new[]
         {
@@ -1205,6 +3060,26 @@ public sealed class DbInitializerRegressionTests : IDisposable
                 MachineNumber = "SN-002",
                 AssetStatus = "ACTIVE",
                 MonthlyFee = 220000m
+            },
+            new RentalAsset
+            {
+                Id = unlinkedAssetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                BillingProfileId = null,
+                CustomerId = customerId,
+                AssetKey = "USENET|MONTHLY-003|SN-003",
+                CustomerName = "?? ??? ??? ???",
+                CurrentCustomerName = "?? ??? ??? ???",
+                InstallSiteName = "??? ???",
+                InstallLocation = "??? ???",
+                ItemName = "???",
+                ManagementNumber = "MONTHLY-003",
+                MachineNumber = "SN-003",
+                AssetStatus = "ACTIVE",
+                MonthlyFee = 330000m
             });
 
         await _dbContext.SaveChangesAsync();
@@ -1235,6 +3110,20 @@ public sealed class DbInitializerRegressionTests : IDisposable
             .ToList();
         Assert.Equal(new[] { firstAssetId }.OrderBy(value => value), includedAssetIds);
         Assert.DoesNotContain(secondAssetId, includedAssetIds);
+        Assert.DoesNotContain(unlinkedAssetId, includedAssetIds);
+
+        var firstAsset = await _dbContext.RentalAssets
+            .IgnoreQueryFilters()
+            .SingleAsync(asset => asset.Id == firstAssetId);
+        var secondAsset = await _dbContext.RentalAssets
+            .IgnoreQueryFilters()
+            .SingleAsync(asset => asset.Id == secondAssetId);
+        var unlinkedAsset = await _dbContext.RentalAssets
+            .IgnoreQueryFilters()
+            .SingleAsync(asset => asset.Id == unlinkedAssetId);
+        Assert.Equal(profileId, firstAsset.BillingProfileId);
+        Assert.Null(secondAsset.BillingProfileId);
+        Assert.Null(unlinkedAsset.BillingProfileId);
     }
 
     [Fact]
@@ -1489,7 +3378,7 @@ public sealed class DbInitializerRegressionTests : IDisposable
             OfficeCode = OfficeCodeCatalog.Usenet,
             ManagementCompanyCode = OfficeCodeCatalog.Usenet,
             ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
-            BillingProfileId = profileId,
+            BillingProfileId = null,
             AssetKey = "USENET|YEONSU-DEPT-001|SN-DEPT",
             CustomerName = "연수구청[여성아동과]",
             CurrentCustomerName = "연수구청[여성아동과]",
@@ -1742,6 +3631,103 @@ public sealed class DbInitializerRegressionTests : IDisposable
     {
         _dbContext.Dispose();
         _connection.Dispose();
+    }
+
+    private async Task InvokeEnsureOperationalRuntimeSchemaAsync()
+    {
+        var method = typeof(DbInitializer).GetMethod(
+            "EnsureOperationalRuntimeSchemaAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+    }
+
+    private async Task InvokeEnsureBusinessDatabaseSchemaAsync()
+    {
+        var method = typeof(DbInitializer).GetMethod(
+            "EnsureBusinessDatabaseSchemaAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(
+            null,
+            new object?[] { _dbContext, NullLogger.Instance, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+    }
+
+    private async Task InvokeEnsureInvoiceVersionColumnsAsync()
+    {
+        var method = typeof(DbInitializer).GetMethod(
+            "EnsureInvoiceVersionColumnsAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(
+            null,
+            new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+    }
+
+    private async Task InvokeBackfillOperationalOfficeOwnershipAsync()
+    {
+        var method = typeof(DbInitializer).GetMethod(
+            "BackfillOperationalOfficeOwnershipAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(
+            null,
+            new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+    }
+
+    private async Task InvokeStartupScopeRepairSequenceAsync()
+    {
+        await InvokeEnsureBusinessDatabaseSchemaAsync();
+        await InvokeEnsureOperationalRuntimeSchemaAsync();
+
+        var verifyMethod = typeof(DbInitializer).GetMethod(
+            "VerifyRequiredOperationalSchemaAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(verifyMethod);
+        var verifyTask = Assert.IsAssignableFrom<Task>(
+            verifyMethod!.Invoke(null, [_dbContext, CancellationToken.None]));
+        await verifyTask;
+
+        var customerScopeMethod = typeof(DbInitializer).GetMethod(
+            "BackfillCustomerScopeFieldsAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(customerScopeMethod);
+        var customerScopeTask = Assert.IsAssignableFrom<Task>(
+            customerScopeMethod!.Invoke(null, [_dbContext, CancellationToken.None]));
+        await customerScopeTask;
+
+        await InvokeBackfillOperationalOfficeOwnershipAsync();
+
+        await InvokeEnsureInvoiceVersionColumnsAsync();
+        await new InventoryLedgerService(_dbContext).RebuildAsync();
+    }
+
+    private async Task<string[]> ReadItemColumnNamesAsync()
+    {
+        var names = new List<string>();
+        await using var command = _connection.CreateCommand();
+        command.CommandText = "PRAGMA table_info(\"Items\");";
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+            names.Add(reader.GetString(reader.GetOrdinal("name")));
+
+        return names.OrderBy(name => name, StringComparer.Ordinal).ToArray();
     }
 
     private async Task InvokeEnsureDefaultRentalManagementCompaniesAsync()

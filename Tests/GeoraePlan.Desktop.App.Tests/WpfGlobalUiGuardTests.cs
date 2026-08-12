@@ -275,7 +275,10 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("OpenDashboardReceivableDetailsCommand", xaml, StringComparison.Ordinal);
         Assert.Contains("OpenDashboardPayableDetailsCommand", xaml, StringComparison.Ordinal);
         Assert.Contains("DashboardBalanceDetailsWindow", viewModel, StringComparison.Ordinal);
-        Assert.Contains("afterPaymentSavedAsync: LoadInvoiceListAsync", viewModel, StringComparison.Ordinal);
+        Assert.Contains(
+            "afterPaymentSavedAsync: () => LoadInvoiceListAsync()",
+            viewModel,
+            StringComparison.Ordinal);
         Assert.Contains("ShowDashboardSalesMetricToggle", xaml, StringComparison.Ordinal);
         Assert.Contains("ShowDashboardExpandedSalesCards", xaml, StringComparison.Ordinal);
         Assert.Contains("CanViewDashboardSalesCards", xaml, StringComparison.Ordinal);
@@ -624,9 +627,14 @@ public sealed class WpfGlobalUiGuardTests
             StringComparison.Ordinal);
         Assert.DoesNotContain("SelectionMode=\"Extended\"", xaml, StringComparison.Ordinal);
         Assert.Contains("private async Task<bool> HandleSelectionAutoSaveAsync", viewModel, StringComparison.Ordinal);
-        Assert.Contains("preserveSelectionRowId: requestedSelection?.Source.Id,", viewModel, StringComparison.Ordinal);
+        Assert.Contains(
+            "preserveSelectionRowId: requestedSelection?.Source.Id ?? Guid.Empty,",
+            viewModel,
+            StringComparison.Ordinal);
         Assert.Contains("refreshAfterSave: false,", viewModel, StringComparison.Ordinal);
-        Assert.Contains("RefreshSavedAssetRowInPlaceAsync(savedAssetId, preserveSelectionRowId)", viewModel, StringComparison.Ordinal);
+        Assert.Contains("await RefreshSavedAssetRowInPlaceAsync(", viewModel, StringComparison.Ordinal);
+        Assert.Contains("preserveSelectionRowId,", viewModel, StringComparison.Ordinal);
+        Assert.Contains("snapshot);", viewModel, StringComparison.Ordinal);
         Assert.Contains(
             "fullRow.IsSelected = current?.IsSelected ?? fullRow.IsSelected;",
             viewModel,
@@ -674,6 +682,116 @@ public sealed class WpfGlobalUiGuardTests
     }
 
     [Fact]
+    public void RentalWindows_ShowPersistentSharedScopeAndReadOnlyGuidance()
+    {
+        var root = FindRepositoryRoot();
+        var assetXaml = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "RentalAssetWindow.xaml"));
+        var billingXaml = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "RentalBillingWindow.xaml"));
+        var billingCodeBehind = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "RentalBillingWindow.xaml.cs"));
+
+        Assert.Contains("Style=\"{StaticResource TradePlanSubToolbarStyle}\"", assetXaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{Binding RentalScopeGuidanceText}\"", assetXaml, StringComparison.Ordinal);
+        var rentalAssetGrid = Regex.Match(
+            assetXaml,
+            "<DataGrid\\b[^>]*x:Name=\"RentalAssetDataGrid\"[^>]*>",
+            RegexOptions.CultureInvariant);
+        Assert.True(rentalAssetGrid.Success, "렌탈 자산 목록 DataGrid를 찾을 수 없습니다.");
+        Assert.Contains("SelectedItem=\"{Binding SelectedRow}\"", rentalAssetGrid.Value, StringComparison.Ordinal);
+        Assert.Contains("IsReadOnly=\"True\"", rentalAssetGrid.Value, StringComparison.Ordinal);
+        Assert.DoesNotContain("IsReadOnly=\"False\"", rentalAssetGrid.Value, StringComparison.Ordinal);
+        Assert.Contains(
+            "IsEnabled=\"{Binding DataContext.CanSelectAssetsForMutation, RelativeSource={RelativeSource AncestorType=DataGrid}}\"",
+            assetXaml,
+            StringComparison.Ordinal);
+        Assert.Contains("<Grid IsEnabled=\"{Binding CanEditAssetDetails}\">", assetXaml, StringComparison.Ordinal);
+        Assert.Contains("Style=\"{StaticResource TradePlanSubToolbarStyle}\"", billingXaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{Binding RentalScopeGuidanceText}\"", billingXaml, StringComparison.Ordinal);
+        Assert.Contains(
+            "Content=\"신규 렌탈 거래처 등록\" Style=\"{StaticResource TradePlanEditButtonStyle}\" Margin=\"0,0,6,6\" Click=\"NewRentalCustomerButton_Click\" IsEnabled=\"{Binding CanEditBillingProfiles}\"",
+            billingXaml,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Content=\"신규 설정\" Style=\"{StaticResource TradePlanEditButtonStyle}\" Margin=\"0,0,6,6\" Command=\"{Binding NewProfileCommand}\" IsEnabled=\"{Binding CanEditBillingProfiles}\"",
+            billingXaml,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "IsEnabled=\"{Binding DataContext.CanEditBillingProfiles, RelativeSource={RelativeSource AncestorType=DataGrid}}\"",
+            billingXaml,
+            StringComparison.Ordinal);
+        Assert.Contains("<Grid IsEnabled=\"{Binding CanEditBillingProfileDetails}\">", billingXaml, StringComparison.Ordinal);
+        Assert.Contains(
+            "<Condition Binding=\"{Binding CanRegisterSettlement}\" Value=\"True\"/>",
+            billingXaml,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "<Condition Binding=\"{Binding DataContext.CanRegisterSettlementSelected, RelativeSource={RelativeSource AncestorType=DataGrid}}\" Value=\"True\"/>",
+            billingXaml,
+            StringComparison.Ordinal);
+
+        var includedAssetsGrid = Regex.Match(
+            billingXaml,
+            "<DataGrid\\b[^>]*ItemsSource=\"\\{Binding IncludedAssets\\}\"[^>]*>",
+            RegexOptions.CultureInvariant);
+        Assert.True(includedAssetsGrid.Success, "거래처 임대 자산 DataGrid를 찾을 수 없습니다.");
+        Assert.Contains("SelectedItem=\"{Binding SelectedIncludedAsset}\"", includedAssetsGrid.Value, StringComparison.Ordinal);
+        Assert.Contains("IsReadOnly=\"{Binding IsRentalAssetSourceReadOnly}\"", includedAssetsGrid.Value, StringComparison.Ordinal);
+        Assert.Contains("BeginningEdit=\"IncludedAssetsDataGrid_BeginningEdit\"", includedAssetsGrid.Value, StringComparison.Ordinal);
+        Assert.DoesNotContain("IsEnabled=", includedAssetsGrid.Value, StringComparison.Ordinal);
+        Assert.Contains(
+            "Command=\"{Binding SetRepresentativeAssetCommand}\"",
+            billingXaml,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "IsEnabled=\"{Binding CanSetRepresentativeAsset}\"",
+            billingXaml,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "대표자산은 청구 프로필 설정이며 렌탈 자산 원본 정보는 수정하지 않습니다.",
+            billingXaml,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "IsChecked=\"{Binding IsRepresentativeAsset, Mode=OneWay}\"",
+            billingXaml,
+            StringComparison.Ordinal);
+        Assert.Contains("IsHitTestVisible=\"False\"", billingXaml, StringComparison.Ordinal);
+        Assert.Contains("Focusable=\"False\"", billingXaml, StringComparison.Ordinal);
+        Assert.Contains(
+            "private void IncludedAssetsDataGrid_BeginningEdit",
+            billingCodeBehind,
+            StringComparison.Ordinal);
+        Assert.Contains("!includedAsset.IsReferenceOnly", billingCodeBehind, StringComparison.Ordinal);
+        Assert.Contains("e.Cancel = true;", billingCodeBehind, StringComparison.Ordinal);
+        Assert.Contains(
+            "참조 전용 자산이므로 원본 정보를 수정할 수 없습니다.",
+            billingCodeBehind,
+            StringComparison.Ordinal);
+        Assert.Contains("if (!viewModel.CanRegisterSettlementSelected)", billingCodeBehind, StringComparison.Ordinal);
+        Assert.Contains("if (!history.CanRegisterSettlement)", billingCodeBehind, StringComparison.Ordinal);
+
+        var linkedAssetExpander = Regex.Match(
+            billingXaml,
+            "<Expander\\b[^>]*Header=\"거래처 임대 자산 \\(렌탈 자산연결과 연동\\)\"[^>]*>",
+            RegexOptions.CultureInvariant);
+        Assert.True(linkedAssetExpander.Success, "거래처 임대 자산 조회 영역을 찾을 수 없습니다.");
+        Assert.DoesNotContain("IsEnabled=", linkedAssetExpander.Value, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PaymentTransferVerifier_CapturesRuntimeWindowScreenshotsAndDatePickerMetrics()
     {
         var root = FindRepositoryRoot();
@@ -685,6 +803,11 @@ public sealed class WpfGlobalUiGuardTests
 
         Assert.Contains("RenderTargetBitmap", source, StringComparison.Ordinal);
         Assert.Contains("PngBitmapEncoder", source, StringComparison.Ordinal);
+        Assert.Contains("app.InitializeComponent();", source, StringComparison.Ordinal);
+        Assert.True(
+            source.IndexOf("app.InitializeComponent();", StringComparison.Ordinal) <
+            source.IndexOf("new PaymentWindow(", StringComparison.Ordinal),
+            "PaymentTransferVerifier는 업무 Window를 생성하기 전에 App.xaml 리소스를 초기화해야 합니다.");
         Assert.Contains("CaptureWindow(paymentAdvanceWindow", source, StringComparison.Ordinal);
         Assert.Contains("CollectDatePickerMetrics(paymentAdvanceWindow", source, StringComparison.Ordinal);
         Assert.Contains("ValidateDatePickerMetrics(datePickerMetrics)", source, StringComparison.Ordinal);
@@ -707,7 +830,7 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("[\"inventory-transfer\"] = 1", source, StringComparison.Ordinal);
         Assert.Contains("[\"period-ledger\"] = 2", source, StringComparison.Ordinal);
         Assert.Contains("[\"print-edit\"] = 1", source, StringComparison.Ordinal);
-        Assert.Contains("[\"rental-asset-link\"] = 1", source, StringComparison.Ordinal);
+        Assert.Contains("[\"rental-asset-link\"] = 3", source, StringComparison.Ordinal);
         Assert.Contains("[\"rental-asset\"] = 5", source, StringComparison.Ordinal);
         Assert.Contains("[\"rental-assignment-history-edit\"] = 2", source, StringComparison.Ordinal);
         Assert.Contains("[\"rental-billing\"] = 2", source, StringComparison.Ordinal);

@@ -33,6 +33,20 @@ public sealed class UnitsController : ControllerBase
         if (dto.IsDeleted)
             return SoftDeleteMutationGuard.RejectCreate("단위");
 
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
+        var mutationCheck = await ProcessedSyncMutationRecorder.CheckAsync(
+            _dbContext,
+            dto,
+            nameof(Unit),
+            cancellationToken);
+        if (mutationCheck.Status == DirectMutationStatus.Conflict)
+            return Conflict(ProcessedSyncMutationRecorder.BuildConflictResponse(mutationCheck));
+        if (mutationCheck.Status == DirectMutationStatus.Duplicate)
+            return await ResolveDuplicateUnitAsync(mutationCheck, cancellationToken);
+
         var entity = new Unit { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
         if (!dto.IsDeleted &&
             dto.IsActive &&
@@ -44,7 +58,9 @@ public sealed class UnitsController : ControllerBase
         dto.Name = normalizedName;
         entity.Apply(dto);
         _dbContext.Units.Add(entity);
+        ProcessedSyncMutationRecorder.Record(_dbContext, mutationCheck, entity.Id);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
 
@@ -52,8 +68,25 @@ public sealed class UnitsController : ControllerBase
     [Authorize(Policy = PermissionNames.SettingsEdit)]
     public async Task<ActionResult<UnitDto>> Update(Guid id, [FromBody] UnitDto dto, CancellationToken cancellationToken)
     {
+        if (dto.Id != Guid.Empty && dto.Id != id)
+            return BadRequest("Unit route id must match the body id.");
+
+        dto.Id = id;
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
         var entity = await _dbContext.Units.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
+        var mutationCheck = await ProcessedSyncMutationRecorder.CheckAsync(
+            _dbContext,
+            dto,
+            nameof(Unit),
+            cancellationToken);
+        if (mutationCheck.Status == DirectMutationStatus.Conflict)
+            return Conflict(ProcessedSyncMutationRecorder.BuildConflictResponse(mutationCheck));
+        if (mutationCheck.Status == DirectMutationStatus.Duplicate)
+            return await ResolveDuplicateUnitAsync(mutationCheck, cancellationToken);
         if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Unit)) is { } conflict)
             return conflict;
         if (dto.IsDeleted)
@@ -70,7 +103,9 @@ public sealed class UnitsController : ControllerBase
 
         dto.Name = normalizedName;
         entity.Apply(dto);
+        ProcessedSyncMutationRecorder.Record(_dbContext, mutationCheck, entity.Id);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
 
@@ -78,8 +113,17 @@ public sealed class UnitsController : ControllerBase
     [Authorize(Policy = PermissionNames.SettingsEdit)]
     public async Task<IActionResult> Delete(Guid id, [FromQuery] long? expectedRevision, CancellationToken cancellationToken)
     {
-        var entity = await _dbContext.Units.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
+
+        var entity = await _dbContext.Units
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
+        if (entity.IsDeleted)
+            return NoContent();
         if (OptimisticConcurrencyGuard.Check(this, entity, expectedRevision, nameof(Unit)) is { } conflict)
             return conflict;
         var referenceBlockMessage = await UnitDeletionReferenceGuard.BuildReferenceBlockMessageAsync(
@@ -95,7 +139,33 @@ public sealed class UnitsController : ControllerBase
 
         entity.IsDeleted = true;
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return NoContent();
+    }
+
+    private async Task<ActionResult<UnitDto>> ResolveDuplicateUnitAsync(
+        DirectMutationCheck mutationCheck,
+        CancellationToken cancellationToken)
+    {
+        if (mutationCheck.ExistingReceipt is not null &&
+            Guid.TryParse(mutationCheck.ExistingReceipt.EntityId, out var entityId))
+        {
+            var entity = await _dbContext.Units
+                .AsNoTracking()
+                .FirstOrDefaultAsync(
+                    current => current.Id == entityId,
+                    cancellationToken);
+            if (entity is not null)
+                return Ok(entity.ToDto());
+        }
+
+        return Conflict(new DirectMutationConflictResponse
+        {
+            MutationId = mutationCheck.MutationId,
+            EntityName = nameof(Unit),
+            EntityId = mutationCheck.RequestedEntityId,
+            Reason = "The processed mutation is unavailable in the current scope."
+        });
     }
 
     private async Task<bool> HasActiveDuplicateNameAsync(

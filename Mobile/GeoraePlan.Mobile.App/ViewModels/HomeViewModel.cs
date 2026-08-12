@@ -6,6 +6,7 @@ public sealed class HomeViewModel : ObservableObject
 {
     private readonly SessionStore _sessionStore;
     private readonly JsonSyncStateStore _syncStateStore;
+    private long _refreshVersion;
 
     private string _displayName = "거래플랜";
     private string _roleText = "로그인이 필요합니다.";
@@ -68,7 +69,13 @@ public sealed class HomeViewModel : ObservableObject
 
     public async Task RefreshAsync()
     {
+        var refreshVersion =
+            Interlocked.Increment(ref _refreshVersion);
+        var owner = _sessionStore.CaptureOwner();
+        ResetForOwner();
         var session = _sessionStore.GetSnapshot();
+        if (!owner.Matches(session))
+            return;
         DisplayName = session.IsAuthenticated
             ? $"{session.Username} 님"
             : "로그인이 필요합니다.";
@@ -79,7 +86,27 @@ public sealed class HomeViewModel : ObservableObject
             ? "저장하면 서버에 바로 올리고, 화면 진입/복귀 시 최신 변경만 확인합니다."
             : "로그인 후 자동 동기화가 시작됩니다.";
 
-        var sync = await _syncStateStore.LoadAsync();
+        var sync = await LoadCurrentOwnerStateAsync(owner);
+        if (sync is null)
+            return;
+        if (Volatile.Read(ref _refreshVersion) !=
+                refreshVersion ||
+            !_sessionStore.IsOwnerCurrent(owner))
+        {
+            return;
+        }
+        session = _sessionStore.GetSnapshot();
+        if (!owner.Matches(session))
+            return;
+        DisplayName = session.IsAuthenticated
+            ? $"{session.Username} 님"
+            : "로그인이 필요합니다.";
+        RoleText = session.IsAuthenticated
+            ? $"권한: {session.Role}"
+            : "권한 정보 없음";
+        AutoSyncText = session.IsAuthenticated
+            ? "저장하면 서버에 바로 올리고, 화면 진입/복귀 시 최신 변경만 확인합니다."
+            : "로그인 후 자동 동기화가 시작됩니다.";
         var pendingSummary = MobilePendingScopeFilter.CreateSummary(session, sync);
         LastSyncText = sync.LastSuccessUtc.HasValue
             ? $"마지막 성공 동기화: {sync.LastSuccessUtc.Value.ToLocalTime():yyyy-MM-dd HH:mm:ss}"
@@ -115,5 +142,29 @@ public sealed class HomeViewModel : ObservableObject
         StatusMessage = string.IsNullOrWhiteSpace(sync.LastError)
             ? "운영 서버와 자동 동기화 준비됨 · 재고이동/렌탈은 모바일 조회 전용"
             : $"최근 동기화 주의: {sync.LastError}";
+    }
+
+    private async Task<Models.MobileSyncState?>
+        LoadCurrentOwnerStateAsync(MobileSessionOwner owner)
+    {
+        try
+        {
+            return await _syncStateStore.LoadAsync(owner);
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            return null;
+        }
+    }
+
+    private void ResetForOwner()
+    {
+        DisplayName = "거래플랜";
+        RoleText = "로그인이 필요합니다.";
+        LastSyncText = "아직 동기화 기록이 없습니다.";
+        AutoSyncText = "로그인 후 자동 동기화가 시작됩니다.";
+        HasPendingNotice = false;
+        PendingNoticeText = string.Empty;
+        StatusMessage = "새 로그인 계정의 동기화 상태를 확인하세요.";
     }
 }

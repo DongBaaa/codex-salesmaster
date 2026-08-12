@@ -184,9 +184,9 @@
                         </StackPanel>
                     </ScrollViewer>
                     <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
-                        <Button Content="{Binding SelectedIssue.MergeActionText, FallbackValue=중복 병합}"
+                        <Button Content="{Binding SelectedIssue.DuplicateReviewActionText, FallbackValue=후보 비교}"
                                 Click="MergeSelectedButton_Click"
-                                IsEnabled="{Binding SelectedIssue.CanMergeDuplicates}"
+                                IsEnabled="{Binding SelectedIssue.CanReviewDuplicateCandidates}"
                                 Style="{StaticResource TradePlanDangerButtonStyle}"/>
                         <Button Content="해당 화면에서 수정"
                                 Style="{StaticResource TradePlanEditButtonStyle}"

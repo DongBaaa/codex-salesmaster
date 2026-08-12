@@ -8,6 +8,8 @@ public sealed class MobileSyncState
     public string OwnerUsername { get; set; } = string.Empty;
     public string OwnerTenantCode { get; set; } = string.Empty;
     public string OwnerOfficeCode { get; set; } = string.Empty;
+    public string OwnerSessionGeneration { get; set; } =
+        string.Empty;
     public long LastRevision { get; set; }
     public DateTime? LastSuccessUtc { get; set; }
     public DateTime? LastAttemptUtc { get; set; }

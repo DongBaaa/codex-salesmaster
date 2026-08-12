@@ -14,6 +14,7 @@ public sealed class CustomersPage : ContentPage
     private readonly MobileRefreshCoordinator _refreshCoordinator;
     private readonly SyncCoordinator _syncCoordinator;
     private readonly SessionStore _sessionStore;
+    private readonly CustomerContractCacheStore _cacheStore;
     private int _seenCustomersVersion;
 
     public CustomersPage()
@@ -24,6 +25,8 @@ public sealed class CustomersPage : ContentPage
         _refreshCoordinator = ServiceHelper.GetRequiredService<MobileRefreshCoordinator>();
         _syncCoordinator = ServiceHelper.GetRequiredService<SyncCoordinator>();
         _sessionStore = ServiceHelper.GetRequiredService<SessionStore>();
+        _cacheStore =
+            ServiceHelper.GetRequiredService<CustomerContractCacheStore>();
         _refreshCoordinator.AllChanged += HandleRealtimeRefreshRequested;
         BindingContext = _viewModel;
 
@@ -962,11 +965,18 @@ try
 
         await Navigation.PushModalAsync(new CustomerEditPage(
             null,
-            async saved =>
+            async (saved, requestOwnerSession) =>
             {
-                await _viewModel.RefreshAsync();
+                _cacheStore.ThrowIfOwnerSessionStale(
+                    requestOwnerSession);
+                await _viewModel.RefreshAsync(
+                    requestOwnerSession);
                 if (saved is not null)
-                    await _viewModel.SelectCustomerAsync(saved);
+                {
+                    await _viewModel.SelectCustomerAsync(
+                        saved,
+                        requestOwnerSession);
+                }
             }));
     }
 
@@ -981,16 +991,23 @@ try
         var editedCustomerId = _viewModel.SelectedCustomer.Id;
         await Navigation.PushModalAsync(new CustomerEditPage(
             _viewModel.SelectedCustomer,
-            async saved =>
+            async (saved, requestOwnerSession) =>
             {
+                _cacheStore.ThrowIfOwnerSessionStale(
+                    requestOwnerSession);
                 if (saved is null || saved.IsDeleted)
                 {
-                    await _viewModel.RemoveDeletedCustomerFromCurrentViewAsync(editedCustomerId);
+                    await _viewModel.RemoveDeletedCustomerFromCurrentViewAsync(
+                        editedCustomerId,
+                        requestOwnerSession);
                     return;
                 }
 
-                await _viewModel.RefreshAsync();
-                await _viewModel.SelectCustomerAsync(saved);
+                await _viewModel.RefreshAsync(
+                    requestOwnerSession);
+                await _viewModel.SelectCustomerAsync(
+                    saved,
+                    requestOwnerSession);
             }));
     }
 
@@ -1005,16 +1022,20 @@ try
         var deletedCustomerId = _viewModel.SelectedCustomer.Id;
         await Navigation.PushModalAsync(new CustomerEditPage(
             _viewModel.SelectedCustomer,
-            async saved =>
+            async (saved, requestOwnerSession) =>
             {
-                if (saved?.IsDeleted == true)
+                _cacheStore.ThrowIfOwnerSessionStale(
+                    requestOwnerSession);
+                if (saved is null || saved.IsDeleted)
                 {
-                    await _viewModel.RemoveDeletedCustomerFromCurrentViewAsync(deletedCustomerId);
+                    await _viewModel.RemoveDeletedCustomerFromCurrentViewAsync(
+                        deletedCustomerId,
+                        requestOwnerSession);
                     return;
                 }
 
-                _viewModel.ClearSelectedCustomer();
-                await _viewModel.RefreshAsync();
+                await _viewModel.RefreshAsync(
+                    requestOwnerSession);
             }));
     }
 

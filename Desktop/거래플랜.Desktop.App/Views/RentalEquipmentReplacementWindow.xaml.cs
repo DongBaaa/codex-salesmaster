@@ -1,5 +1,6 @@
 using System.Windows;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 
 namespace 거래플랜.Desktop.App.Views;
@@ -25,6 +26,7 @@ public partial class RentalEquipmentReplacementWindow : Window
 
         ReplacementRequest = replacementRequest ?? throw new ArgumentNullException(nameof(replacementRequest));
         InitializeComponent();
+        ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(this);
 
         OriginalSummaryText.Text = BuildSummary(originalAsset);
         OriginalDetailText.Text = BuildDetail(originalAsset);

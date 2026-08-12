@@ -14,7 +14,7 @@ public sealed class SyncCoordinator
     private readonly CustomerContractCacheStore _contractCacheStore;
     private readonly SessionStore _sessionStore;
     private readonly SemaphoreSlim _syncLock = new(1, 1);
-    private readonly List<PendingPaymentAttachmentRecord> _discardedPaymentAttachmentDrafts = new();
+    private readonly List<DiscardedPaymentAttachmentDraft> _discardedPaymentAttachmentDrafts = new();
     private static readonly TimeSpan OrphanPaymentAttachmentDraftMinimumAge = TimeSpan.FromDays(7);
 
     public const string ConcurrencyConflictUserMessage = "다른 PC/모바일에서 먼저 수정되어 최신값을 다시 불러왔습니다. 내용을 확인한 뒤 다시 저장해 주세요.";
@@ -46,11 +46,46 @@ public sealed class SyncCoordinator
         => !string.IsNullOrWhiteSpace(message) &&
            message.Contains("다른 PC/모바일에서 먼저 수정", StringComparison.Ordinal);
 
-    public async Task<MobileSyncState> LoadAsync(CancellationToken ct = default)
+    public Task<MobileSyncState> LoadAsync(CancellationToken ct = default)
+        => LoadAsync(
+            _sessionStore.CaptureOwner(),
+            ct);
+
+    public async Task<MobileSyncState> LoadAsync(
+        MobileSessionOwner owner,
+        CancellationToken ct = default)
     {
-        var state = await _store.LoadAsync(ct);
-        await CleanupOrphanPaymentAttachmentDraftsAsync(state, ct);
-        return state;
+        await _syncLock.WaitAsync(ct);
+        try
+        {
+            _sessionStore.ThrowIfOwnerChanged(owner);
+            var state = await _store.LoadAsync(owner, ct);
+            _sessionStore.ThrowIfOwnerChanged(owner);
+            if (await _attachmentStore.PrepareOwnedDraftsAsync(
+                    owner,
+                    state.PendingPaymentAttachments,
+                    ct))
+            {
+                _sessionStore.ThrowIfOwnerChanged(owner);
+                await _store.SaveAsync(
+                    owner,
+                    state,
+                    ct);
+                _sessionStore.ThrowIfOwnerChanged(owner);
+            }
+
+            _sessionStore.ThrowIfOwnerChanged(owner);
+            await CleanupOrphanPaymentAttachmentDraftsAsync(
+                owner,
+                state,
+                ct);
+            _sessionStore.ThrowIfOwnerChanged(owner);
+            return state;
+        }
+        finally
+        {
+            _syncLock.Release();
+        }
     }
 
     public async Task<MobileSyncState> PullAsync(CancellationToken ct = default)
@@ -58,20 +93,41 @@ public sealed class SyncCoordinator
         await _syncLock.WaitAsync(ct);
         try
         {
-            var state = await _store.LoadAsync(ct);
+            var owner = _sessionStore.CaptureOwner();
+            var state = await _store.LoadAsync(owner, ct);
             state.LastAttemptUtc = DateTime.UtcNow;
 
             try
             {
-                var response = EnsurePullResponse(await _api.PullAsync(state.LastRevision, ct));
-                await ApplyPullResponseAsync(state, response, ct);
+                var cacheOwnerSession =
+                    _contractCacheStore.CaptureOwnerSession();
+                var response = EnsurePullResponse(
+                    await _api.PullAsync(
+                        state.LastRevision,
+                        owner,
+                        ct));
+                _sessionStore.ThrowIfOwnerChanged(owner);
+                var candidateState =
+                    CloneStateForPullApply(state);
+                await ApplyPullResponseAsync(
+                    owner,
+                    candidateState,
+                    response,
+                    cacheOwnerSession,
+                    ct);
+                state = candidateState;
             }
             catch (Exception ex)
             {
+                if (ex is StaleMobileSessionOwnerException)
+                    throw;
                 MarkFailure(state, ex);
             }
 
-            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
+            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(
+                owner,
+                state,
+                ct);
             return state;
         }
         finally
@@ -85,8 +141,12 @@ public sealed class SyncCoordinator
         await _syncLock.WaitAsync(ct);
         try
         {
-            var state = await _store.LoadAsync(ct);
-            return await PushInternalAsync(state, ct);
+            var owner = _sessionStore.CaptureOwner();
+            var state = await _store.LoadAsync(owner, ct);
+            return await PushInternalAsync(
+                owner,
+                state,
+                ct);
         }
         finally
         {
@@ -99,26 +159,55 @@ public sealed class SyncCoordinator
         await _syncLock.WaitAsync(ct);
         try
         {
-            var state = await _store.LoadAsync(ct);
-            var scopedPaymentIdsBeforePush = MobilePendingScopeFilter
-                .CreateScopedPushRequest(_sessionStore.GetSnapshot(), state)
-                .Payments
-                .Select(payment => payment.Id)
-                .Where(id => id != Guid.Empty)
-                .ToHashSet();
-            state = await PushInternalAsync(state, ct);
+            var owner = _sessionStore.CaptureOwner();
+            var state = await _store.LoadAsync(owner, ct);
+            var sessionSnapshot =
+                _sessionStore.GetSnapshot();
+            var scopedPaymentIdsBeforePush =
+                MobilePendingScopeFilter
+                    .CreateScopedPushRequest(
+                        sessionSnapshot,
+                        state)
+                    .Payments
+                    .Select(payment => payment.Id)
+                    .Concat(
+                        MobilePendingScopeFilter
+                            .GetScopedPaymentAttachments(
+                                sessionSnapshot,
+                                state)
+                            .Select(attachment =>
+                                attachment.PaymentId))
+                    .Where(id => id != Guid.Empty)
+                    .ToHashSet();
+            state = await PushInternalAsync(
+                owner,
+                state,
+                ct);
             if (!string.IsNullOrWhiteSpace(state.LastError))
                 return state;
 
-            state = await UploadPendingPaymentAttachmentsInternalAsync(state, ct, scopedPaymentIdsBeforePush);
+            state = await UploadPendingPaymentAttachmentsInternalAsync(
+                owner,
+                state,
+                ct,
+                scopedPaymentIdsBeforePush);
             if (!string.IsNullOrWhiteSpace(state.LastError))
             {
-                await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
+                await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(
+                    owner,
+                    state,
+                    ct);
                 return state;
             }
 
-            state = await PullInternalAsync(state, ct);
-            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
+            state = await PullInternalAsync(
+                owner,
+                state,
+                ct);
+            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(
+                owner,
+                state,
+                ct);
             return state;
         }
         finally
@@ -132,37 +221,71 @@ public sealed class SyncCoordinator
         await _syncLock.WaitAsync(ct);
         try
         {
-            var state = await _store.LoadAsync(ct);
+            var owner = _sessionStore.CaptureOwner();
+            var state = await _store.LoadAsync(owner, ct);
             var now = DateTime.UtcNow;
             if (state.LastBackgroundSyncUtc.HasValue && now - state.LastBackgroundSyncUtc.Value < minInterval)
                 return state;
 
             state.LastBackgroundSyncUtc = now;
 
-            var scopedPaymentIdsBeforePush = MobilePendingScopeFilter
-                .CreateScopedPushRequest(_sessionStore.GetSnapshot(), state)
-                .Payments
-                .Select(payment => payment.Id)
-                .Where(id => id != Guid.Empty)
-                .ToHashSet();
-            if (MobilePendingScopeFilter.HasScopedServerSyncPayload(_sessionStore.GetSnapshot(), state) ||
-                MobilePendingScopeFilter.GetScopedPaymentAttachments(_sessionStore.GetSnapshot(), state, scopedPaymentIdsBeforePush).Count > 0)
+            var sessionSnapshot =
+                _sessionStore.GetSnapshot();
+            var scopedPaymentIdsBeforePush =
+                MobilePendingScopeFilter
+                    .CreateScopedPushRequest(
+                        sessionSnapshot,
+                        state)
+                    .Payments
+                    .Select(payment => payment.Id)
+                    .Concat(
+                        MobilePendingScopeFilter
+                            .GetScopedPaymentAttachments(
+                                sessionSnapshot,
+                                state)
+                            .Select(attachment =>
+                                attachment.PaymentId))
+                    .Where(id => id != Guid.Empty)
+                    .ToHashSet();
+            if (MobilePendingScopeFilter.HasScopedServerSyncPayload(sessionSnapshot, state) ||
+                MobilePendingScopeFilter.GetScopedPaymentAttachments(sessionSnapshot, state, scopedPaymentIdsBeforePush).Count > 0)
             {
-                state = await PushInternalAsync(state, ct);
+                state = await PushInternalAsync(
+                    owner,
+                    state,
+                    ct);
                 if (string.IsNullOrWhiteSpace(state.LastError))
-                    state = await UploadPendingPaymentAttachmentsInternalAsync(state, ct, scopedPaymentIdsBeforePush);
+                    state =
+                        await UploadPendingPaymentAttachmentsInternalAsync(
+                            owner,
+                            state,
+                            ct,
+                            scopedPaymentIdsBeforePush);
                 if (string.IsNullOrWhiteSpace(state.LastError))
-                    state = await PullInternalAsync(state, ct);
+                    state = await PullInternalAsync(
+                        owner,
+                        state,
+                        ct);
 
-                await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
+                await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(
+                    owner,
+                    state,
+                    ct);
                 return state;
             }
 
             try
             {
-                var syncStatus = EnsureSyncStatus(await _api.GetSyncStatusAsync(ct));
+                var syncStatus = EnsureSyncStatus(
+                    await _api.GetSyncStatusAsync(
+                        owner,
+                        ct));
+                _sessionStore.ThrowIfOwnerChanged(owner);
                 if (syncStatus.CurrentServerRevision > state.LastRevision)
-                    state = await PullInternalAsync(state, ct);
+                    state = await PullInternalAsync(
+                        owner,
+                        state,
+                        ct);
                 else
                 {
                     state.LastSuccessUtc ??= now;
@@ -172,10 +295,15 @@ public sealed class SyncCoordinator
             }
             catch (Exception ex)
             {
+                if (ex is StaleMobileSessionOwnerException)
+                    throw;
                 MarkFailure(state, ex);
             }
 
-            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
+            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(
+                owner,
+                state,
+                ct);
             return state;
         }
         finally
@@ -184,12 +312,24 @@ public sealed class SyncCoordinator
         }
     }
 
-    public async Task<MobileSyncState> SaveInvoiceImmediatelyAsync(InvoiceDto invoice, CancellationToken ct = default)
+    public Task<MobileSyncState> SaveInvoiceImmediatelyAsync(
+        InvoiceDto invoice,
+        CancellationToken ct = default)
+        => SaveInvoiceImmediatelyAsync(
+            invoice,
+            _sessionStore.CaptureOwner(),
+            ct);
+
+    public async Task<MobileSyncState> SaveInvoiceImmediatelyAsync(
+        InvoiceDto invoice,
+        MobileSessionOwner owner,
+        CancellationToken ct = default)
     {
         await _syncLock.WaitAsync(ct);
         try
         {
-            var state = await _store.LoadAsync(ct);
+            _sessionStore.ThrowIfOwnerChanged(owner);
+            var state = await _store.LoadAsync(owner, ct);
             state.LastAttemptUtc = DateTime.UtcNow;
             state.Normalize();
             state.PendingPush.Invoices.RemoveAll(x => x.Id == invoice.Id);
@@ -198,21 +338,38 @@ public sealed class SyncCoordinator
             {
                 var isExistingInvoice = invoice.Revision > 0 || !string.IsNullOrWhiteSpace(invoice.InvoiceNumber);
                 var saved = isExistingInvoice
-                    ? await _api.UpdateInvoiceAsync(invoice, ct)
-                    : await _api.CreateInvoiceAsync(invoice, ct);
+                    ? await _api.UpdateInvoiceAsync(
+                        invoice,
+                        owner,
+                        ct)
+                    : await _api.CreateInvoiceAsync(
+                        invoice,
+                        owner,
+                        ct);
                 saved = EnsureEntityResult(saved, "전표 저장");
-                state.LastRevision = Math.Max(state.LastRevision, saved.Revision);
+                _sessionStore.ThrowIfOwnerChanged(owner);
 
                 state.LastSuccessUtc = DateTime.UtcNow;
                 state.LastError = string.Empty;
                 state.LastFailureAllowsCachedDisplay = true;
                 state.ConsecutiveFailureCount = 0;
-                state = await PullInternalAsync(state, ct);
+                state = await PullInternalAsync(
+                    owner,
+                    state,
+                    ct);
                 state.LastSuccessUtc = DateTime.UtcNow;
+            }
+            catch (StaleMobileSessionOwnerException)
+            {
+                throw;
             }
             catch (Exception ex) when (IsConcurrencyConflict(ex))
             {
-                await MarkConcurrencyConflictAndRefreshAsync(state, ex, ct);
+                state = await MarkConcurrencyConflictAndRefreshAsync(
+                    owner,
+                    state,
+                    ex,
+                    ct);
             }
             catch (Exception ex) when (IsNonRetryableClientFailure(ex))
             {
@@ -224,7 +381,10 @@ public sealed class SyncCoordinator
                 MarkFailure(state, ex);
             }
 
-            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
+            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(
+                owner,
+                state,
+                ct);
             return state;
         }
         finally
@@ -233,69 +393,205 @@ public sealed class SyncCoordinator
         }
     }
 
-    public async Task<MobileSyncState> SavePaymentImmediatelyAsync(
+    public Task<MobileSyncState> SavePaymentImmediatelyAsync(
         PaymentDto payment,
         IEnumerable<PendingPaymentAttachmentRecord>? attachments = null,
         TransactionDto? linkedTransaction = null,
         CancellationToken ct = default)
+        => SavePaymentImmediatelyAsync(
+            payment,
+            _sessionStore.CaptureOwner(),
+            attachments,
+            linkedTransaction,
+            ct);
+
+    public async Task<MobileSyncState> SavePaymentImmediatelyAsync(
+        PaymentDto payment,
+        MobileSessionOwner owner,
+        IEnumerable<PendingPaymentAttachmentRecord>? attachments = null,
+        TransactionDto? linkedTransaction = null,
+        CancellationToken ct = default)
+        => (await SavePaymentWithOutcomeImmediatelyAsync(
+                payment,
+                owner,
+                attachments,
+                linkedTransaction,
+                ct))
+            .State;
+
+    internal async Task<MobileImmediatePaymentSaveResult>
+        SavePaymentWithOutcomeImmediatelyAsync(
+            PaymentDto payment,
+            MobileSessionOwner owner,
+            IEnumerable<PendingPaymentAttachmentRecord>? attachments = null,
+            TransactionDto? linkedTransaction = null,
+            CancellationToken ct = default)
     {
         await _syncLock.WaitAsync(ct);
         try
         {
-            var state = await _store.LoadAsync(ct);
+            _sessionStore.ThrowIfOwnerChanged(owner);
+            var state = await _store.LoadAsync(owner, ct);
             state.LastAttemptUtc = DateTime.UtcNow;
             state.Normalize();
-            state.PendingPush.Payments.RemoveAll(x => x.Id == payment.Id);
-            if (linkedTransaction is not null)
-                state.PendingPush.Transactions.RemoveAll(x => x.Id == linkedTransaction.Id);
 
             var attachmentList = attachments?.ToList() ?? [];
             var uploadedAttachments = new List<PendingPaymentAttachmentRecord>();
             var terminalFailedAttachments = new List<PendingPaymentAttachmentRecord>();
             var attachmentUploadErrors = new List<string>();
             var terminalAttachmentUploadErrors = new List<string>();
+            var serverAcceptanceDurablyRecorded = false;
+            var terminalRejectionDurablyRecorded = false;
+            var paymentOutcome =
+                MobileImmediateMutationOutcome.Unknown;
+            var linkedTransactionOutcome =
+                linkedTransaction is null
+                    ? MobileImmediateMutationOutcome
+                        .NotApplicable
+                    : MobileImmediateMutationOutcome.Unknown;
+            foreach (var attachment in attachmentList)
+            {
+                attachment.PaymentId = payment.Id;
+                await EnsureOwnedPaymentAttachmentDraftAsync(
+                    owner,
+                    attachment,
+                    ct);
+                _sessionStore.ThrowIfOwnerChanged(owner);
+            }
+
+            MobilePaymentWriteAheadJournal.PrepareBeforeNetworkMutation(
+                state,
+                payment,
+                linkedTransaction,
+                attachmentList);
+            // This durable write-ahead save is the hard boundary: no payment
+            // network mutation is allowed before it succeeds.
+            await _store.SaveAsync(owner, state, ct);
+            _sessionStore.ThrowIfOwnerChanged(owner);
 
             try
             {
                 if (linkedTransaction is null)
                 {
-                    var saved = await _api.CreatePaymentAsync(payment, ct);
+                    var saved = await _api.CreatePaymentAsync(
+                        payment,
+                        owner,
+                        ct);
                     saved = EnsureEntityResult(saved, "입금 저장");
-                    state.LastRevision = Math.Max(state.LastRevision, saved.Revision);
+                    _sessionStore.ThrowIfOwnerChanged(owner);
+                    MobilePaymentWriteAheadJournal.MarkServerAccepted(
+                        state,
+                        payment,
+                        linkedTransaction: null);
+                    await _store.SaveAsync(owner, state, ct);
+                    serverAcceptanceDurablyRecorded = true;
+                    paymentOutcome =
+                        MobileImmediateMutationOutcome.Accepted;
+                    _sessionStore.ThrowIfOwnerChanged(owner);
                 }
                 else
                 {
                     var request = new SyncPushRequest { DeviceId = state.DeviceId };
                     request.Transactions.Add(linkedTransaction);
                     request.Payments.Add(payment);
-                    var result = EnsurePushResult(await _api.PushAsync(request, ct));
-                    state.LastRevision = Math.Max(state.LastRevision, result.CurrentServerRevision);
+                    var result = EnsurePushResult(
+                        await _api.PushAsync(
+                            request,
+                            owner,
+                            ct));
+                    _sessionStore.ThrowIfOwnerChanged(owner);
                     if (result.ConflictCount > 0)
                     {
                         if (WasAccepted(result.AcceptedRevisions, PaymentEntityName, payment.Id))
-                            QueuePaymentAttachmentsForRetry(state, payment.Id, attachmentList);
+                        {
+                            var acceptedLinkedTransaction =
+                                WasAccepted(
+                                    result.AcceptedRevisions,
+                                    TransactionRecordEntityName,
+                                    linkedTransaction.Id)
+                                    ? linkedTransaction
+                                    : null;
+                            MobilePaymentWriteAheadJournal.MarkServerAccepted(
+                                state,
+                                payment,
+                                acceptedLinkedTransaction);
+                        }
                         else
-                            QueueDiscardedPaymentAttachmentDrafts(attachmentList);
+                        {
+                            var discarded =
+                                MobilePaymentWriteAheadJournal.MarkTerminallyRejected(
+                                    state,
+                                    payment,
+                                    linkedTransaction);
+                            QueueDiscardedPaymentAttachmentDrafts(
+                                owner,
+                                discarded);
+                        }
 
-                        await MarkPushConflictAndRefreshAsync(state, result, ct);
-                        await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
-                        return state;
+                        await _store.SaveAsync(owner, state, ct);
+                        serverAcceptanceDurablyRecorded =
+                            WasAccepted(
+                                result.AcceptedRevisions,
+                                PaymentEntityName,
+                                payment.Id);
+                        terminalRejectionDurablyRecorded =
+                            !serverAcceptanceDurablyRecorded;
+                        paymentOutcome =
+                            serverAcceptanceDurablyRecorded
+                                ? MobileImmediateMutationOutcome
+                                    .Accepted
+                                : MobileImmediateMutationOutcome
+                                    .Rejected;
+                        linkedTransactionOutcome =
+                            WasAccepted(
+                                result.AcceptedRevisions,
+                                TransactionRecordEntityName,
+                                linkedTransaction.Id)
+                                ? MobileImmediateMutationOutcome
+                                    .Accepted
+                                : MobileImmediateMutationOutcome
+                                    .Rejected;
+                        _sessionStore.ThrowIfOwnerChanged(owner);
+
+                        state = await MarkPushConflictAndRefreshAsync(
+                            owner,
+                            state,
+                            result,
+                            ct);
+                        await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(
+                            owner,
+                            state,
+                            ct);
+                        return new MobileImmediatePaymentSaveResult(
+                            state,
+                            paymentOutcome,
+                            linkedTransactionOutcome);
                     }
+
+                    MobilePaymentWriteAheadJournal.MarkServerAccepted(
+                        state,
+                        payment,
+                        linkedTransaction);
+                    await _store.SaveAsync(owner, state, ct);
+                    serverAcceptanceDurablyRecorded = true;
+                    paymentOutcome =
+                        MobileImmediateMutationOutcome.Accepted;
+                    linkedTransactionOutcome =
+                        MobileImmediateMutationOutcome.Accepted;
+                    _sessionStore.ThrowIfOwnerChanged(owner);
                 }
 
                 foreach (var attachment in attachmentList)
                 {
-                    attachment.PaymentId = payment.Id;
-                    state.PendingPaymentAttachments.RemoveAll(x => x.LocalId == attachment.LocalId);
-
+                    var serverUploadAccepted = false;
                     try
                     {
-                        EnsurePaymentAttachmentResult(await _api.UploadPaymentAttachmentAsync(payment.Id, attachment, ct));
-                        uploadedAttachments.Add(attachment);
+                        EnsurePaymentAttachmentResult(await _api.UploadPaymentAttachmentAsync(payment.Id, attachment, owner, ct));
+                        _sessionStore.ThrowIfOwnerChanged(owner);
+                        serverUploadAccepted = true;
                     }
                     catch (Exception uploadEx) when (ShouldRetryPaymentAttachmentUpload(uploadEx))
                     {
-                        state.PendingPaymentAttachments.Add(attachment);
                         attachmentUploadErrors.Add(uploadEx.Message);
                         if (string.IsNullOrWhiteSpace(state.LastError))
                         {
@@ -305,41 +601,196 @@ public sealed class SyncCoordinator
                     }
                     catch (Exception uploadEx)
                     {
+                        MobilePaymentWriteAheadJournal
+                            .MarkAttachmentUploadedOrTerminal(
+                                state,
+                                attachment.LocalId);
+                        await _store.SaveAsync(owner, state, ct);
+                        _sessionStore.ThrowIfOwnerChanged(owner);
                         terminalAttachmentUploadErrors.Add(BuildTerminalPaymentAttachmentUploadFailureMessage(attachment, uploadEx));
                         terminalFailedAttachments.Add(attachment);
+                    }
+
+                    if (!serverUploadAccepted)
+                        continue;
+
+                    MobilePaymentWriteAheadJournal
+                        .MarkAttachmentServerAccepted(
+                            state,
+                            attachment.LocalId,
+                            DateTime.UtcNow);
+                    try
+                    {
+                        // Persist the server acknowledgement before removing
+                        // the pending record. A failure here is a local
+                        // durability problem, not a server upload rejection.
+                        await _store.SaveAsync(
+                            owner,
+                            state,
+                            ct);
+                        _sessionStore.ThrowIfOwnerChanged(
+                            owner);
+                        MobilePaymentWriteAheadJournal
+                            .MarkAttachmentUploadedOrTerminal(
+                                state,
+                                attachment.LocalId);
+                        await _store.SaveAsync(
+                            owner,
+                            state,
+                            ct);
+                        _sessionStore.ThrowIfOwnerChanged(
+                            owner);
+                        uploadedAttachments.Add(attachment);
+                    }
+                    catch (StaleMobileSessionOwnerException)
+                    {
+                        throw;
+                    }
+                    catch (Exception commitEx)
+                    {
+                        MobilePaymentWriteAheadJournal
+                            .RestorePendingAttachment(
+                                state,
+                                attachment);
+                        var commitMessage =
+                            $"첨부 서버 업로드는 완료됐지만 로컬 완료 기록 저장에 실패했습니다: {commitEx.Message}";
+                        attachmentUploadErrors.Add(
+                            commitMessage);
+                        if (string.IsNullOrWhiteSpace(
+                                state.LastError))
+                        {
+                            state.LastError = commitMessage;
+                            state.LastFailureAllowsCachedDisplay =
+                                true;
+                        }
                     }
                 }
 
                 state.LastSuccessUtc = DateTime.UtcNow;
                 state.LastFailureAllowsCachedDisplay = true;
                 state.ConsecutiveFailureCount = 0;
-                state = await PullInternalAsync(state, ct);
+                state = await PullInternalAsync(
+                    owner,
+                    state,
+                    ct);
                 state.LastSuccessUtc = DateTime.UtcNow;
                 RestorePaymentAttachmentUploadErrorsAfterPull(state, attachmentUploadErrors);
                 RestoreTerminalPaymentAttachmentUploadErrorsAfterPull(state, terminalAttachmentUploadErrors);
             }
+            catch (StaleMobileSessionOwnerException)
+            {
+                throw;
+            }
             catch (Exception ex) when (IsConcurrencyConflict(ex))
             {
-                await MarkConcurrencyConflictAndRefreshAsync(state, ex, ct);
+                if (!serverAcceptanceDurablyRecorded &&
+                    !terminalRejectionDurablyRecorded)
+                {
+                    var discarded =
+                        MobilePaymentWriteAheadJournal
+                            .MarkTerminallyRejected(
+                                state,
+                                payment,
+                                linkedTransaction);
+                    QueueDiscardedPaymentAttachmentDrafts(
+                        owner,
+                        discarded);
+                    paymentOutcome =
+                        MobileImmediateMutationOutcome.Rejected;
+                    if (linkedTransaction is not null)
+                    {
+                        linkedTransactionOutcome =
+                            MobileImmediateMutationOutcome.Rejected;
+                    }
+                }
+                await _store.SaveAsync(owner, state, ct);
+                _sessionStore.ThrowIfOwnerChanged(owner);
+                state = await MarkConcurrencyConflictAndRefreshAsync(
+                    owner,
+                    state,
+                    ex,
+                    ct);
             }
             catch (Exception ex) when (IsNonRetryableClientFailure(ex))
             {
+                if (!serverAcceptanceDurablyRecorded &&
+                    !terminalRejectionDurablyRecorded)
+                {
+                    var discarded =
+                        MobilePaymentWriteAheadJournal
+                            .MarkTerminallyRejected(
+                                state,
+                                payment,
+                                linkedTransaction);
+                    QueueDiscardedPaymentAttachmentDrafts(
+                        owner,
+                        discarded);
+                }
                 MarkFailure(state, ex);
+                await _store.SaveAsync(owner, state, ct);
+                if (!serverAcceptanceDurablyRecorded &&
+                    !terminalRejectionDurablyRecorded)
+                {
+                    paymentOutcome =
+                        MobileImmediateMutationOutcome.Rejected;
+                    if (linkedTransaction is not null)
+                    {
+                        linkedTransactionOutcome =
+                            MobileImmediateMutationOutcome.Rejected;
+                    }
+                }
+                _sessionStore.ThrowIfOwnerChanged(owner);
             }
             catch (Exception ex)
             {
-                state.PendingPush.Payments.Add(payment);
-                if (linkedTransaction is not null)
-                    state.PendingPush.Transactions.Add(linkedTransaction);
-                QueuePaymentAttachmentsForRetry(state, payment.Id, attachmentList);
+                if (!serverAcceptanceDurablyRecorded &&
+                    !terminalRejectionDurablyRecorded)
+                {
+                    MobilePaymentWriteAheadJournal
+                        .PrepareBeforeNetworkMutation(
+                            state,
+                            payment,
+                            linkedTransaction,
+                            attachmentList);
+                }
 
                 MarkFailure(state, ex);
             }
 
-            QueueDiscardedPaymentAttachmentDrafts(uploadedAttachments);
-            QueueDiscardedPaymentAttachmentDrafts(terminalFailedAttachments);
-            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
-            return state;
+            QueueDiscardedPaymentAttachmentDrafts(
+                owner,
+                uploadedAttachments);
+            QueueDiscardedPaymentAttachmentDrafts(
+                owner,
+                terminalFailedAttachments);
+            try
+            {
+                await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(
+                    owner,
+                    state,
+                    ct);
+            }
+            catch (StaleMobileSessionOwnerException)
+            {
+                throw;
+            }
+            catch (Exception recoveryEx)
+                when (serverAcceptanceDurablyRecorded)
+            {
+                var recoveryMessage =
+                    $"서버 반영은 완료됐지만 로컬 후처리 저장에 실패했습니다. 다음 동기화에서 복구합니다: {recoveryEx.Message}";
+                MobileAppLogger.Warn(
+                    "SYNC",
+                    recoveryMessage);
+                state.LastError = recoveryMessage;
+                state.LastFailureAllowsCachedDisplay = true;
+                // The earlier accepted journal save is authoritative. Do not
+                // requeue or report this payment as a failed submission.
+            }
+            return new MobileImmediatePaymentSaveResult(
+                state,
+                paymentOutcome,
+                linkedTransactionOutcome);
         }
         finally
         {
@@ -358,7 +809,18 @@ public sealed class SyncCoordinator
         }, ct);
 
     public async Task<MobileSyncState> QueueCustomerDraftAsync(CustomerDto customer, string? pendingReason = null, CancellationToken ct = default)
-        => await MutateStoredStateAsync(state =>
+        => await QueueCustomerDraftAsync(
+            customer,
+            _sessionStore.CaptureOwner(),
+            pendingReason,
+            ct);
+
+    public async Task<MobileSyncState> QueueCustomerDraftAsync(
+        CustomerDto customer,
+        MobileSessionOwner owner,
+        string? pendingReason = null,
+        CancellationToken ct = default)
+        => await MutateStoredStateAsync(owner, state =>
         {
             state.LastAttemptUtc = DateTime.UtcNow;
             state.PendingPush.Customers.RemoveAll(x => x.Id == customer.Id);
@@ -372,7 +834,18 @@ public sealed class SyncCoordinator
         }, ct);
 
     public async Task<MobileSyncState> QueueItemDraftAsync(ItemDto item, string? pendingReason = null, CancellationToken ct = default)
-        => await MutateStoredStateAsync(state =>
+        => await QueueItemDraftAsync(
+            item,
+            _sessionStore.CaptureOwner(),
+            pendingReason,
+            ct);
+
+    public async Task<MobileSyncState> QueueItemDraftAsync(
+        ItemDto item,
+        MobileSessionOwner owner,
+        string? pendingReason = null,
+        CancellationToken ct = default)
+        => await MutateStoredStateAsync(owner, state =>
         {
             state.LastAttemptUtc = DateTime.UtcNow;
             state.PendingPush.Items.RemoveAll(x => x.Id == item.Id);
@@ -473,15 +946,35 @@ public sealed class SyncCoordinator
         }
     }
 
-    private async Task<MobileSyncState> MutateStoredStateAsync(Action<MobileSyncState> mutate, CancellationToken ct)
+    private Task<MobileSyncState> MutateStoredStateAsync(
+        Action<MobileSyncState> mutate,
+        CancellationToken ct)
     {
+        var owner = _sessionStore.CaptureOwner();
+        return MutateStoredStateAsync(
+            owner,
+            mutate,
+            ct);
+    }
+
+    private async Task<MobileSyncState> MutateStoredStateAsync(
+        MobileSessionOwner owner,
+        Action<MobileSyncState> mutate,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
         await _syncLock.WaitAsync(ct);
         try
         {
-            var state = await _store.LoadAsync(ct);
+            _sessionStore.ThrowIfOwnerChanged(owner);
+            var state = await _store.LoadAsync(owner, ct);
+            _sessionStore.ThrowIfOwnerChanged(owner);
             state.Normalize();
             mutate(state);
-            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
+            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(
+                owner,
+                state,
+                ct);
             return state;
         }
         finally
@@ -490,21 +983,49 @@ public sealed class SyncCoordinator
         }
     }
 
-    private async Task SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(MobileSyncState state, CancellationToken ct)
+    private async Task
+        SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(
+            MobileSessionOwner owner,
+            MobileSyncState state,
+            CancellationToken ct)
     {
-        await _store.SaveAsync(state, ct);
-        await RemoveDiscardedPaymentAttachmentDraftsAsync(ct);
-        await CleanupOrphanPaymentAttachmentDraftsAsync(state, ct);
+        _sessionStore.ThrowIfOwnerChanged(owner);
+        await _attachmentStore.PrepareOwnedDraftsAsync(
+            owner,
+            state.PendingPaymentAttachments,
+            ct);
+        _sessionStore.ThrowIfOwnerChanged(owner);
+        await _store.SaveAsync(owner, state, ct);
+        _sessionStore.ThrowIfOwnerChanged(owner);
+        await RemoveDiscardedPaymentAttachmentDraftsAsync(
+            owner,
+            ct);
+        _sessionStore.ThrowIfOwnerChanged(owner);
+        await CleanupOrphanPaymentAttachmentDraftsAsync(
+            owner,
+            state,
+            ct);
+        _sessionStore.ThrowIfOwnerChanged(owner);
     }
 
-    private async Task CleanupOrphanPaymentAttachmentDraftsAsync(MobileSyncState state, CancellationToken ct)
+    private async Task CleanupOrphanPaymentAttachmentDraftsAsync(
+        MobileSessionOwner owner,
+        MobileSyncState state,
+        CancellationToken ct)
     {
         try
         {
+            _sessionStore.ThrowIfOwnerChanged(owner);
             await _attachmentStore.RemoveOrphanDraftsAsync(
+                owner,
                 state.PendingPaymentAttachments,
                 OrphanPaymentAttachmentDraftMinimumAge,
                 ct);
+            _sessionStore.ThrowIfOwnerChanged(owner);
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -513,6 +1034,7 @@ public sealed class SyncCoordinator
     }
 
     private void RemovePendingPaymentAttachments(
+        MobileSessionOwner owner,
         MobileSyncState state,
         Predicate<PendingPaymentAttachmentRecord> predicate)
     {
@@ -526,40 +1048,79 @@ public sealed class SyncCoordinator
             .Select(attachment => attachment.LocalId)
             .ToHashSet();
         state.PendingPaymentAttachments.RemoveAll(attachment => removedLocalIds.Contains(attachment.LocalId));
-        QueueDiscardedPaymentAttachmentDrafts(removed);
+        QueueDiscardedPaymentAttachmentDrafts(
+            owner,
+            removed);
     }
 
-    private void QueueDiscardedPaymentAttachmentDrafts(IEnumerable<PendingPaymentAttachmentRecord> attachments)
+    private void QueueDiscardedPaymentAttachmentDrafts(
+        MobileSessionOwner owner,
+        IEnumerable<PendingPaymentAttachmentRecord> attachments)
     {
+        ArgumentNullException.ThrowIfNull(owner);
         foreach (var attachment in attachments)
         {
             if (attachment is null)
                 continue;
-            if (_discardedPaymentAttachmentDrafts.Any(current => current.LocalId == attachment.LocalId))
+            if (_discardedPaymentAttachmentDrafts.Any(
+                    current =>
+                        IsSameAttachmentDraftOwner(
+                            current.Owner,
+                            owner) &&
+                        current.Attachment.LocalId ==
+                        attachment.LocalId))
+            {
                 continue;
+            }
 
-            _discardedPaymentAttachmentDrafts.Add(attachment);
+            _discardedPaymentAttachmentDrafts.Add(
+                new DiscardedPaymentAttachmentDraft(
+                    owner,
+                    attachment));
         }
     }
 
-    private async Task<MobileSyncState> PullInternalAsync(MobileSyncState state, CancellationToken ct)
+    private async Task<MobileSyncState> PullInternalAsync(
+        MobileSessionOwner owner,
+        MobileSyncState state,
+        CancellationToken ct)
     {
         state.LastAttemptUtc = DateTime.UtcNow;
 
         try
         {
-            var response = EnsurePullResponse(await _api.PullAsync(state.LastRevision, ct));
-            await ApplyPullResponseAsync(state, response, ct);
+            var cacheOwnerSession =
+                _contractCacheStore.CaptureOwnerSession();
+            var response = EnsurePullResponse(
+                await _api.PullAsync(
+                    state.LastRevision,
+                    owner,
+                    ct));
+            _sessionStore.ThrowIfOwnerChanged(owner);
+            var candidateState =
+                CloneStateForPullApply(state);
+            await ApplyPullResponseAsync(
+                owner,
+                candidateState,
+                response,
+                cacheOwnerSession,
+                ct);
+            state = candidateState;
         }
         catch (Exception ex)
         {
+            if (ex is StaleMobileSessionOwnerException)
+                throw;
             MarkFailure(state, ex);
         }
 
         return state;
     }
 
-    private async Task<MobileSyncState> PushInternalAsync(MobileSyncState state, CancellationToken ct)
+    private async Task<MobileSyncState> PushInternalAsync(
+        MobileSessionOwner owner,
+        MobileSyncState state,
+        CancellationToken ct)
     {
         state.LastAttemptUtc = DateTime.UtcNow;
 
@@ -570,18 +1131,57 @@ public sealed class SyncCoordinator
             var scopedPush = MobilePendingScopeFilter.CreateScopedPushRequest(_sessionStore.GetSnapshot(), state);
             if (HasPendingServerSyncPayload(scopedPush))
             {
-                var result = EnsurePushResult(await _api.PushAsync(scopedPush, ct));
-                state.LastRevision = Math.Max(state.LastRevision, result.CurrentServerRevision);
+                var result = EnsurePushResult(
+                    await _api.PushAsync(
+                        scopedPush,
+                        owner,
+                        ct));
+                _sessionStore.ThrowIfOwnerChanged(owner);
+                var unacknowledgedSubmittedStockKeys =
+                    GetUnacknowledgedSubmittedItemWarehouseStockKeys(
+                        scopedPush,
+                        result);
                 if (result.ConflictCount > 0)
                 {
                     RemoveAcceptedPendingMutations(state.PendingPush, result.AcceptedRevisions);
                     RemoveSubmittedItemWarehouseStocks(state.PendingPush, scopedPush, result);
-                    await MarkPushConflictAndRefreshAsync(state, result, ct);
-                    await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
+                    if (unacknowledgedSubmittedStockKeys.Count > 0)
+                    {
+                        MarkUnacknowledgedSubmittedItemWarehouseStocks(
+                            state,
+                            unacknowledgedSubmittedStockKeys.Count);
+                        await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(
+                            owner,
+                            state,
+                            ct);
+                        return state;
+                    }
+
+                    state = await MarkPushConflictAndRefreshAsync(
+                        owner,
+                        state,
+                        result,
+                        ct);
+                    await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(
+                        owner,
+                        state,
+                        ct);
                     return state;
                 }
 
                 RemoveSentScopedPendingMutations(state.PendingPush, scopedPush, result);
+                if (unacknowledgedSubmittedStockKeys.Count > 0)
+                {
+                    MarkUnacknowledgedSubmittedItemWarehouseStocks(
+                        state,
+                        unacknowledgedSubmittedStockKeys.Count);
+                    await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(
+                        owner,
+                        state,
+                        ct);
+                    return state;
+                }
+
                 if (!HasPendingServerSyncPayload(state))
                     state.PendingPush = new SyncPushRequest { DeviceId = state.DeviceId };
             }
@@ -590,13 +1190,21 @@ public sealed class SyncCoordinator
             state.LastError = string.Empty;
             state.LastFailureAllowsCachedDisplay = true;
             state.ConsecutiveFailureCount = 0;
-            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
+            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(
+                owner,
+                state,
+                ct);
             return state;
         }
         catch (Exception ex)
         {
+            if (ex is StaleMobileSessionOwnerException)
+                throw;
             MarkFailure(state, ex);
-            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
+            await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(
+                owner,
+                state,
+                ct);
             return state;
         }
     }
@@ -701,16 +1309,23 @@ public sealed class SyncCoordinator
         SyncPushRequest submittedPush,
         SyncPushResult result)
     {
-        var conflictedStockKeys = result.Conflicts
-            .Where(conflict => string.Equals(conflict.EntityName, ItemWarehouseStockEntityName, StringComparison.OrdinalIgnoreCase))
-            .Select(conflict => conflict.EntityId?.Trim() ?? string.Empty)
-            .Where(key => !string.IsNullOrWhiteSpace(key))
+        var acceptedStockKeys = (result.AcceptedItemWarehouseStockKeys ?? [])
+            .Where(key =>
+                key.ItemId != Guid.Empty &&
+                !string.IsNullOrWhiteSpace(key.WarehouseCode))
+            .Select(key => BuildItemWarehouseStockConflictKey(
+                new ItemWarehouseStockDto
+                {
+                    ItemId = key.ItemId,
+                    WarehouseCode = key.WarehouseCode
+                }))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var submittedStockKeys = submittedPush.ItemWarehouseStocks
             .Select(BuildItemWarehouseStockConflictKey)
-            .Where(key => !string.IsNullOrWhiteSpace(key) && !conflictedStockKeys.Contains(key))
+            .Where(key => !string.IsNullOrWhiteSpace(key))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        submittedStockKeys.IntersectWith(acceptedStockKeys);
 
         if (submittedStockKeys.Count == 0)
             return;
@@ -718,8 +1333,56 @@ public sealed class SyncCoordinator
         pendingPush.ItemWarehouseStocks.RemoveAll(stock => submittedStockKeys.Contains(BuildItemWarehouseStockConflictKey(stock)));
     }
 
-    private static string BuildItemWarehouseStockConflictKey(ItemWarehouseStockDto stock)
-        => $"{stock.ItemId:D}|{OfficeCodeCatalog.NormalizeWarehouseCodeLoose(stock.WarehouseCode)}";
+    internal static HashSet<string> GetUnacknowledgedSubmittedItemWarehouseStockKeys(
+        SyncPushRequest submittedPush,
+        SyncPushResult result)
+    {
+        var acceptedStockKeys = (result.AcceptedItemWarehouseStockKeys ?? [])
+            .Where(key =>
+                key.ItemId != Guid.Empty &&
+                !string.IsNullOrWhiteSpace(key.WarehouseCode))
+            .Select(key => BuildItemWarehouseStockConflictKey(
+                new ItemWarehouseStockDto
+                {
+                    ItemId = key.ItemId,
+                    WarehouseCode = key.WarehouseCode
+                }))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var unacknowledgedStockKeys = submittedPush.ItemWarehouseStocks
+            .Select(BuildItemWarehouseStockConflictKey)
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        unacknowledgedStockKeys.ExceptWith(acceptedStockKeys);
+        return unacknowledgedStockKeys;
+    }
+
+    internal static string BuildItemWarehouseStockConflictKey(ItemWarehouseStockDto stock)
+    {
+        var rawWarehouseCode =
+            (stock.WarehouseCode ?? string.Empty)
+            .Trim();
+        var warehouseIdentity =
+            OfficeCodeCatalog.TryNormalizeWarehouseCode(
+                rawWarehouseCode,
+                out var canonicalWarehouseCode)
+                ? canonicalWarehouseCode
+                : rawWarehouseCode.ToUpperInvariant();
+        return $"{stock.ItemId:D}|{warehouseIdentity}";
+    }
+
+    private static void MarkUnacknowledgedSubmittedItemWarehouseStocks(
+        MobileSyncState state,
+        int unacknowledgedCount)
+    {
+        state.LastError =
+            $"일부 품목 창고재고가 서버에서 승인되지 않아 {unacknowledgedCount:N0}건을 보류했습니다. 담당지점/권한과 최신 재고를 확인한 뒤 다시 동기화해 주세요.";
+        state.LastFailureAllowsCachedDisplay = true;
+        state.ConsecutiveFailureCount++;
+        MobileAppLogger.Warn(
+            "SYNC",
+            $"모바일 창고재고 동기화 일부 미승인: {unacknowledgedCount:N0}건 보류, 사용자 확인 필요.");
+    }
 
     private static void RemoveAccepted<T>(
         List<T> pending,
@@ -748,7 +1411,6 @@ public sealed class SyncCoordinator
     private const string CustomerEntityName = "Customer";
     private const string CustomerContractEntityName = "CustomerContract";
     private const string ItemEntityName = "Item";
-    private const string ItemWarehouseStockEntityName = "ItemWarehouseStock";
     private const string TransactionRecordEntityName = "TransactionRecord";
     private const string TransactionAttachmentEntityName = "TransactionAttachment";
     private const string InventoryTransferEntityName = "InventoryTransfer";
@@ -761,6 +1423,7 @@ public sealed class SyncCoordinator
     private const string PaymentEntityName = "Payment";
 
     private async Task<MobileSyncState> UploadPendingPaymentAttachmentsInternalAsync(
+        MobileSessionOwner owner,
         MobileSyncState state,
         CancellationToken ct,
         IReadOnlySet<Guid>? additionalAllowedPaymentIds = null)
@@ -783,21 +1446,67 @@ public sealed class SyncCoordinator
         {
             try
             {
+                if (attachment.ServerUploadAcceptedAtUtc
+                    .HasValue)
+                {
+                    uploadedIds.Add(
+                        attachment.LocalId);
+                    continue;
+                }
+
                 if (attachment.PaymentId == Guid.Empty)
                 {
                     uploadedIds.Add(attachment.LocalId);
                     continue;
                 }
 
-                if (string.IsNullOrWhiteSpace(attachment.StoredPath) || !File.Exists(attachment.StoredPath))
+                var storedPath =
+                    await _attachmentStore.ResolveOwnedPathAsync(
+                        owner,
+                        attachment,
+                        ct);
+                if (string.IsNullOrWhiteSpace(storedPath) ||
+                    !File.Exists(storedPath))
                 {
                     uploadedIds.Add(attachment.LocalId);
                     errors.Add($"첨부 파일을 찾을 수 없어 정리했습니다: {attachment.FileName}");
                     continue;
                 }
 
-                EnsurePaymentAttachmentResult(await _api.UploadPaymentAttachmentAsync(attachment.PaymentId, attachment, ct));
-                uploadedIds.Add(attachment.LocalId);
+                EnsurePaymentAttachmentResult(await _api.UploadPaymentAttachmentAsync(attachment.PaymentId, attachment, owner, ct));
+                _sessionStore.ThrowIfOwnerChanged(owner);
+                MobilePaymentWriteAheadJournal
+                    .MarkAttachmentServerAccepted(
+                        state,
+                        attachment.LocalId,
+                        DateTime.UtcNow);
+                try
+                {
+                    // Persist the server acknowledgement while the attachment
+                    // is still pending. If the later removal save fails, a
+                    // recreated coordinator can finalize without reuploading.
+                    await _store.SaveAsync(
+                        owner,
+                        state,
+                        ct);
+                    _sessionStore.ThrowIfOwnerChanged(
+                        owner);
+                    uploadedIds.Add(
+                        attachment.LocalId);
+                }
+                catch (StaleMobileSessionOwnerException)
+                {
+                    throw;
+                }
+                catch (Exception commitEx)
+                {
+                    errors.Add(
+                        $"첨부 서버 업로드는 완료됐지만 로컬 완료 기록 저장에 실패했습니다: {commitEx.Message}");
+                }
+            }
+            catch (StaleMobileSessionOwnerException)
+            {
+                throw;
             }
             catch (Exception ex) when (ShouldRetryPaymentAttachmentUpload(ex))
             {
@@ -810,7 +1519,11 @@ public sealed class SyncCoordinator
             }
         }
 
-        RemovePendingPaymentAttachments(state, attachment => uploadedIds.Contains(attachment.LocalId));
+        RemovePendingPaymentAttachments(
+            owner,
+            state,
+            attachment =>
+                uploadedIds.Contains(attachment.LocalId));
         if (errors.Count == 0)
         {
             state.LastSuccessUtc = DateTime.UtcNow;
@@ -825,8 +1538,30 @@ public sealed class SyncCoordinator
             state.ConsecutiveFailureCount++;
         }
 
-        await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(state, ct);
+        await SaveStateAndRemoveDiscardedPaymentAttachmentDraftsAsync(
+            owner,
+            state,
+            ct);
         return state;
+    }
+
+    private async Task EnsureOwnedPaymentAttachmentDraftAsync(
+        MobileSessionOwner owner,
+        PendingPaymentAttachmentRecord attachment,
+        CancellationToken ct)
+    {
+        var storedPath =
+            await _attachmentStore.ResolveOwnedPathAsync(
+                owner,
+                attachment,
+                ct);
+        if (string.IsNullOrWhiteSpace(storedPath) ||
+            !File.Exists(storedPath))
+        {
+            throw new FileNotFoundException(
+                "현재 로그인 소유자의 수금첨부 임시 파일을 찾을 수 없습니다.",
+                attachment.FileName);
+        }
     }
 
     private static void RestorePaymentAttachmentUploadErrorsAfterPull(
@@ -894,9 +1629,12 @@ public sealed class SyncCoordinator
     }
 
     private static bool ShouldRetryPaymentAttachmentUpload(Exception ex)
-        => MobileRetryableNetworkFailure.IsRetryable(ex) ||
+        => ex is MobileClientUpgradeRequiredException ||
+           MobileRetryableNetworkFailure.IsRetryable(ex) ||
            ex is MobileAuthenticationException ||
-           ex is HttpRequestException { StatusCode: HttpStatusCode.Unauthorized };
+           ex is HttpRequestException { StatusCode: HttpStatusCode.Unauthorized } ||
+           ex is HttpRequestException upgradeRequired &&
+           upgradeRequired.StatusCode == (HttpStatusCode)426;
 
     private static string BuildTerminalPaymentAttachmentUploadFailureMessage(PendingPaymentAttachmentRecord attachment, Exception ex)
     {
@@ -910,62 +1648,139 @@ public sealed class SyncCoordinator
             : $"첨부 업로드를 계속 재시도하지 않도록 대기 목록에서 제외했습니다: {fileName}. {detail} 첨부를 확인한 뒤 다시 선택해 주세요.";
     }
 
-    private async Task RemoveDiscardedPaymentAttachmentDraftsAsync(CancellationToken ct)
+    private async Task RemoveDiscardedPaymentAttachmentDraftsAsync(
+        MobileSessionOwner owner,
+        CancellationToken ct)
     {
-        if (_discardedPaymentAttachmentDrafts.Count == 0)
+        var discardedForOwner =
+            _discardedPaymentAttachmentDrafts
+                .Where(discarded =>
+                    IsSameAttachmentDraftOwner(
+                        discarded.Owner,
+                        owner))
+                .GroupBy(discarded =>
+                    discarded.Attachment.LocalId)
+                .Select(group => group.First())
+                .ToList();
+        if (discardedForOwner.Count == 0)
             return;
 
-        var attachments = _discardedPaymentAttachmentDrafts
-            .GroupBy(attachment => attachment.LocalId)
-            .Select(group => group.First())
-            .ToList();
-        _discardedPaymentAttachmentDrafts.Clear();
+        var discardedIds = discardedForOwner
+            .Select(discarded =>
+                discarded.Attachment.LocalId)
+            .ToHashSet();
+        _discardedPaymentAttachmentDrafts.RemoveAll(
+            discarded =>
+                IsSameAttachmentDraftOwner(
+                    discarded.Owner,
+                    owner) &&
+                discardedIds.Contains(
+                    discarded.Attachment.LocalId));
 
-        foreach (var attachment in attachments)
+        foreach (var discarded in discardedForOwner)
         {
             try
             {
-                await _attachmentStore.RemoveAsync(attachment, ct);
+                _sessionStore.ThrowIfOwnerChanged(owner);
+                await _attachmentStore.RemoveAsync(
+                    discarded.Owner,
+                    discarded.Attachment,
+                    ct);
+                _sessionStore.ThrowIfOwnerChanged(owner);
+            }
+            catch (StaleMobileSessionOwnerException)
+            {
+                _discardedPaymentAttachmentDrafts.Add(
+                    discarded);
+                throw;
             }
             catch (Exception ex)
             {
-                MobileAppLogger.Warn("SYNC", $"제거된 첨부 임시 파일 정리 실패: {attachment.FileName} / {ex.Message}");
+                _discardedPaymentAttachmentDrafts.Add(
+                    discarded);
+                MobileAppLogger.Warn(
+                    "SYNC",
+                    $"제거된 첨부 임시 파일 정리 실패: {discarded.Attachment.FileName} / {ex.Message}");
             }
         }
     }
 
-    private async Task MarkConcurrencyConflictAndRefreshAsync(MobileSyncState state, Exception ex, CancellationToken ct)
+    private async Task<MobileSyncState>
+        MarkConcurrencyConflictAndRefreshAsync(
+            MobileSessionOwner owner,
+            MobileSyncState state,
+            Exception ex,
+            CancellationToken ct)
     {
         var message = BuildConcurrencyConflictMessage(ex);
-        await RefreshLatestAfterConflictAsync(state, message, ct);
+        return await RefreshLatestAfterConflictAsync(
+            owner,
+            state,
+            message,
+            ct);
     }
 
-    private async Task MarkPushConflictAndRefreshAsync(MobileSyncState state, SyncPushResult result, CancellationToken ct)
+    private async Task<MobileSyncState>
+        MarkPushConflictAndRefreshAsync(
+            MobileSessionOwner owner,
+            MobileSyncState state,
+            SyncPushResult result,
+            CancellationToken ct)
     {
         var message = BuildPushConflictMessage(result);
-        await RefreshLatestAfterConflictAsync(state, message, ct);
+        return await RefreshLatestAfterConflictAsync(
+            owner,
+            state,
+            message,
+            ct);
     }
 
-    private async Task RefreshLatestAfterConflictAsync(MobileSyncState state, string message, CancellationToken ct)
+    private async Task<MobileSyncState>
+        RefreshLatestAfterConflictAsync(
+            MobileSessionOwner owner,
+            MobileSyncState state,
+            string message,
+            CancellationToken ct)
     {
+        var refreshedState = state;
         var refreshError = string.Empty;
         try
         {
-            var response = await _api.PullAsync(0, ct);
+            var cacheOwnerSession =
+                _contractCacheStore.CaptureOwnerSession();
+            var response = await _api.PullAsync(
+                0,
+                owner,
+                ct);
+            _sessionStore.ThrowIfOwnerChanged(owner);
             if (response is not null)
-                await ApplyPullResponseAsync(state, response, ct);
+            {
+                var candidateState =
+                    CloneStateForPullApply(state);
+                await ApplyPullResponseAsync(
+                    owner,
+                    candidateState,
+                    response,
+                    cacheOwnerSession,
+                    ct);
+                refreshedState = candidateState;
+            }
         }
         catch (Exception refreshEx)
         {
+            if (refreshEx is StaleMobileSessionOwnerException)
+                throw;
             refreshError = TranslateFailureMessage(refreshEx);
         }
 
-        state.LastError = string.IsNullOrWhiteSpace(refreshError)
+        refreshedState.LastError = string.IsNullOrWhiteSpace(refreshError)
             ? message
             : $"{message} 최신 데이터 새로고침은 실패했습니다: {refreshError}";
-        state.LastFailureAllowsCachedDisplay = true;
-        state.ConsecutiveFailureCount = 0;
+        refreshedState.LastFailureAllowsCachedDisplay = true;
+        refreshedState.ConsecutiveFailureCount = 0;
+        state = refreshedState;
         MobileAppLogger.Warn("SYNC", $"모바일 동시 수정 충돌: {state.LastError}");
+        return refreshedState;
     }
 
     private static string BuildConcurrencyConflictMessage(Exception ex)
@@ -1008,7 +1823,10 @@ public sealed class SyncCoordinator
     private static void MarkFailure(MobileSyncState state, Exception ex)
     {
         state.LastError = TranslateFailureMessage(ex);
-        state.LastFailureAllowsCachedDisplay = MobileRetryableNetworkFailure.IsRetryable(ex) || IsConcurrencyConflict(ex);
+        state.LastFailureAllowsCachedDisplay =
+            ex is MobileClientUpgradeRequiredException ||
+            MobileRetryableNetworkFailure.IsRetryable(ex) ||
+            IsConcurrencyConflict(ex);
         state.ConsecutiveFailureCount++;
         MobileAppLogger.Warn("SYNC", $"모바일 동기화 실패: {state.LastError}");
     }
@@ -1017,6 +1835,10 @@ public sealed class SyncCoordinator
     {
         return ex switch
         {
+            MobileClientUpgradeRequiredException upgradeRequired
+                => string.IsNullOrWhiteSpace(upgradeRequired.Message)
+                    ? "업무 데이터를 계속 사용하려면 거래플랜 앱을 업데이트해야 합니다."
+                    : upgradeRequired.Message,
             MobileAuthenticationException => "인증이 만료되었거나 복구되지 않았습니다. 다시 로그인해 주세요.",
             HttpRequestException httpEx when httpEx.StatusCode == HttpStatusCode.Unauthorized
                 => "인증이 만료되었거나 복구되지 않았습니다. 다시 로그인해 주세요.",
@@ -1129,44 +1951,83 @@ public sealed class SyncCoordinator
             || (pendingPush.Invoices?.Count ?? 0) > 0
             || (pendingPush.Payments?.Count ?? 0) > 0;
 
-    private async Task ApplyPullResponseAsync(MobileSyncState state, SyncPullResponse response, CancellationToken ct)
+    private async Task ApplyPullResponseAsync(
+        MobileSessionOwner owner,
+        MobileSyncState state,
+        SyncPullResponse response,
+        CacheOwnerSession cacheOwnerSession,
+        CancellationToken ct)
     {
-        state.Normalize();
-        state.LastRevision = Math.Max(state.LastRevision, response.CurrentServerRevision);
-        state.LastSuccessUtc = DateTime.UtcNow;
-        state.LastError = string.Empty;
-        state.LastFailureAllowsCachedDisplay = true;
-        state.ConsecutiveFailureCount = 0;
-        state.LastPulledCustomerCount = response.Customers.Count;
-        state.LastPulledItemCount = response.Items.Count;
-        state.LastPulledItemWarehouseStockCount = response.ItemWarehouseStocks.Count;
-        state.LastPulledPriceGradeOptionCount = response.PriceGradeOptions.Count;
-        state.LastPulledInvoiceCount = response.Invoices.Count;
-        state.LastPulledPaymentCount = response.Payments.Count;
-        state.LastPulledTransactionCount = response.Transactions.Count;
-        state.LastPulledTransactionAttachmentCount = response.TransactionAttachments.Count;
-        state.LastPulledInventoryTransferCount = response.InventoryTransfers.Count;
-        state.LastPulledRentalManagementCompanyCount = response.RentalManagementCompanies.Count;
-        state.LastPulledRentalBillingProfileCount = response.RentalBillingProfiles.Count;
-        state.LastPulledRentalAssetCount = response.RentalAssets.Count;
-        state.LastPulledRentalAssetAssignmentHistoryCount = response.RentalAssetAssignmentHistories.Count;
-        state.LastPulledRentalBillingLogCount = response.RentalBillingLogs.Count;
-        state.SyncedCustomers = MergeById(state.SyncedCustomers, response.Customers);
-        state.SyncedItems = MergeById(state.SyncedItems, response.Items);
-        state.SyncedItemWarehouseStocks = ReplaceItemWarehouseStocks(response.ItemWarehouseStocks);
-        state.SyncedPriceGradeOptions = MergeById(state.SyncedPriceGradeOptions, response.PriceGradeOptions);
-        state.SyncedInvoices = MergeById(state.SyncedInvoices, response.Invoices);
-        state.SyncedPayments = MergeById(state.SyncedPayments, response.Payments);
-        state.SyncedTransactions = MergeById(state.SyncedTransactions, response.Transactions);
-        state.SyncedTransactionAttachments = MergeById(state.SyncedTransactionAttachments, response.TransactionAttachments);
-        state.SyncedInventoryTransfers = MergeById(state.SyncedInventoryTransfers, response.InventoryTransfers);
-        state.SyncedRentalManagementCompanies = MergeById(state.SyncedRentalManagementCompanies, response.RentalManagementCompanies);
-        state.SyncedRentalBillingProfiles = MergeById(state.SyncedRentalBillingProfiles, response.RentalBillingProfiles);
-        state.SyncedRentalAssets = MergeById(state.SyncedRentalAssets, response.RentalAssets);
-        state.SyncedRentalAssetAssignmentHistories = MergeById(state.SyncedRentalAssetAssignmentHistories, response.RentalAssetAssignmentHistories);
-        state.SyncedRentalBillingLogs = MergeById(state.SyncedRentalBillingLogs, response.RentalBillingLogs);
-        NormalizeNonInventoryItemStocks(state);
-        await ApplyPurgeRecordsAsync(state, response.PurgeRecords, ct);
+        var previouslyQueuedAttachmentDrafts =
+            _discardedPaymentAttachmentDrafts.ToList();
+        try
+        {
+            _contractCacheStore.ThrowIfOwnerSessionStale(
+                cacheOwnerSession);
+            state.Normalize();
+            state.SyncedCustomers = MergeById(state.SyncedCustomers, response.Customers);
+            state.SyncedItems = MergeById(state.SyncedItems, response.Items);
+            state.SyncedItemWarehouseStocks = ReplaceItemWarehouseStocks(response.ItemWarehouseStocks);
+            state.SyncedPriceGradeOptions = MergeById(state.SyncedPriceGradeOptions, response.PriceGradeOptions);
+            state.SyncedInvoices = MergeById(state.SyncedInvoices, response.Invoices);
+            state.SyncedPayments = MergeById(state.SyncedPayments, response.Payments);
+            state.SyncedTransactions = MergeById(state.SyncedTransactions, response.Transactions);
+            state.SyncedTransactionAttachments = MergeById(state.SyncedTransactionAttachments, response.TransactionAttachments);
+            state.SyncedInventoryTransfers = MergeById(state.SyncedInventoryTransfers, response.InventoryTransfers);
+            state.SyncedRentalManagementCompanies = MergeById(state.SyncedRentalManagementCompanies, response.RentalManagementCompanies);
+            state.SyncedRentalBillingProfiles = MergeById(state.SyncedRentalBillingProfiles, response.RentalBillingProfiles);
+            state.SyncedRentalAssets = MergeById(state.SyncedRentalAssets, response.RentalAssets);
+            state.SyncedRentalAssetAssignmentHistories = MergeById(state.SyncedRentalAssetAssignmentHistories, response.RentalAssetAssignmentHistories);
+            state.SyncedRentalBillingLogs = MergeById(state.SyncedRentalBillingLogs, response.RentalBillingLogs);
+            NormalizeNonInventoryItemStocks(state);
+            await ApplyPurgeRecordsAsync(
+                owner,
+                state,
+                response.PurgeRecords,
+                cacheOwnerSession,
+                ct);
+            _contractCacheStore.ThrowIfOwnerSessionStale(
+                cacheOwnerSession);
+
+            state.LastPulledCustomerCount = response.Customers.Count;
+            state.LastPulledItemCount = response.Items.Count;
+            state.LastPulledItemWarehouseStockCount = response.ItemWarehouseStocks.Count;
+            state.LastPulledPriceGradeOptionCount = response.PriceGradeOptions.Count;
+            state.LastPulledInvoiceCount = response.Invoices.Count;
+            state.LastPulledPaymentCount = response.Payments.Count;
+            state.LastPulledTransactionCount = response.Transactions.Count;
+            state.LastPulledTransactionAttachmentCount = response.TransactionAttachments.Count;
+            state.LastPulledInventoryTransferCount = response.InventoryTransfers.Count;
+            state.LastPulledRentalManagementCompanyCount = response.RentalManagementCompanies.Count;
+            state.LastPulledRentalBillingProfileCount = response.RentalBillingProfiles.Count;
+            state.LastPulledRentalAssetCount = response.RentalAssets.Count;
+            state.LastPulledRentalAssetAssignmentHistoryCount = response.RentalAssetAssignmentHistories.Count;
+            state.LastPulledRentalBillingLogCount = response.RentalBillingLogs.Count;
+            state.LastSuccessUtc = DateTime.UtcNow;
+            state.LastError = string.Empty;
+            state.LastFailureAllowsCachedDisplay = true;
+            state.ConsecutiveFailureCount = 0;
+            state.LastRevision = Math.Max(state.LastRevision, response.CurrentServerRevision);
+        }
+        catch
+        {
+            _discardedPaymentAttachmentDrafts.Clear();
+            _discardedPaymentAttachmentDrafts.AddRange(
+                previouslyQueuedAttachmentDrafts);
+            throw;
+        }
+    }
+
+    private static MobileSyncState CloneStateForPullApply(
+        MobileSyncState state)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(state);
+        var clone = JsonSerializer.Deserialize<MobileSyncState>(
+            bytes)
+            ?? throw new InvalidDataException(
+                "Mobile sync state clone is null.");
+        clone.Normalize();
+        return clone;
     }
 
     private static List<T> MergeById<T>(IEnumerable<T>? existing, IEnumerable<T>? incoming) where T : SyncEntityDto
@@ -1282,7 +2143,12 @@ public sealed class SyncCoordinator
         return ItemOperationalPolicy.SupportsInventory(trackingType);
     }
 
-    private async Task ApplyPurgeRecordsAsync(MobileSyncState state, IEnumerable<RecycleBinPurgeRecordDto>? purgeRecords, CancellationToken ct)
+    private async Task ApplyPurgeRecordsAsync(
+        MobileSessionOwner owner,
+        MobileSyncState state,
+        IEnumerable<RecycleBinPurgeRecordDto>? purgeRecords,
+        CacheOwnerSession cacheOwnerSession,
+        CancellationToken ct)
     {
         var records = (purgeRecords ?? Enumerable.Empty<RecycleBinPurgeRecordDto>())
             .Where(record => record.EntityId != Guid.Empty && !string.IsNullOrWhiteSpace(record.Kind))
@@ -1299,10 +2165,26 @@ public sealed class SyncCoordinator
 
         state.Normalize();
         foreach (var record in records)
-            await ApplyPurgeRecordAsync(state, NormalizePurgeRecordKind(record.Kind), record.EntityId, record.Revision, ct);
+        {
+            await ApplyPurgeRecordAsync(
+                owner,
+                state,
+                NormalizePurgeRecordKind(record.Kind),
+                record.EntityId,
+                record.Revision,
+                cacheOwnerSession,
+                ct);
+        }
     }
 
-    private async Task ApplyPurgeRecordAsync(MobileSyncState state, string normalizedKind, Guid entityId, long purgeRevision, CancellationToken ct)
+    private async Task ApplyPurgeRecordAsync(
+        MobileSessionOwner owner,
+        MobileSyncState state,
+        string normalizedKind,
+        Guid entityId,
+        long purgeRevision,
+        CacheOwnerSession cacheOwnerSession,
+        CancellationToken ct)
     {
         switch (normalizedKind)
         {
@@ -1326,7 +2208,11 @@ public sealed class SyncCoordinator
                 RemoveEntityById(state.SyncedCustomers, entityId, purgeRevision);
                 RemoveEntityById(state.PendingPush.Customers, entityId, purgeRevision);
                 RemoveCustomerContractsForPurgedCustomer(state.PendingPush.CustomerContracts, entityId, purgeRevision);
-                await _contractCacheStore.RemoveCustomerAsync(entityId, purgeRevision, ct);
+                await _contractCacheStore.RemoveCustomerAsync(
+                    cacheOwnerSession,
+                    entityId,
+                    purgeRevision,
+                    ct);
                 ClearRentalAssignmentHistoryCustomerReferences(state.SyncedRentalAssetAssignmentHistories, entityId, purgeRevision);
                 ClearRentalAssignmentHistoryCustomerReferences(state.PendingPush.RentalAssetAssignmentHistories, entityId, purgeRevision);
                 break;
@@ -1334,7 +2220,11 @@ public sealed class SyncCoordinator
             case "customercontract":
             case "customer-contract":
                 RemoveEntityById(state.PendingPush.CustomerContracts, entityId, purgeRevision);
-                await _contractCacheStore.RemoveContractAsync(entityId, purgeRevision, ct);
+                await _contractCacheStore.RemoveContractAsync(
+                    cacheOwnerSession,
+                    entityId,
+                    purgeRevision,
+                    ct);
                 break;
             case "item":
                 RemoveEntityById(state.SyncedItems, entityId, purgeRevision);
@@ -1361,7 +2251,12 @@ public sealed class SyncCoordinator
                 var removedPaymentIds = new HashSet<Guid>();
                 RemovePaymentsForPurgedInvoice(state.SyncedPayments, entityId, purgeRevision, removedPaymentIds);
                 RemovePaymentsForPurgedInvoice(state.PendingPush.Payments, entityId, purgeRevision, removedPaymentIds);
-                RemovePendingPaymentAttachments(state, attachment => removedPaymentIds.Contains(attachment.PaymentId));
+                RemovePendingPaymentAttachments(
+                    owner,
+                    state,
+                    attachment =>
+                        removedPaymentIds.Contains(
+                            attachment.PaymentId));
                 var removedTransactionIds = new HashSet<Guid>();
                 RemoveTransactionsForPurgedInvoice(state.SyncedTransactions, entityId, purgeRevision, removedTransactionIds);
                 RemoveTransactionsForPurgedInvoice(state.PendingPush.Transactions, entityId, purgeRevision, removedTransactionIds);
@@ -1371,7 +2266,11 @@ public sealed class SyncCoordinator
             case "payment":
                 RemoveEntityById(state.SyncedPayments, entityId, purgeRevision);
                 RemoveEntityById(state.PendingPush.Payments, entityId, purgeRevision);
-                RemovePendingPaymentAttachments(state, attachment => attachment.PaymentId == entityId);
+                RemovePendingPaymentAttachments(
+                    owner,
+                    state,
+                    attachment =>
+                        attachment.PaymentId == entityId);
                 RemoveEntityById(state.SyncedTransactions, entityId, purgeRevision);
                 RemoveEntityById(state.PendingPush.Transactions, entityId, purgeRevision);
                 state.SyncedTransactionAttachments.RemoveAll(attachment => attachment.TransactionId == entityId && !IsEntityNewerThanPurge(attachment, purgeRevision));
@@ -1383,7 +2282,12 @@ public sealed class SyncCoordinator
                 var transactionRemovedPaymentIds = new HashSet<Guid>();
                 RemovePaymentForPurgedTransaction(state.SyncedPayments, entityId, purgeRevision, transactionRemovedPaymentIds);
                 RemovePaymentForPurgedTransaction(state.PendingPush.Payments, entityId, purgeRevision, transactionRemovedPaymentIds);
-                RemovePendingPaymentAttachments(state, attachment => transactionRemovedPaymentIds.Contains(attachment.PaymentId));
+                RemovePendingPaymentAttachments(
+                    owner,
+                    state,
+                    attachment =>
+                        transactionRemovedPaymentIds.Contains(
+                            attachment.PaymentId));
                 state.SyncedTransactionAttachments.RemoveAll(attachment => attachment.TransactionId == entityId && !IsEntityNewerThanPurge(attachment, purgeRevision));
                 state.PendingPush.TransactionAttachments.RemoveAll(attachment => attachment.TransactionId == entityId && !IsEntityNewerThanPurge(attachment, purgeRevision));
                 break;
@@ -1802,4 +2706,22 @@ public sealed class SyncCoordinator
             "itemcategoryoption" => 10,
             _ => 99
         };
+
+    private static bool IsSameAttachmentDraftOwner(
+        MobileSessionOwner left,
+        MobileSessionOwner right)
+        => left.IsAuthenticated ==
+           right.IsAuthenticated &&
+           string.Equals(
+               left.BuildStateKey(),
+               right.BuildStateKey(),
+               StringComparison.Ordinal) &&
+           string.Equals(
+               left.SessionGeneration,
+               right.SessionGeneration,
+               StringComparison.Ordinal);
+
+    private sealed record DiscardedPaymentAttachmentDraft(
+        MobileSessionOwner Owner,
+        PendingPaymentAttachmentRecord Attachment);
 }

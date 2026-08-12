@@ -7,8 +7,10 @@ using 거래플랜.Server.Api.Services;
 using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Runtime.ExceptionServices;
 
 
 namespace 거래플랜.Server.Api.Controllers;
@@ -21,6 +23,7 @@ public sealed class PaymentsController : ControllerBase
     private readonly AppDbContext _dbContext;
     private readonly OfficeScopeService _officeScopeService;
     private readonly ICentralFileStorage _fileStorage;
+    private readonly IStoredFileReferenceReconciler _storedFileReferenceReconciler;
     private readonly RentalSettlementRecalculationService _rentalSettlementRecalculationService;
 
     public PaymentsController(
@@ -28,10 +31,27 @@ public sealed class PaymentsController : ControllerBase
         OfficeScopeService officeScopeService,
         ICentralFileStorage fileStorage,
         RentalSettlementRecalculationService rentalSettlementRecalculationService)
+        : this(
+            dbContext,
+            officeScopeService,
+            fileStorage,
+            PreserveAllStoredFileReferenceReconciler.Instance,
+            rentalSettlementRecalculationService)
+    {
+    }
+
+    [ActivatorUtilitiesConstructor]
+    public PaymentsController(
+        AppDbContext dbContext,
+        OfficeScopeService officeScopeService,
+        ICentralFileStorage fileStorage,
+        IStoredFileReferenceReconciler storedFileReferenceReconciler,
+        RentalSettlementRecalculationService rentalSettlementRecalculationService)
     {
         _dbContext = dbContext;
         _officeScopeService = officeScopeService;
         _fileStorage = fileStorage;
+        _storedFileReferenceReconciler = storedFileReferenceReconciler;
         _rentalSettlementRecalculationService = rentalSettlementRecalculationService;
     }
 
@@ -165,12 +185,46 @@ public sealed class PaymentsController : ControllerBase
             return Forbid();
         if (payment is null)
             return NotFound();
+        if (await ValidateWritableInvoiceRentalBillingRunAsync(payment.Invoice, cancellationToken) is { } rentalRunError)
+            return rentalRunError;
 
         if (file is null || file.Length <= 0)
             return BadRequest(new { error = "empty_file", message = "업로드할 파일을 선택하세요." });
 
         if (file.Length > 15 * 1024 * 1024)
             return BadRequest(new { error = "file_too_large", message = "첨부 파일은 15MB 이하만 업로드할 수 있습니다." });
+
+        var safeFileName = Path.GetFileName(file.FileName ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(safeFileName))
+            return BadRequest(new { error = "invalid_file_name", message = "유효한 첨부 파일명을 확인할 수 없습니다." });
+
+        var normalizedContentType = EvidenceAttachmentFilePolicy.NormalizeContentType(file.ContentType, safeFileName);
+        if (!EvidenceAttachmentFilePolicy.IsAllowedFileType(safeFileName, normalizedContentType))
+        {
+            return BadRequest(new
+            {
+                error = "unsupported_file_type",
+                message = "첨부 파일은 PDF 또는 이미지 파일만 업로드할 수 있습니다."
+            });
+        }
+
+        await using var memory = new MemoryStream();
+        await file.CopyToAsync(memory, cancellationToken);
+        var bytes = memory.ToArray();
+        if (!EvidenceAttachmentFilePolicy.ContentMatchesFileType(safeFileName, normalizedContentType, bytes))
+        {
+            return BadRequest(new
+            {
+                error = "file_content_mismatch",
+                message = "첨부 파일 내용이 PDF 또는 이미지 형식과 일치하지 않습니다."
+            });
+        }
+
+        var normalizedAttachmentType = string.IsNullOrWhiteSpace(attachmentType)
+            ? "내역첨부"
+            : attachmentType.Trim();
+        var normalizedDescription = description?.Trim() ?? string.Empty;
+        var fileHash = Convert.ToHexString(SHA256.HashData(bytes));
 
         var attachmentId = clientAttachmentId.GetValueOrDefault();
         if (attachmentId != Guid.Empty)
@@ -199,6 +253,22 @@ public sealed class PaymentsController : ControllerBase
                     });
                 }
 
+                if (!HasSamePaymentAttachmentPayload(
+                        existingAttachment,
+                        paymentId,
+                        normalizedAttachmentType,
+                        normalizedDescription,
+                        safeFileName,
+                        normalizedContentType,
+                        bytes.LongLength,
+                        fileHash))
+                {
+                    return ClientAttachmentPayloadConflict();
+                }
+
+                if (!HasAvailablePaymentAttachmentContent(existingAttachment))
+                    return ClientAttachmentContentUnavailable();
+
                 return Ok(existingAttachment.ToDto(false));
             }
         }
@@ -207,42 +277,16 @@ public sealed class PaymentsController : ControllerBase
             attachmentId = Guid.NewGuid();
         }
 
-        var safeFileName = Path.GetFileName(file.FileName ?? string.Empty);
-        if (string.IsNullOrWhiteSpace(safeFileName))
-            return BadRequest(new { error = "invalid_file_name", message = "유효한 첨부 파일명을 확인할 수 없습니다." });
-
-        var normalizedContentType = EvidenceAttachmentFilePolicy.NormalizeContentType(file.ContentType, safeFileName);
-        if (!EvidenceAttachmentFilePolicy.IsAllowedFileType(safeFileName, normalizedContentType))
-        {
-            return BadRequest(new
-            {
-                error = "unsupported_file_type",
-                message = "첨부 파일은 PDF 또는 이미지 파일만 업로드할 수 있습니다."
-            });
-        }
-
-        await using var memory = new MemoryStream();
-        await file.CopyToAsync(memory, cancellationToken);
-        var bytes = memory.ToArray();
-        if (!EvidenceAttachmentFilePolicy.ContentMatchesFileType(safeFileName, normalizedContentType, bytes))
-        {
-            return BadRequest(new
-            {
-                error = "file_content_mismatch",
-                message = "첨부 파일 내용이 PDF 또는 이미지 형식과 일치하지 않습니다."
-            });
-        }
-
         var entity = new PaymentAttachment
         {
             Id = attachmentId,
             PaymentId = paymentId,
-            AttachmentType = string.IsNullOrWhiteSpace(attachmentType) ? "내역첨부" : attachmentType.Trim(),
-            Description = description?.Trim() ?? string.Empty,
+            AttachmentType = normalizedAttachmentType,
+            Description = normalizedDescription,
             FileName = safeFileName,
             MimeType = normalizedContentType,
             FileSize = bytes.LongLength,
-            FileHash = Convert.ToHexString(SHA256.HashData(bytes)),
+            FileHash = fileHash,
             UploadedAtUtc = DateTime.UtcNow,
             FileContent = []
         };
@@ -250,26 +294,149 @@ public sealed class PaymentsController : ControllerBase
         var storedPath = await _fileStorage.SaveBytesAsync(
             "payment-attachments",
             paymentId.ToString("N"),
-            entity.Id,
+            Guid.NewGuid(),
             safeFileName,
             bytes,
             cancellationToken);
         entity.StoragePath = storedPath;
 
         _dbContext.PaymentAttachments.Add(entity);
+        ExceptionDispatchInfo? saveFailure = null;
         try
         {
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+            try
+            {
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                saveFailure = ExceptionDispatchInfo.Capture(exception);
+                try
+                {
+                    await transaction.RollbackAsync(CancellationToken.None);
+                }
+                catch
+                {
+                    // Preserve the original save/commit failure. Transaction
+                    // disposal completes before the independent reference lookup.
+                }
+            }
         }
-        catch
+        catch (Exception exception)
         {
-            _fileStorage.DeleteIfExists(storedPath);
+            saveFailure ??= ExceptionDispatchInfo.Capture(exception);
+        }
+
+        if (saveFailure is not null)
+        {
             _dbContext.Entry(entity).State = EntityState.Detached;
-            throw;
+            await _storedFileReferenceReconciler.DeleteUnreferencedAsync(
+                [storedPath],
+                CancellationToken.None);
+            var committedAttachment =
+                await _storedFileReferenceReconciler.FindPaymentAttachmentAsync(
+                    attachmentId,
+                    CancellationToken.None);
+            if (committedAttachment is not null)
+            {
+                if (committedAttachment.PaymentId != paymentId)
+                {
+                    return Conflict(new
+                    {
+                        error = "client_attachment_id_conflict",
+                        message = "이미 다른 수금/지급 내역에 사용된 모바일 첨부 식별자입니다."
+                    });
+                }
+
+                if (committedAttachment.IsDeleted)
+                {
+                    return Conflict(new
+                    {
+                        error = "client_attachment_deleted",
+                        message = "이미 삭제된 첨부 식별자입니다. 첨부를 새로 선택한 뒤 다시 시도하세요."
+                    });
+                }
+
+                if (!HasSamePaymentAttachmentPayload(
+                        committedAttachment,
+                        paymentId,
+                        normalizedAttachmentType,
+                        normalizedDescription,
+                        safeFileName,
+                        normalizedContentType,
+                        bytes.LongLength,
+                        fileHash))
+                {
+                    return ClientAttachmentPayloadConflict();
+                }
+
+                if (!HasAvailablePaymentAttachmentContent(committedAttachment))
+                    return ClientAttachmentContentUnavailable();
+
+                return Ok(committedAttachment.ToDto(false));
+            }
+
+            saveFailure.Throw();
         }
 
         return Ok(entity.ToDto(false));
     }
+
+    private ConflictObjectResult ClientAttachmentPayloadConflict()
+        => Conflict(new
+        {
+            error = "client_attachment_payload_conflict",
+            message = "같은 모바일 첨부 식별자에 다른 파일 또는 설명이 사용되었습니다. 첨부를 다시 선택해 새 식별자로 업로드하세요."
+        });
+
+    private ObjectResult ClientAttachmentContentUnavailable()
+        => StatusCode(
+            StatusCodes.Status503ServiceUnavailable,
+            new
+            {
+                error = "client_attachment_content_unavailable",
+                message = "기존 첨부 파일을 확인할 수 없어 재시도를 완료하지 못했습니다. 잠시 후 다시 시도하세요."
+            });
+
+    private bool HasAvailablePaymentAttachmentContent(PaymentAttachment attachment)
+    {
+        try
+        {
+            var verifiedContent = FileContentIntegrityVerifier.SelectVerifiedOrEmpty(
+                _fileStorage.ReadBytes(attachment.StoragePath, attachment.FileContent),
+                attachment.FileContent,
+                attachment.FileSize,
+                attachment.FileHash);
+            return FileContentIntegrityVerifier.HasExpectedIntegrity(
+                verifiedContent,
+                attachment.FileSize,
+                attachment.FileHash);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool HasSamePaymentAttachmentPayload(
+        PaymentAttachment existing,
+        Guid paymentId,
+        string attachmentType,
+        string description,
+        string fileName,
+        string mimeType,
+        long fileSize,
+        string fileHash)
+        => existing.PaymentId == paymentId &&
+           string.Equals(existing.AttachmentType, attachmentType, StringComparison.Ordinal) &&
+           string.Equals(existing.Description, description, StringComparison.Ordinal) &&
+           string.Equals(existing.FileName, fileName, StringComparison.Ordinal) &&
+           string.Equals(existing.MimeType, mimeType, StringComparison.OrdinalIgnoreCase) &&
+           existing.FileSize == fileSize &&
+           !string.IsNullOrWhiteSpace(existing.FileHash) &&
+           string.Equals(existing.FileHash, fileHash, StringComparison.OrdinalIgnoreCase);
 
     [HttpPost]
     [Authorize(Policy = PermissionNames.PaymentEdit)]
@@ -279,6 +446,11 @@ public sealed class PaymentsController : ControllerBase
             return Forbid();
         if (dto.IsDeleted)
             return SoftDeleteMutationGuard.RejectCreate("수금/지급");
+
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
 
         var invoice = await _dbContext.Invoices
             .IgnoreQueryFilters()
@@ -290,39 +462,54 @@ public sealed class PaymentsController : ControllerBase
             return Forbid();
         if (await ValidateWritableInvoiceRentalBillingProfileAsync(invoice, allowMissingOrDeleted: false, cancellationToken) is { } rentalProfileScopeError)
             return rentalProfileScopeError;
+        if (await ValidateWritableInvoiceRentalBillingRunAsync(invoice, cancellationToken) is { } rentalRunError)
+            return rentalRunError;
+
+        var mutationCheck = await ProcessedSyncMutationRecorder.CheckAsync(
+            _dbContext,
+            dto,
+            nameof(Payment),
+            cancellationToken);
+        if (mutationCheck.Status == DirectMutationStatus.Conflict)
+            return Conflict(ProcessedSyncMutationRecorder.BuildConflictResponse(mutationCheck));
+        if (mutationCheck.Status == DirectMutationStatus.Duplicate)
+            return await ResolveDuplicatePaymentAsync(mutationCheck, cancellationToken);
+
+        var paymentId = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id;
+        if (await _dbContext.Payments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .AnyAsync(existingPayment => existingPayment.Id == paymentId, cancellationToken))
+        {
+            return Conflict($"A payment already uses payment ID {paymentId}, but no matching processed mutation receipt was found.");
+        }
+        if (await _dbContext.Transactions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .AnyAsync(existingTransaction => existingTransaction.Id == paymentId, cancellationToken))
+        {
+            return Conflict($"A transaction already uses payment ID {paymentId}.");
+        }
+
         if (dto.ExpectedRevision > 0 && invoice.Revision != dto.ExpectedRevision)
             return Conflict($"Referenced invoice revision mismatch. client={dto.ExpectedRevision}, server={invoice.Revision}");
         if (await ValidatePaymentAmountAsync(dto, currentPaymentId: null, cancellationToken) is { } paymentValidationError)
             return paymentValidationError;
 
-        var entity = new Payment { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
+        var entity = new Payment { Id = paymentId };
         dto.Id = entity.Id;
         entity.Apply(dto);
         _dbContext.Payments.Add(entity);
-        var linkedTransaction = await _dbContext.Transactions
-            .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(transaction => transaction.Id == entity.Id, cancellationToken);
-        if (linkedTransaction is not null &&
-            !linkedTransaction.IsDeleted &&
-            linkedTransaction.LinkedInvoiceId.HasValue &&
-            linkedTransaction.LinkedInvoiceId.Value != invoice.Id)
+        var linkedTransaction = new TransactionRecord
         {
-            return Conflict($"Linked transaction invoice does not match the payment invoice: {linkedTransaction.LinkedInvoiceId.Value}");
-        }
-
-        if (linkedTransaction is null)
-        {
-            linkedTransaction = new TransactionRecord
-            {
-                Id = entity.Id,
-                CreatedAtUtc = entity.CreatedAtUtc,
-                UpdatedAtUtc = entity.UpdatedAtUtc
-            };
-            _dbContext.Transactions.Add(linkedTransaction);
-        }
+            Id = entity.Id,
+            CreatedAtUtc = entity.CreatedAtUtc,
+            UpdatedAtUtc = entity.UpdatedAtUtc
+        };
+        _dbContext.Transactions.Add(linkedTransaction);
 
         SynchronizeLinkedTransactionFromPayment(linkedTransaction, entity, invoice);
-        await ProcessedSyncMutationRecorder.RecordAsync(_dbContext, dto, nameof(Payment), cancellationToken);
+        ProcessedSyncMutationRecorder.Record(_dbContext, mutationCheck, entity.Id);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await RecalculateRentalSettlementsForPaymentInvoicesAsync([invoice], cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -331,6 +518,7 @@ public sealed class PaymentsController : ControllerBase
             .AsNoTracking()
             .Include(x => x.Attachments)
             .FirstAsync(x => x.Id == entity.Id, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return Ok(saved.ToDto());
     }
 
@@ -340,6 +528,15 @@ public sealed class PaymentsController : ControllerBase
     {
         if (!_officeScopeService.CanEditPayments())
             return Forbid();
+        if (dto.Id != Guid.Empty && dto.Id != id)
+            return BadRequest("Payment route id must match the body id.");
+
+        dto.Id = id;
+
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
 
         var entity = await _dbContext.Payments
             .Include(x => x.Invoice)
@@ -350,12 +547,25 @@ public sealed class PaymentsController : ControllerBase
             return NotFound();
         if (entity.Invoice is null || !_officeScopeService.CanWriteOfficeForPayments(entity.Invoice.ResponsibleOfficeCode, entity.Invoice.TenantCode, entity.Invoice.OfficeCode))
             return Forbid();
+
+        var mutationCheck = await ProcessedSyncMutationRecorder.CheckAsync(
+            _dbContext,
+            dto,
+            nameof(Payment),
+            cancellationToken);
+        if (mutationCheck.Status == DirectMutationStatus.Conflict)
+            return Conflict(ProcessedSyncMutationRecorder.BuildConflictResponse(mutationCheck));
+        if (mutationCheck.Status == DirectMutationStatus.Duplicate)
+            return await ResolveDuplicatePaymentAsync(mutationCheck, cancellationToken);
+
         if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Payment)) is { } conflict)
             return conflict;
         if (dto.IsDeleted)
             return SoftDeleteMutationGuard.RejectUpdate("수금/지급");
         if (await ValidateWritableInvoiceRentalBillingProfileAsync(entity.Invoice, allowMissingOrDeleted: true, cancellationToken) is { } existingRentalProfileScopeError)
             return existingRentalProfileScopeError;
+        if (await ValidateWritableInvoiceRentalBillingRunAsync(entity.Invoice, cancellationToken) is { } existingRentalRunError)
+            return existingRentalRunError;
 
         var targetInvoice = await _dbContext.Invoices
             .IgnoreQueryFilters()
@@ -368,6 +578,8 @@ public sealed class PaymentsController : ControllerBase
         }
         if (await ValidateWritableInvoiceRentalBillingProfileAsync(targetInvoice, allowMissingOrDeleted: false, cancellationToken) is { } targetRentalProfileScopeError)
             return targetRentalProfileScopeError;
+        if (await ValidateWritableInvoiceRentalBillingRunAsync(targetInvoice, cancellationToken) is { } targetRentalRunError)
+            return targetRentalRunError;
 
         if (await ValidatePaymentAmountAsync(dto, id, cancellationToken) is { } paymentValidationError)
             return paymentValidationError;
@@ -399,6 +611,13 @@ public sealed class PaymentsController : ControllerBase
             {
                 return linkedTransactionRentalProfileScopeError;
             }
+            if (await ValidateWritableRentalBillingRunAsync(
+                    linkedTransaction.LinkedRentalBillingProfileId,
+                    linkedTransaction.LinkedRentalBillingRunId,
+                    cancellationToken) is { } linkedTransactionRentalRunError)
+            {
+                return linkedTransactionRentalRunError;
+            }
 
             AddRentalSettlementTarget(
                 linkedTransactionRentalTargets,
@@ -417,11 +636,12 @@ public sealed class PaymentsController : ControllerBase
                 linkedTransaction.LinkedRentalBillingRunId);
         }
 
-        await ProcessedSyncMutationRecorder.RecordAsync(_dbContext, dto, nameof(Payment), cancellationToken);
+        ProcessedSyncMutationRecorder.Record(_dbContext, mutationCheck, entity.Id);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await RecalculateRentalSettlementsForPaymentInvoicesAsync([previousInvoice, targetInvoice], cancellationToken);
         await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(linkedTransactionRentalTargets, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
 
@@ -431,6 +651,11 @@ public sealed class PaymentsController : ControllerBase
     {
         if (!_officeScopeService.CanEditPayments())
             return Forbid();
+
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
 
         var entity = await _dbContext.Payments
             .Include(x => x.Invoice)
@@ -499,7 +724,44 @@ public sealed class PaymentsController : ControllerBase
                 cancellationToken);
         }
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return NoContent();
+    }
+
+    private async Task<ActionResult<PaymentDto>> ResolveDuplicatePaymentAsync(
+        DirectMutationCheck mutationCheck,
+        CancellationToken cancellationToken)
+    {
+        if (mutationCheck.ExistingReceipt is null ||
+            !Guid.TryParse(mutationCheck.ExistingReceipt.EntityId, out var entityId))
+        {
+            return Conflict(new DirectMutationConflictResponse
+            {
+                MutationId = mutationCheck.MutationId,
+                EntityName = nameof(Payment),
+                EntityId = mutationCheck.RequestedEntityId,
+                Reason = "The processed mutation receipt does not reference a valid payment."
+            });
+        }
+
+        var entity = await _officeScopeService.ApplyPaymentScope(_dbContext.Payments
+                .Include(payment => payment.Invoice)
+                .ThenInclude(invoice => invoice!.Customer)
+                .Include(payment => payment.Attachments)
+                .AsNoTracking())
+            .FirstOrDefaultAsync(payment => payment.Id == entityId, cancellationToken);
+        if (entity is null)
+        {
+            return Conflict(new DirectMutationConflictResponse
+            {
+                MutationId = mutationCheck.MutationId,
+                EntityName = nameof(Payment),
+                EntityId = entityId,
+                Reason = "The processed mutation receipt exists, but its payment is unavailable in the current scope."
+            });
+        }
+
+        return Ok(entity.ToDto());
     }
 
     private async Task RecalculateRentalSettlementsForPaymentInvoicesAsync(
@@ -689,6 +951,45 @@ public sealed class PaymentsController : ControllerBase
             return Forbid();
 
         return null;
+    }
+
+    private Task<ActionResult?> ValidateWritableInvoiceRentalBillingRunAsync(
+        Invoice? invoice,
+        CancellationToken cancellationToken)
+        => ValidateWritableRentalBillingRunAsync(
+            invoice?.LinkedRentalBillingProfileId,
+            invoice?.LinkedRentalBillingRunId,
+            cancellationToken);
+
+    private async Task<ActionResult?> ValidateWritableRentalBillingRunAsync(
+        Guid? profileId,
+        Guid? runId,
+        CancellationToken cancellationToken)
+    {
+        if (!profileId.HasValue || profileId.Value == Guid.Empty)
+            return null;
+
+        var billingRunsJson = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => current.Id == profileId.Value && !current.IsDeleted)
+            .Select(current => current.BillingRunsJson)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (billingRunsJson is null)
+            return null;
+
+        var lookup = runId.HasValue && runId.Value != Guid.Empty
+            ? RentalBillingRunTombstonePolicy.LookupForServerMutation(billingRunsJson, runId.Value)
+            : RentalBillingRunTombstonePolicy.ValidateForServerMutation(billingRunsJson);
+        if (!lookup.IsValid)
+        {
+            return Conflict(
+                "Referenced rental billing profile has malformed billing run tombstone JSON.");
+        }
+
+        return lookup.IsTombstoned
+            ? Conflict("Referenced rental billing run was deleted and cannot receive active payment evidence.")
+            : null;
     }
 
     private async Task<ActionResult?> ValidatePaymentAmountAsync(

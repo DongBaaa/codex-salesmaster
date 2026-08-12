@@ -75,6 +75,7 @@ public sealed partial class LegacyDataMigrationService
         var legacyLocalDbPath = ResolveLegacyLocalDbPath();
         if (!string.IsNullOrWhiteSpace(legacyLocalDbPath))
         {
+            EnsureAutomaticLegacyDatabasePathSafeForImport(legacyLocalDbPath);
             var fingerprint = BuildFileFingerprint(legacyLocalDbPath);
             var processedFingerprint = await _local.GetSettingAsync(AutoLegacyLocalDbFingerprintSettingKey, ct);
             var hasCurrentData = (await _local.GetCustomersAsync(ct)).Count > 0 || (await _local.GetItemsAsync(ct)).Count > 0;
@@ -88,6 +89,7 @@ public sealed partial class LegacyDataMigrationService
                     "이전에 처리한 로컬 DB와 동일해서 자동 마이그레이션을 건너뛰었습니다.");
             }
 
+            EnsureAutomaticLegacyDatabasePathSafeForImport(legacyLocalDbPath);
             var result = await ImportFromLegacyLocalDbAsync(legacyLocalDbPath, ct);
             await _local.SetSettingAsync(AutoLegacyLocalDbFingerprintSettingKey, fingerprint, ct);
             await _local.SetSettingAsync(AutoLegacyLocalDbPathSettingKey, legacyLocalDbPath, ct);
@@ -100,10 +102,9 @@ public sealed partial class LegacyDataMigrationService
         }
 
         var excelPaths = await ResolveConfiguredLegacyExcelPathsAsync(ct);
-        if (!string.IsNullOrWhiteSpace(excelPaths.CustomerExcelPath) &&
-            !string.IsNullOrWhiteSpace(excelPaths.ItemExcelPath) &&
-            File.Exists(excelPaths.CustomerExcelPath) &&
-            File.Exists(excelPaths.ItemExcelPath))
+        if (AreAutomaticLegacyExcelPathsSafeForImport(
+                excelPaths.CustomerExcelPath,
+                excelPaths.ItemExcelPath))
         {
             var fingerprint = BuildFileFingerprint(excelPaths.CustomerExcelPath, excelPaths.ItemExcelPath);
             var processedFingerprint = await _local.GetSettingAsync(AutoLegacyExcelFingerprintSettingKey, ct);
@@ -118,7 +119,15 @@ public sealed partial class LegacyDataMigrationService
                     "이전에 처리한 엑셀 데이터와 동일해서 자동 마이그레이션을 건너뛰었습니다.");
             }
 
-            var result = await ImportFromExcelAsync(excelPaths.CustomerExcelPath, excelPaths.ItemExcelPath, ct);
+            // Re-check immediately before the import call. A test must fail
+            // closed if a directory is replaced by a junction after discovery.
+            EnsureAutomaticLegacyExcelPathsSafeForImport(
+                excelPaths.CustomerExcelPath,
+                excelPaths.ItemExcelPath);
+            var result = await ImportFromExcelAsync(
+                excelPaths.CustomerExcelPath,
+                excelPaths.ItemExcelPath,
+                ct);
             await _local.SetSettingAsync(AutoLegacyExcelFingerprintSettingKey, fingerprint, ct);
             return new LegacyAutoMigrationResult(
                 true,

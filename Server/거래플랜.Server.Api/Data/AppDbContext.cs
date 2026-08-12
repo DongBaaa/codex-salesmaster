@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore.ChangeTracking;
 
 namespace 거래플랜.Server.Api.Data;
 
-public sealed class AppDbContext : DbContext
+public sealed partial class AppDbContext : DbContext
 {
     private static readonly JsonSerializerOptions AuditJsonOptions = new() { WriteIndented = false };
 
@@ -56,6 +56,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<ConflictLog> ConflictLogs => Set<ConflictLog>();
     public DbSet<RecycleBinPurgeRecord> RecycleBinPurgeRecords => Set<RecycleBinPurgeRecord>();
+    public DbSet<SyncRevisionState> SyncRevisionStates => Set<SyncRevisionState>();
     public DbSet<ProcessedSyncMutation> ProcessedSyncMutations => Set<ProcessedSyncMutation>();
     public DbSet<InventoryLedgerEntry> InventoryLedgerEntries => Set<InventoryLedgerEntry>();
     public DbSet<RentalAssetAssignmentHistory> RentalAssetAssignmentHistories => Set<RentalAssetAssignmentHistory>();
@@ -65,6 +66,9 @@ public sealed class AppDbContext : DbContext
     {
         base.OnModelCreating(modelBuilder);
 
+        modelBuilder.Entity<SyncRevisionState>()
+            .Property(x => x.Id)
+            .ValueGeneratedNever();
         modelBuilder.Entity<UserPermission>().HasKey(x => new { x.UserId, x.Permission });
         modelBuilder.Entity<UserPermission>()
             .HasOne(x => x.User).WithMany(x => x.Permissions)
@@ -78,6 +82,7 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<TenantDefinition>().HasIndex(x => x.TenantCode).IsUnique();
         modelBuilder.Entity<TenantOfficeDefinition>().HasIndex(x => x.OfficeCode).IsUnique();
         modelBuilder.Entity<TenantOfficeDefinition>().HasIndex(x => new { x.TenantCode, x.OfficeCode }).IsUnique();
+        modelBuilder.Entity<AuditLog>().HasIndex(x => new { x.EntityName, x.EntityId, x.CreatedAtUtc });
         modelBuilder.Entity<ConflictLog>().HasIndex(x => new { x.EntityName, x.EntityId, x.Status });
         modelBuilder.Entity<PriceGradeOption>().HasIndex(x => x.Name).IsUnique();
         modelBuilder.Entity<TradeTypeOption>().HasIndex(x => x.Name).IsUnique();
@@ -122,6 +127,7 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<Invoice>().Property(x => x.SupplyAmount).HasPrecision(18, 2);
         modelBuilder.Entity<Invoice>().Property(x => x.VatAmount).HasPrecision(18, 2);
         modelBuilder.Entity<Invoice>().Property(x => x.VatMode).HasMaxLength(20).HasDefaultValue(InvoiceVatModes.Included);
+        modelBuilder.Entity<Item>().Property(x => x.BoxQuantity).HasPrecision(18, 2);
         modelBuilder.Entity<Item>().Property(x => x.CurrentStock).HasPrecision(18, 2);
         modelBuilder.Entity<Item>().Property(x => x.SafetyStock).HasPrecision(18, 2);
         modelBuilder.Entity<Item>().Property(x => x.PurchasePrice).HasPrecision(18, 2);
@@ -214,7 +220,14 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<RecycleBinPurgeRecord>().HasIndex(x => x.OfficeCode);
         modelBuilder.Entity<RecycleBinPurgeRecord>().HasIndex(x => x.SourceOfficeCode);
         modelBuilder.Entity<RecycleBinPurgeRecord>().HasIndex(x => x.TargetOfficeCode);
-        modelBuilder.Entity<ProcessedSyncMutation>().HasIndex(x => x.MutationId).IsUnique();
+        var processedSyncMutation = modelBuilder.Entity<ProcessedSyncMutation>();
+        var mutationIdProperty = processedSyncMutation.Property(x => x.MutationId)
+            .HasConversion(
+                value => value.Trim().ToLowerInvariant(),
+                value => value);
+        if (Database.IsSqlite())
+            mutationIdProperty.UseCollation("NOCASE");
+        processedSyncMutation.HasIndex(x => x.MutationId).IsUnique();
         modelBuilder.Entity<InventoryLedgerEntry>().HasIndex(x => new { x.ItemId, x.OccurredDate });
         modelBuilder.Entity<InventoryLedgerEntry>().HasIndex(x => x.WarehouseCode);
         modelBuilder.Entity<RentalAssetAssignmentHistory>().HasIndex(x => new { x.AssetId, x.IsCurrent });
@@ -261,19 +274,27 @@ public sealed class AppDbContext : DbContext
         ApplySoftDeleteFilter<Invoice>(modelBuilder);
         ApplySoftDeleteFilter<Payment>(modelBuilder);
         ApplySoftDeleteFilter<PaymentAttachment>(modelBuilder);
+
+        ApplyRevisionConcurrencyTokens(modelBuilder);
     }
 
     public override int SaveChanges()
-    {
-        PrepareTrackedEntityState();
-        return base.SaveChanges();
-    }
+        => SaveChangesWithCommittedRevisions(acceptAllChangesOnSuccess: true);
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+        => SaveChangesWithCommittedRevisions(acceptAllChangesOnSuccess);
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
-    {
-        PrepareTrackedEntityState();
-        return base.SaveChangesAsync(cancellationToken);
-    }
+        => SaveChangesWithCommittedRevisionsAsync(
+            acceptAllChangesOnSuccess: true,
+            cancellationToken);
+
+    public override Task<int> SaveChangesAsync(
+        bool acceptAllChangesOnSuccess,
+        CancellationToken cancellationToken = default)
+        => SaveChangesWithCommittedRevisionsAsync(
+            acceptAllChangesOnSuccess,
+            cancellationToken);
 
     private static void ApplySoftDeleteFilter<TEntity>(ModelBuilder modelBuilder)
         where TEntity : TrackedEntity
@@ -281,7 +302,22 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<TEntity>().HasQueryFilter(x => !x.IsDeleted);
     }
 
-    private void PrepareTrackedEntityState()
+    private static void ApplyRevisionConcurrencyTokens(ModelBuilder modelBuilder)
+    {
+        foreach (var entityType in modelBuilder.Model.GetEntityTypes()
+                     .Where(entityType => typeof(ITrackedEntity).IsAssignableFrom(entityType.ClrType)))
+        {
+            modelBuilder.Entity(entityType.ClrType)
+                .Property(nameof(ITrackedEntity.Revision))
+                .IsConcurrencyToken();
+        }
+
+        modelBuilder.Entity<ItemWarehouseStock>()
+            .Property(x => x.Revision)
+            .IsConcurrencyToken();
+    }
+
+    private void PrepareTrackedEntityState(IReadOnlyDictionary<object, long>? reservedRevisions = null)
     {
         var now = DateTime.UtcNow;
         var auditLogs = new List<AuditLog>();
@@ -296,7 +332,11 @@ public sealed class AppDbContext : DbContext
                 }
 
                 trackedEntity.UpdatedAtUtc = now;
-                trackedEntity.Revision = _revisionClock.NextRevision();
+                trackedEntity.Revision = ResolveRevision(entry.Entity, reservedRevisions);
+            }
+            else if (entry.Entity is ItemWarehouseStock itemWarehouseStock)
+            {
+                itemWarehouseStock.Revision = ResolveRevision(entry.Entity, reservedRevisions);
             }
 
             var audit = BuildAuditLog(entry, now);
@@ -323,10 +363,19 @@ public sealed class AppDbContext : DbContext
 
         return entry.Entity is not AuditLog
                and not ConflictLog
+               and not SyncRevisionState
                and not ProcessedSyncMutation
                and not InventoryLedgerEntry
                and not ActiveEditSession;
     }
+
+    private long ResolveRevision(
+        object entity,
+        IReadOnlyDictionary<object, long>? reservedRevisions)
+        => reservedRevisions is not null &&
+           reservedRevisions.TryGetValue(entity, out var revision)
+            ? revision
+            : _revisionClock.NextRevision();
 
     private AuditLog? BuildAuditLog(EntityEntry entry, DateTime now)
     {

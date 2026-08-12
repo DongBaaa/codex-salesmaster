@@ -88,10 +88,20 @@ public static partial class DbInitializer
                 desiredResponsibleOfficeCode,
                 linkedCustomer?.OfficeCode,
                 OfficeCodeCatalog.Usenet);
-            var desiredTenantCode = NormalizeOperationalTenantCode(
-                invoice.TenantCode,
-                desiredOfficeCode,
-                desiredResponsibleOfficeCode);
+            var desiredTenantCode =
+                TenantScopeCatalog.TryNormalizeTenantCode(
+                    invoice.TenantCode,
+                    out var explicitTenantCode)
+                    ? explicitTenantCode
+                    : linkedCustomer is not null &&
+                      TenantScopeCatalog.TryNormalizeTenantCode(
+                          linkedCustomer.TenantCode,
+                          out var customerTenantCode)
+                        ? customerTenantCode
+                        : NormalizeOperationalTenantCode(
+                            null,
+                            desiredOfficeCode,
+                            desiredResponsibleOfficeCode);
 
             changed |= TryAssign(invoice, entity => entity.ResponsibleOfficeCode, (entity, value) => entity.ResponsibleOfficeCode = value, desiredResponsibleOfficeCode);
             changed |= TryAssign(invoice, entity => entity.OfficeCode, (entity, value) => entity.OfficeCode = value, desiredOfficeCode);

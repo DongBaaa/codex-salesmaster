@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
 
@@ -59,6 +60,29 @@ public sealed partial class LoginViewModel : ObservableObject
         }
     }
 
+    internal async Task<bool> TryIsolatedTestAutoLoginAsync(
+        IsolatedTestAutoLoginRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (!AppRuntimeInfo.IsTestRuntime)
+            return false;
+
+        RememberPassword = false;
+        RememberUsername = false;
+        Username = request.Username;
+        Password = request.Password;
+        try
+        {
+            await LoginAsync();
+            return _session.IsLoggedIn &&
+                   !_session.IsOfflineMode;
+        }
+        finally
+        {
+            Password = string.Empty;
+        }
+    }
+
     [RelayCommand(CanExecute = nameof(CanLogin))]
     private async Task LoginAsync()
     {
@@ -70,9 +94,19 @@ public sealed partial class LoginViewModel : ObservableObject
         ShowOfflineButton = false;
         try
         {
-            var result = await _api.LoginAsync(Username, Password);
+            var outcome = await _api.LoginWithOutcomeAsync(Username, Password);
+            var result = outcome.Response;
             if (result is null || result.Token is null)
             {
+                if ((outcome.StatusCode is System.Net.HttpStatusCode.Unauthorized
+                    or System.Net.HttpStatusCode.Forbidden)
+                    && await _local.DoesCachedSessionPasswordProofMatchAsync(Username, Password))
+                {
+                    await _local.RevokeRejectedAuthenticationCacheAsync(
+                        Username,
+                        officeCode: null,
+                        CancellationToken.None);
+                }
                 ErrorMessage = "로그인 실패: 아이디 또는 비밀번호를 확인하세요.";
                 return;
             }
@@ -103,20 +137,18 @@ public sealed partial class LoginViewModel : ObservableObject
         catch (Exception ex) when (IsConnectionError(ex))
         {
             // Server unreachable — offer offline mode if cache exists
-            var cached = await _local.GetCachedSessionAsync(Username);
-            if (cached is not null && await _local.VerifyCachedSessionPasswordAsync(Username, Password))
+            var cachedAuthentication =
+                await _local.ProbeCachedSessionAuthenticationAsync(Username, Password);
+            if (cachedAuthentication is not null)
             {
                 ErrorMessage = "서버에 연결할 수 없습니다. 오프라인 모드로 시작할 수 있습니다.";
                 ShowOfflineButton = true;
             }
-            else if (cached is not null)
-            {
-                ErrorMessage = "서버에 연결할 수 없고 오프라인 비밀번호 검증에 실패했습니다. 최근에 정상 로그인한 비밀번호를 입력하세요.";
-            }
             else
             {
-                ErrorMessage = "서버 연결 오류: 서버가 실행 중인지 확인하세요.\n" +
-                               "(처음 사용 시 서버에 한 번 이상 로그인해야 오프라인 모드 사용 가능)";
+                ErrorMessage =
+                    "서버에 연결할 수 없고 오프라인 인증 캐시 또는 비밀번호를 확인할 수 없습니다. "
+                    + "최근 정상 로그인한 아이디와 비밀번호를 입력하세요.";
             }
         }
         catch (Exception ex)
@@ -132,21 +164,16 @@ public sealed partial class LoginViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanOfflineLogin))]
     private async Task OfflineLoginAsync()
     {
-        var cached = await _local.GetCachedSessionAsync(Username);
-        if (cached is null)
+        var cachedAuthentication =
+            await _local.AuthenticateCachedSessionAsync(Username, Password);
+        if (cachedAuthentication is null)
         {
-            ErrorMessage = "오프라인 캐시가 없습니다.";
+            ErrorMessage = "오프라인 인증에 실패했습니다. 최근 정상 로그인한 아이디와 비밀번호를 입력하세요.";
             return;
         }
-        if (!await _local.VerifyCachedSessionPasswordAsync(Username, Password))
-        {
-            ErrorMessage = "오프라인 비밀번호 검증에 실패했습니다. 최근 정상 로그인한 비밀번호를 입력하세요.";
-            return;
-        }
-        _session.SetOfflineSession(cached);
-        var cachedOffice = await _local.GetCachedOfficeCodeAsync(Username);
-        if (!string.IsNullOrWhiteSpace(cachedOffice))
-            _session.SetOfficeCode(cachedOffice);
+        _session.SetOfflineSession(cachedAuthentication.User);
+        if (!string.IsNullOrWhiteSpace(cachedAuthentication.OfficeCode))
+            _session.SetOfficeCode(cachedAuthentication.OfficeCode);
         await SaveRememberOptionsAsync();
         LoginSucceeded?.Invoke();
     }
@@ -198,18 +225,20 @@ public sealed partial class LoginViewModel : ObservableObject
 
     private async Task SaveRememberOptionsAsync()
     {
-        await _local.SetSettingAsync(RememberUsernameSettingKey, RememberUsername ? "1" : "0");
-        await _local.SetSettingAsync(RememberPasswordSettingKey, RememberPassword ? "1" : "0");
-
-        if (RememberUsername && !string.IsNullOrWhiteSpace(Username))
-            await _local.SetSettingAsync(SavedUsernameSettingKey, Username);
-        else
-            await _local.SetSettingAsync(SavedUsernameSettingKey, string.Empty);
-
-        if (RememberPassword && !string.IsNullOrEmpty(Password))
-            await _local.SetSettingAsync(SavedPasswordSettingKey, EncryptPassword(Password));
-        else
-            await _local.SetSettingAsync(SavedPasswordSettingKey, string.Empty);
+        await _local.SaveSettingsIndependentAsync(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [RememberUsernameSettingKey] = RememberUsername ? "1" : "0",
+                [RememberPasswordSettingKey] = RememberPassword ? "1" : "0",
+                [SavedUsernameSettingKey] =
+                    RememberUsername && !string.IsNullOrWhiteSpace(Username)
+                        ? Username
+                        : string.Empty,
+                [SavedPasswordSettingKey] =
+                    RememberPassword && !string.IsNullOrEmpty(Password)
+                        ? EncryptPassword(Password)
+                        : string.Empty
+            });
     }
 
     private static string EncryptPassword(string plainText)

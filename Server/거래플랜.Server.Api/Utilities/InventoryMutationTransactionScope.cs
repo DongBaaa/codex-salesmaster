@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore.Storage;
 
 namespace 거래플랜.Server.Api.Utilities;
 
-// Serializes stock snapshot read-modify-write operations and full ledger rebuilds per database.
+// Serializes stock snapshot operations and idempotent sync mutation batches per database.
 // This scope intentionally does not impose a minimum stock quantity.
 public sealed class InventoryMutationTransactionScope : IAsyncDisposable
 {

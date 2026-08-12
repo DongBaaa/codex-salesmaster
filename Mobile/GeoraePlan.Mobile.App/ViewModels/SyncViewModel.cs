@@ -6,6 +6,7 @@ public sealed class SyncViewModel : ObservableObject
 {
     private readonly SyncCoordinator _syncCoordinator;
     private readonly SessionStore _sessionStore;
+    private readonly MobileOwnerOperationGate _ownerOperations;
 
     private string _lastRevisionText = "0";
     private string _lastPullSummary = "-";
@@ -20,6 +21,8 @@ public sealed class SyncViewModel : ObservableObject
     {
         _syncCoordinator = syncCoordinator;
         _sessionStore = sessionStore;
+        _ownerOperations =
+            new MobileOwnerOperationGate(sessionStore);
         RefreshCommand = new AsyncCommand(RefreshAsync);
         PullCommand = new AsyncCommand(PullAsync);
         PushCommand = new AsyncCommand(PushAsync);
@@ -80,74 +83,78 @@ public sealed class SyncViewModel : ObservableObject
     public AsyncCommand SyncNowCommand { get; }
 
     public async Task RefreshAsync()
-    {
-        var state = await _syncCoordinator.LoadAsync();
-        ApplyState(state);
-        StatusMessage = string.IsNullOrWhiteSpace(state.LastError)
-            ? "동기화 상태를 불러왔습니다."
-            : $"최근 동기화 오류: {state.LastError}";
-    }
+        => await RunOwnerOperationAsync(
+            () => _syncCoordinator.LoadAsync(),
+            "동기화 상태를 확인하는 중입니다.",
+            state => string.IsNullOrWhiteSpace(state.LastError)
+                ? "동기화 상태를 불러왔습니다."
+                : $"최근 동기화 오류: {state.LastError}",
+            deferRefreshWhenBusy: true);
 
     public async Task PullAsync()
-    {
-        if (IsBusy)
-            return;
-
-        try
-        {
-            IsBusy = true;
-            StatusMessage = "서버에서 최신 데이터를 받는 중입니다.";
-            var state = await _syncCoordinator.PullAsync();
-            ApplyState(state);
-            StatusMessage = string.IsNullOrWhiteSpace(state.LastError)
+        => await RunOwnerOperationAsync(
+            () => _syncCoordinator.PullAsync(),
+            "서버에서 최신 데이터를 받는 중입니다.",
+            state => string.IsNullOrWhiteSpace(state.LastError)
                 ? "서버 데이터 받기 완료"
-                : $"서버 데이터 받기 오류: {state.LastError}";
-        }
-        finally
-        {
-            IsBusy = false;
-        }
-    }
+                : $"서버 데이터 받기 오류: {state.LastError}");
 
     public async Task PushAsync()
-    {
-        if (IsBusy)
-            return;
-
-        try
-        {
-            IsBusy = true;
-            StatusMessage = "내 기기 저장 내용을 서버에 올리는 중입니다.";
-            var state = await _syncCoordinator.PushAsync();
-            ApplyState(state);
-            StatusMessage = string.IsNullOrWhiteSpace(state.LastError)
+        => await RunOwnerOperationAsync(
+            () => _syncCoordinator.PushAsync(),
+            "내 기기 저장 내용을 서버에 올리는 중입니다.",
+            state => string.IsNullOrWhiteSpace(state.LastError)
                 ? "서버 올리기 완료"
-                : $"서버 올리기 오류: {state.LastError}";
-        }
-        finally
-        {
-            IsBusy = false;
-        }
-    }
+                : $"서버 올리기 오류: {state.LastError}");
 
     public async Task SyncNowAsync()
+        => await RunOwnerOperationAsync(
+            () => _syncCoordinator.SynchronizeNowAsync(),
+            "권장 동기화(내 변경 올리기 → 첨부 올리기 → 서버 최신 받기) 진행 중입니다.",
+            state => string.IsNullOrWhiteSpace(state.LastError)
+                ? "권장 동기화 완료"
+                : $"동기화 대기/오류: {state.LastError}");
+
+    private async Task RunOwnerOperationAsync(
+        Func<Task<Models.MobileSyncState>> runAsync,
+        string runningMessage,
+        Func<Models.MobileSyncState, string> completedMessage,
+        bool deferRefreshWhenBusy = false)
     {
-        if (IsBusy)
+        var operation = _ownerOperations.TryBegin(
+            ResetForOwner,
+            deferRefreshWhenBusy);
+        IsBusy = _ownerOperations.IsBusy;
+        if (operation is null)
             return;
 
+        var runDeferredRefresh = false;
         try
         {
-            IsBusy = true;
-            StatusMessage = "권장 동기화(내 변경 올리기 → 첨부 올리기 → 서버 최신 받기) 진행 중입니다.";
-            var state = await _syncCoordinator.SynchronizeNowAsync();
+            StatusMessage = runningMessage;
+            var state = await runAsync();
+            if (!_ownerOperations.CanCommit(operation))
+                return;
             ApplyState(state);
-            StatusMessage = string.IsNullOrWhiteSpace(state.LastError)
-                ? "권장 동기화 완료"
-                : $"동기화 대기/오류: {state.LastError}";
+            StatusMessage = completedMessage(state);
+        }
+        catch (MobileClientUpgradeRequiredException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (_ownerOperations.CanCommit(operation))
+                StatusMessage = $"동기화 작업 실패: {ex.Message}";
         }
         finally
         {
-            IsBusy = false;
+            runDeferredRefresh = _ownerOperations.Complete(
+                operation,
+                ResetForOwner);
+            IsBusy = _ownerOperations.IsBusy;
+            if (runDeferredRefresh)
+                await RefreshAsync();
         }
     }
 
@@ -200,5 +207,17 @@ public sealed class SyncViewModel : ObservableObject
             HasAttention = false;
             AttentionText = string.Empty;
         }
+    }
+
+    private void ResetForOwner()
+    {
+        LastRevisionText = "0";
+        LastPullSummary = "-";
+        PendingText =
+            "저장 대기: 설정 0건 / 거래처기준 0건 / 거래처 0건 / 계약 0건 / 품목 0건 / 재고 0건 / 전표 0건 / 수금·지급 0건 / 첨부 0건 / 거래 0건 / 거래첨부 0건 / 재고이동 0건 / 렌탈관리 0건 / 렌탈 0건";
+        HasAttention = false;
+        AttentionText = string.Empty;
+        StatusMessage =
+            "새 로그인 계정의 동기화 상태를 확인하세요.";
     }
 }

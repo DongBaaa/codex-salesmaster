@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Claims;
 using 거래플랜.Shared.Contracts;
 using 거래플랜.Server.Api.Services;
@@ -81,11 +82,26 @@ public sealed class ActiveUserSessionValidator : IActiveUserSessionValidator
         await using var userCommand = connection.CreateCommand();
         userCommand.CommandText =
             """
-            SELECT "Role", "TenantCode", "OfficeCode", "ScopeType"
-            FROM "Users"
-            WHERE UPPER("Id") = UPPER($id)
-              AND COALESCE("IsActive", 1) = 1
-              AND COALESCE("IsDeleted", 0) = 0
+            SELECT user."Role", user."TenantCode", user."OfficeCode", user."ScopeType", user."Revision"
+            FROM "Users" AS user
+            WHERE UPPER(user."Id") = UPPER($id)
+              AND COALESCE(user."IsActive", 1) = 1
+              AND COALESCE(user."IsDeleted", 0) = 0
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM "TenantDefinitions" AS tenant
+                  WHERE UPPER(tenant."TenantCode") = UPPER(user."TenantCode")
+                    AND (
+                        COALESCE(tenant."IsActive", 1) <> 1 OR
+                        COALESCE(tenant."IsDeleted", 0) <> 0))
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM "TenantOfficeDefinitions" AS office
+                  WHERE UPPER(office."OfficeCode") = UPPER(user."OfficeCode")
+                    AND (
+                        UPPER(office."TenantCode") <> UPPER(user."TenantCode") OR
+                        COALESCE(office."IsActive", 1) <> 1 OR
+                        COALESCE(office."IsDeleted", 0) <> 0))
             LIMIT 1;
             """;
         userCommand.Parameters.AddWithValue("$id", userId.ToString());
@@ -94,6 +110,7 @@ public sealed class ActiveUserSessionValidator : IActiveUserSessionValidator
         string? tenantCode;
         string? officeCode;
         string? scopeType;
+        long revision;
         await using (var reader = await userCommand.ExecuteReaderAsync(cancellationToken))
         {
             if (!await reader.ReadAsync(cancellationToken))
@@ -103,6 +120,7 @@ public sealed class ActiveUserSessionValidator : IActiveUserSessionValidator
             tenantCode = ReadNullableString(reader, 1);
             officeCode = ReadNullableString(reader, 2);
             scopeType = ReadNullableString(reader, 3);
+            revision = reader.GetInt64(4);
         }
 
         await using var permissionsCommand = connection.CreateCommand();
@@ -126,7 +144,7 @@ public sealed class ActiveUserSessionValidator : IActiveUserSessionValidator
             }
         }
 
-        return ActiveUserSessionSnapshot.Create(role, tenantCode, officeCode, scopeType, permissions);
+        return ActiveUserSessionSnapshot.Create(role, tenantCode, officeCode, scopeType, revision, permissions);
     }
 
     private static async Task<ActiveUserSessionSnapshot?> LoadPostgresUserSessionSnapshotAsync(
@@ -139,11 +157,26 @@ public sealed class ActiveUserSessionValidator : IActiveUserSessionValidator
         await using var userCommand = connection.CreateCommand();
         userCommand.CommandText =
             """
-            SELECT "Role", "TenantCode", "OfficeCode", "ScopeType"
-            FROM "Users"
-            WHERE "Id" = @id
-              AND COALESCE("IsActive", TRUE) = TRUE
-              AND COALESCE("IsDeleted", FALSE) = FALSE
+            SELECT "user"."Role", "user"."TenantCode", "user"."OfficeCode", "user"."ScopeType", "user"."Revision"
+            FROM "Users" AS "user"
+            WHERE "user"."Id" = @id
+              AND COALESCE("user"."IsActive", TRUE) = TRUE
+              AND COALESCE("user"."IsDeleted", FALSE) = FALSE
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM "TenantDefinitions" AS tenant
+                  WHERE UPPER(tenant."TenantCode") = UPPER("user"."TenantCode")
+                    AND (
+                        COALESCE(tenant."IsActive", TRUE) = FALSE OR
+                        COALESCE(tenant."IsDeleted", FALSE) = TRUE))
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM "TenantOfficeDefinitions" AS office
+                  WHERE UPPER(office."OfficeCode") = UPPER("user"."OfficeCode")
+                    AND (
+                        UPPER(office."TenantCode") <> UPPER("user"."TenantCode") OR
+                        COALESCE(office."IsActive", TRUE) = FALSE OR
+                        COALESCE(office."IsDeleted", FALSE) = TRUE))
             LIMIT 1;
             """;
         userCommand.Parameters.AddWithValue("id", userId);
@@ -152,6 +185,7 @@ public sealed class ActiveUserSessionValidator : IActiveUserSessionValidator
         string? tenantCode;
         string? officeCode;
         string? scopeType;
+        long revision;
         await using (var reader = await userCommand.ExecuteReaderAsync(cancellationToken))
         {
             if (!await reader.ReadAsync(cancellationToken))
@@ -161,6 +195,7 @@ public sealed class ActiveUserSessionValidator : IActiveUserSessionValidator
             tenantCode = ReadNullableString(reader, 1);
             officeCode = ReadNullableString(reader, 2);
             scopeType = ReadNullableString(reader, 3);
+            revision = reader.GetInt64(4);
         }
 
         await using var permissionsCommand = connection.CreateCommand();
@@ -184,11 +219,26 @@ public sealed class ActiveUserSessionValidator : IActiveUserSessionValidator
             }
         }
 
-        return ActiveUserSessionSnapshot.Create(role, tenantCode, officeCode, scopeType, permissions);
+        return ActiveUserSessionSnapshot.Create(role, tenantCode, officeCode, scopeType, revision, permissions);
     }
 
     private static bool TokenClaimsMatch(ActiveUserSessionSnapshot snapshot, ClaimsPrincipal principal)
     {
+        var revisionClaims = principal.Claims
+            .Where(claim => string.Equals(claim.Type, JwtClaimTypes.UserRevision, StringComparison.Ordinal))
+            .Select(claim => claim.Value?.Trim() ?? string.Empty)
+            .ToArray();
+        if (revisionClaims.Length != 1 ||
+            !long.TryParse(
+                revisionClaims[0],
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out var tokenRevision) ||
+            tokenRevision != snapshot.Revision)
+        {
+            return false;
+        }
+
         if (!SingleClaimEquals(principal, ClaimTypes.Role, snapshot.Role, StringComparer.Ordinal))
             return false;
 
@@ -258,6 +308,7 @@ public sealed class ActiveUserSessionValidator : IActiveUserSessionValidator
         string TenantCode,
         string OfficeCode,
         string ScopeType,
+        long Revision,
         IReadOnlyList<string> Permissions)
     {
         public static ActiveUserSessionSnapshot Create(
@@ -265,6 +316,7 @@ public sealed class ActiveUserSessionValidator : IActiveUserSessionValidator
             string? tenantCode,
             string? officeCode,
             string? scopeType,
+            long revision,
             IEnumerable<string> permissions)
         {
             var normalizedRole = string.IsNullOrWhiteSpace(role) ? "User" : role.Trim();
@@ -286,6 +338,7 @@ public sealed class ActiveUserSessionValidator : IActiveUserSessionValidator
                 normalizedTenantCode,
                 normalizedOfficeCode,
                 normalizedScopeType,
+                revision,
                 normalizedPermissions);
         }
     }

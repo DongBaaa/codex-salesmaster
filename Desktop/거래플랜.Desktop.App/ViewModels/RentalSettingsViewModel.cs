@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 
 namespace 거래플랜.Desktop.App.ViewModels;
@@ -168,7 +169,7 @@ public sealed partial class RentalSettingsViewModel : ObservableObject
             CheckFileExists = true
         };
 
-        if (dialog.ShowDialog() == true)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) == true)
             BillingWorkbookPath = dialog.FileName;
     }
 
@@ -182,7 +183,7 @@ public sealed partial class RentalSettingsViewModel : ObservableObject
             CheckFileExists = true
         };
 
-        if (dialog.ShowDialog() == true)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) == true)
             AssetWorkbookPath = dialog.FileName;
     }
 }

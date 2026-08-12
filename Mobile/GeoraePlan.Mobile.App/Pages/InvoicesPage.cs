@@ -12,7 +12,6 @@ public sealed class InvoicesPage : ContentPage
 {
     private readonly InvoicesViewModel _viewModel;
     private readonly MobileRefreshCoordinator _refreshCoordinator;
-    private readonly SyncCoordinator _syncCoordinator;
     private readonly SessionStore _sessionStore;
     private int _seenInvoicesVersion;
 
@@ -22,7 +21,6 @@ public sealed class InvoicesPage : ContentPage
 
         _viewModel = ServiceHelper.GetRequiredService<InvoicesViewModel>();
         _refreshCoordinator = ServiceHelper.GetRequiredService<MobileRefreshCoordinator>();
-        _syncCoordinator = ServiceHelper.GetRequiredService<SyncCoordinator>();
         _sessionStore = ServiceHelper.GetRequiredService<SessionStore>();
         _refreshCoordinator.AllChanged += HandleRealtimeRefreshRequested;
         BindingContext = _viewModel;
@@ -409,20 +407,39 @@ public sealed class InvoicesPage : ContentPage
         await MobileErrorHandler.RunGuardedAsync(
             async () =>
             {
-try
-        {
-            await _syncCoordinator.RefreshIfServerChangedAsync("invoices-page", TimeSpan.FromSeconds(5));
+                var owner = _viewModel.EnsureCurrentOwner();
+                try
+                {
+                    var versionChanged =
+                        _seenInvoicesVersion !=
+                        _refreshCoordinator.InvoicesVersion;
+                    if (versionChanged ||
+                        _viewModel.NeedsRefresh(
+                            TimeSpan.FromSeconds(15)))
+                    {
+                        await _viewModel.RefreshAsync();
+                    }
 
-            var versionChanged = _seenInvoicesVersion != _refreshCoordinator.InvoicesVersion;
-            if (versionChanged || _viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
-                await _viewModel.RefreshAsync();
+                    if (!_viewModel.IsCurrentOwner(owner))
+                    {
+                        owner = _viewModel.EnsureCurrentOwner();
+                        await _viewModel.RefreshAsync();
+                    }
 
-            _seenInvoicesVersion = _refreshCoordinator.InvoicesVersion;
-        }
-        catch (Exception ex)
-        {
-            _viewModel.StatusMessage = $"전표 화면 초기화 실패: {ex.Message}";
-        }
+                    if (_viewModel.IsCurrentOwner(owner))
+                    {
+                        _seenInvoicesVersion =
+                            _refreshCoordinator.InvoicesVersion;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (_viewModel.IsCurrentOwner(owner))
+                    {
+                        _viewModel.StatusMessage =
+                            $"전표 화면 초기화 실패: {ex.Message}";
+                    }
+                }
             },
             "전표 화면 초기화");
     }
@@ -435,8 +452,14 @@ try
                 {
                     if (Shell.Current?.CurrentPage == this)
                     {
+                        var owner =
+                            _viewModel.EnsureCurrentOwner();
                         await _viewModel.RefreshAsync();
-                        _seenInvoicesVersion = _refreshCoordinator.InvoicesVersion;
+                        if (_viewModel.IsCurrentOwner(owner))
+                        {
+                            _seenInvoicesVersion =
+                                _refreshCoordinator.InvoicesVersion;
+                        }
                     }
                 },
                 "전표 실시간 갱신"));

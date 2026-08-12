@@ -23,6 +23,25 @@ public sealed class RentalAssetLinkDialogViewModelTests
         Assert.Equal("현재 담당지점 자산만 표시 중입니다.", InvokePrivateInstance<string>(vm, "BuildScopeStatusSuffix"));
     }
 
+    [Fact]
+    public void BillingAssetOption_ReferenceOnlySelectionDisablesSourceEditing()
+    {
+        var option = new RentalBillingAssetOption
+        {
+            IsSelected = true,
+            IsReferenceOnly = true
+        };
+
+        Assert.False(option.CanEditInLinkDialog);
+        Assert.Equal("참조 전용", option.LinkModeDisplay);
+
+        option.IsReferenceOnly = false;
+        option.IsLinkedToAnotherProfile = true;
+
+        Assert.True(option.CanEditInLinkDialog);
+        Assert.Equal("다른 청구에서 이동", option.LinkModeDisplay);
+    }
+
     private static SessionState CreateAdminSession()
     {
         var session = new SessionState();

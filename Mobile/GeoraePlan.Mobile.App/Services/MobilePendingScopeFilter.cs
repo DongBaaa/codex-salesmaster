@@ -102,11 +102,28 @@ public static class MobilePendingScopeFilter
 
         var paymentMap = BuildEntityMap(state.SyncedPayments, state.PendingPush.Payments);
         var invoiceMap = BuildEntityMap(state.SyncedInvoices, state.PendingPush.Invoices);
+        var transactionMap = BuildEntityMap(
+            state.SyncedTransactions,
+            state.PendingPush.Transactions);
         var allowedPaymentIds = paymentMap.Values
             .Where(payment => CanAccessPayment(snapshot, payment, invoiceMap))
             .Select(payment => payment.Id)
             .Where(id => id != Guid.Empty)
             .ToHashSet();
+        foreach (var transaction in transactionMap.Values
+                     .Where(transaction =>
+                         transaction.Id != Guid.Empty &&
+                         MobileSessionScopeFilter
+                             .CanAccessTransaction(
+                                 snapshot,
+                                 transaction)))
+        {
+            // PaymentDraft creates the linked transaction with the same stable
+            // id as the payment. This retains enough scoped evidence to upload
+            // a durable accepted-payment attachment after a restart even when
+            // the invoice snapshot has not yet been pulled into local state.
+            allowedPaymentIds.Add(transaction.Id);
+        }
 
         if (additionalAllowedPaymentIds is not null)
         {

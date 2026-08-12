@@ -190,7 +190,8 @@ public sealed class SettingsViewModel : ObservableObject
 
     public async Task SaveAsync()
     {
-        if (!EnsureCanEditConnectionSettings())
+        if (!EnsureCanEditConnectionSettings(
+                out var expectedOwner))
             return;
 
         if (IsTestingConnection)
@@ -202,35 +203,76 @@ public sealed class SettingsViewModel : ObservableObject
             StatusMessage = "저장 전 연결 테스트 중...";
 
             var result = await _connectionTestService.TestAsync(BaseUrl);
+            _sessionStore.ThrowIfOwnerChanged(expectedOwner);
             if (!string.IsNullOrWhiteSpace(result.NormalizedBaseUrl))
                 BaseUrl = result.NormalizedBaseUrl;
 
             if (!result.IsSuccess)
             {
-                StatusMessage = $"저장 중단: {result.Message}";
+                if (_sessionStore.IsOwnerCurrent(expectedOwner))
+                    StatusMessage = $"저장 중단: {result.Message}";
                 return;
             }
 
-            await _settings.SaveBaseUrlAsync(result.NormalizedBaseUrl);
+            if (!await CommitConnectionSettingIfAuthorizedAsync(
+                    expectedOwner,
+                    () => _settings.SaveBaseUrlAsync(
+                        result.NormalizedBaseUrl)))
+            {
+                return;
+            }
+
+            if (!_sessionStore.IsOwnerCurrent(expectedOwner))
+                return;
             BaseUrl = _settings.GetBaseUrl();
             RefreshConnectionModeText();
             StatusMessage = _settings.HasCustomBaseUrl()
                 ? "연결 테스트 성공 후 고급 연결 URL을 저장했습니다. 다음 요청부터 해당 서버로 연결합니다."
                 : "연결 테스트 성공 후 운영 서버 기본 연결로 저장했습니다.";
         }
+        catch (StaleMobileSessionOwnerException)
+        {
+            RefreshConnectionPermissionFromCurrentSession();
+        }
         catch (ArgumentException ex)
         {
-            StatusMessage = ex.Message;
+            if (_sessionStore.IsOwnerCurrent(expectedOwner))
+                StatusMessage = ex.Message;
         }
         finally
         {
-            IsTestingConnection = false;
+            if (_sessionStore.IsOwnerCurrent(expectedOwner))
+                IsTestingConnection = false;
+            else
+                RefreshConnectionPermissionFromCurrentSession();
         }
     }
 
     public async Task ResetConnectionAsync()
     {
-        await _settings.ResetBaseUrlAsync();
+        if (!EnsureCanEditConnectionSettings(
+                out var expectedOwner))
+        {
+            return;
+        }
+
+        try
+        {
+            if (!await CommitConnectionSettingIfAuthorizedAsync(
+                    expectedOwner,
+                    _settings.ResetBaseUrlAsync))
+            {
+                return;
+            }
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            RefreshConnectionPermissionFromCurrentSession();
+            return;
+        }
+
+        if (!_sessionStore.IsOwnerCurrent(expectedOwner))
+            return;
         BaseUrl = _settings.GetDefaultBaseUrl();
         RefreshConnectionModeText();
         StatusMessage = "운영 서버 기본 연결로 초기화했습니다.";
@@ -238,7 +280,8 @@ public sealed class SettingsViewModel : ObservableObject
 
     public async Task TestConnectionAsync()
     {
-        if (!EnsureCanEditConnectionSettings())
+        if (!EnsureCanEditConnectionSettings(
+                out var expectedOwner))
             return;
 
         if (IsTestingConnection)
@@ -249,13 +292,21 @@ public sealed class SettingsViewModel : ObservableObject
             IsTestingConnection = true;
             StatusMessage = "연결 테스트 중...";
             var result = await _connectionTestService.TestAsync(BaseUrl);
+            _sessionStore.ThrowIfOwnerChanged(expectedOwner);
             if (!string.IsNullOrWhiteSpace(result.NormalizedBaseUrl))
                 BaseUrl = result.NormalizedBaseUrl;
             StatusMessage = result.Message;
         }
+        catch (StaleMobileSessionOwnerException)
+        {
+            RefreshConnectionPermissionFromCurrentSession();
+        }
         finally
         {
-            IsTestingConnection = false;
+            if (_sessionStore.IsOwnerCurrent(expectedOwner))
+                IsTestingConnection = false;
+            else
+                RefreshConnectionPermissionFromCurrentSession();
         }
     }
 
@@ -289,7 +340,8 @@ public sealed class SettingsViewModel : ObservableObject
 
     private Task ToggleConnectionSettingsAsync()
     {
-        if (!EnsureCanEditConnectionSettings())
+        if (!EnsureCanEditConnectionSettings(
+                out _))
             return Task.CompletedTask;
 
         IsConnectionSettingsVisible = !IsConnectionSettingsVisible;
@@ -301,13 +353,55 @@ public sealed class SettingsViewModel : ObservableObject
     }
 
     private bool EnsureCanEditConnectionSettings()
+        => EnsureCanEditConnectionSettings(out _);
+
+    private bool EnsureCanEditConnectionSettings(
+        out MobileSessionOwner owner)
     {
+        var snapshot = _sessionStore.GetSnapshot();
+        owner = MobileSessionOwner.Capture(snapshot);
+        CanEditConnectionSettings = snapshot.CanEditSettings;
         if (CanEditConnectionSettings)
             return true;
 
         IsConnectionSettingsVisible = false;
         StatusMessage = "고급 연결 설정은 관리자 또는 Settings.Edit 권한 계정만 사용할 수 있습니다.";
         return false;
+    }
+
+    private async Task<bool>
+        CommitConnectionSettingIfAuthorizedAsync(
+            MobileSessionOwner expectedOwner,
+            Func<Task> commitAsync)
+    {
+        ArgumentNullException.ThrowIfNull(expectedOwner);
+        ArgumentNullException.ThrowIfNull(commitAsync);
+
+        using var ownerLease = await _sessionStore
+            .AcquireOwnerCommitLeaseAsync(expectedOwner);
+        var snapshot = _sessionStore.GetSnapshot();
+        if (!snapshot.CanEditSettings)
+        {
+            CanEditConnectionSettings = false;
+            IsConnectionSettingsVisible = false;
+            StatusMessage =
+                "고급 연결 설정은 관리자 또는 Settings.Edit 권한 계정만 사용할 수 있습니다.";
+            return false;
+        }
+
+        await commitAsync();
+        return true;
+    }
+
+    private void RefreshConnectionPermissionFromCurrentSession()
+    {
+        var snapshot = _sessionStore.GetSnapshot();
+        CanEditConnectionSettings = snapshot.CanEditSettings;
+        if (!CanEditConnectionSettings)
+            IsConnectionSettingsVisible = false;
+        BaseUrl = _settings.GetBaseUrl();
+        RefreshConnectionModeText();
+        IsTestingConnection = false;
     }
 
     public async Task InstallUpdateAsync()

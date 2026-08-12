@@ -10,6 +10,7 @@ using System.Windows.Xps;
 using System.Windows.Xps.Packaging;
 using QuestPDF.Fluent;
 using QuestPDF.Infrastructure;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Printing;
 using 거래플랜.Desktop.App.Views;
 using WpfSize = System.Windows.Size;
@@ -109,7 +110,7 @@ public static class TradePrintExecutor
                 Owner = ResolveActiveOwner()
             };
 
-            if (dialog.ShowDialog() != true || dialog.PrintOptions is null)
+            if (DialogWindowCloseHelper.ShowDialog(dialog) != true || dialog.PrintOptions is null)
                 return false;
 
             paginator.PageSize = pageSize;

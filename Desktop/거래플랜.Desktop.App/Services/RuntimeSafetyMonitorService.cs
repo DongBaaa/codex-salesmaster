@@ -351,6 +351,13 @@ public sealed class RuntimeSafetyMonitorService
         var local = scope.ServiceProvider.GetRequiredService<LocalStateService>();
         var sync = scope.ServiceProvider.GetRequiredService<SyncService>();
         var backup = scope.ServiceProvider.GetRequiredService<BackupService>();
-        return await action(local, sync, backup);
+        try
+        {
+            return await action(local, sync, backup);
+        }
+        finally
+        {
+            await sync.StopAndDrainAsync().ConfigureAwait(false);
+        }
     }
 }

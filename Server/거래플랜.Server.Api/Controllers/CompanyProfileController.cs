@@ -59,6 +59,10 @@ public sealed class CompanyProfileController : ControllerBase
             return SoftDeleteMutationGuard.RejectUpdate("회사 프로필");
 
         dto.OfficeCode = normalizedOfficeCode;
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
 
         var profile = dto.Id == Guid.Empty
             ? null
@@ -75,6 +79,26 @@ public sealed class CompanyProfileController : ControllerBase
                     cancellationToken);
         }
 
+        if (profile is not null)
+        {
+            if (!_officeScopeService.CanWriteOfficeForCompanyProfiles(profile.OfficeCode))
+                return Forbid();
+
+            dto.OfficeCode = ResolveWritableOfficeCode(dto.OfficeCode, profile.OfficeCode);
+            if (!_officeScopeService.CanWriteOfficeForCompanyProfiles(dto.OfficeCode))
+                return Forbid();
+        }
+
+        var mutationCheck = await ProcessedSyncMutationRecorder.CheckAsync(
+            _dbContext,
+            dto,
+            nameof(Domain.CompanyProfile),
+            cancellationToken);
+        if (mutationCheck.Status == DirectMutationStatus.Conflict)
+            return Conflict(ProcessedSyncMutationRecorder.BuildConflictResponse(mutationCheck));
+        if (mutationCheck.Status == DirectMutationStatus.Duplicate)
+            return await ResolveDuplicateCompanyProfileAsync(mutationCheck, cancellationToken);
+
         if (profile is null)
         {
             profile = new Domain.CompanyProfile { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
@@ -83,15 +107,8 @@ public sealed class CompanyProfileController : ControllerBase
         }
         else
         {
-            if (!_officeScopeService.CanWriteOfficeForCompanyProfiles(profile.OfficeCode))
-                return Forbid();
-
             if (OptimisticConcurrencyGuard.Check(this, profile, dto, nameof(Domain.CompanyProfile)) is { } conflict)
                 return conflict;
-
-            dto.OfficeCode = ResolveWritableOfficeCode(dto.OfficeCode, profile.OfficeCode);
-            if (!_officeScopeService.CanWriteOfficeForCompanyProfiles(dto.OfficeCode))
-                return Forbid();
 
             profile.Apply(dto);
         }
@@ -111,8 +128,35 @@ public sealed class CompanyProfileController : ControllerBase
             }
         }
 
+        ProcessedSyncMutationRecorder.Record(_dbContext, mutationCheck, profile.Id);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return Ok(profile.ToDto());
+    }
+
+    private async Task<ActionResult<CompanyProfileDto>> ResolveDuplicateCompanyProfileAsync(
+        DirectMutationCheck mutationCheck,
+        CancellationToken cancellationToken)
+    {
+        if (mutationCheck.ExistingReceipt is not null &&
+            Guid.TryParse(mutationCheck.ExistingReceipt.EntityId, out var entityId))
+        {
+            var profile = await _officeScopeService.ApplyCompanyProfileScope(
+                    _dbContext.CompanyProfiles.AsNoTracking())
+                .FirstOrDefaultAsync(
+                    current => current.Id == entityId,
+                    cancellationToken);
+            if (profile is not null)
+                return Ok(profile.ToDto());
+        }
+
+        return Conflict(new DirectMutationConflictResponse
+        {
+            MutationId = mutationCheck.MutationId,
+            EntityName = nameof(Domain.CompanyProfile),
+            EntityId = mutationCheck.RequestedEntityId,
+            Reason = "The processed mutation is unavailable in the current scope."
+        });
     }
 
     private string ResolveRequestedOfficeCode(string? requestedOfficeCode)

@@ -14,22 +14,63 @@ public sealed record ItemVendorPurchasePriceRow(
     string Unit,
     string InvoiceNumber);
 
+public sealed record ItemConfirmedInvoiceDates(
+    DateOnly? LastPurchaseDate,
+    DateOnly? LastSaleDate);
+
 public sealed partial class LocalStateService
 {
+    public async Task<ItemConfirmedInvoiceDates> GetItemConfirmedInvoiceDatesAsync(
+        Guid itemId,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        var scope = await ResolveReadableItemInvoiceHistoryScopeAsync(itemId, session, ct);
+        if (scope is null)
+            return new ItemConfirmedInvoiceDates(null, null);
+
+        var rows = await (
+                from invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking()
+                join line in _db.InvoiceLines.IgnoreQueryFilters().AsNoTracking()
+                    on invoice.Id equals line.InvoiceId
+                where !invoice.IsDeleted
+                      && invoice.IsLatestVersion
+                      && invoice.IsConfirmed
+                      && (invoice.VoucherType == VoucherType.Purchase
+                          || invoice.VoucherType == VoucherType.Sales)
+                      && !line.IsDeleted
+                      && line.ItemId == itemId
+                      && invoice.TenantCode == scope.TenantCode
+                      && (invoice.OfficeCode == OfficeCodeCatalog.Shared
+                          || scope.ReadableOfficeCodes.Contains(invoice.OfficeCode)
+                          || scope.ReadableOfficeCodes.Contains(invoice.ResponsibleOfficeCode))
+                group invoice by invoice.VoucherType
+                into invoiceGroup
+                select new ItemInvoiceDateQueryRow(
+                    invoiceGroup.Key,
+                    invoiceGroup.Max(invoice => invoice.InvoiceDate)))
+            .Take(2)
+            .ToListAsync(ct);
+
+        return new ItemConfirmedInvoiceDates(
+            rows.FirstOrDefault(row => row.VoucherType == VoucherType.Purchase)?.InvoiceDate,
+            rows.FirstOrDefault(row => row.VoucherType == VoucherType.Sales)?.InvoiceDate);
+    }
+
     public async Task<IReadOnlyList<ItemVendorPurchasePriceRow>> GetItemVendorPurchasePricesAsync(
         Guid itemId,
         SessionState session,
         CancellationToken ct = default)
     {
-        if (itemId == Guid.Empty)
+        var scope = await ResolveReadableItemInvoiceHistoryScopeAsync(itemId, session, ct);
+        if (scope is null)
             return [];
 
-        var tenantCode = ResolveCurrentTenantCode(session);
-        var readableOfficeCodes = GetReadableOfficeCodes(session);
-        if (readableOfficeCodes.Count == 0)
-            return [];
-
-        var rows = await QueryPurchasePriceRows(tenantCode, readableOfficeCodes, itemId, null)
+        var rows = await QueryPurchasePriceRows(
+                scope.TenantCode,
+                scope.ReadableOfficeCodes,
+                itemId,
+                null)
             .ToListAsync(ct);
 
         return rows
@@ -69,6 +110,40 @@ public sealed partial class LocalStateService
                 .First())
             .Where(row => row.UnitPrice > 0m)
             .ToDictionary(row => row.ItemId, row => row.UnitPrice);
+    }
+
+    private async Task<ItemInvoiceHistoryScope?> ResolveReadableItemInvoiceHistoryScopeAsync(
+        Guid itemId,
+        SessionState session,
+        CancellationToken ct)
+    {
+        if (itemId == Guid.Empty)
+            return null;
+
+        var item = await _db.Items
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                candidate => candidate.Id == itemId && !candidate.IsDeleted,
+                ct);
+        if (item is null || !CanReadItemScope(item, session))
+            return null;
+
+        var tenantCode = session.HasGlobalDataScope
+            ? TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                item.TenantCode,
+                item.OfficeCode,
+                session.TenantCode,
+                session.OfficeCode)
+            : ResolveCurrentTenantCode(session);
+        var readableOfficeCodes = session.HasGlobalDataScope
+            ? TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : GetReadableOfficeCodes(session);
+        if (readableOfficeCodes.Count == 0)
+            return null;
+
+        return new ItemInvoiceHistoryScope(tenantCode, readableOfficeCodes);
     }
 
     private IQueryable<PurchasePriceQueryRow> QueryPurchasePriceRows(
@@ -134,4 +209,12 @@ public sealed partial class LocalStateService
                 Unit?.Trim() ?? string.Empty,
                 InvoiceNumber?.Trim() ?? string.Empty);
     }
+
+    private sealed record ItemInvoiceDateQueryRow(
+        VoucherType VoucherType,
+        DateOnly InvoiceDate);
+
+    private sealed record ItemInvoiceHistoryScope(
+        string TenantCode,
+        HashSet<string> ReadableOfficeCodes);
 }

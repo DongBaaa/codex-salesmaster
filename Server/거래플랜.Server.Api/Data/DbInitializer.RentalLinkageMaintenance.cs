@@ -113,12 +113,15 @@ public static partial class DbInitializer
 
             activeProfilesById.TryGetValue(asset.BillingProfileId ?? Guid.Empty, out var linkedProfile);
             if (linkedProfile is not null &&
-                !ProfileMatchesAssetScope(
-                    linkedProfile,
-                    preferredTenantCode,
-                    preferredResponsibleOfficeCode,
-                    asset.CustomerId,
-                    assetCustomerKeys))
+                (!ProfileMatchesAssetScope(
+                     linkedProfile,
+                     preferredTenantCode,
+                     preferredResponsibleOfficeCode,
+                     asset.CustomerId,
+                     assetCustomerKeys) ||
+                 !RentalBillingTemplateAssetCoverageRules.AllowsLink(
+                     linkedProfile.BillingTemplateJson,
+                     asset.Id)))
             {
                 UnregisterProfileAssetLink(activeProfileAssetCounts, linkedProfile.Id);
                 asset.BillingProfileId = null;
@@ -837,6 +840,9 @@ public static partial class DbInitializer
         var customerProfiles = profiles
             .Where(profile => !profile.IsDeleted)
             .Where(profile => ProfileMatchesAssetCustomer(profile, asset.CustomerId, assetCustomerKeys))
+            .Where(profile => RentalBillingTemplateAssetCoverageRules.AllowsLink(
+                profile.BillingTemplateJson,
+                asset.Id))
             .ToList();
         if (customerProfiles.Count == 0)
             return null;
@@ -1464,7 +1470,7 @@ public static partial class DbInitializer
     }
 
     private static bool RequiresExactOfficeCode(string? currentOfficeCode, string expectedOfficeCode)
-        => !OfficeCodeCatalog.TryNormalizeOfficeCode(currentOfficeCode, out var normalizedOfficeCode) ||
+        => !OfficeCodeCatalog.TryNormalizeScope(currentOfficeCode, out var normalizedOfficeCode) ||
            !string.Equals(normalizedOfficeCode, expectedOfficeCode, StringComparison.OrdinalIgnoreCase) ||
            !string.Equals((currentOfficeCode ?? string.Empty).Trim(), expectedOfficeCode, StringComparison.OrdinalIgnoreCase);
 

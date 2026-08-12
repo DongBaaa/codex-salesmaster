@@ -41,6 +41,21 @@ public sealed class IntegrityController : ControllerBase
         "transaction-attachments",
         "payment-attachments"
     ];
+    private static readonly EnumerationOptions SafeFileStorageEnumerationOptions = new()
+    {
+        RecurseSubdirectories = true,
+        IgnoreInaccessible = true,
+        ReturnSpecialDirectories = false,
+        AttributesToSkip = FileAttributes.ReparsePoint
+    };
+    private static readonly StringComparison FileSystemPathComparison =
+        OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+    private static readonly StringComparer FileSystemPathComparer =
+        OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
 
     private readonly AppDbContext _dbContext;
     private readonly OfficeScopeService _officeScopeService;
@@ -2592,7 +2607,11 @@ public sealed class IntegrityController : ControllerBase
             .ToListAsync(cancellationToken);
 
         var transactionKeys = transactions
-            .Select(transaction => (PaymentId: transaction.Id, transaction.ProfileId))
+            .Where(transaction => transaction.Amount > 0m)
+            .Select(transaction => (
+                PaymentId: transaction.Id,
+                transaction.ProfileId,
+                RunId: NormalizeRunId(transaction.RunId)))
             .ToHashSet();
 
         var directPayments = await (
@@ -2616,7 +2635,10 @@ public sealed class IntegrityController : ControllerBase
             .GroupBy(transaction => (transaction.ProfileId, RunId: NormalizeRunId(transaction.RunId)))
             .ToDictionary(group => group.Key, group => group.Sum(transaction => transaction.Amount));
         var directPaymentSettledAmounts = directPayments
-            .Where(payment => !transactionKeys.Contains((payment.Id, payment.ProfileId)))
+            .Where(payment => !transactionKeys.Contains((
+                payment.Id,
+                payment.ProfileId,
+                NormalizeRunId(payment.RunId))))
             .GroupBy(payment => (payment.ProfileId, RunId: NormalizeRunId(payment.RunId)))
             .ToDictionary(group => group.Key, group => group.Sum(payment => payment.Amount));
 
@@ -2625,7 +2647,7 @@ public sealed class IntegrityController : ControllerBase
         {
             foreach (var run in ParseRentalBillingRuns(profile.BillingRunsJson))
             {
-                if (run.RunId == Guid.Empty)
+                if (run.RunId == Guid.Empty || run.IsTombstoned)
                     continue;
 
                 var runId = NormalizeRunId(run.RunId);
@@ -2705,7 +2727,7 @@ public sealed class IntegrityController : ControllerBase
         {
             foreach (var run in ParseRentalBillingRuns(profile.BillingRunsJson))
             {
-                if (run.RunId != Guid.Empty)
+                if (run.RunId != Guid.Empty || run.IsTombstoned)
                     continue;
 
                 rows.Add(new RentalBillingRunMissingRunIdRow(
@@ -2798,7 +2820,11 @@ public sealed class IntegrityController : ControllerBase
             .ToListAsync(cancellationToken);
 
         var transactionKeys = transactions
-            .Select(transaction => (PaymentId: transaction.Id, transaction.ProfileId))
+            .Where(transaction => transaction.Amount > 0m)
+            .Select(transaction => (
+                PaymentId: transaction.Id,
+                transaction.ProfileId,
+                RunId: NormalizeRunId(transaction.RunId)))
             .ToHashSet();
 
         var directPayments = await (
@@ -2835,7 +2861,10 @@ public sealed class IntegrityController : ControllerBase
             .GroupBy(transaction => (transaction.ProfileId, RunId: NormalizeRunId(transaction.RunId)))
             .ToDictionary(group => group.Key, group => group.Sum(transaction => transaction.Amount));
         var directPaymentSettledAmounts = directPayments
-            .Where(payment => !transactionKeys.Contains((payment.Id, payment.ProfileId)))
+            .Where(payment => !transactionKeys.Contains((
+                payment.Id,
+                payment.ProfileId,
+                NormalizeRunId(payment.RunId))))
             .GroupBy(payment => (payment.ProfileId, RunId: NormalizeRunId(payment.RunId)))
             .ToDictionary(group => group.Key, group => group.Sum(payment => payment.Amount));
         var invoicedRunKeys = invoices
@@ -2847,7 +2876,7 @@ public sealed class IntegrityController : ControllerBase
         foreach (var profile in profiles)
         {
             var activeRuns = ParseRentalBillingRuns(profile.BillingRunsJson)
-                .Where(run => run.RunId != Guid.Empty)
+                .Where(run => run.RunId != Guid.Empty && !run.IsTombstoned)
                 .OrderByDescending(run => run.ScheduledDate)
                 .ThenByDescending(run => run.PeriodEndDate)
                 .ToList();
@@ -2957,7 +2986,7 @@ public sealed class IntegrityController : ControllerBase
             var profileIsManualStop = RentalBillingEvidenceStatusResolver.IsManualStopStatus(profileBillingStatus);
             foreach (var run in ParseRentalBillingRuns(profile.BillingRunsJson))
             {
-                if (run.RunId == Guid.Empty)
+                if (run.RunId == Guid.Empty || run.IsTombstoned)
                     continue;
 
                 var outstandingAmount = Math.Max(0m, run.BilledAmount - run.SettledAmount);
@@ -3646,10 +3675,17 @@ public sealed class IntegrityController : ControllerBase
 
             try
             {
-                foreach (var filePath in Directory.EnumerateFiles(areaRoot, "*", SearchOption.AllDirectories))
+                if ((System.IO.File.GetAttributes(areaRoot) & FileAttributes.ReparsePoint) != 0)
+                    continue;
+
+                foreach (var filePath in Directory.EnumerateFiles(
+                             areaRoot,
+                             "*",
+                             SafeFileStorageEnumerationOptions))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (!TryNormalizeStoredPath(filePath, storageRoot, out var normalizedPath) ||
+                    if (!_fileStorage.Inspect(filePath).IsSafePath ||
+                        !TryNormalizeStoredPath(filePath, storageRoot, out var normalizedPath) ||
                         referencedPaths.Contains(normalizedPath))
                     {
                         continue;
@@ -3719,11 +3755,14 @@ public sealed class IntegrityController : ControllerBase
             .Select(attachment => attachment.StoragePath)
             .ToListAsync(cancellationToken));
 
-        var referencedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var referencedPaths = new HashSet<string>(FileSystemPathComparer);
         foreach (var rawPath in rawPaths)
         {
-            if (TryNormalizeStoredPath(rawPath, storageRoot, out var normalizedPath))
+            if (_fileStorage.Inspect(rawPath).IsSafePath &&
+                TryNormalizeStoredPath(rawPath, storageRoot, out var normalizedPath))
+            {
                 referencedPaths.Add(normalizedPath);
+            }
         }
 
         return referencedPaths;
@@ -3738,7 +3777,8 @@ public sealed class IntegrityController : ControllerBase
                 return false;
 
             storageRoot = Path.GetFullPath(_fileStorage.RootPath);
-            return Directory.Exists(storageRoot);
+            return Directory.Exists(storageRoot) &&
+                   (System.IO.File.GetAttributes(storageRoot) & FileAttributes.ReparsePoint) == 0;
         }
         catch
         {
@@ -4686,7 +4726,7 @@ public sealed class IntegrityController : ControllerBase
         {
             var root = EnsureTrailingDirectorySeparator(Path.GetFullPath(storageRoot));
             var fullPath = Path.GetFullPath(storedPath);
-            if (!fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            if (!fullPath.StartsWith(root, FileSystemPathComparison))
                 return false;
 
             normalizedPath = fullPath;
@@ -5219,6 +5259,9 @@ public sealed class IntegrityController : ControllerBase
         public decimal SettledAmount { get; set; }
         public string Status { get; set; } = string.Empty;
         public string SettlementStatus { get; set; } = string.Empty;
+        public bool IsTombstoned { get; set; }
+        public DateTime? TombstonedAtUtc { get; set; }
+        public string TombstonedByUsername { get; set; } = string.Empty;
     }
 
     private sealed class RentalBillingTemplateItemSnapshot

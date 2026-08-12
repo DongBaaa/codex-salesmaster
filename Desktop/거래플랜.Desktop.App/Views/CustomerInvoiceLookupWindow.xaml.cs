@@ -4,6 +4,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using 거래플랜.Desktop.App.Data;
 using 거래플랜.Desktop.App.Infrastructure;
+using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.ViewModels;
 using 거래플랜.Shared.Contracts;
 
@@ -34,6 +35,11 @@ public partial class CustomerInvoiceLookupWindow : Window
         _openPaymentEntryAsync = openPaymentEntryAsync;
         _printInvoiceRowAsync = printInvoiceRowAsync;
         DataContext = viewModel;
+        Closed += (_, _) => UiTaskHelper.Forget(
+            () => _viewModel.DisposeAsync().AsTask(),
+            "UI",
+            "거래내역 조회창 백그라운드 작업 종료",
+            ex => AppLogger.Warn("UI", $"거래내역 조회창 백그라운드 작업 종료 실패: {ex.Message}"));
     }
 
     private void Window_KeyDown(object sender, KeyEventArgs e)

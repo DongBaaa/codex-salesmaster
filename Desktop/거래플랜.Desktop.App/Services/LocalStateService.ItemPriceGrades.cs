@@ -42,9 +42,6 @@ public sealed partial class LocalStateService
         if (rows.Count == 0)
             return rows;
 
-        if (CanWriteAllScopedData(session))
-            return rows;
-
         var itemIds = rows.Select(row => row.ItemId).Distinct().ToArray();
         var items = await _db.Items
             .IgnoreQueryFilters()

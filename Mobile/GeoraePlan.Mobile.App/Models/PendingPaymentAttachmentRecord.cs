@@ -12,4 +12,5 @@ public sealed class PendingPaymentAttachmentRecord
     public long FileSize { get; set; }
     public string FileHash { get; set; } = string.Empty;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? ServerUploadAcceptedAtUtc { get; set; }
 }

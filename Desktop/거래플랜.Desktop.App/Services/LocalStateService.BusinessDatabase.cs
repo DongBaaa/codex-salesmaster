@@ -1,5 +1,6 @@
 using System.IO;
 using Microsoft.EntityFrameworkCore;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Shared.Contracts;
 using 거래플랜.Desktop.App.Data;
 
@@ -151,24 +152,128 @@ public sealed partial class LocalStateService
 
     public async Task ResetSharedMirrorCacheAsync(CancellationToken ct = default)
     {
+        if (_db.Database.CurrentTransaction is not null)
+        {
+            throw new InvalidOperationException(
+                "외부 DB 트랜잭션에서 공유 미러를 초기화하려면 동일 범위의 첨부파일 저널을 전달해야 합니다.");
+        }
+
+        await AttachmentFileJournal.RecoverIncompleteJournalsAsync(
+            _db,
+            AppPaths.AttachmentFileJournalDir,
+            AppPaths.AttachmentsDir,
+            ct);
+        await using var transaction = await _db.BeginRuntimeMutationTransactionAsync(ct);
+        using var attachmentFiles = new AttachmentFileJournal(
+            AppPaths.AttachmentFileJournalDir,
+            AppPaths.AttachmentsDir);
+        var commitAttempted = false;
+
+        try
+        {
+            await ResetSharedMirrorCacheCoreAsync(ct, attachmentFiles);
+            await attachmentFiles.StageCommitEvidenceAsync(_db, ct);
+            attachmentFiles.Promote();
+            commitAttempted = true;
+            await transaction.CommitAsync(ct);
+            await transaction.DisposeAsync().ConfigureAwait(false);
+            await attachmentFiles.CompleteAfterDatabaseCommitAsync(
+                _db,
+                CancellationToken.None);
+        }
+        catch
+        {
+            var commitResolution = AttachmentCommitResolution.RolledBack;
+            try
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+            }
+            catch (Exception rollbackException)
+            {
+                AppLogger.Error(
+                    "ATTACHMENT",
+                    "공유 미러 초기화 커밋 실패 후 DB 롤백 결과를 확정하지 못했습니다.",
+                    rollbackException);
+            }
+            finally
+            {
+                if (!commitAttempted)
+                {
+                    attachmentFiles.Rollback();
+                }
+                else
+                {
+                    commitResolution = await attachmentFiles.ResolveCommitAmbiguityAsync(
+                        _db,
+                        CancellationToken.None);
+                }
+
+                _db.ChangeTracker.Clear();
+            }
+
+            if (commitResolution == AttachmentCommitResolution.Committed)
+                return;
+
+            throw;
+        }
+    }
+
+    internal Task ResetSharedMirrorCacheWithAttachmentJournalAsync(
+        AttachmentFileJournal attachmentFileJournal,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(attachmentFileJournal);
+        if (_db.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException(
+                "공유 미러의 외부 첨부파일 저널은 동일 범위의 DB 트랜잭션과 함께 사용해야 합니다.");
+        }
+
+        return ResetSharedMirrorCacheCoreAsync(ct, attachmentFileJournal);
+    }
+
+    private async Task ResetSharedMirrorCacheCoreAsync(
+        CancellationToken ct,
+        AttachmentFileJournal attachmentFileJournal)
+    {
         _db.ChangeTracker.Clear();
         _officeAccess.ClearSessionAccess(_session);
 
-        foreach (var attachment in await _db.TransactionAttachments.IgnoreQueryFilters()
-                     .Where(current => !string.IsNullOrWhiteSpace(current.StoredPath))
-                     .Select(current => current.StoredPath)
-                     .ToListAsync(ct))
+        var attachmentPaths = await _db.TransactionAttachments.IgnoreQueryFilters()
+            .Where(current => !string.IsNullOrWhiteSpace(current.StoredPath))
+            .Select(current => current.StoredPath)
+            .ToListAsync(ct);
+        attachmentPaths.AddRange(await _db.InventoryTransfers
+            .IgnoreQueryFilters()
+            .Where(current => !string.IsNullOrWhiteSpace(current.ReceiveEvidencePath))
+            .Select(current => current.ReceiveEvidencePath)
+            .ToListAsync(ct));
+        var conflictOwnedEvidencePaths = (await _db
+                .InventoryTransferTombstoneConflicts
+                .AsNoTracking()
+                .Where(current =>
+                    current.ArchivedReceiveEvidencePath != string.Empty)
+                .Select(current => current.ArchivedReceiveEvidencePath)
+                .ToListAsync(ct))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var attachmentPath in attachmentPaths)
         {
-            if (string.IsNullOrWhiteSpace(attachment) || !File.Exists(attachment))
+            if (conflictOwnedEvidencePaths.Contains(attachmentPath))
                 continue;
 
             try
             {
-                File.Delete(attachment);
+                attachmentFileJournal.StageDelete(attachmentPath);
             }
-            catch
+            catch (AttachmentFileJournalContentionException)
             {
-                // ignore local cached attachment cleanup failure
+                throw;
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Warn(
+                    "ATTACHMENT",
+                    $"허용된 첨부파일 저장 경로 밖의 미러 파일은 삭제하지 않습니다. {ex.Message}");
             }
         }
 
@@ -210,6 +315,42 @@ public sealed partial class LocalStateService
 
         await ClearAdministrativeBusinessCacheRevisionSettingsAsync(ct);
 
+        await _db.SaveChangesAsync(ct);
+
+        // A full mirror refresh owns an outer DB transaction. Its old files stay
+        // untouched here so a later pull/commit failure can roll the DB back
+        // without losing the attachments referenced by the restored rows.
+
+        _db.ChangeTracker.Clear();
+    }
+
+    internal async Task ResetBusinessDataCacheWithAttachmentJournalAsync(
+        AttachmentFileJournal attachmentFileJournal,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(attachmentFileJournal);
+        if (_db.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException(
+                "업체 DB 캐시를 교체하려면 동일 범위의 DB 트랜잭션과 첨부파일 저널이 필요합니다.");
+        }
+
+        await ResetSharedMirrorCacheCoreAsync(ct, attachmentFileJournal);
+
+        await _db.Offices.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.Warehouses.IgnoreQueryFilters().ExecuteDeleteAsync(ct);
+        await _db.RecentSelections.ExecuteDeleteAsync(ct);
+        await _db.AttachmentSelections.ExecuteDeleteAsync(ct);
+        await _db.AuditLogs.ExecuteDeleteAsync(ct);
+
+        foreach (var key in BusinessScopedSettingKeys)
+        {
+            var setting = await _db.Settings.FindAsync([key], ct);
+            if (setting is not null)
+                _db.Settings.Remove(setting);
+        }
+
+        await ClearAdministrativeBusinessCacheRevisionSettingsAsync(ct);
         await _db.SaveChangesAsync(ct);
         _db.ChangeTracker.Clear();
     }

@@ -5,8 +5,6 @@ namespace 거래플랜.Desktop.App.Services;
 
 internal static class LocalEntityConcurrencyGuard
 {
-    private static readonly TimeSpan AcknowledgedMutationRebaseTolerance = TimeSpan.FromMinutes(2);
-
     public static async Task<TEntity?> ReloadTrackedEntityAsync<TEntity>(
         LocalDbContext db,
         TEntity? existing,
@@ -52,18 +50,30 @@ internal static class LocalEntityConcurrencyGuard
             .OrderByDescending(entry => entry.AcknowledgedAtUtc)
             .FirstOrDefaultAsync(ct);
 
-        if (acknowledged?.AcknowledgedAtUtc is not DateTime acknowledgedAtUtc)
+        if (acknowledged is null ||
+            acknowledged.AcceptedRevision <= 0 ||
+            acknowledged.AcceptedUpdatedAtUtc is not DateTime acceptedUpdatedAtUtc)
             return;
 
         // The local row can be refreshed by the server pull after the same PC's
         // previous save. In that case the editor still carries the old baseline
-        // revision, but the clean local row already has the acknowledged server
-        // revision. Rebase only when the server timestamp is close to the local
-        // acknowledgement so real later edits from another PC still surface as
-        // conflicts.
-        if (existing.UpdatedAtUtc <= acknowledgedAtUtc.Add(AcknowledgedMutationRebaseTolerance))
+        // revision. Rebase only when both the revision and server timestamp are
+        // the exact accepted identity recorded for that mutation. A later edit
+        // from another PC must keep surfacing as a conflict even when it arrives
+        // immediately after this PC's acknowledgement.
+        if (existing.Revision == acknowledged.AcceptedRevision &&
+            NormalizeUtc(existing.UpdatedAtUtc) == NormalizeUtc(acceptedUpdatedAtUtc))
             candidate.Revision = existing.Revision;
     }
+
+    private static DateTime NormalizeUtc(DateTime value)
+        => value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            DateTimeKind.Unspecified => DateTime.SpecifyKind(value, DateTimeKind.Utc),
+            _ => value
+        };
 
     public static bool TryPrepareForSave<TEntity>(
         TEntity candidate,

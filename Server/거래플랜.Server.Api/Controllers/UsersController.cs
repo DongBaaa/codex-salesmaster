@@ -129,6 +129,12 @@ public sealed class UsersController : ControllerBase
         user.IsActive = request.IsActive;
         ApplyPermissions(user, request.Permissions);
 
+        // An accepted aggregate update must always return a fresh concurrency token,
+        // including scalar no-op and permission-only requests used before a password change.
+        _dbContext.Entry(user)
+            .Property(current => current.UpdatedAtUtc)
+            .IsModified = true;
+
         await _dbContext.SaveChangesAsync(cancellationToken);
         await PersistScopeTypeAsync(user.Id, normalizedScopeType, cancellationToken);
         await _dbContext.Entry(user).ReloadAsync(cancellationToken);
@@ -151,6 +157,11 @@ public sealed class UsersController : ControllerBase
             user.Permissions.Add(new UserPermission { UserId = user.Id, Permission = perm });
         }
 
+        // Permissions are part of the user aggregate. Mark the aggregate itself
+        // as modified so its optimistic-concurrency revision advances with them.
+        _dbContext.Entry(user)
+            .Property(current => current.UpdatedAtUtc)
+            .IsModified = true;
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(user.ToDto());
     }
@@ -231,10 +242,10 @@ public sealed class UsersController : ControllerBase
             return query;
 
         var tenantCode = _officeScopeService.CurrentTenantCode;
-        var writableOffices = _officeScopeService.WritableOfficeCodes;
+        var manageableOffices = ResolveIntrinsicManageableOfficeCodes();
         return query.Where(user =>
             user.TenantCode == tenantCode &&
-            writableOffices.Contains(user.OfficeCode) &&
+            manageableOffices.Contains(user.OfficeCode) &&
             user.ScopeType != TenantScopeCatalog.ScopeAdmin);
     }
 
@@ -252,11 +263,29 @@ public sealed class UsersController : ControllerBase
         if (string.Equals(scopeType, TenantScopeCatalog.ScopeAdmin, StringComparison.OrdinalIgnoreCase))
             return Forbid();
 
-        if (!_officeScopeService.WritableOfficeCodes.Contains(officeCode, StringComparer.OrdinalIgnoreCase))
+        if (string.Equals(scopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(_officeScopeService.CurrentScopeType, TenantScopeCatalog.ScopeTenantAll, StringComparison.OrdinalIgnoreCase))
+        {
+            return Forbid();
+        }
+
+        var actorManageableOffices = ResolveIntrinsicManageableOfficeCodes();
+        var requestedManageableOffices = TenantScopeCatalog.ResolveScopedOfficeCodes(
+            officeCode,
+            tenantCode,
+            scopeType);
+        if (!requestedManageableOffices.All(requestedOffice =>
+                actorManageableOffices.Contains(requestedOffice, StringComparer.OrdinalIgnoreCase)))
             return Forbid();
 
         return null;
     }
+
+    private IReadOnlyCollection<string> ResolveIntrinsicManageableOfficeCodes()
+        => TenantScopeCatalog.ResolveScopedOfficeCodes(
+            _officeScopeService.CurrentOfficeCode,
+            _officeScopeService.CurrentTenantCode,
+            _officeScopeService.CurrentScopeType);
 
     private void ApplyPermissions(UserAccount user, IEnumerable<string> permissions)
     {

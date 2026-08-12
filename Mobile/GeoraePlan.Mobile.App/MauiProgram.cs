@@ -1,6 +1,7 @@
 using GeoraePlan.Mobile.App.Pages;
 using GeoraePlan.Mobile.App.Services;
 using GeoraePlan.Mobile.App.ViewModels;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace GeoraePlan.Mobile.App;
 
@@ -14,6 +15,7 @@ public static class MauiProgram
 
         builder.Services.AddSingleton<SettingsService>();
         builder.Services.AddSingleton<SessionStore>();
+        builder.Services.AddSingleton<MobileClientIdentityProvider>();
         builder.Services.AddSingleton<MobileSessionRecoveryService>();
         builder.Services.AddSingleton<JsonSyncStateStore>();
         builder.Services.AddSingleton<MobileDiagnosticExportService>();
@@ -24,6 +26,10 @@ public static class MauiProgram
         builder.Services.AddSingleton<GeoraePlanApiClient>();
         builder.Services.AddSingleton<MobileConnectionTestService>();
         builder.Services.AddSingleton<MobileAppUpdateService>();
+        builder.Services.AddSingleton(serviceProvider =>
+            new MobileCompatibilityGateService(
+                serviceProvider.GetRequiredService<MobileAppUpdateService>(),
+                serviceProvider.GetRequiredService<MobileClientIdentityProvider>()));
         builder.Services.AddSingleton<MobileInvoicePdfExportService>();
         builder.Services.AddSingleton<SyncCoordinator>();
         builder.Services.AddSingleton<MobileRealtimeSyncService>();

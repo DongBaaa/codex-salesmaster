@@ -43,6 +43,31 @@ services:
       Security__RequireHttpsForwardedProto: ${SECURITY_REQUIRE_HTTPS_FORWARDED_PROTO:-true}
       Security__AllowAnyCorsOrigin: ${SECURITY_ALLOW_ANY_CORS_ORIGIN:-false}
       Security__AllowedCorsOrigins__0: ${SECURITY_ALLOWED_CORS_ORIGIN_0:-}
+      ClientCompatibility__Mode: ${CLIENT_COMPATIBILITY_MODE:-AuditOnly}
+      ClientCompatibility__Policies__0__Enabled: ${CLIENT_COMPATIBILITY_DESKTOP_ENABLED:-false}
+      ClientCompatibility__Policies__0__AppId: ${CLIENT_COMPATIBILITY_DESKTOP_APP_ID:-kr.georaeplan.desktop}
+      ClientCompatibility__Policies__0__Platform: ${CLIENT_COMPATIBILITY_DESKTOP_PLATFORM:-windows}
+      ClientCompatibility__Policies__0__PolicyVersion: ${CLIENT_COMPATIBILITY_DESKTOP_POLICY_VERSION:-1}
+      ClientCompatibility__Policies__0__RequiresUserAction: ${CLIENT_COMPATIBILITY_DESKTOP_REQUIRES_USER_ACTION:-true}
+      ClientCompatibility__Policies__0__MinimumVersion: ${CLIENT_COMPATIBILITY_DESKTOP_MINIMUM_VERSION:-}
+      ClientCompatibility__Policies__0__MinimumBuild: ${CLIENT_COMPATIBILITY_DESKTOP_MINIMUM_BUILD:-}
+      ClientCompatibility__Policies__0__MinimumProtocolVersion: ${CLIENT_COMPATIBILITY_DESKTOP_MINIMUM_PROTOCOL_VERSION:-}
+      ClientCompatibility__Policies__0__LatestVersion: ${CLIENT_COMPATIBILITY_DESKTOP_LATEST_VERSION:-}
+      ClientCompatibility__Policies__0__LatestBuild: ${CLIENT_COMPATIBILITY_DESKTOP_LATEST_BUILD:-}
+      ClientCompatibility__Policies__0__UpdateUrl: ${CLIENT_COMPATIBILITY_DESKTOP_UPDATE_URL:-/updates/manifest?channel=stable}
+      ClientCompatibility__Policies__0__UpgradeToken: ${CLIENT_COMPATIBILITY_DESKTOP_UPGRADE_TOKEN:-georaeplan-client}
+      ClientCompatibility__Policies__1__Enabled: ${CLIENT_COMPATIBILITY_ANDROID_ENABLED:-false}
+      ClientCompatibility__Policies__1__AppId: ${CLIENT_COMPATIBILITY_ANDROID_APP_ID:-kr.georaeplan.mobile}
+      ClientCompatibility__Policies__1__Platform: ${CLIENT_COMPATIBILITY_ANDROID_PLATFORM:-android}
+      ClientCompatibility__Policies__1__PolicyVersion: ${CLIENT_COMPATIBILITY_ANDROID_POLICY_VERSION:-1}
+      ClientCompatibility__Policies__1__RequiresUserAction: ${CLIENT_COMPATIBILITY_ANDROID_REQUIRES_USER_ACTION:-true}
+      ClientCompatibility__Policies__1__MinimumVersion: ${CLIENT_COMPATIBILITY_ANDROID_MINIMUM_VERSION:-}
+      ClientCompatibility__Policies__1__MinimumBuild: ${CLIENT_COMPATIBILITY_ANDROID_MINIMUM_BUILD:-}
+      ClientCompatibility__Policies__1__MinimumProtocolVersion: ${CLIENT_COMPATIBILITY_ANDROID_MINIMUM_PROTOCOL_VERSION:-}
+      ClientCompatibility__Policies__1__LatestVersion: ${CLIENT_COMPATIBILITY_ANDROID_LATEST_VERSION:-}
+      ClientCompatibility__Policies__1__LatestBuild: ${CLIENT_COMPATIBILITY_ANDROID_LATEST_BUILD:-}
+      ClientCompatibility__Policies__1__UpdateUrl: ${CLIENT_COMPATIBILITY_ANDROID_UPDATE_URL:-/updates/manifest?channel=stable}
+      ClientCompatibility__Policies__1__UpgradeToken: ${CLIENT_COMPATIBILITY_ANDROID_UPGRADE_TOKEN:-georaeplan-client}
       SeedUsers__EnableSeedUsers: ${SEED_USERS_ENABLE_SEED_USERS:-true}
       SeedUsers__AdminPassword: ${SEED_USERS_ADMIN_PASSWORD:-}
       SeedUsers__UserPassword: ${SEED_USERS_USER_PASSWORD:-}

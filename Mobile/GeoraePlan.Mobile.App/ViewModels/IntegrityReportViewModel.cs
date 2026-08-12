@@ -10,6 +10,7 @@ public sealed class IntegrityReportViewModel : ObservableObject
 
     private readonly GeoraePlanApiClient _api;
     private readonly SessionStore _sessionStore;
+    private readonly MobileOwnerOperationGate _ownerOperations;
 
     private string _summaryText = "서버 무결성 검사 결과를 불러올 준비가 되었습니다.";
     private string _scopeText = "-";
@@ -25,6 +26,8 @@ public sealed class IntegrityReportViewModel : ObservableObject
     {
         _api = api;
         _sessionStore = sessionStore;
+        _ownerOperations =
+            new MobileOwnerOperationGate(sessionStore);
         RefreshCommand = new AsyncCommand(RefreshAsync);
         ClearDetailCommand = new AsyncCommand(ClearDetailAsync);
     }
@@ -110,9 +113,24 @@ public sealed class IntegrityReportViewModel : ObservableObject
     public double IssueListHeight => CalculateListHeight(Issues.Count, 92, 48, 8);
     public double DetailListHeight => CalculateListHeight(DetailRows.Count, 118, 48, 5);
 
+    public MobileSessionOwner EnsureCurrentOwner()
+    {
+        var owner = _ownerOperations.EnsureCurrentOwner(
+            ResetForOwner);
+        IsBusy = _ownerOperations.IsBusy;
+        return owner;
+    }
+
+    public bool IsCurrentOwner(MobileSessionOwner owner)
+        => _ownerOperations.IsCurrent(owner);
+
     public async Task RefreshAsync()
     {
-        if (IsBusy)
+        var operation = _ownerOperations.TryBegin(
+            ResetForOwner,
+            deferRefreshWhenBusy: true);
+        IsBusy = _ownerOperations.IsBusy;
+        if (operation is null)
             return;
 
         var session = _sessionStore.GetSnapshot();
@@ -124,14 +142,20 @@ public sealed class IntegrityReportViewModel : ObservableObject
                 ? $"현재 계정: {session.Username} / {session.Role}"
                 : "로그인 필요";
             StatusMessage = "운영점검 권한이 필요합니다. 관리자 또는 Settings.Edit 권한 계정으로 로그인하세요.";
+            _ownerOperations.Complete(
+                operation,
+                ResetForOwner);
+            IsBusy = _ownerOperations.IsBusy;
             return;
         }
 
+        var runDeferredRefresh = false;
         try
         {
-            IsBusy = true;
             StatusMessage = "운영 서버 무결성 결과를 조회하는 중입니다.";
             var report = await _api.GetIntegrityReportAsync();
+            if (!CanCommitAuthorized(operation))
+                return;
             if (report is null)
             {
                 ClearReport();
@@ -141,30 +165,64 @@ public sealed class IntegrityReportViewModel : ObservableObject
 
             ApplyReport(report);
         }
+        catch (MobileClientUpgradeRequiredException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
-            StatusMessage = $"운영점검 조회 실패: {ex.Message}";
+            if (CanCommitAuthorized(operation))
+            {
+                ClearReport();
+                StatusMessage = $"운영점검 조회 실패: {ex.Message}";
+            }
         }
         finally
         {
-            IsBusy = false;
+            runDeferredRefresh = _ownerOperations.Complete(
+                operation,
+                ResetForOwner);
+            IsBusy = _ownerOperations.IsBusy;
+            if (runDeferredRefresh)
+                await RefreshAsync();
         }
     }
 
     public async Task SelectIssueAsync(IntegrityIssueDto issue)
     {
-        if (IsBusy)
+        var operation = _ownerOperations.TryBegin(
+            ResetForOwner,
+            deferRefreshWhenBusy: false);
+        IsBusy = _ownerOperations.IsBusy;
+        if (operation is null)
             return;
 
-        SelectedIssue = issue;
+        var currentIssue = Issues.FirstOrDefault(
+            candidate => string.Equals(
+                candidate.Code,
+                issue.Code,
+                StringComparison.Ordinal));
+        if (currentIssue is null)
+        {
+            _ownerOperations.Complete(
+                operation,
+                ResetForOwner);
+            IsBusy = _ownerOperations.IsBusy;
+            return;
+        }
+
+        SelectedIssue = currentIssue;
         DetailRows.Clear();
         OnPropertyChanged(nameof(DetailListHeight));
-        DetailStatusMessage = $"{issue.Code} 상세 근거를 조회하는 중입니다.";
+        DetailStatusMessage =
+            $"{currentIssue.Code} 상세 근거를 조회하는 중입니다.";
 
         try
         {
-            IsBusy = true;
-            var details = await _api.GetIntegrityIssueDetailsAsync(issue.Code);
+            var details = await _api.GetIntegrityIssueDetailsAsync(
+                currentIssue.Code);
+            if (!CanCommitAuthorized(operation))
+                return;
             DetailRows.Clear();
             if (details?.Rows is { Count: > 0 } rows)
             {
@@ -182,18 +240,31 @@ public sealed class IntegrityReportViewModel : ObservableObject
 
             OnPropertyChanged(nameof(DetailListHeight));
         }
+        catch (MobileClientUpgradeRequiredException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
-            DetailStatusMessage = $"상세 조회 실패: {ex.Message}";
+            if (CanCommitAuthorized(operation))
+            {
+                DetailRows.Clear();
+                DetailStatusMessage = $"상세 조회 실패: {ex.Message}";
+                OnPropertyChanged(nameof(DetailListHeight));
+            }
         }
         finally
         {
-            IsBusy = false;
+            _ownerOperations.Complete(
+                operation,
+                ResetForOwner);
+            IsBusy = _ownerOperations.IsBusy;
         }
     }
 
     private Task ClearDetailAsync()
     {
+        EnsureCurrentOwner();
         SelectedIssue = null;
         DetailRows.Clear();
         DetailStatusMessage = "항목을 선택하면 상세 근거를 조회합니다.";
@@ -250,6 +321,31 @@ public sealed class IntegrityReportViewModel : ObservableObject
         DetailStatusMessage = "항목을 선택하면 상세 근거를 조회합니다.";
         OnPropertyChanged(nameof(IssueListHeight));
         OnPropertyChanged(nameof(DetailListHeight));
+    }
+
+    private void ResetForOwner()
+    {
+        CanViewIntegrityReport = false;
+        ScopeText = "-";
+        ClearReport();
+        StatusMessage =
+            "새 로그인 계정의 운영점검 권한과 결과를 확인하세요.";
+    }
+
+    private bool CanCommitAuthorized(
+        MobileOwnerUiOperation operation)
+    {
+        if (!_ownerOperations.CanCommit(operation))
+            return false;
+
+        var snapshot = _sessionStore.GetSnapshot();
+        if (snapshot.CanViewIntegrityReport)
+            return true;
+
+        ResetForOwner();
+        StatusMessage =
+            "운영점검 권한이 변경되어 표시 중인 결과를 비웠습니다.";
+        return false;
     }
 
     private static int SeverityRank(IntegrityIssueDto issue)

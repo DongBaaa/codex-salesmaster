@@ -11,6 +11,98 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class SyncScopePendingMessageTests
 {
     [Fact]
+    public async Task DirtyRentalSyncSelection_ScopeAdminUsenet_DoesNotSelectItworldEntities()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-sync-scope-admin-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profile = new LocalRentalBillingProfile
+            {
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                ProfileKey = $"ITWORLD-SYNC-SCOPE-{Guid.NewGuid():N}",
+                CustomerName = "ITWORLD sync scope customer",
+                IsDirty = true
+            };
+            var asset = CreateDirtyRentalAsset(
+                OfficeCodeCatalog.Itworld,
+                TenantScopeCatalog.Itworld,
+                OfficeCodeCatalog.Itworld,
+                OfficeCodeCatalog.Itworld,
+                "ITWORLD-SYNC-SCOPE");
+            asset.BillingProfileId = profile.Id;
+            var assignmentHistory = new LocalRentalAssetAssignmentHistory
+            {
+                AssetId = asset.Id,
+                BillingProfileId = profile.Id,
+                TenantCode = TenantScopeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                CustomerName = profile.CustomerName,
+                IsDirty = true
+            };
+            var billingLog = new LocalRentalBillingLog
+            {
+                BillingProfileId = profile.Id,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                BillingYearMonth = "2026-07",
+                ScheduledDate = new DateOnly(2026, 7, 25),
+                IsDirty = true
+            };
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(asset);
+            db.RentalAssetAssignmentHistories.Add(assignmentHistory);
+            db.RentalBillingLogs.Add(billingLog);
+            await db.SaveChangesAsync();
+
+            var usenetScopeAdmin = CreateAdminSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet);
+            Assert.True(usenetScopeAdmin.HasGlobalDataScope);
+            var service = new LocalStateService(
+                db,
+                new OfficeAccessService(),
+                new SyncRequestDispatcher(),
+                usenetScopeAdmin);
+
+            Assert.Empty(await service.GetDirtyRentalBillingProfilesForSyncAsync(usenetScopeAdmin));
+            Assert.Empty(await service.GetDirtyRentalAssetsForSyncAsync(usenetScopeAdmin));
+            Assert.Empty(await service.GetDirtyRentalAssetAssignmentHistoriesForSyncAsync(usenetScopeAdmin));
+            Assert.Empty(await service.GetDirtyRentalBillingLogsForSyncAsync(usenetScopeAdmin));
+
+            Assert.Single(await service.GetDirtyRentalBillingProfilesForOutboundSyncAsync(usenetScopeAdmin));
+            Assert.Single(await service.GetDirtyRentalAssetsForOutboundSyncAsync(usenetScopeAdmin));
+            Assert.Single(await service.GetDirtyRentalAssetAssignmentHistoriesForOutboundSyncAsync(usenetScopeAdmin));
+            Assert.Single(await service.GetDirtyRentalBillingLogsForOutboundSyncAsync(usenetScopeAdmin));
+
+            var usenetTenantAdmin = CreateAdminSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                TenantScopeCatalog.ScopeTenantAll);
+            Assert.False(usenetTenantAdmin.HasGlobalDataScope);
+            Assert.Empty(await service.GetDirtyRentalBillingProfilesForOutboundSyncAsync(usenetTenantAdmin));
+            Assert.Empty(await service.GetDirtyRentalAssetsForOutboundSyncAsync(usenetTenantAdmin));
+            Assert.Empty(await service.GetDirtyRentalAssetAssignmentHistoriesForOutboundSyncAsync(usenetTenantAdmin));
+            Assert.Empty(await service.GetDirtyRentalBillingLogsForOutboundSyncAsync(usenetTenantAdmin));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task PendingSyncWaitingMessage_UsenetLogin_DoesNotReportItworldRentalDirty()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-pending-scope-{Guid.NewGuid():N}");
@@ -208,7 +300,10 @@ public sealed class SyncScopePendingMessageTests
             UpdatedAtUtc = DateTime.UtcNow
         };
 
-    private static SessionState CreateAdminSession(string tenantCode, string officeCode)
+    private static SessionState CreateAdminSession(
+        string tenantCode,
+        string officeCode,
+        string scopeType = TenantScopeCatalog.ScopeAdmin)
     {
         var session = new SessionState();
         session.SetOfflineSession(new UserSessionDto
@@ -217,7 +312,7 @@ public sealed class SyncScopePendingMessageTests
             Role = DomainConstants.RoleAdmin,
             TenantCode = tenantCode,
             OfficeCode = officeCode,
-            ScopeType = TenantScopeCatalog.ScopeAdmin
+            ScopeType = scopeType
         });
         return session;
     }

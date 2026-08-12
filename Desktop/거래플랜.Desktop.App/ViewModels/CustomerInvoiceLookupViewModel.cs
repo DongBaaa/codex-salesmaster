@@ -9,7 +9,7 @@ using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.ViewModels;
 
-public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject
+public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject, IAsyncDisposable
 {
     private readonly LocalStateService _local;
     private readonly SessionState _session;
@@ -21,6 +21,7 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject
     private readonly Dictionary<Guid, string> _customerNameById = new();
     private List<LocalCustomer> _allCustomers = new();
     private CancellationTokenSource? _invoiceLoadCts;
+    private Task? _disposeTask;
     private int _previewVersion;
     private int _customerSummaryVersion;
     private bool _suppressInvoiceReload;
@@ -194,7 +195,12 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject
     }
 
     partial void OnCustomerFilterTextChanged(string value)
-        => _customerFilterDebouncer.Debounce(TimeSpan.FromMilliseconds(120), ApplyCustomerFilter);
+    {
+        if (_disposeTask is not null)
+            return;
+
+        _customerFilterDebouncer.Debounce(TimeSpan.FromMilliseconds(120), ApplyCustomerFilter);
+    }
 
     partial void OnSelectedCustomerChanged(LocalCustomer? value)
     {
@@ -211,7 +217,7 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject
 
     private void RequestInvoiceReload()
     {
-        if (_suppressInvoiceReload)
+        if (_suppressInvoiceReload || _disposeTask is not null)
             return;
 
         _invoiceReloadDebouncer.DebounceAsync(
@@ -225,6 +231,9 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject
 
     private async Task LoadInvoiceRowsCoreAsync(bool forceReload = false)
     {
+        if (_disposeTask is not null)
+            return;
+
         _invoiceLoadCts?.Cancel();
         var loadCts = new CancellationTokenSource();
         _invoiceLoadCts = loadCts;
@@ -354,7 +363,27 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject
     }
 
     private bool IsCurrentInvoiceLoad(CancellationTokenSource loadCts)
-        => ReferenceEquals(_invoiceLoadCts, loadCts) && !loadCts.IsCancellationRequested;
+        => _disposeTask is null &&
+           ReferenceEquals(_invoiceLoadCts, loadCts) &&
+           !loadCts.IsCancellationRequested;
+
+    public ValueTask DisposeAsync()
+    {
+        _disposeTask ??= DisposeCoreAsync();
+        return new ValueTask(_disposeTask);
+    }
+
+    private async Task DisposeCoreAsync()
+    {
+        _invoiceLoadCts?.Cancel();
+
+        await Task.WhenAll(
+            _customerFilterDebouncer.DisposeAsync().AsTask(),
+            _invoiceReloadDebouncer.DisposeAsync().AsTask());
+
+        await _invoiceLoadGate.WaitAsync();
+        _invoiceLoadGate.Release();
+    }
 
     private void InvalidateInvoiceLedgerCaches()
     {
@@ -477,7 +506,7 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject
     {
         var version = Interlocked.Increment(ref _previewVersion);
         UiTaskHelper.Forget(
-            LoadPreviewAsync(row, version),
+            () => LoadPreviewAsync(row, version),
             "UI",
             "거래내역 조회창 전표 미리보기",
             ex =>
@@ -549,7 +578,7 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject
 
     private void ApplyCustomerInfo(LocalCustomer? customer)
         => UiTaskHelper.Forget(
-            RefreshCustomerSummaryAsync(customer),
+            () => RefreshCustomerSummaryAsync(customer),
             "UI",
             "거래내역 조회창 거래처 요약",
             ex => AppLogger.Warn("UI", $"거래내역 조회창 거래처 요약 실패: {ex.Message}"));

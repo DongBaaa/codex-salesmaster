@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.DependencyInjection;
@@ -95,6 +96,51 @@ internal sealed class InvoiceLedgerScreenCache
     }
 }
 
+internal readonly record struct SyncStatusCompositionIdentity(
+    Guid SessionId,
+    long SyncScopeEpoch,
+    string TenantCode,
+    string OfficeCode,
+    string BusinessDatabaseName);
+
+internal sealed class SyncStatusCompositionCoordinator
+{
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private long _generation;
+
+    internal long BeginRequest()
+        => Interlocked.Increment(ref _generation);
+
+    internal void Invalidate()
+        => Interlocked.Increment(ref _generation);
+
+    internal void ApplyAuthoritative(Action assignment)
+    {
+        Invalidate();
+        assignment();
+    }
+
+    internal bool IsCurrent(
+        long generation,
+        SyncStatusCompositionIdentity expectedIdentity,
+        SyncStatusCompositionIdentity currentIdentity)
+        => generation == Volatile.Read(ref _generation) &&
+           expectedIdentity == currentIdentity;
+
+    internal async Task RunAsync(Func<Task> operation)
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            await operation();
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+}
+
 public sealed partial class MainViewModel : ObservableObject
 {
     private readonly LocalStateService _local;
@@ -105,14 +151,28 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly ErpApiClient _api;
     private readonly SessionState _session;
     private readonly IServiceScopeFactory? _serviceScopeFactory;
+    private readonly SyncStatusCompositionCoordinator _syncStatusCompositionCoordinator = new();
+    private bool _applyingComposedSyncStatus;
+    private bool _applyingAuthoritativeSyncStatus;
     private readonly IPrintService _invoicePrintService = new WpfInvoicePrintService();
     private static readonly JsonSerializerOptions PrintModelJsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly TimeSpan RecentPostLoginSyncSkipWindow = TimeSpan.FromMinutes(2);
     private readonly LegacyDataMigrationService _legacyMigrationService;
-    private CancellationTokenSource? _customerAutoSaveCts;
-    private int _customerAutoSaveVersion;
+    private readonly object _customerAutoSaveGate = new();
+    private readonly Dictionary<Guid, CancellationTokenSource> _customerAutoSaveCtsByCustomer = [];
+    private readonly HashSet<Task> _activeCustomerAutoSaveTasks = [];
+    private readonly SemaphoreSlim _customerInlineDataGate;
+    private readonly Dictionary<Guid, CustomerInlineEditPatch> _pendingCustomerInlineEdits = [];
+    private readonly CustomerInlineSaveStateTracker _customerInlineSaveState = new();
+    private bool _customerInlineBusinessTransitionInProgress;
     private int _customerFinancialPreviewVersion;
+    private readonly BackgroundTaskTracker _ownerScopeBackgroundWork = new();
+    private readonly object _customerFinancialPreviewTaskGate = new();
+    private CancellationTokenSource? _customerFinancialPreviewCts;
+    private Task _customerFinancialPreviewTask = Task.CompletedTask;
+    private bool _shutdownBackgroundWorkCancellationRequested;
     private int _invoicePreviewVersion;
+    private CancellationTokenSource? _invoicePreviewCts;
     private int _invoiceFilterApplyVersion;
     private readonly UiDebouncer _invoiceFilterDebouncer = new();
     private readonly UiDebouncer _customerFilterDebouncer = new();
@@ -121,6 +181,7 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly Dictionary<InvoiceRowCacheKey, IReadOnlyList<InvoiceListRow>> _invoiceRowCache = new();
     private bool _dashboardMetricsLoaded;
     private CancellationTokenSource? _invoiceFilterApplyCts;
+    private Task _invoiceFilterApplyTask = Task.CompletedTask;
     private CancellationTokenSource? _invoiceListLoadCts;
     private const string LegacySourceDbPathSettingKey = "LegacyMigration.SourceDbPath";
     private const string LegacyCustomerExcelPathSettingKey = "LegacyMigration.CustomerExcelPath";
@@ -196,72 +257,497 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _editCustNotes = string.Empty;
     [ObservableProperty] private string _customerInlineSaveStatus = "거래처를 선택하면 빠른 수정 상태가 표시됩니다.";
 
-    partial void OnEditCustBizNumberChanged(string value) => TriggerCustomerAutoSave();
-    partial void OnEditCustPhoneChanged(string value) => TriggerCustomerAutoSave();
-    partial void OnEditCustDeptChanged(string value) => TriggerCustomerAutoSave();
-    partial void OnEditCustContactPersonChanged(string value) => TriggerCustomerAutoSave();
-    partial void OnEditCustAddressChanged(string value) => TriggerCustomerAutoSave();
-    partial void OnEditCustNotesChanged(string value) => TriggerCustomerAutoSave();
+    partial void OnEditCustBizNumberChanged(string value)
+        => TriggerCustomerAutoSave(CustomerInlineFieldMask.BusinessNumber);
+    partial void OnEditCustPhoneChanged(string value)
+        => TriggerCustomerAutoSave(CustomerInlineFieldMask.Phone);
+    partial void OnEditCustDeptChanged(string value)
+        => TriggerCustomerAutoSave(CustomerInlineFieldMask.Department);
+    partial void OnEditCustContactPersonChanged(string value)
+        => TriggerCustomerAutoSave(CustomerInlineFieldMask.ContactPerson);
+    partial void OnEditCustAddressChanged(string value)
+        => TriggerCustomerAutoSave(CustomerInlineFieldMask.Address);
+    partial void OnEditCustNotesChanged(string value)
+        => TriggerCustomerAutoSave(CustomerInlineFieldMask.Notes);
 
-    private void TriggerCustomerAutoSave()
+    private void TriggerCustomerAutoSave(CustomerInlineFieldMask changedField)
     {
         if (_suppressCustomerSave)
             return;
 
-        _customerAutoSaveCts?.Cancel();
-        _customerAutoSaveCts?.Dispose();
-        _customerAutoSaveCts = new CancellationTokenSource();
-        var version = Interlocked.Increment(ref _customerAutoSaveVersion);
-        var token = _customerAutoSaveCts.Token;
-        CustomerInlineSaveStatus = "거래처 정보 변경 감지 - 잠시 후 자동저장합니다.";
-        UiTaskHelper.Forget(
-            AutoSaveCustomerAsync(token, version),
-            "MAIN",
-            "거래처 인라인 자동저장",
-            ex =>
-            {
-                CustomerInlineSaveStatus = $"거래처 정보 자동저장 실패: {ex.Message}";
-                AppLogger.Warn("AUTOSAVE", $"Customer inline auto-save failed: {ex.Message}");
-            });
-    }
-
-    private async Task AutoSaveCustomerAsync(CancellationToken cancellationToken, int version)
-    {
-        try
+        lock (_customerFinancialPreviewTaskGate)
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(350), cancellationToken);
+            if (_shutdownBackgroundWorkCancellationRequested)
+                return;
         }
-        catch (OperationCanceledException)
-        {
-            return;
-        }
-
-        if (_suppressCustomerSave || version != Volatile.Read(ref _customerAutoSaveVersion))
-            return;
 
         var customer = SelectedCustomerFilter;
         if (customer is null)
             return;
 
-        CustomerInlineSaveStatus = "거래처 정보 저장 중...";
-        customer.BusinessNumber = EditCustBizNumber;
-        customer.Phone = EditCustPhone;
-        customer.Department = EditCustDept;
-        customer.ContactPerson = EditCustContactPerson;
-        customer.Address = EditCustAddress;
-        customer.Notes = EditCustNotes;
-        customer.NameMatchKey = customer.NameOriginal.ToUpperInvariant();
-        var result = await _local.UpsertCustomerAsync(customer, _session);
-        if (!result.Success)
+        var scope = CaptureCustomerInlineEditScopeIdentity();
+        CustomerInlineEditableFields baseline;
+        long baseRevision;
+        CustomerInlineFieldMask changedFields;
+        lock (_customerAutoSaveGate)
         {
-            CustomerInlineSaveStatus = string.IsNullOrWhiteSpace(result.Message)
-                ? "거래처 정보 저장 실패 - 권한 또는 동기화 상태를 확인하세요."
-                : $"거래처 정보 저장 실패: {result.Message}";
-            AppLogger.Warn("AUTOSAVE", $"Customer inline auto-save failed for '{customer.NameOriginal}'. {result.Message}");
+            if (_customerInlineBusinessTransitionInProgress)
+            {
+                CustomerInlineSaveStatus =
+                    "업체 DB 전환 중에는 거래처 정보를 수정할 수 없습니다. 전환 완료 후 다시 입력해 주세요.";
+                return;
+            }
+
+            if (_pendingCustomerInlineEdits.TryGetValue(customer.Id, out var pending) &&
+                pending.Scope == scope)
+            {
+                baseline = pending.Baseline;
+                baseRevision = pending.BaseRevision;
+                changedFields = pending.ChangedFields | changedField;
+            }
+            else
+            {
+                baseline = CustomerInlineEditableFields.Capture(customer);
+                baseRevision = customer.Revision;
+                changedFields = changedField;
+            }
+        }
+
+        var patch = new CustomerInlineEditPatch(
+            customer.Id,
+            customer.NameOriginal,
+            baseRevision,
+            scope,
+            baseline,
+            new CustomerInlineEditableFields(
+                EditCustBizNumber,
+                EditCustPhone,
+                EditCustDept,
+                EditCustContactPerson,
+                EditCustAddress,
+                EditCustNotes),
+            changedFields);
+        QueueCustomerAutoSave(patch, TimeSpan.FromMilliseconds(350));
+    }
+
+    private void QueueCustomerAutoSave(
+        CustomerInlineEditPatch patch,
+        TimeSpan delay)
+    {
+        var customerId = patch.CustomerId;
+        var cancellation = new CancellationTokenSource();
+        CancellationTokenSource? previousCancellation;
+        int generation;
+
+        lock (_customerAutoSaveGate)
+        {
+            if (_customerInlineBusinessTransitionInProgress)
+            {
+                cancellation.Dispose();
+                return;
+            }
+
+            generation = _customerInlineSaveState.Begin(
+                customerId,
+                patch.Label);
+            _customerAutoSaveCtsByCustomer.TryGetValue(
+                customerId,
+                out previousCancellation);
+            _customerAutoSaveCtsByCustomer[customerId] = cancellation;
+            _pendingCustomerInlineEdits[customerId] = patch;
+        }
+
+        if (previousCancellation is not null)
+        {
+            try
+            {
+                previousCancellation.Cancel();
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error(
+                    "AUTOSAVE",
+                    $"Customer inline auto-save cancellation failed for '{patch.Label}'.",
+                    ex);
+            }
+        }
+
+        SetCustomerInlineSaveStatus(
+            customerId,
+            "거래처 정보 변경 감지 - 잠시 후 자동저장합니다.");
+
+        Task? task;
+        try
+        {
+            task = _ownerScopeBackgroundWork.TryStart(
+                () => AutoSaveCustomerAsync(
+                    patch,
+                    generation,
+                    cancellation,
+                    delay));
+        }
+        catch (Exception ex)
+        {
+            _customerInlineSaveState.MarkFailure(customerId, generation);
+            CompleteCustomerAutoSaveAttempt(customerId, cancellation);
+            SetCustomerInlineSaveStatus(
+                customerId,
+                $"거래처 정보 자동저장 시작 실패: {ex.Message}");
+            AppLogger.Error(
+                "AUTOSAVE",
+                $"Customer inline auto-save could not start for '{patch.Label}'.",
+                ex);
             return;
         }
 
-        CustomerInlineSaveStatus = $"거래처 정보 저장됨 · {DateTime.Now:HH:mm:ss}";
+        if (task is null)
+        {
+            _customerInlineSaveState.MarkFailure(customerId, generation);
+            CompleteCustomerAutoSaveAttempt(customerId, cancellation);
+            SetCustomerInlineSaveStatus(
+                customerId,
+                "거래처 정보 자동저장을 시작하지 못했습니다. 다시 시도해 주세요.");
+            AppLogger.Warn(
+                "AUTOSAVE",
+                $"Customer inline auto-save tracking was closed for '{patch.Label}'.");
+            return;
+        }
+
+        TrackCustomerAutoSaveTask(task);
+        UiTaskHelper.Forget(
+            task,
+            "MAIN",
+            "거래처 인라인 자동저장",
+            ex => AppLogger.Warn(
+                "AUTOSAVE",
+                $"Customer inline auto-save failed for '{patch.Label}': {ex.Message}"));
+    }
+
+    private async Task AutoSaveCustomerAsync(
+        CustomerInlineEditPatch patch,
+        int generation,
+        CancellationTokenSource cancellation,
+        TimeSpan delay)
+    {
+        var customerId = patch.CustomerId;
+        var cancellationToken = cancellation.Token;
+        var gateEntered = false;
+
+        try
+        {
+            await Task.Delay(delay, cancellationToken);
+
+            if (!_customerInlineSaveState.IsLatest(customerId, generation))
+                return;
+
+            await _customerInlineDataGate.WaitAsync(cancellationToken);
+            gateEntered = true;
+
+            if (!_customerInlineSaveState.IsLatest(customerId, generation))
+                return;
+
+            CustomerInlineEditPatch? effectivePatch;
+            lock (_customerAutoSaveGate)
+            {
+                if (!_customerInlineSaveState.IsLatest(customerId, generation) ||
+                    !_pendingCustomerInlineEdits.TryGetValue(customerId, out effectivePatch) ||
+                    effectivePatch is null)
+                {
+                    return;
+                }
+            }
+
+            SetCustomerInlineSaveStatus(customerId, "거래처 정보 저장 중...");
+            var savedCustomer = await CommitCustomerInlineEditPatchAsync(
+                effectivePatch,
+                CancellationToken.None);
+
+            if (_customerInlineSaveState.MarkSuccess(customerId, generation))
+            {
+                RemovePendingCustomerInlineEdit(customerId, effectivePatch);
+                ApplyCustomerInlineSaveResult(savedCustomer);
+                SetCustomerInlineSaveStatus(
+                    customerId,
+                    $"거래처 정보 저장됨 · {DateTime.Now:HH:mm:ss}");
+            }
+            else
+            {
+                RebasePendingCustomerInlineEdit(
+                    customerId,
+                    effectivePatch.Scope,
+                    savedCustomer);
+            }
+        }
+        catch (OperationCanceledException)
+            when (cancellationToken.IsCancellationRequested &&
+                  !_customerInlineSaveState.IsLatest(customerId, generation))
+        {
+            // A newer edit for this customer superseded this attempt.
+        }
+        catch (Exception ex)
+        {
+            if (_customerInlineSaveState.MarkFailure(customerId, generation))
+            {
+                SetCustomerInlineSaveStatus(
+                    customerId,
+                    $"거래처 정보 자동저장 실패: {ex.Message}");
+            }
+
+            throw;
+        }
+        finally
+        {
+            if (gateEntered)
+                _customerInlineDataGate.Release();
+
+            CompleteCustomerAutoSaveAttempt(customerId, cancellation);
+        }
+    }
+
+    private async Task<LocalCustomer> CommitCustomerInlineEditPatchAsync(
+        CustomerInlineEditPatch patch,
+        CancellationToken cancellationToken)
+    {
+        return await Task.Run(async () =>
+        {
+            using var commitLease = await _session
+                .AcquireSyncScopeCommitLeaseAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (patch.Scope != CaptureCustomerInlineEditScopeIdentityWithLeaseHeld())
+            {
+                throw new InvalidOperationException(
+                    "거래처 편집을 시작한 뒤 로그인 또는 업체 DB 범위가 변경되어 자동저장을 중단했습니다.");
+            }
+
+            using var serviceScope = _serviceScopeFactory?.CreateScope();
+            var local = serviceScope?.ServiceProvider.GetRequiredService<LocalStateService>() ?? _local;
+            var current = await local
+                .GetCustomerAsync(patch.CustomerId, _session, cancellationToken)
+                .ConfigureAwait(false)
+                ?? throw new InvalidOperationException(
+                    $"자동저장할 거래처 '{patch.Label}'을(를) 현재 업체 DB에서 찾을 수 없습니다.");
+
+            var merge = CustomerInlineEditPatchMerge.TryMerge(current, patch);
+            if (!merge.Succeeded)
+            {
+                var fields = string.Join(
+                    ", ",
+                    merge.ConflictingFields.Select(GetCustomerInlineFieldDisplayName));
+                throw new InvalidOperationException(
+                    $"다른 PC에서도 같은 거래처 항목이 변경되었습니다: {fields}. " +
+                    "최신 값을 확인한 뒤 원하는 값을 다시 입력해 주세요.");
+            }
+
+            current.NameMatchKey = current.NameOriginal.ToUpperInvariant();
+            var result = await local
+                .UpsertCustomerAsync(current, _session, cancellationToken)
+                .ConfigureAwait(false);
+            if (!result.Success)
+            {
+                throw new InvalidOperationException(
+                    string.IsNullOrWhiteSpace(result.Message)
+                        ? "Customer inline auto-save was rejected."
+                        : result.Message);
+            }
+
+            return current;
+        }, cancellationToken);
+    }
+
+    private static string GetCustomerInlineFieldDisplayName(string fieldName)
+        => fieldName switch
+        {
+            nameof(LocalCustomer.BusinessNumber) => "사업자번호",
+            nameof(LocalCustomer.Phone) => "전화번호",
+            nameof(LocalCustomer.Department) => "부서",
+            nameof(LocalCustomer.ContactPerson) => "담당자",
+            nameof(LocalCustomer.Address) => "주소",
+            nameof(LocalCustomer.Notes) => "메모",
+            _ => fieldName
+        };
+
+    private CustomerInlineEditScopeIdentity CaptureCustomerInlineEditScopeIdentity()
+    {
+        using var scopeLease = _session.AcquireSyncScopeSnapshotLease();
+        return CaptureCustomerInlineEditScopeIdentityWithLeaseHeld();
+    }
+
+    private CustomerInlineEditScopeIdentity CaptureCustomerInlineEditScopeIdentityWithLeaseHeld()
+        => new(
+            _session.SessionId,
+            _session.SyncScopeEpoch,
+            _session.TenantCode,
+            _session.OfficeCode,
+            _session.BusinessOfficeCode,
+            _session.ScopeType,
+            _session.SelectedBusinessDatabaseName);
+
+    private void ApplyCustomerInlineSaveResult(LocalCustomer savedCustomer)
+    {
+        var savedFields = CustomerInlineEditableFields.Capture(savedCustomer);
+        foreach (var target in _allCustomers.Where(customer => customer.Id == savedCustomer.Id))
+            ApplyCustomerInlineSaveResult(target, savedCustomer, savedFields);
+
+        if (SelectedCustomerFilter is { } selected &&
+            selected.Id == savedCustomer.Id &&
+            !_allCustomers.Any(customer => ReferenceEquals(customer, selected)))
+        {
+            ApplyCustomerInlineSaveResult(selected, savedCustomer, savedFields);
+        }
+    }
+
+    private static void ApplyCustomerInlineSaveResult(
+        LocalCustomer target,
+        LocalCustomer savedCustomer,
+        CustomerInlineEditableFields savedFields)
+    {
+        CustomerInlineEditPatchMerge.Overlay(target, savedFields);
+        target.Revision = savedCustomer.Revision;
+        target.CreatedAtUtc = savedCustomer.CreatedAtUtc;
+        target.UpdatedAtUtc = savedCustomer.UpdatedAtUtc;
+        target.IsDirty = savedCustomer.IsDirty;
+        target.IsDeleted = savedCustomer.IsDeleted;
+        target.NameMatchKey = savedCustomer.NameMatchKey;
+    }
+
+    private void TrackCustomerAutoSaveTask(Task task)
+    {
+        lock (_customerAutoSaveGate)
+            _activeCustomerAutoSaveTasks.Add(task);
+
+        _ = task.ContinueWith(
+            completedTask =>
+            {
+                lock (_customerAutoSaveGate)
+                    _activeCustomerAutoSaveTasks.Remove(completedTask);
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private async Task DrainCustomerAutoSaveTasksAsync()
+    {
+        while (true)
+        {
+            Task[] activeTasks;
+            lock (_customerAutoSaveGate)
+            {
+                _activeCustomerAutoSaveTasks.RemoveWhere(task => task.IsCompleted);
+                activeTasks = _activeCustomerAutoSaveTasks.ToArray();
+            }
+
+            if (activeTasks.Length == 0)
+                return;
+
+            try
+            {
+                await Task.WhenAll(activeTasks);
+            }
+            catch
+            {
+                // Per-customer failure state retains the actionable error.
+            }
+        }
+    }
+
+    private void CompleteCustomerAutoSaveAttempt(
+        Guid customerId,
+        CancellationTokenSource cancellation)
+    {
+        lock (_customerAutoSaveGate)
+        {
+            if (_customerAutoSaveCtsByCustomer.TryGetValue(customerId, out var current) &&
+                ReferenceEquals(current, cancellation))
+            {
+                _customerAutoSaveCtsByCustomer.Remove(customerId);
+            }
+        }
+
+        cancellation.Dispose();
+    }
+
+    private void RemovePendingCustomerInlineEdit(
+        Guid customerId,
+        CustomerInlineEditPatch patch)
+    {
+        lock (_customerAutoSaveGate)
+        {
+            if (_pendingCustomerInlineEdits.TryGetValue(customerId, out var current) &&
+                ReferenceEquals(current, patch))
+            {
+                _pendingCustomerInlineEdits.Remove(customerId);
+            }
+        }
+    }
+
+    private void RebasePendingCustomerInlineEdit(
+        Guid customerId,
+        CustomerInlineEditScopeIdentity savedScope,
+        LocalCustomer savedCustomer)
+    {
+        lock (_customerAutoSaveGate)
+        {
+            if (!_pendingCustomerInlineEdits.TryGetValue(customerId, out var pending) ||
+                pending.Scope != savedScope)
+            {
+                return;
+            }
+
+            _pendingCustomerInlineEdits[customerId] =
+                CustomerInlineEditPatchMerge.RebaseAfterSupersededSave(
+                    pending,
+                    savedCustomer);
+        }
+    }
+
+    private CustomerInlineEditPatch[] SnapshotPendingCustomerInlineEdits()
+    {
+        lock (_customerAutoSaveGate)
+            return _pendingCustomerInlineEdits.Values.ToArray();
+    }
+
+    private bool HasPendingCustomerInlineEdits
+    {
+        get
+        {
+            lock (_customerAutoSaveGate)
+                return _pendingCustomerInlineEdits.Count > 0;
+        }
+    }
+
+    private void SetCustomerInlineSaveStatus(Guid customerId, string status)
+    {
+        if (SelectedCustomerFilter?.Id == customerId)
+            CustomerInlineSaveStatus = status;
+    }
+
+    private void RetryUnresolvedCustomerInlineSave(Guid customerId)
+    {
+        if (!_customerInlineSaveState.SnapshotUnresolvedFailures()
+                .Any(failure => failure.CustomerId == customerId))
+        {
+            return;
+        }
+
+        lock (_customerFinancialPreviewTaskGate)
+        {
+            if (_shutdownBackgroundWorkCancellationRequested)
+                return;
+        }
+
+        CustomerInlineEditPatch? patch;
+        lock (_customerAutoSaveGate)
+        {
+            if (_customerAutoSaveCtsByCustomer.ContainsKey(customerId) ||
+                _customerInlineBusinessTransitionInProgress ||
+                !_pendingCustomerInlineEdits.TryGetValue(customerId, out patch))
+            {
+                return;
+            }
+        }
+
+        QueueCustomerAutoSave(patch, TimeSpan.Zero);
     }
 
     // 전표 목록 - Bottom panel (선택한 전표 라인 미리보기)
@@ -356,6 +842,7 @@ public sealed partial class MainViewModel : ObservableObject
         IServiceScopeFactory? serviceScopeFactory = null)
     {
         _local = local;
+        _customerInlineDataGate = local.OwnerScopeDataGate;
         _sync = sync;
         _backup = backup;
         _rental = rental;
@@ -372,32 +859,274 @@ public sealed partial class MainViewModel : ObservableObject
 
     public void CancelPendingBackgroundWorkForShutdown()
     {
-        Interlocked.Increment(ref _customerAutoSaveVersion);
+        lock (_customerFinancialPreviewTaskGate)
+            _shutdownBackgroundWorkCancellationRequested = true;
+
+        _ownerScopeBackgroundWork.BeginShutdown();
         Interlocked.Increment(ref _customerFinancialPreviewVersion);
         Interlocked.Increment(ref _invoicePreviewVersion);
+        Interlocked.Increment(ref _previewCustomerContractVersion);
         Interlocked.Increment(ref _invoiceFilterApplyVersion);
+        _syncStatusCompositionCoordinator.Invalidate();
 
-        _customerFilterDebouncer.Dispose();
-        _invoiceFilterDebouncer.Dispose();
+        TryRunShutdownCancellation(
+            _customerFilterDebouncer.Cancel,
+            "customer filter debounce");
+        TryRunShutdownCancellation(
+            _invoiceFilterDebouncer.Cancel,
+            "invoice filter debounce");
 
-        _customerAutoSaveCts?.Cancel();
-        _customerAutoSaveCts?.Dispose();
-        _customerAutoSaveCts = null;
+        lock (_customerFinancialPreviewTaskGate)
+        {
+            TryCancelShutdownToken(
+                _customerFinancialPreviewCts,
+                "customer financial preview");
+        }
 
-        _invoiceFilterApplyCts?.Cancel();
-        _invoiceFilterApplyCts?.Dispose();
-        _invoiceFilterApplyCts = null;
+        TryCancelShutdownToken(_invoicePreviewCts, "invoice preview");
+        TryCancelShutdownToken(
+            _previewCustomerContractCts,
+            "customer contract preview");
 
-        _invoiceListLoadCts?.Cancel();
+        TryCancelShutdownToken(_invoiceFilterApplyCts, "invoice filter apply");
+
+        TryCancelShutdownToken(_invoiceListLoadCts, "invoice list load");
         _invoiceListLoadCts = null;
 
-        _backgroundDesktopUpdateCts?.Cancel();
+        TryCancelShutdownToken(
+            _backgroundDesktopUpdateCts,
+            "background desktop update");
+    }
+
+    private static void TryCancelShutdownToken(
+        CancellationTokenSource? cancellation,
+        string operation)
+    {
+        if (cancellation is null)
+            return;
+
+        TryRunShutdownCancellation(cancellation.Cancel, operation);
+    }
+
+    private static void TryRunShutdownCancellation(
+        Action cancellation,
+        string operation)
+    {
+        try
+        {
+            cancellation();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error(
+                "MAIN",
+                $"Shutdown cancellation callback failure: {operation}",
+                ex);
+        }
+    }
+
+    public async Task DrainPendingBackgroundWorkForShutdownAsync()
+    {
+        CancelPendingBackgroundWorkForShutdown();
+        Task previewTask;
+        lock (_customerFinancialPreviewTaskGate)
+            previewTask = _customerFinancialPreviewTask;
+
+        try
+        {
+            await Task.WhenAll(
+                previewTask,
+                _customerFilterDebouncer.CancelAndDrainAsync(),
+                _invoiceFilterDebouncer.CancelAndDrainAsync(),
+                _ownerScopeBackgroundWork.DrainAsync());
+        }
+        catch (OperationCanceledException)
+        {
+            // 종료 취소에 응답한 미리보기 조회는 정상적인 drain으로 처리합니다.
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn(
+                "MAIN",
+                $"종료 전 거래처 재무 미리보기 작업 확인 중 오류를 기록하고 종료 절차를 계속합니다. {ex.Message}");
+        }
+
+        finally
+        {
+            _invoicePreviewCts?.Dispose();
+            _invoicePreviewCts = null;
+            _previewCustomerContractCts?.Dispose();
+            _previewCustomerContractCts = null;
+            _invoiceFilterApplyCts?.Dispose();
+            _invoiceFilterApplyCts = null;
+            _backgroundDesktopUpdateCts?.Dispose();
+            _backgroundDesktopUpdateCts = null;
+        }
+
+        // Inline customer edits are user data, not disposable UI refresh work.
+        // A completed fault is retained per customer until that same customer's
+        // latest captured edit is saved successfully.
+        var unresolvedFailures = _customerInlineSaveState.SnapshotUnresolvedFailures();
+        var pendingEdits = SnapshotPendingCustomerInlineEdits();
+        if (unresolvedFailures.Count > 0 || pendingEdits.Length > 0)
+        {
+            var customerLabels = unresolvedFailures
+                .Select(failure => failure.Label)
+                .Concat(pendingEdits.Select(patch => patch.Label))
+                .Where(label => !string.IsNullOrWhiteSpace(label))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(label => label, StringComparer.Ordinal)
+                .ToArray();
+            var targetText = customerLabels.Length == 0
+                ? "알 수 없는 거래처"
+                : string.Join(", ", customerLabels);
+
+            throw new InvalidOperationException(
+                $"거래처 정보 자동저장이 완료되지 않아 종료를 취소했습니다. 대상: {targetText}. " +
+                "권한과 동기화 상태를 확인한 뒤 해당 거래처를 다시 선택하거나 저장을 다시 시도해 주세요.");
+        }
+    }
+
+    public bool IsShutdownBackgroundWorkCompleted
+    {
+        get
+        {
+            lock (_customerFinancialPreviewTaskGate)
+                return _customerFinancialPreviewTask.IsCompleted &&
+                       _ownerScopeBackgroundWork.IsCompleted &&
+                       _customerFilterDebouncer.IsIdle &&
+                       _invoiceFilterDebouncer.IsIdle &&
+                       !HasPendingCustomerInlineEdits &&
+                       _customerInlineSaveState.SnapshotUnresolvedFailures().Count == 0;
+        }
+    }
+
+    public void ResumePendingBackgroundWorkAfterShutdownCanceled()
+    {
+        lock (_customerFinancialPreviewTaskGate)
+            _shutdownBackgroundWorkCancellationRequested = false;
+        _ownerScopeBackgroundWork.Resume();
+
+        foreach (var patch in SnapshotPendingCustomerInlineEdits())
+            QueueCustomerAutoSave(patch, TimeSpan.Zero);
+    }
+
+    public async Task RunBusinessDatabaseTransitionAsync(Func<Task> transitionAsync)
+    {
+        ArgumentNullException.ThrowIfNull(transitionAsync);
+
+        lock (_customerAutoSaveGate)
+        {
+            if (_customerInlineBusinessTransitionInProgress)
+            {
+                throw new InvalidOperationException(
+                    "업체 DB 전환이 이미 진행 중입니다. 잠시 후 다시 시도해 주세요.");
+            }
+
+            _customerInlineBusinessTransitionInProgress = true;
+        }
+
+        var dataGateEntered = false;
+        try
+        {
+            await QuiesceInvoiceWorkForBusinessDatabaseTransitionAsync();
+            await DrainCustomerAutoSaveTasksAsync();
+            ThrowIfCustomerInlineEditsIncomplete("업체 DB 전환");
+
+            await _customerInlineDataGate.WaitAsync();
+            dataGateEntered = true;
+            await transitionAsync();
+        }
+        finally
+        {
+            if (dataGateEntered)
+                _customerInlineDataGate.Release();
+
+            lock (_customerAutoSaveGate)
+                _customerInlineBusinessTransitionInProgress = false;
+        }
+    }
+
+    private async Task QuiesceInvoiceWorkForBusinessDatabaseTransitionAsync()
+    {
+        Interlocked.Increment(ref _invoiceFilterApplyVersion);
+        await _invoiceFilterDebouncer.CancelAndDrainAsync();
+
+        var filterCancellation = _invoiceFilterApplyCts;
+        TryCancelShutdownToken(filterCancellation, "business database transition invoice filter apply");
+        TryCancelShutdownToken(_invoiceListLoadCts, "business database transition invoice list load");
+
+        try
+        {
+            await _invoiceFilterApplyTask;
+        }
+        catch (OperationCanceledException)
+        {
+            // The transition intentionally cancels stale filter persistence/list work.
+        }
+        finally
+        {
+            if (ReferenceEquals(_invoiceFilterApplyCts, filterCancellation))
+                _invoiceFilterApplyCts = null;
+            filterCancellation?.Dispose();
+            _invoiceFilterApplyTask = Task.CompletedTask;
+        }
+    }
+
+    private void ThrowIfCustomerInlineEditsIncomplete(string operation)
+    {
+        var unresolvedFailures = _customerInlineSaveState.SnapshotUnresolvedFailures();
+        var pendingEdits = SnapshotPendingCustomerInlineEdits();
+        if (unresolvedFailures.Count == 0 && pendingEdits.Length == 0)
+            return;
+
+        var customerLabels = unresolvedFailures
+            .Select(failure => failure.Label)
+            .Concat(pendingEdits.Select(patch => patch.Label))
+            .Where(label => !string.IsNullOrWhiteSpace(label))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(label => label, StringComparer.Ordinal)
+            .ToArray();
+        var targetText = customerLabels.Length == 0
+            ? "알 수 없는 거래처"
+            : string.Join(", ", customerLabels);
+
+        throw new InvalidOperationException(
+            $"거래처 정보 자동저장이 완료되지 않아 {operation}을(를) 중단했습니다. 대상: {targetText}. " +
+            "권한과 동기화 상태를 확인한 뒤 해당 거래처를 다시 선택하거나 저장을 다시 시도해 주세요.");
+    }
+
+    private bool IsBusinessDatabaseTransitionInProgress()
+    {
+        lock (_customerAutoSaveGate)
+            return _customerInlineBusinessTransitionInProgress;
     }
 
     private void HandleSyncStatusChanged(string status)
     {
+        if (string.IsNullOrWhiteSpace(status))
+            return;
+
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            if (dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished)
+                return;
+
+            _ = dispatcher.BeginInvoke(
+                DispatcherPriority.DataBind,
+                new Action(() => HandleSyncStatusChanged(status)));
+            return;
+        }
+
+        var generation = _syncStatusCompositionCoordinator.BeginRequest();
+        var identity = CaptureSyncStatusCompositionIdentity();
+        var task = _ownerScopeBackgroundWork.TryStart(
+            () => ApplySyncStatusAsync(status, generation, identity));
+        if (task is null)
+            return;
         UiTaskHelper.Forget(
-            ApplySyncStatusAsync(status),
+            task,
             "SYNC-UI",
             "동기화 상태 표시 갱신",
             ex => AppLogger.Warn("SYNC-UI", $"동기화 상태 표시 갱신 실패: {ex.Message}"));
@@ -406,35 +1135,119 @@ public sealed partial class MainViewModel : ObservableObject
 
     public void ApplyExternalSyncStatus(string status) => HandleSyncStatusChanged(status);
 
-    private async Task<T> RunIsolatedSyncAsync<T>(Func<SyncService, Task<T>> operation)
+    private async Task<T> RunIsolatedSyncAsync<T>(
+        Func<SyncService, CancellationToken, Task<T>> operation,
+        CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (_serviceScopeFactory is null)
-            return await Task.Run(() => operation(_sync));
+            return await Task.Run(() => operation(_sync, ct), ct);
 
         return await Task.Run(async () =>
         {
+            ct.ThrowIfCancellationRequested();
             using var scope = _serviceScopeFactory.CreateScope();
             var sync = scope.ServiceProvider.GetRequiredService<SyncService>();
             sync.SyncStatusChanged += HandleSyncStatusChanged;
             try
             {
-                return await operation(sync).ConfigureAwait(false);
+                return await operation(sync, ct).ConfigureAwait(false);
             }
             finally
             {
                 sync.SyncStatusChanged -= HandleSyncStatusChanged;
+                await sync.StopAndDrainAsync().ConfigureAwait(false);
             }
+        }, ct);
+    }
+
+    private async Task<T> RunIsolatedLocalStateAsync<T>(Func<LocalStateService, Task<T>> operation)
+    {
+        if (_serviceScopeFactory is null)
+            throw new InvalidOperationException("A service scope is required for isolated sync-status queries.");
+
+        return await Task.Run(async () =>
+        {
+            using var scope = _serviceScopeFactory.CreateScope();
+            var local = scope.ServiceProvider.GetRequiredService<LocalStateService>();
+            return await operation(local).ConfigureAwait(false);
         });
     }
 
-    private async Task ApplySyncStatusAsync(string status)
+    private async Task ApplySyncStatusAsync(
+        string status,
+        long generation,
+        SyncStatusCompositionIdentity identity)
     {
-        var resolvedStatus = await ComposeSyncStatusAsync(status);
-        var dispatcher = Application.Current?.Dispatcher;
-        if (dispatcher is not null && !dispatcher.CheckAccess())
-            await dispatcher.InvokeAsync(() => SyncStatus = resolvedStatus);
-        else
-            SyncStatus = resolvedStatus;
+        await _syncStatusCompositionCoordinator.RunAsync(async () =>
+        {
+            if (!IsSyncStatusCompositionCurrent(generation, identity))
+                return;
+
+            var resolvedStatus = await ComposeSyncStatusAsync(status);
+            var dispatcher = Application.Current?.Dispatcher;
+            if (dispatcher is not null && !dispatcher.CheckAccess())
+                await dispatcher.InvokeAsync(() => ApplyComposedSyncStatusIfCurrent(resolvedStatus, generation, identity));
+            else
+                ApplyComposedSyncStatusIfCurrent(resolvedStatus, generation, identity);
+        });
+    }
+
+    private SyncStatusCompositionIdentity CaptureSyncStatusCompositionIdentity()
+        => new(
+            _session.SessionId,
+            _session.SyncScopeEpoch,
+            _session.TenantCode,
+            _session.OfficeCode,
+            _session.SelectedBusinessDatabaseName);
+
+    private bool IsSyncStatusCompositionCurrent(
+        long generation,
+        SyncStatusCompositionIdentity identity)
+        => _syncStatusCompositionCoordinator.IsCurrent(
+            generation,
+            identity,
+            CaptureSyncStatusCompositionIdentity());
+
+    private void ApplyComposedSyncStatusIfCurrent(
+        string status,
+        long generation,
+        SyncStatusCompositionIdentity identity)
+    {
+        if (!IsSyncStatusCompositionCurrent(generation, identity))
+            return;
+
+        _applyingComposedSyncStatus = true;
+        try
+        {
+            SyncStatus = status;
+        }
+        finally
+        {
+            _applyingComposedSyncStatus = false;
+        }
+    }
+
+    private void InvalidatePendingSyncStatusComposition()
+        => _syncStatusCompositionCoordinator.Invalidate();
+
+    private void SetAuthoritativeSyncStatus(string status)
+    {
+        _applyingAuthoritativeSyncStatus = true;
+        try
+        {
+            _syncStatusCompositionCoordinator.ApplyAuthoritative(() => SyncStatus = status);
+        }
+        finally
+        {
+            _applyingAuthoritativeSyncStatus = false;
+        }
+    }
+
+    partial void OnSyncStatusChanging(string value)
+    {
+        if (!_applyingComposedSyncStatus && !_applyingAuthoritativeSyncStatus)
+            InvalidatePendingSyncStatusComposition();
     }
 
     private async Task<string> ComposeSyncStatusAsync(string status)
@@ -449,32 +1262,39 @@ public sealed partial class MainViewModel : ObservableObject
             return status;
         }
 
-        var dirtyCount = await _local.CountDirtyAsync(_session);
-        if (dirtyCount <= 0)
+        if (_serviceScopeFactory is null)
             return status;
 
-        if (IsSyncAttentionStatus(status))
-            return await _local.GetPendingSyncWaitingMessageAsync(_session, $"{status} /", CancellationToken.None)
-                   ?? $"{status} / 서버 반영 대기 데이터 {dirtyCount:N0}건";
+        return await RunIsolatedLocalStateAsync(async local =>
+        {
+            var dirtyCount = await local.CountDirtyAsync(_session);
+            if (dirtyCount <= 0)
+                return status;
 
-        return await _local.GetPendingSyncWaitingMessageAsync(_session, "동기화 작업은 완료됐지만", CancellationToken.None)
-               ?? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다.";
+            if (IsSyncAttentionStatus(status))
+                return await local.GetPendingSyncWaitingMessageAsync(_session, $"{status} /", CancellationToken.None)
+                       ?? $"{status} / 서버 반영 대기 데이터 {dirtyCount:N0}건";
+
+            return await local.GetPendingSyncWaitingMessageAsync(_session, "동기화 작업은 완료됐지만", CancellationToken.None)
+                   ?? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다.";
+        });
     }
 
     private static bool IsSyncAttentionStatus(string status)
         => status.StartsWith("동기화 확인 필요", StringComparison.Ordinal)
            || status.StartsWith("서버 응답 지연", StringComparison.Ordinal);
 
-    public async Task LoadAsync()
+    public async Task LoadAsync(CancellationToken ct = default)
     {
-        await LoadCustomersAsync();
-        await RefreshInvoiceDefaultDateRangeFromDataAsync();
-        await LoadInvoiceFilterSettingsAsync();
-        await LoadInvoiceListAsync();
-        await LoadCompanyProfileAsync();
-        await LoadLegacyMigrationSettingsAsync();
+        ct.ThrowIfCancellationRequested();
+        await LoadCustomersAsync(ct);
+        await RefreshInvoiceDefaultDateRangeFromDataAsync(ct);
+        await LoadInvoiceFilterSettingsAsync(ct);
+        await LoadInvoiceListAsync(ct);
+        await LoadCompanyProfileAsync(ct);
+        await LoadLegacyMigrationSettingsAsync(ct);
         if (_session.IsOfflineMode)
-            SyncStatus = "오프라인 모드에서는 자동 동기화를 진행하지 않습니다.";
+            SetAuthoritativeSyncStatus("오프라인 모드에서는 자동 동기화를 진행하지 않습니다.");
     }
 
     public void SetInvoiceDefaultDateRange(DateOnly serverToday)
@@ -487,8 +1307,8 @@ public sealed partial class MainViewModel : ObservableObject
         FilterTo = _invoiceDefaultTo;
     }
 
-    public async Task<bool> ShouldShowPostLoginSyncPopupAsync()
-        => await IsInitialServerDataLoadRequiredAsync();
+    public async Task<bool> ShouldShowPostLoginSyncPopupAsync(CancellationToken ct = default)
+        => await IsInitialServerDataLoadRequiredAsync(ct);
 
     public async Task<bool> IsInitialServerDataLoadRequiredAsync(CancellationToken ct = default)
     {
@@ -510,83 +1330,94 @@ public sealed partial class MainViewModel : ObservableObject
         return !await HasPersistedSyncRevisionAsync(ct);
     }
 
-    public async Task RunPostLoginSyncAsync()
+    public async Task RunPostLoginSyncAsync(CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (_session.IsOfflineMode)
         {
-            SyncStatus = "로그인 후 서버 동기화를 진행하지 못했습니다.";
+            SetAuthoritativeSyncStatus("로그인 후 서버 동기화를 진행하지 못했습니다.");
             return;
         }
 
         try
         {
-            if (await ShouldSkipImmediatePostLoginSyncAsync())
+            if (await ShouldSkipImmediatePostLoginSyncAsync(ct))
             {
-                var lastSuccess = await GetLastSuccessfulSyncAtAsync();
-                SyncStatus = lastSuccess.HasValue
+                var lastSuccess = await GetLastSuccessfulSyncAtAsync(ct);
+                SetAuthoritativeSyncStatus(lastSuccess.HasValue
                     ? $"최근 동기화 기록({lastSuccess.Value.ToLocalTime():HH:mm:ss})이 있어 시작 동기화는 생략했습니다."
-                    : "최근 동기화 기록이 있어 시작 동기화는 생략했습니다.";
+                    : "최근 동기화 기록이 있어 시작 동기화는 생략했습니다.");
                 return;
             }
 
-            var initialDataLoadRequired = await IsInitialServerDataLoadRequiredAsync();
-            var shouldRefreshCurrentBusinessScope = await ShouldRefreshCurrentBusinessScopeAfterPostLoginAsync();
-            var dirtyBefore = await _local.CountDirtyAsync(_session);
-            SyncStatus = initialDataLoadRequired
+            var initialDataLoadRequired = await IsInitialServerDataLoadRequiredAsync(ct);
+            var shouldRefreshCurrentBusinessScope = await ShouldRefreshCurrentBusinessScopeAfterPostLoginAsync(ct);
+            var dirtyBefore = await _local.CountDirtyAsync(_session, ct);
+            SetAuthoritativeSyncStatus(initialDataLoadRequired
                 ? "초기 데이터 동기화 중입니다. 거래처/거래내역을 서버에서 받는 동안 잠시만 기다려 주세요."
-                : "로그인 후 서버 동기화 중...";
+                : "로그인 후 서버 동기화 중...");
 
-            var syncOk = await RunIsolatedSyncAsync(sync => sync.TrySyncAsync());
-            var dirtyAfter = await _local.CountDirtyAsync(_session);
+            var syncOk = await RunIsolatedSyncAsync(
+                (sync, token) => sync.TrySyncAsync(token),
+                ct);
+            ct.ThrowIfCancellationRequested();
+            var dirtyAfter = await _local.CountDirtyAsync(_session, ct);
 
             // 업데이트 직후 전체 캐시 재구성은 동기화 내부 복구 경로에서 완료될 수 있다.
             // 이 경우 syncOk가 false여도 DB에는 거래처/거래내역이 다시 채워질 수 있으므로
             // 반드시 메인 목록을 한 번 재조회해 빈 화면이 그대로 남지 않게 한다.
-            await ReloadAfterPassiveSyncAsync();
-            var hasVisiblePrimaryWorkCache = await _local.HasVisiblePrimaryWorkCacheAsync(_session);
+            await ReloadAfterPassiveSyncAsync(ct);
+            var hasVisiblePrimaryWorkCache = await _local.HasVisiblePrimaryWorkCacheAsync(_session, ct);
 
             if (syncOk && dirtyAfter == 0)
             {
                 var refreshOk = true;
                 var currentBusinessScopeRefreshAttempted = false;
-                if (shouldRefreshCurrentBusinessScope && await _local.IsServerMirrorRefreshRequiredAsync())
+                if (shouldRefreshCurrentBusinessScope && await _local.IsServerMirrorRefreshRequiredAsync(ct))
                 {
                     currentBusinessScopeRefreshAttempted = true;
-                    refreshOk = await RunIsolatedSyncAsync(sync => sync.RefreshCurrentBusinessScopeFromServerAsync());
+                    refreshOk = await RunIsolatedSyncAsync(
+                        (sync, token) => sync.RefreshCurrentBusinessScopeFromServerAsync(token),
+                        ct);
+                    ct.ThrowIfCancellationRequested();
                 }
 
                 if (currentBusinessScopeRefreshAttempted)
-                    await ReloadAfterPassiveSyncAsync();
-                hasVisiblePrimaryWorkCache = await _local.HasVisiblePrimaryWorkCacheAsync(_session);
+                    await ReloadAfterPassiveSyncAsync(ct);
+                hasVisiblePrimaryWorkCache = await _local.HasVisiblePrimaryWorkCacheAsync(_session, ct);
 
                 if (initialDataLoadRequired && !hasVisiblePrimaryWorkCache)
                 {
-                    SyncStatus = "초기 데이터 표시 확인 중입니다. 서버 기준으로 한 번 더 받습니다...";
-                    var mirrorRefreshOk = await RunIsolatedSyncAsync(sync => sync.RefreshSharedMirrorFromServerAsync());
-                    await ReloadAfterPassiveSyncAsync();
-                    hasVisiblePrimaryWorkCache = await _local.HasVisiblePrimaryWorkCacheAsync(_session);
+                    SetAuthoritativeSyncStatus("초기 데이터 표시 확인 중입니다. 서버 기준으로 한 번 더 받습니다...");
+                    var mirrorRefreshOk = await RunIsolatedSyncAsync(
+                        (sync, token) => sync.RefreshSharedMirrorFromServerAsync(token),
+                        ct);
+                    ct.ThrowIfCancellationRequested();
+                    await ReloadAfterPassiveSyncAsync(ct);
+                    hasVisiblePrimaryWorkCache = await _local.HasVisiblePrimaryWorkCacheAsync(_session, ct);
                     if (mirrorRefreshOk && hasVisiblePrimaryWorkCache)
                     {
-                        SyncStatus = $"초기 데이터 동기화 완료 {DateTime.Now:HH:mm:ss}";
+                        SetAuthoritativeSyncStatus($"초기 데이터 동기화 완료 {DateTime.Now:HH:mm:ss}");
                         return;
                     }
                 }
 
-                SyncStatus = shouldRefreshCurrentBusinessScope && !refreshOk
+                SetAuthoritativeSyncStatus(shouldRefreshCurrentBusinessScope && !refreshOk
                     ? "로그인 후 현재 업체 DB 캐시 재구성은 일부 실패했지만 앱은 계속 사용할 수 있습니다."
-                    : $"로그인 후 서버 동기화 완료 {DateTime.Now:HH:mm:ss}";
+                    : $"로그인 후 서버 동기화 완료 {DateTime.Now:HH:mm:ss}");
                 return;
             }
 
             if (dirtyAfter == 0 && hasVisiblePrimaryWorkCache)
             {
-                SyncStatus = $"서버 기준 데이터 복구 완료 {DateTime.Now:HH:mm:ss}";
+                SetAuthoritativeSyncStatus($"서버 기준 데이터 복구 완료 {DateTime.Now:HH:mm:ss}");
                 return;
             }
 
             if (dirtyBefore > 0 || dirtyAfter > 0)
             {
-                var backupOk = await _backup.BackupNowAsync();
+                var backupOk = await _backup.BackupNowAsync(ct);
+                ct.ThrowIfCancellationRequested();
                 AppLogger.Warn(
                     "APP",
                     $"Post-login auto sync failed with {dirtyAfter} dirty rows. Auto-backup {(backupOk ? "succeeded" : "failed")}.");
@@ -595,7 +1426,8 @@ public sealed partial class MainViewModel : ObservableObject
                     rawMessage: $"로그인 후 자동 동기화 확인 필요. dirty={dirtyAfter}, backup={(backupOk ? "ok" : "failed")}.",
                     severity: "Warning",
                     recoveryAttempted: true,
-                    recoverySucceeded: false);
+                    recoverySucceeded: false,
+                    ct: ct);
             }
             else
             {
@@ -604,20 +1436,25 @@ public sealed partial class MainViewModel : ObservableObject
                     rawMessage: "로그인 후 자동 동기화 확인 필요. dirty row는 없지만 서버 캐시 재구성 또는 네트워크 상태를 확인해야 합니다.",
                     severity: "Warning",
                     recoveryAttempted: false,
-                    recoverySucceeded: false);
+                    recoverySucceeded: false,
+                    ct: ct);
             }
 
             if (dirtyAfter > 0)
             {
-                var pendingMessage = await _local.GetPendingSyncWaitingMessageAsync(_session, ct: CancellationToken.None);
-                SyncStatus = string.IsNullOrWhiteSpace(pendingMessage)
+                var pendingMessage = await _local.GetPendingSyncWaitingMessageAsync(_session, ct: ct);
+                SetAuthoritativeSyncStatus(string.IsNullOrWhiteSpace(pendingMessage)
                     ? $"서버 반영 대기 데이터 {dirtyAfter:N0}건이 남아 있습니다. 환경설정 > 동기화에서 확인해 주세요."
-                    : $"{pendingMessage} 환경설정 > 동기화에서 확인해 주세요.";
+                    : $"{pendingMessage} 환경설정 > 동기화에서 확인해 주세요.");
             }
             else
             {
-                SyncStatus = "동기화 확인이 지연되어 백그라운드에서 다시 확인합니다. 앱은 계속 사용할 수 있습니다.";
+                SetAuthoritativeSyncStatus("동기화 확인이 지연되어 백그라운드에서 다시 확인합니다. 앱은 계속 사용할 수 있습니다.");
             }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -627,35 +1464,35 @@ public sealed partial class MainViewModel : ObservableObject
                 rawMessage: ex.InnerException?.Message ?? ex.Message,
                 exception: ex,
                 severity: "Warning");
-            SyncStatus = "로그인 후 서버 확인이 지연되었습니다. 백그라운드에서 다시 확인하며 앱은 계속 사용할 수 있습니다.";
+            SetAuthoritativeSyncStatus("로그인 후 서버 확인이 지연되었습니다. 백그라운드에서 다시 확인하며 앱은 계속 사용할 수 있습니다.");
         }
     }
 
-    private async Task<bool> ShouldSkipImmediatePostLoginSyncAsync()
+    private async Task<bool> ShouldSkipImmediatePostLoginSyncAsync(CancellationToken ct = default)
     {
-        if (await _local.IsServerMirrorRefreshRequiredAsync())
+        if (await _local.IsServerMirrorRefreshRequiredAsync(ct))
             return false;
 
-        if (await _local.HasLikelyCorruptedPrimaryWorkCacheAsync(_session))
+        if (await _local.HasLikelyCorruptedPrimaryWorkCacheAsync(_session, ct))
         {
-            await _local.MarkServerMirrorRefreshRequiredAsync();
+            await _local.MarkServerMirrorRefreshRequiredAsync(ct);
             return false;
         }
 
-        if (!await HasPersistedSyncRevisionAsync())
+        if (!await HasPersistedSyncRevisionAsync(ct))
             return false;
 
-        if (!await _local.HasVisiblePrimaryWorkCacheAsync(_session))
+        if (!await _local.HasVisiblePrimaryWorkCacheAsync(_session, ct))
             return false;
 
-        if (await HasServerRevisionAdvancedSinceLastSyncAsync())
+        if (await HasServerRevisionAdvancedSinceLastSyncAsync(ct))
             return false;
 
-        var lastSuccess = await GetLastSuccessfulSyncAtAsync();
+        var lastSuccess = await GetLastSuccessfulSyncAtAsync(ct);
         if (!lastSuccess.HasValue || DateTimeOffset.Now - lastSuccess.Value.ToLocalTime() > RecentPostLoginSyncSkipWindow)
             return false;
 
-        var dirtyCount = await _local.CountDirtyAsync(_session);
+        var dirtyCount = await _local.CountDirtyAsync(_session, ct);
         return dirtyCount == 0;
     }
 
@@ -671,6 +1508,10 @@ public sealed partial class MainViewModel : ObservableObject
             _ = long.TryParse(revisionRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var lastSyncRevision);
             return status.CurrentServerRevision > lastSyncRevision;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             AppLogger.Warn("SYNC", $"Post-login revision check failed: {ex.Message}");
@@ -678,8 +1519,8 @@ public sealed partial class MainViewModel : ObservableObject
         }
     }
 
-    private async Task<bool> ShouldRefreshCurrentBusinessScopeAfterPostLoginAsync()
-        => await _local.IsServerMirrorRefreshRequiredAsync();
+    private async Task<bool> ShouldRefreshCurrentBusinessScopeAfterPostLoginAsync(CancellationToken ct = default)
+        => await _local.IsServerMirrorRefreshRequiredAsync(ct);
 
     private async Task<bool> HasPersistedSyncRevisionAsync(CancellationToken ct = default)
     {
@@ -687,30 +1528,68 @@ public sealed partial class MainViewModel : ObservableObject
         return long.TryParse(revisionRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var revision) && revision > 0;
     }
 
-    private async Task<DateTimeOffset?> GetLastSuccessfulSyncAtAsync()
+    private async Task<DateTimeOffset?> GetLastSuccessfulSyncAtAsync(CancellationToken ct = default)
     {
-        var raw = await _local.GetSettingAsync("Sync.LastSuccessAt");
+        var raw = await _local.GetSettingAsync("Sync.LastSuccessAt", ct);
         return DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var value)
             ? value
             : null;
     }
 
     // Customer Filter (Left Panel)
-    private async Task LoadCustomersAsync()
+    private async Task LoadCustomersAsync(
+        CancellationToken ct = default,
+        bool dataGateAlreadyHeld = false)
     {
-        var selectedCustomerId = SelectedCustomerFilter?.Id;
-        _allCustomers = await _local.GetCustomersAsync(_session);
-        _customerNameById = _allCustomers
-            .Where(customer => customer.Id != Guid.Empty)
-            .GroupBy(customer => customer.Id)
-            .ToDictionary(group => group.Key, group => group.First().NameOriginal);
-        DashboardCustomerCount = _allCustomers.Count;
-        ApplyCustomerFilter();
+        var ownsDataGate = !dataGateAlreadyHeld;
+        if (ownsDataGate)
+            await _customerInlineDataGate.WaitAsync(ct);
 
-        if (selectedCustomerId.HasValue)
+        try
         {
-            var refreshedSelection = _allCustomers.FirstOrDefault(customer => customer.Id == selectedCustomerId.Value);
-            SelectedCustomerFilter = refreshedSelection;
+            var selectedCustomerId = SelectedCustomerFilter?.Id;
+            var customers = await _local.GetCustomersAsync(_session, ct);
+            ApplyPendingCustomerInlineEditOverlays(customers);
+
+            _allCustomers = customers;
+            _customerNameById = _allCustomers
+                .Where(customer => customer.Id != Guid.Empty)
+                .GroupBy(customer => customer.Id)
+                .ToDictionary(group => group.Key, group => group.First().NameOriginal);
+            DashboardCustomerCount = _allCustomers.Count;
+            ApplyCustomerFilter();
+
+            if (selectedCustomerId.HasValue)
+            {
+                var refreshedSelection = _allCustomers.FirstOrDefault(customer => customer.Id == selectedCustomerId.Value);
+                SelectedCustomerFilter = refreshedSelection;
+            }
+        }
+        finally
+        {
+            if (ownsDataGate)
+                _customerInlineDataGate.Release();
+        }
+    }
+
+    private void ApplyPendingCustomerInlineEditOverlays(
+        IReadOnlyCollection<LocalCustomer> customers)
+    {
+        var currentScope = CaptureCustomerInlineEditScopeIdentity();
+        var pendingEdits = SnapshotPendingCustomerInlineEdits()
+            .Where(patch => patch.Scope == currentScope)
+            .GroupBy(patch => patch.CustomerId)
+            .ToDictionary(group => group.Key, group => group.Last());
+
+        foreach (var customer in customers)
+        {
+            if (pendingEdits.TryGetValue(customer.Id, out var patch))
+            {
+                CustomerInlineEditPatchMerge.OverlayChangedFields(
+                    customer,
+                    patch.Desired,
+                    patch.ChangedFields);
+            }
         }
     }
 
@@ -771,6 +1650,9 @@ public sealed partial class MainViewModel : ObservableObject
         }
         finally { _suppressCustomerSave = false; }
 
+        if (value is not null)
+            RetryUnresolvedCustomerInlineSave(value.Id);
+
         RequestRefreshCustomerFinancialPreview(value);
         RequestRefreshPreviewCustomerContract(value);
         HandleInvoiceFilterChanged();
@@ -826,14 +1708,22 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
-        var ids = await GetFavoriteInvoiceIdsAsync();
-        if (ids.Contains(SelectedInvoiceRow.Id))
-            ids.Remove(SelectedInvoiceRow.Id);
-        else
-            ids.Insert(0, SelectedInvoiceRow.Id);
+        await _customerInlineDataGate.WaitAsync();
+        try
+        {
+            var ids = await GetFavoriteInvoiceIdsAsync();
+            if (ids.Contains(SelectedInvoiceRow.Id))
+                ids.Remove(SelectedInvoiceRow.Id);
+            else
+                ids.Insert(0, SelectedInvoiceRow.Id);
 
-        await SaveFavoriteInvoiceIdsAsync(ids);
-        await LoadInvoiceFavoritesAsync();
+            await SaveFavoriteInvoiceIdsAsync(ids);
+            await LoadInvoiceFavoritesAsync(dataGateAlreadyHeld: true);
+        }
+        finally
+        {
+            _customerInlineDataGate.Release();
+        }
     }
 
     [RelayCommand]
@@ -850,7 +1740,17 @@ public sealed partial class MainViewModel : ObservableObject
 
         if (targetRow is null)
         {
-            var invoice = await _local.GetInvoiceAsync(targetId, _session);
+            LocalInvoice? invoice;
+            await _customerInlineDataGate.WaitAsync();
+            try
+            {
+                invoice = await _local.GetInvoiceAsync(targetId, _session);
+            }
+            finally
+            {
+                _customerInlineDataGate.Release();
+            }
+
             if (invoice is null)
             {
                 System.Windows.MessageBox.Show("선택한 즐겨찾기 전표를 찾을 수 없습니다.", "알림", System.Windows.MessageBoxButton.OK);
@@ -888,9 +1788,22 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void RequestLoadPreview(InvoiceListRow? row)
     {
+        _invoicePreviewCts?.Cancel();
+        _invoicePreviewCts?.Dispose();
+        _invoicePreviewCts = new CancellationTokenSource();
         var version = Interlocked.Increment(ref _invoicePreviewVersion);
+        var token = _invoicePreviewCts.Token;
+        var task = _ownerScopeBackgroundWork.TryStart(
+            () => LoadPreviewAsync(row, version, token));
+        if (task is null)
+        {
+            _invoicePreviewCts.Cancel();
+            _invoicePreviewCts.Dispose();
+            _invoicePreviewCts = null;
+            return;
+        }
         UiTaskHelper.Forget(
-            LoadPreviewAsync(row, version),
+            task,
             "MAIN",
             "전표 미리보기 로드",
             ex =>
@@ -900,8 +1813,28 @@ public sealed partial class MainViewModel : ObservableObject
             });
     }
 
-    private async Task LoadPreviewAsync(InvoiceListRow? row, int version)
+    private async Task LoadPreviewAsync(
+        InvoiceListRow? row,
+        int version,
+        CancellationToken ct)
     {
+        await _customerInlineDataGate.WaitAsync(ct);
+        try
+        {
+            await LoadPreviewCoreAsync(row, version, ct);
+        }
+        finally
+        {
+            _customerInlineDataGate.Release();
+        }
+    }
+
+    private async Task LoadPreviewCoreAsync(
+        InvoiceListRow? row,
+        int version,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
         if (!IsCurrentInvoicePreview(version))
             return;
 
@@ -915,7 +1848,10 @@ public sealed partial class MainViewModel : ObservableObject
             if (SelectedCustomerFilter is null)
             {
                 ClearPreviewCustomerInfo();
-                await RefreshCustomerFinancialPreviewAsync(null);
+                await RefreshCustomerFinancialPreviewAsync(
+                    null,
+                    ct,
+                    dataGateAlreadyHeld: true);
                 RequestRefreshPreviewCustomerContract(null);
             }
             return;
@@ -926,7 +1862,8 @@ public sealed partial class MainViewModel : ObservableObject
             if (SelectedCustomerFilter is null)
             {
                 var transactionCustomer = _allCustomers.FirstOrDefault(c => c.Id == row.CustomerId)
-                    ?? await _local.GetCustomerAsync(row.CustomerId);
+                    ?? await _local.GetCustomerAsync(row.CustomerId, ct);
+                ct.ThrowIfCancellationRequested();
                 if (!IsCurrentInvoicePreview(version))
                     return;
 
@@ -949,7 +1886,10 @@ public sealed partial class MainViewModel : ObservableObject
                     }
 
                     CustomerInlineSaveStatus = "수금/지급 내역 선택 상태입니다. 거래처 정보는 복사할 수 있으며, 수정은 왼쪽 거래처를 선택한 뒤 가능합니다.";
-                    await RefreshCustomerFinancialPreviewAsync(transactionCustomer);
+                    await RefreshCustomerFinancialPreviewAsync(
+                        transactionCustomer,
+                        ct,
+                        dataGateAlreadyHeld: true);
                     RequestRefreshPreviewCustomerContract(transactionCustomer);
                 }
             }
@@ -957,7 +1897,8 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
-        var inv = await _local.GetLatestInvoiceVersionAsync(row.Id, _session);
+        var inv = await _local.GetLatestInvoiceVersionAsync(row.Id, _session, ct);
+        ct.ThrowIfCancellationRequested();
         if (!IsCurrentInvoicePreview(version))
             return;
 
@@ -966,7 +1907,10 @@ public sealed partial class MainViewModel : ObservableObject
             if (SelectedCustomerFilter is null)
             {
                 ClearPreviewCustomerInfo();
-                await RefreshCustomerFinancialPreviewAsync(null);
+                await RefreshCustomerFinancialPreviewAsync(
+                    null,
+                    ct,
+                    dataGateAlreadyHeld: true);
                 RequestRefreshPreviewCustomerContract(null);
             }
             return;
@@ -986,7 +1930,8 @@ public sealed partial class MainViewModel : ObservableObject
         if (SelectedCustomerFilter is null)
         {
             var customer = _allCustomers.FirstOrDefault(c => c.Id == inv.CustomerId)
-                ?? await _local.GetCustomerAsync(inv.CustomerId);
+                ?? await _local.GetCustomerAsync(inv.CustomerId, ct);
+            ct.ThrowIfCancellationRequested();
             if (!IsCurrentInvoicePreview(version))
                 return;
 
@@ -1006,13 +1951,19 @@ public sealed partial class MainViewModel : ObservableObject
                 finally { _suppressCustomerSave = false; }
                 CustomerInlineSaveStatus = "전표 선택 상태입니다. 거래처 정보는 복사 가능하며, 수정은 왼쪽 거래처를 선택한 뒤 가능합니다.";
 
-                await RefreshCustomerFinancialPreviewAsync(customer);
+                await RefreshCustomerFinancialPreviewAsync(
+                    customer,
+                    ct,
+                    dataGateAlreadyHeld: true);
                 RequestRefreshPreviewCustomerContract(customer);
             }
             else
             {
                 ClearPreviewCustomerInfo();
-                await RefreshCustomerFinancialPreviewAsync(null);
+                await RefreshCustomerFinancialPreviewAsync(
+                    null,
+                    ct,
+                    dataGateAlreadyHeld: true);
                 RequestRefreshPreviewCustomerContract(null);
             }
         }
@@ -1054,31 +2005,53 @@ public sealed partial class MainViewModel : ObservableObject
     private async Task LoadInvoiceListAsync()
         => await ReloadInvoiceListAsync();
 
-    private async Task LoadInvoiceListCachedAsync()
-        => await LoadInvoiceListCoreAsync();
+    private async Task LoadInvoiceListAsync(CancellationToken ct)
+        => await ReloadInvoiceListAsync(ct);
 
-    private async Task ReloadInvoiceListAsync()
+    private async Task ReloadInvoiceListAsync(CancellationToken ct = default)
     {
-        InvalidateInvoiceLedgerCaches();
-        await LoadInvoiceListCoreAsync(forceReload: true);
+        await RunTrackedInvoiceListLoadAsync(forceReload: true, ct);
     }
 
-    private async Task LoadInvoiceListCoreAsync(bool forceReload = false)
+    private Task RunTrackedInvoiceListLoadAsync(bool forceReload, CancellationToken ct)
+        => _ownerScopeBackgroundWork.TryStart(
+               () => LoadInvoiceListCoreAsync(
+                   forceReload: forceReload,
+                   cancellationToken: ct))
+           ?? Task.CompletedTask;
+
+    private async Task LoadInvoiceListCoreAsync(
+        bool forceReload = false,
+        CancellationToken cancellationToken = default,
+        bool dataGateAlreadyHeld = false)
     {
-        _invoiceListLoadCts?.Cancel();
-        var loadCts = new CancellationTokenSource();
-        _invoiceListLoadCts = loadCts;
-        var ct = loadCts.Token;
-        var gateEntered = false;
+        CancellationTokenSource? loadCts = null;
+        var ct = cancellationToken;
+        var dataGateEntered = false;
+        var invoiceGateEntered = false;
         var previouslySelectedInvoiceId = SelectedInvoiceRow?.Id;
         var previouslySelectedVersionGroupId = SelectedInvoiceRow?.EffectiveVersionGroupId;
 
         try
         {
+            if (!dataGateAlreadyHeld)
+            {
+                await _customerInlineDataGate.WaitAsync(ct);
+                dataGateEntered = true;
+            }
+
+            _invoiceListLoadCts?.Cancel();
+            loadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            _invoiceListLoadCts = loadCts;
+            ct = loadCts.Token;
+
             await _invoiceListLoadGate.WaitAsync(ct);
-            gateEntered = true;
+            invoiceGateEntered = true;
             if (!ReferenceEquals(_invoiceListLoadCts, loadCts))
                 return;
+
+            if (forceReload)
+                InvalidateInvoiceLedgerCaches();
 
             var overallStopwatch = Stopwatch.StartNew();
             Guid? customerId = SelectedCustomerFilter?.Id;
@@ -1240,12 +2213,13 @@ public sealed partial class MainViewModel : ObservableObject
             if (!IsCurrentInvoiceListLoad(loadCts))
                 return;
 
-            await LoadInvoiceFavoritesAsync(canReuseAsAllInvoiceSet ? invoiceList : null, ct, forceReload);
+            await LoadInvoiceFavoritesAsync(canReuseAsAllInvoiceSet ? invoiceList : null, ct, forceReload, dataGateAlreadyHeld: true);
             ct.ThrowIfCancellationRequested();
             if (!IsCurrentInvoiceListLoad(loadCts))
                 return;
 
-            await RefreshSelectedCustomerFinancialPreviewAsync();
+            await RefreshSelectedCustomerFinancialPreviewAsync(ct, dataGateAlreadyHeld: true);
+            ct.ThrowIfCancellationRequested();
             overallStopwatch.Stop();
             OperationTiming.LogIfSlow(
                 "MAIN",
@@ -1255,16 +2229,21 @@ public sealed partial class MainViewModel : ObservableObject
                 infoThreshold: DetailedInvoiceTimingInfoThreshold,
                 warningThreshold: DetailedInvoiceTimingWarningThreshold);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException)
+            when (loadCts is not null &&
+                  ct.IsCancellationRequested &&
+                  !cancellationToken.IsCancellationRequested)
         {
         }
         finally
         {
-            if (gateEntered)
+            if (invoiceGateEntered)
                 _invoiceListLoadGate.Release();
-            if (ReferenceEquals(_invoiceListLoadCts, loadCts))
+            if (dataGateEntered)
+                _customerInlineDataGate.Release();
+            if (loadCts is not null && ReferenceEquals(_invoiceListLoadCts, loadCts))
                 _invoiceListLoadCts = null;
-            loadCts.Dispose();
+            loadCts?.Dispose();
         }
     }
 
@@ -1278,11 +2257,23 @@ public sealed partial class MainViewModel : ObservableObject
         _dashboardMetricsLoaded = false;
     }
 
-    private async Task ReloadCustomerAndInvoiceDataAsync()
+    private async Task ReloadCustomerAndInvoiceDataAsync(CancellationToken ct = default)
     {
-        InvalidateInvoiceLedgerCaches();
-        await LoadCustomersAsync();
-        await LoadInvoiceListCoreAsync(forceReload: true);
+        await _customerInlineDataGate.WaitAsync(ct);
+
+        try
+        {
+            InvalidateInvoiceLedgerCaches();
+            await LoadCustomersAsync(ct, dataGateAlreadyHeld: true);
+            await LoadInvoiceListCoreAsync(
+                forceReload: true,
+                cancellationToken: ct,
+                dataGateAlreadyHeld: true);
+        }
+        finally
+        {
+            _customerInlineDataGate.Release();
+        }
     }
 
     private InvoiceRowCacheKey BuildInvoiceRowCacheKey(
@@ -1347,13 +2338,23 @@ public sealed partial class MainViewModel : ObservableObject
         if (selected.IsTransactionRow)
             return null;
 
-        var latest = await _local.GetLatestInvoiceVersionAsync(selected.Id, _session, ct);
+        LocalInvoice? latest;
+        await _customerInlineDataGate.WaitAsync(ct);
+        try
+        {
+            latest = await _local.GetLatestInvoiceVersionAsync(selected.Id, _session, ct);
+        }
+        finally
+        {
+            _customerInlineDataGate.Release();
+        }
+
         if (latest is null)
             return null;
 
         if (latest.Id != selected.Id)
         {
-            await ReloadInvoiceListAsync();
+            await ReloadInvoiceListAsync(ct);
             var latestRow = InvoiceRows.FirstOrDefault(row => row.Id == latest.Id)
                 ?? InvoiceRows.FirstOrDefault(row => row.EffectiveVersionGroupId == ResolveEffectiveVersionGroupId(latest));
             if (latestRow is not null)
@@ -1511,7 +2512,7 @@ public sealed partial class MainViewModel : ObservableObject
                 $"{balanceKindText}이 남은 거래처와 전표내역을 현재 계정/담당지점 조회 권한 범위로 표시합니다.",
                 balanceKindText,
                 accentBrush,
-                afterPaymentSavedAsync: LoadInvoiceListAsync);
+                afterPaymentSavedAsync: () => LoadInvoiceListAsync());
             await detailViewModel.RefreshAsync();
             var window = new DashboardBalanceDetailsWindow(detailViewModel);
             var owner = Application.Current?.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive)
@@ -1534,7 +2535,7 @@ public sealed partial class MainViewModel : ObservableObject
 
     private void HandleInvoiceFilterChanged()
     {
-        if (_suppressFilterAutoSave)
+        if (_suppressFilterAutoSave || IsBusinessDatabaseTransitionInProgress())
             return;
 
         RequestApplyInvoiceFilters();
@@ -1549,8 +2550,18 @@ public sealed partial class MainViewModel : ObservableObject
             _invoiceFilterApplyCts?.Dispose();
             _invoiceFilterApplyCts = new CancellationTokenSource();
             var token = _invoiceFilterApplyCts.Token;
+            var task = _ownerScopeBackgroundWork.TryStart(
+                () => ApplyInvoiceFiltersAsync(version, token));
+            if (task is null)
+            {
+                _invoiceFilterApplyCts.Cancel();
+                _invoiceFilterApplyCts.Dispose();
+                _invoiceFilterApplyCts = null;
+                return;
+            }
+            _invoiceFilterApplyTask = task;
             UiTaskHelper.Forget(
-                ApplyInvoiceFiltersAsync(version, token),
+                task,
                 "MAIN",
                 "전표 필터 적용",
                 ex =>
@@ -1567,12 +2578,23 @@ public sealed partial class MainViewModel : ObservableObject
         if (!IsCurrentInvoiceFilterApply(version))
             return;
 
-        await PersistInvoiceFiltersAsync(ct);
-        ct.ThrowIfCancellationRequested();
-        if (!IsCurrentInvoiceFilterApply(version))
-            return;
+        await _customerInlineDataGate.WaitAsync(ct);
+        try
+        {
+            await PersistInvoiceFiltersCoreAsync(ct);
+            ct.ThrowIfCancellationRequested();
+            if (!IsCurrentInvoiceFilterApply(version))
+                return;
 
-        await LoadInvoiceListCachedAsync();
+            await LoadInvoiceListCoreAsync(
+                forceReload: false,
+                cancellationToken: ct,
+                dataGateAlreadyHeld: true);
+        }
+        finally
+        {
+            _customerInlineDataGate.Release();
+        }
     }
 
     private bool IsCurrentInvoiceFilterApply(int version)
@@ -1583,6 +2605,19 @@ public sealed partial class MainViewModel : ObservableObject
 
     private async Task PersistInvoiceFiltersAsync(CancellationToken ct)
     {
+        await _customerInlineDataGate.WaitAsync(ct);
+        try
+        {
+            await PersistInvoiceFiltersCoreAsync(ct);
+        }
+        finally
+        {
+            _customerInlineDataGate.Release();
+        }
+    }
+
+    private async Task PersistInvoiceFiltersCoreAsync(CancellationToken ct)
+    {
         await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterCustomerSettingKey), FilterCustomerName ?? string.Empty, ct);
         await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterVoucherTypeSettingKey), SelectedVoucherTypeFilter ?? "전체", ct);
         await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterOfficeCodeSettingKey), SelectedInvoiceOfficeFilterCode ?? GetDefaultInvoiceOfficeFilterCode(), ct);
@@ -1590,37 +2625,78 @@ public sealed partial class MainViewModel : ObservableObject
         await _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMaxAmountSettingKey), FilterMaxAmountText ?? string.Empty, ct);
     }
 
-    private async Task LoadInvoiceFilterSettingsAsync()
+    private async Task LoadInvoiceFilterSettingsAsync(
+        CancellationToken ct = default,
+        bool dataGateAlreadyHeld = false)
+    {
+        var dataGateEntered = false;
+        if (!dataGateAlreadyHeld)
+        {
+            await _customerInlineDataGate.WaitAsync(ct);
+            dataGateEntered = true;
+        }
+
+        try
+        {
+            await LoadInvoiceFilterSettingsCoreAsync(ct);
+        }
+        finally
+        {
+            if (dataGateEntered)
+                _customerInlineDataGate.Release();
+        }
+    }
+
+    private async Task LoadInvoiceFilterSettingsCoreAsync(CancellationToken ct)
     {
         _suppressFilterAutoSave = true;
+        var hadPersistedHiddenTextFilter = false;
+        try
+        {
+            InitializeInvoiceOfficeFilterOptions();
+            var customerNameValue = await _local.GetSettingAsync(
+                BuildAccountScopedInvoiceFilterKey(InvoiceFilterCustomerSettingKey),
+                ct);
+            var voucherTypeValue = await _local.GetSettingAsync(
+                BuildAccountScopedInvoiceFilterKey(InvoiceFilterVoucherTypeSettingKey),
+                ct);
+            var minAmountValue = await _local.GetSettingAsync(
+                BuildAccountScopedInvoiceFilterKey(InvoiceFilterMinAmountSettingKey),
+                ct);
+            var maxAmountValue = await _local.GetSettingAsync(
+                BuildAccountScopedInvoiceFilterKey(InvoiceFilterMaxAmountSettingKey),
+                ct);
+            hadPersistedHiddenTextFilter = HasHiddenInvoiceTextFilter(
+                customerNameValue,
+                minAmountValue,
+                maxAmountValue);
+            var hiddenTextFilters = NormalizeHiddenInvoiceTextFilters(
+                customerNameValue,
+                minAmountValue,
+                maxAmountValue);
+            FilterFrom = _invoiceDefaultFrom;
+            FilterTo = _invoiceDefaultTo;
 
-        InitializeInvoiceOfficeFilterOptions();
-        var customerNameValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterCustomerSettingKey));
-        var voucherTypeValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterVoucherTypeSettingKey));
-        var minAmountValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMinAmountSettingKey));
-        var maxAmountValue = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(InvoiceFilterMaxAmountSettingKey));
-        var hadPersistedHiddenTextFilter = HasHiddenInvoiceTextFilter(customerNameValue, minAmountValue, maxAmountValue);
-        var hiddenTextFilters = NormalizeHiddenInvoiceTextFilters(customerNameValue, minAmountValue, maxAmountValue);
-        FilterFrom = _invoiceDefaultFrom;
-        FilterTo = _invoiceDefaultTo;
-
-        FilterCustomerName = hiddenTextFilters.CustomerName;
-        SelectedVoucherTypeFilter = VoucherTypeFilterOptions.Contains(voucherTypeValue ?? string.Empty)
-            ? voucherTypeValue!
-            : "전체";
-        var defaultOfficeFilterCode = GetDefaultInvoiceOfficeFilterCode();
-        var normalizedOfficeCode = defaultOfficeFilterCode;
-        SelectedInvoiceOfficeFilterCode = InvoiceOfficeFilterOptions.Any(option =>
-            string.Equals(option.Code, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase))
-            ? normalizedOfficeCode
-            : defaultOfficeFilterCode;
-        FilterMinAmountText = hiddenTextFilters.MinAmountText;
-        FilterMaxAmountText = hiddenTextFilters.MaxAmountText;
-
-        _suppressFilterAutoSave = false;
+            FilterCustomerName = hiddenTextFilters.CustomerName;
+            SelectedVoucherTypeFilter = VoucherTypeFilterOptions.Contains(voucherTypeValue ?? string.Empty)
+                ? voucherTypeValue!
+                : "전체";
+            var defaultOfficeFilterCode = GetDefaultInvoiceOfficeFilterCode();
+            var normalizedOfficeCode = defaultOfficeFilterCode;
+            SelectedInvoiceOfficeFilterCode = InvoiceOfficeFilterOptions.Any(option =>
+                string.Equals(option.Code, normalizedOfficeCode, StringComparison.OrdinalIgnoreCase))
+                ? normalizedOfficeCode
+                : defaultOfficeFilterCode;
+            FilterMinAmountText = hiddenTextFilters.MinAmountText;
+            FilterMaxAmountText = hiddenTextFilters.MaxAmountText;
+        }
+        finally
+        {
+            _suppressFilterAutoSave = false;
+        }
 
         if (hadPersistedHiddenTextFilter)
-            await PersistInvoiceFiltersAsync();
+            await PersistInvoiceFiltersCoreAsync(ct);
     }
 
     private static (DateOnly? From, DateOnly? To) ResolveMainInvoiceQueryDateRange(DateOnly filterFrom, DateOnly filterTo)
@@ -1643,9 +2719,9 @@ public sealed partial class MainViewModel : ObservableObject
            || !string.IsNullOrWhiteSpace(minAmountText)
            || !string.IsNullOrWhiteSpace(maxAmountText);
 
-    private async Task RefreshInvoiceDefaultDateRangeFromDataAsync()
+    private async Task RefreshInvoiceDefaultDateRangeFromDataAsync(CancellationToken ct = default)
     {
-        var (firstDate, lastDate) = await _local.GetInvoiceDateRangeAsync(_session);
+        var (firstDate, lastDate) = await _local.GetInvoiceDateRangeAsync(_session, ct);
         if (!firstDate.HasValue || !lastDate.HasValue)
             return;
 
@@ -1671,9 +2747,11 @@ public sealed partial class MainViewModel : ObservableObject
         return null;
     }
 
-    private async Task<List<Guid>> GetFavoriteInvoiceIdsAsync()
+    private async Task<List<Guid>> GetFavoriteInvoiceIdsAsync(CancellationToken ct = default)
     {
-        var raw = await _local.GetSettingAsync(BuildAccountScopedInvoiceFilterKey(FavoriteInvoiceIdsSettingKey));
+        var raw = await _local.GetSettingAsync(
+            BuildAccountScopedInvoiceFilterKey(FavoriteInvoiceIdsSettingKey),
+            ct);
         if (string.IsNullOrWhiteSpace(raw))
             return new List<Guid>();
 
@@ -1689,66 +2767,87 @@ public sealed partial class MainViewModel : ObservableObject
         return ids;
     }
 
-    private Task SaveFavoriteInvoiceIdsAsync(IEnumerable<Guid> ids)
+    private Task SaveFavoriteInvoiceIdsAsync(
+        IEnumerable<Guid> ids,
+        CancellationToken ct = default)
     {
         var payload = string.Join(',', ids.Select(id => id.ToString("D")));
-        return _local.SetSettingAsync(BuildAccountScopedInvoiceFilterKey(FavoriteInvoiceIdsSettingKey), payload);
+        return _local.SetSettingAsync(
+            BuildAccountScopedInvoiceFilterKey(FavoriteInvoiceIdsSettingKey),
+            payload,
+            ct);
     }
 
     private async Task LoadInvoiceFavoritesAsync(
         IReadOnlyList<LocalInvoiceListSummary>? sourceInvoices = null,
         CancellationToken ct = default,
-        bool forceReload = false)
+        bool forceReload = false,
+        bool dataGateAlreadyHeld = false)
     {
-        var selectedId = SelectedFavoriteInvoice?.InvoiceId;
-        var ids = await GetFavoriteInvoiceIdsAsync();
-        var allInvoices = sourceInvoices;
-        if (allInvoices is null)
+        var dataGateEntered = false;
+        if (!dataGateAlreadyHeld)
         {
-            var favoritesKey = new InvoiceLedgerCacheKey(CustomerId: null, From: null, To: null);
-            var favoritesLoadStopwatch = Stopwatch.StartNew();
-            var (cachedInvoices, invoiceCacheHit) = await _invoiceLedgerCache.GetInvoiceSummariesAsync(
-                favoritesKey,
-                forceReload,
-                () => _local.GetInvoiceListSummariesAsync(from: null, to: null, customerId: null, session: _session, ct));
-            favoritesLoadStopwatch.Stop();
-            OperationTiming.LogIfSlow(
-                "MAIN",
-                "Favorite invoice summary load",
-                favoritesLoadStopwatch.Elapsed,
-                $"{favoritesKey.ToOperationDetail()}, force={forceReload}, invoiceCache={FormatCacheState(invoiceCacheHit)}, invoices={cachedInvoices.Count:N0}",
-                infoThreshold: DetailedInvoiceTimingInfoThreshold,
-                warningThreshold: DetailedInvoiceTimingWarningThreshold);
-            allInvoices = cachedInvoices;
+            await _customerInlineDataGate.WaitAsync(ct);
+            dataGateEntered = true;
         }
 
-        var invoiceMap = allInvoices.ToDictionary(i => i.Id);
-        var customerMap = await BuildInvoiceCustomerNameMapAsync(allInvoices, ct);
-
-        var favoriteItems = new List<FavoriteInvoiceQuickItem>();
-        foreach (var id in ids)
+        try
         {
-            if (!invoiceMap.TryGetValue(id, out var invoice))
-                continue;
-
-            var customerName = customerMap.TryGetValue(invoice.CustomerId, out var n) ? n : "(미지정)";
-            var display = $"{invoice.InvoiceDate:yyyy/MM/dd}  {customerName}  {invoice.TotalAmount:N0}원";
-
-            favoriteItems.Add(new FavoriteInvoiceQuickItem
+            var selectedId = SelectedFavoriteInvoice?.InvoiceId;
+            var ids = await GetFavoriteInvoiceIdsAsync(ct);
+            var allInvoices = sourceInvoices;
+            if (allInvoices is null)
             {
-                InvoiceId = id,
-                DisplayText = display
-            });
+                var favoritesKey = new InvoiceLedgerCacheKey(CustomerId: null, From: null, To: null);
+                var favoritesLoadStopwatch = Stopwatch.StartNew();
+                var (cachedInvoices, invoiceCacheHit) = await _invoiceLedgerCache.GetInvoiceSummariesAsync(
+                    favoritesKey,
+                    forceReload,
+                    () => _local.GetInvoiceListSummariesAsync(from: null, to: null, customerId: null, session: _session, ct));
+                favoritesLoadStopwatch.Stop();
+                OperationTiming.LogIfSlow(
+                    "MAIN",
+                    "Favorite invoice summary load",
+                    favoritesLoadStopwatch.Elapsed,
+                    $"{favoritesKey.ToOperationDetail()}, force={forceReload}, invoiceCache={FormatCacheState(invoiceCacheHit)}, invoices={cachedInvoices.Count:N0}",
+                    infoThreshold: DetailedInvoiceTimingInfoThreshold,
+                    warningThreshold: DetailedInvoiceTimingWarningThreshold);
+                allInvoices = cachedInvoices;
+            }
+
+            var invoiceMap = allInvoices.ToDictionary(i => i.Id);
+            var customerMap = await BuildInvoiceCustomerNameMapAsync(allInvoices, ct);
+
+            var favoriteItems = new List<FavoriteInvoiceQuickItem>();
+            foreach (var id in ids)
+            {
+                if (!invoiceMap.TryGetValue(id, out var invoice))
+                    continue;
+
+                var customerName = customerMap.TryGetValue(invoice.CustomerId, out var n) ? n : "(미지정)";
+                var display = $"{invoice.InvoiceDate:yyyy/MM/dd}  {customerName}  {invoice.TotalAmount:N0}원";
+
+                favoriteItems.Add(new FavoriteInvoiceQuickItem
+                {
+                    InvoiceId = id,
+                    DisplayText = display
+                });
+            }
+
+            FavoriteInvoices.ReplaceWith(favoriteItems);
+
+            if (FavoriteInvoices.Count != ids.Count)
+                await SaveFavoriteInvoiceIdsAsync(FavoriteInvoices.Select(f => f.InvoiceId), ct);
+
+            SelectedFavoriteInvoice = selectedId.HasValue
+                ? FavoriteInvoices.FirstOrDefault(f => f.InvoiceId == selectedId.Value)
+                : FavoriteInvoices.FirstOrDefault();
         }
-
-        FavoriteInvoices.ReplaceWith(favoriteItems);
-
-        if (FavoriteInvoices.Count != ids.Count)
-            await SaveFavoriteInvoiceIdsAsync(FavoriteInvoices.Select(f => f.InvoiceId));
-
-        SelectedFavoriteInvoice = selectedId.HasValue
-            ? FavoriteInvoices.FirstOrDefault(f => f.InvoiceId == selectedId.Value)
-            : FavoriteInvoices.FirstOrDefault();
+        finally
+        {
+            if (dataGateEntered)
+                _customerInlineDataGate.Release();
+        }
     }
 
     [RelayCommand]
@@ -2205,9 +3304,9 @@ public sealed partial class MainViewModel : ObservableObject
             .FirstOrDefault(window => window.IsActive);
     }
 // Company Settings
-    private async Task LoadCompanyProfileAsync()
+    private async Task LoadCompanyProfileAsync(CancellationToken ct = default)
     {
-        var profile = await _local.GetCompanyProfileAsync(_session);
+        var profile = await _local.GetCompanyProfileAsync(_session, ct);
         if (profile is null) return;
 
         _loadedCompanyProfile = profile;
@@ -2287,7 +3386,7 @@ public sealed partial class MainViewModel : ObservableObject
             Title = "직인 이미지 선택",
             Filter = "이미지 파일|*.png;*.jpg;*.jpeg;*.bmp"
         };
-        if (dlg.ShowDialog() != true) return;
+        if (DialogWindowCloseHelper.ShowDialog(dlg) != true) return;
         CompanyStampImage = File.ReadAllBytes(dlg.FileName);
         CompanyStampImagePath = "(이미지 있음)";
     }
@@ -2299,15 +3398,15 @@ public sealed partial class MainViewModel : ObservableObject
         CompanyStampImagePath = "(없음)";
     }
 
-    private async Task LoadLegacyMigrationSettingsAsync()
+    private async Task LoadLegacyMigrationSettingsAsync(CancellationToken ct = default)
     {
         var defaultDb = GetDefaultLegacySourceDbPath();
         var defaultCustomerExcel = Path.Combine(AppPaths.UserDownloadsDir, "거래처 목록.xlsx");
         var defaultItemExcel = Path.Combine(AppPaths.UserDownloadsDir, "제품 목록.xlsx");
 
-        LegacySourceDbPath = await _local.GetSettingAsync(LegacySourceDbPathSettingKey) ?? defaultDb;
-        LegacyCustomerExcelPath = await _local.GetSettingAsync(LegacyCustomerExcelPathSettingKey) ?? defaultCustomerExcel;
-        LegacyItemExcelPath = await _local.GetSettingAsync(LegacyItemExcelPathSettingKey) ?? defaultItemExcel;
+        LegacySourceDbPath = await _local.GetSettingAsync(LegacySourceDbPathSettingKey, ct) ?? defaultDb;
+        LegacyCustomerExcelPath = await _local.GetSettingAsync(LegacyCustomerExcelPathSettingKey, ct) ?? defaultCustomerExcel;
+        LegacyItemExcelPath = await _local.GetSettingAsync(LegacyItemExcelPathSettingKey, ct) ?? defaultItemExcel;
 
         if (string.IsNullOrWhiteSpace(LegacySourceDbPath))
             LegacySourceDbPath = defaultDb;
@@ -2342,7 +3441,7 @@ public sealed partial class MainViewModel : ObservableObject
             CheckFileExists = true
         };
 
-        if (dialog.ShowDialog() != true)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) != true)
             return;
 
         LegacySourceDbPath = dialog.FileName;
@@ -2366,7 +3465,7 @@ public sealed partial class MainViewModel : ObservableObject
             InitialDirectory = initialDirectory
         };
 
-        if (dialog.ShowDialog() != true)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) != true)
             return;
 
         LegacyCustomerExcelPath = dialog.FileName;
@@ -2390,7 +3489,7 @@ public sealed partial class MainViewModel : ObservableObject
             InitialDirectory = initialDirectory
         };
 
-        if (dialog.ShowDialog() != true)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) != true)
             return;
 
         LegacyItemExcelPath = dialog.FileName;
@@ -2522,27 +3621,25 @@ public sealed partial class MainViewModel : ObservableObject
     }
 
     // Sync
-    public async Task ReloadAfterPassiveSyncAsync()
+    public async Task ReloadAfterPassiveSyncAsync(CancellationToken ct = default)
     {
-        await ReloadCustomerAndInvoiceDataAsync();
+        await ReloadCustomerAndInvoiceDataAsync(ct);
     }
 
     [RelayCommand]
     private async Task ForceSyncAsync()
     {
-        SyncStatus = "수동 동기화 중...";
-        var syncOk = await RunIsolatedSyncAsync(sync => sync.TrySyncAsync());
+        SetAuthoritativeSyncStatus("수동 동기화 중...");
+        var syncOk = await RunIsolatedSyncAsync((sync, ct) => sync.TrySyncAsync(ct));
         var dirtyCount = await _local.CountDirtyAsync(_session);
-        if (syncOk && dirtyCount == 0)
-            await RunIsolatedSyncAsync(sync => sync.RefreshSharedMirrorFromServerAsync());
         await ReloadCustomerAndInvoiceDataAsync();
 
-        SyncStatus = dirtyCount > 0
+        SetAuthoritativeSyncStatus(dirtyCount > 0
             ? await _local.GetPendingSyncWaitingMessageAsync(_session, "동기화 작업은 완료됐지만", CancellationToken.None)
                 ?? $"동기화 작업은 완료됐지만 서버 반영 대기 데이터 {dirtyCount:N0}건이 남아 있습니다."
             : syncOk
                 ? $"동기화 완료 {DateTime.Now:HH:mm:ss}"
-                : "동기화가 완료되었지만 확인이 필요한 항목이 남아 있습니다. 동기화 진단을 확인하세요.";
+                : "동기화가 완료되었지만 확인이 필요한 항목이 남아 있습니다. 동기화 진단을 확인하세요.");
     }
 
     // Backup

@@ -51,9 +51,9 @@ public partial class DataIntegrityIssueWindow : Window
             return;
         }
 
-        if (!_viewModel.SelectedIssue.CanMergeDuplicates)
+        if (!_viewModel.SelectedIssue.CanReviewDuplicateCandidates)
         {
-            MessageBox.Show(this, "이 항목은 자동 병합 대상이 아닙니다. 판단 정보를 확인한 뒤 원본 화면에서 수동 정리하세요.", "운영 점검", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, "이 항목은 중복 후보 비교 대상이 아닙니다. 판단 정보를 확인한 뒤 원본 화면에서 수동 정리하세요.", "운영 점검", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 

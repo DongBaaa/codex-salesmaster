@@ -21,7 +21,14 @@ public partial class PeriodLedgerWindow : Window
         DialogWindowCloseHelper.Close(this);
     }
 
-    private async void LedgerRowsDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    private void LedgerRowsDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        => UiTaskHelper.Run(
+            this,
+            () => EditSelectedLedgerMemoAsync(e),
+            "UI",
+            "전표메모 수정");
+
+    private async Task EditSelectedLedgerMemoAsync(MouseButtonEventArgs e)
     {
         if (DataContext is not PeriodLedgerViewModel vm || vm.SelectedLedgerRow is null)
             return;
@@ -45,7 +52,14 @@ public partial class PeriodLedgerWindow : Window
             MessageBox.Show(result.Message, "전표메모 수정", MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
-    private async void DetailItemsDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    private void DetailItemsDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        => UiTaskHelper.Run(
+            this,
+            () => EditSelectedItemMemoAsync(e),
+            "UI",
+            "품목비고 수정");
+
+    private async Task EditSelectedItemMemoAsync(MouseButtonEventArgs e)
     {
         if (DataContext is not PeriodLedgerViewModel vm || vm.SelectedLedgerItem is null)
             return;
@@ -125,7 +139,7 @@ public partial class PeriodLedgerWindow : Window
         input.SelectAll();
         input.Focus();
 
-        return dialog.ShowDialog() == true ? input.Text : null;
+        return DialogWindowCloseHelper.ShowDialog(dialog) == true ? input.Text : null;
     }
 
     private static T? FindVisualParent<T>(DependencyObject? source)

@@ -217,6 +217,70 @@ public static class OfficeCodeCatalog
             _ => UsenetMainWarehouse
         };
 
+    public static bool TryNormalizeWarehouseCode(string? warehouseCode, out string canonical)
+    {
+        var normalized = (warehouseCode ?? string.Empty).Trim().ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            canonical = string.Empty;
+            return false;
+        }
+
+        if (normalized is UsenetMainWarehouse or ItworldMainWarehouse or YeonsuMainWarehouse)
+        {
+            canonical = normalized;
+            return true;
+        }
+
+        var aliasKey = string.Concat(normalized.Where(char.IsLetterOrDigit));
+        if (aliasKey is
+            "USENET" or
+            "UZNET" or
+            "USENETMAIN" or
+            "UZNETMAIN" or
+            "USENETWAREHOUSE" or
+            "UZNETWAREHOUSE" or
+            "USENETMAINWAREHOUSE" or
+            "UZNETMAINWAREHOUSE" or
+            "유즈넷" or
+            "유즈넷창고" or
+            "유즈넷주창고")
+        {
+            canonical = UsenetMainWarehouse;
+            return true;
+        }
+
+        if (aliasKey is
+            "ITWORLD" or
+            "ITWORLDMAIN" or
+            "ITWORLDWAREHOUSE" or
+            "ITWORLDMAINWAREHOUSE" or
+            "아이티월드" or
+            "아이티월드창고" or
+            "아이티월드주창고")
+        {
+            canonical = ItworldMainWarehouse;
+            return true;
+        }
+
+        if (aliasKey is
+            "YEONSU" or
+            "YEONSUMAIN" or
+            "YEONSUWAREHOUSE" or
+            "YEONSUMAINWAREHOUSE" or
+            "연수" or
+            "연수구" or
+            "연수창고" or
+            "연수주창고")
+        {
+            canonical = YeonsuMainWarehouse;
+            return true;
+        }
+
+        canonical = string.Empty;
+        return false;
+    }
+
     public static string NormalizeWarehouseCodeOrDefault(string? warehouseCode, string? officeCode, string? fallbackOfficeCode = null)
     {
         var normalized = (warehouseCode ?? string.Empty).Trim().ToUpperInvariant();
@@ -228,27 +292,10 @@ public static class OfficeCodeCatalog
 
     public static string NormalizeWarehouseCodeLoose(string? warehouseCode, string? officeCode = null, string? fallbackOfficeCode = null)
     {
-        var normalized = (warehouseCode ?? string.Empty).Trim().ToUpperInvariant();
+        if (TryNormalizeWarehouseCode(warehouseCode, out var canonical))
+            return canonical;
+
         var office = NormalizeLoose(officeCode, warehouseCode, fallbackOfficeCode);
-        if (string.IsNullOrWhiteSpace(normalized))
-            return GetMainWarehouseCode(office);
-
-        if (normalized is UsenetMainWarehouse or ItworldMainWarehouse or YeonsuMainWarehouse)
-            return normalized;
-
-        if (normalized.Contains("UZNET", StringComparison.OrdinalIgnoreCase) ||
-            normalized.Contains("USENET", StringComparison.OrdinalIgnoreCase) ||
-            normalized.Contains("유즈넷", StringComparison.OrdinalIgnoreCase))
-            return UsenetMainWarehouse;
-
-        if (normalized.Contains("ITWORLD", StringComparison.OrdinalIgnoreCase) ||
-            normalized.Contains("아이티월드", StringComparison.OrdinalIgnoreCase))
-            return ItworldMainWarehouse;
-
-        if (normalized.Contains("YEONSU", StringComparison.OrdinalIgnoreCase) ||
-            normalized.Contains("연수", StringComparison.OrdinalIgnoreCase))
-            return YeonsuMainWarehouse;
-
         return GetMainWarehouseCode(office);
     }
 }

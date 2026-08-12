@@ -20,6 +20,7 @@ internal static class Program
     {
         PrepareIsolatedLocalAppData();
         var app = new App();
+        app.InitializeComponent();
         app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
         Application.Current.Resources["UnifiedDatePickerButtonStyle"] = BuildUnifiedDatePickerButtonStyle();
 

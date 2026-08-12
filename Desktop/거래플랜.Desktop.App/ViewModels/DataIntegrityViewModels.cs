@@ -129,7 +129,7 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject, IDis
             InitialDirectory = AppPaths.UserDownloadsDir
         };
 
-        if (dialog.ShowDialog() != true)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) != true)
             return;
 
         using var workbook = new XLWorkbook();

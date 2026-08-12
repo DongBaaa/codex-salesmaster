@@ -9,7 +9,11 @@ public sealed class DesktopAppUpdateCheckResult
     public string MinimumSupportedVersion { get; set; } = string.Empty;
     public bool IsUpdateAvailable { get; set; }
     public bool IsBelowMinimumSupportedVersion { get; set; }
+    public bool HasBlockingPolicyIssue { get; set; }
     public string Message { get; set; } = string.Empty;
     public AppUpdatePackageDto? Package { get; set; }
-    public bool RequiresImmediateUpdate => IsBelowMinimumSupportedVersion || (IsUpdateAvailable && Package?.Mandatory == true);
+    public bool RequiresImmediateUpdate =>
+        HasBlockingPolicyIssue ||
+        IsBelowMinimumSupportedVersion ||
+        (IsUpdateAvailable && Package?.Mandatory == true);
 }

@@ -11,14 +11,19 @@ public sealed class MobileSessionRecoveryService
 
     private readonly SettingsService _settings;
     private readonly SessionStore _sessionStore;
+    private readonly MobileClientIdentityProvider _clientIdentity;
     private readonly HttpClient _httpClient = new();
     private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
     private readonly SemaphoreSlim _restoreLock = new(1, 1);
 
-    public MobileSessionRecoveryService(SettingsService settings, SessionStore sessionStore)
+    public MobileSessionRecoveryService(
+        SettingsService settings,
+        SessionStore sessionStore,
+        MobileClientIdentityProvider clientIdentity)
     {
         _settings = settings;
         _sessionStore = sessionStore;
+        _clientIdentity = clientIdentity;
     }
 
     public async Task<SessionRecoveryResult> TryRestoreSessionAsync(string reason, CancellationToken ct = default)
@@ -29,29 +34,33 @@ public sealed class MobileSessionRecoveryService
         bool forceRefresh,
         CancellationToken ct = default)
     {
+        var expectedOwner = _sessionStore.CaptureOwner();
         await _restoreLock.WaitAsync(ct);
         try
         {
+            if (!_sessionStore.IsOwnerCurrent(expectedOwner))
+                return SessionRecoveryResult.FailureResult(
+                    $"세션 소유자가 변경되어 이전 자동 로그인 결과를 폐기했습니다. ({reason})");
             if (!forceRefresh && await _sessionStore.HasUsableSessionAsync().ConfigureAwait(false))
                 return SessionRecoveryResult.SuccessResult($"세션이 이미 유효합니다. ({reason})");
 
             var username = _settings.GetLastUsername().Trim();
             if (string.IsNullOrWhiteSpace(username))
             {
-                await _sessionStore.ClearAsync().ConfigureAwait(false);
+                await _sessionStore.ClearIfCurrentAsync(expectedOwner).ConfigureAwait(false);
                 return SessionRecoveryResult.FailureResult($"저장된 아이디가 없어 세션을 복구할 수 없습니다. ({reason})");
             }
 
             if (!_settings.GetRememberPassword())
             {
-                await _sessionStore.ClearAsync().ConfigureAwait(false);
+                await _sessionStore.ClearIfCurrentAsync(expectedOwner).ConfigureAwait(false);
                 return SessionRecoveryResult.FailureResult($"저장된 비밀번호가 없어 자동 로그인에 실패했습니다. ({reason})");
             }
 
             var password = await _settings.GetSavedPasswordAsync().ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(password))
             {
-                await _sessionStore.ClearAsync().ConfigureAwait(false);
+                await _sessionStore.ClearIfCurrentAsync(expectedOwner).ConfigureAwait(false);
                 return SessionRecoveryResult.FailureResult($"저장된 비밀번호를 찾지 못해 세션을 복구할 수 없습니다. ({reason})");
             }
 
@@ -65,13 +74,14 @@ public sealed class MobileSessionRecoveryService
             {
                 Content = JsonContent.Create(loginRequest, options: _jsonOptions)
             };
+            _clientIdentity.Apply(request);
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(SessionRecoveryRequestTimeout);
             using var response = await _httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
-                await _sessionStore.ClearAsync().ConfigureAwait(false);
+                await _sessionStore.ClearIfCurrentAsync(expectedOwner).ConfigureAwait(false);
                 return SessionRecoveryResult.FailureResult($"저장된 로그인 정보가 만료되어 자동 로그인에 실패했습니다. ({reason})");
             }
 
@@ -88,11 +98,22 @@ public sealed class MobileSessionRecoveryService
             var loginResponse = await response.Content.ReadFromJsonAsync<LoginResponse>(_jsonOptions, ct).ConfigureAwait(false);
             if (loginResponse is null || string.IsNullOrWhiteSpace(loginResponse.Token))
             {
-                await _sessionStore.ClearAsync().ConfigureAwait(false);
+                await _sessionStore.ClearIfCurrentAsync(expectedOwner).ConfigureAwait(false);
                 return SessionRecoveryResult.FailureResult($"세션 복구 응답에 토큰이 없어 자동 로그인을 완료하지 못했습니다. ({reason})");
             }
 
-            await _sessionStore.SaveAsync(loginResponse).ConfigureAwait(false);
+            var replaced =
+                await _sessionStore.ReplaceIfCurrentAsync(
+                    expectedOwner,
+                    loginResponse,
+                    preserveGeneration:
+                        expectedOwner.IsAuthenticated,
+                    ct).ConfigureAwait(false);
+            if (!replaced)
+            {
+                return SessionRecoveryResult.FailureResult(
+                    $"세션 소유자가 변경되었거나 복구 응답의 계정 범위가 달라 자동 로그인 결과를 폐기했습니다. ({reason})");
+            }
             return SessionRecoveryResult.SuccessResult($"자동 로그인으로 세션을 복구했습니다. ({reason})");
         }
         catch (HttpRequestException ex)

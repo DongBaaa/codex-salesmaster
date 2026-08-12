@@ -722,6 +722,86 @@ public sealed class RentalBillingSpecificationTests
     }
 
     [Fact]
+    public void RentalBillingViewModel_ScopeGuidanceDistinguishesReadOnlyAndEditableAccounts()
+    {
+        var readOnly = new RentalBillingViewModel(null!, null!, CreateUserSession());
+        var profileEditor = new RentalBillingViewModel(
+            null!,
+            null!,
+            CreateUserSession(AppPermissionNames.RentalProfileEdit));
+
+        Assert.Contains("담당지점 및 공유 정책", readOnly.RentalScopeGuidanceText, StringComparison.Ordinal);
+        Assert.Contains("조회 전용", readOnly.RentalScopeGuidanceText, StringComparison.Ordinal);
+        Assert.Contains("렌탈 청구 프로필 편집", readOnly.RentalAssetEditPermissionNotice, StringComparison.Ordinal);
+        Assert.DoesNotContain("계속 수정할 수 있습니다", readOnly.RentalAssetEditPermissionNotice, StringComparison.Ordinal);
+        Assert.False(readOnly.CanEditBillingProfiles);
+        Assert.False(readOnly.CanEditBillingProfileDetails);
+        Assert.False(readOnly.CanEditBillingAssetDetails);
+        Assert.True(readOnly.IsRentalAssetSourceReadOnly);
+
+        Assert.Contains("권한 있는 담당 범위", profileEditor.RentalScopeGuidanceText, StringComparison.Ordinal);
+        Assert.DoesNotContain("조회 전용", profileEditor.RentalScopeGuidanceText, StringComparison.Ordinal);
+        Assert.Contains("렌탈 자산 편집", profileEditor.RentalAssetEditPermissionNotice, StringComparison.Ordinal);
+        Assert.Contains("청구 일정과 표시품목은 계속 수정할 수 있습니다", profileEditor.RentalAssetEditPermissionNotice, StringComparison.Ordinal);
+        Assert.True(profileEditor.CanEditBillingProfiles);
+        Assert.True(profileEditor.CanEditBillingProfileDetails);
+        Assert.False(profileEditor.CanEditBillingAssetDetails);
+        Assert.True(profileEditor.IsRentalAssetSourceReadOnly);
+    }
+
+    [Fact]
+    public void RentalBillingViewModel_AssetLinkStatusDistinguishesMutableAndReferenceOnlySelections()
+    {
+        var mutableAssetId = Guid.Parse("17171717-1717-1717-1717-171717171701");
+        var referenceAssetId = Guid.Parse("17171717-1717-1717-1717-171717171702");
+        var vm = new RentalBillingViewModel(
+            null!,
+            null!,
+            CreateUserSession(AppPermissionNames.RentalProfileEdit, AppPermissionNames.RentalAssetEdit));
+        var templateItem = new RentalBillingTemplateEditorItem
+        {
+            DisplayItemName = "렌탈료",
+            BillingLineMode = "묶음",
+            Quantity = 1m
+        };
+        vm.TemplateItems.Add(templateItem);
+        vm.SelectedTemplateItem = templateItem;
+
+        vm.ApplyAssetLinkSelections(
+        [
+            new RentalBillingAssetOption
+            {
+                AssetId = referenceAssetId,
+                ItemName = "참조 전용 장비",
+                IsReferenceOnly = true
+            }
+        ]);
+
+        Assert.Contains("참조 전용 장비 1대", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("자산 원본과 기존 연결은 변경하지 않습니다", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.DoesNotContain("자산 원장과 함께 반영", vm.StatusMessage, StringComparison.Ordinal);
+
+        vm.ApplyAssetLinkSelections(
+        [
+            new RentalBillingAssetOption
+            {
+                AssetId = mutableAssetId,
+                ItemName = "수정 가능 장비"
+            },
+            new RentalBillingAssetOption
+            {
+                AssetId = referenceAssetId,
+                ItemName = "참조 전용 장비",
+                IsReferenceOnly = true
+            }
+        ]);
+
+        Assert.Contains("장비 2대", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("1대는 저장 시 자산 원장에 반영", vm.StatusMessage, StringComparison.Ordinal);
+        Assert.Contains("1대는 참조 전용", vm.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void RentalBillingViewModel_InternalCandidateAssetAddsToDisplayItemWithoutOverwritingEditedLine()
     {
         var assetId = Guid.Parse("14141414-1414-1414-1414-141414141414");
@@ -760,12 +840,9 @@ public sealed class RentalBillingSpecificationTests
 
         vm.ApplyAssetLinkSelections([candidateRow]);
         var linkedRow = Assert.Single(vm.IncludedAssets, asset => asset.AssetId == assetId);
-        Assert.False(linkedRow.IsSelected);
+        Assert.True(linkedRow.IsSelected);
         vm.SelectedIncludedAsset = linkedRow;
-        Assert.True(vm.CanAddSelectedIncludedAssetToTemplateItem);
         Assert.True(vm.CanRemoveIncludedAsset);
-
-        InvokePrivateInstance(vm, "AddSelectedIncludedAssetToTemplateItem");
 
         Assert.Contains(assetId, item.IncludedAssetIds);
         Assert.Equal("\uC0AC\uC6A9\uC790 \uD3B8\uC9D1 \uD488\uBA85", item.DisplayItemName);
@@ -778,6 +855,48 @@ public sealed class RentalBillingSpecificationTests
 
         var edits = InvokePrivateInstance<IReadOnlyList<RentalBillingAssetLinkEdit>>(vm, "BuildPendingAssetLinkEdits");
         Assert.Contains(edits, edit => edit.AssetId == assetId);
+    }
+
+    [Fact]
+    public void RentalBillingViewModel_AssetLinkSelectionGroupsSameModelIntoOneIndividualLine()
+    {
+        var firstAssetId = Guid.Parse("16161616-1616-1616-1616-161616161601");
+        var secondAssetId = Guid.Parse("16161616-1616-1616-1616-161616161602");
+        var vm = new RentalBillingViewModel(
+            null!,
+            null!,
+            CreateUserSession(AppPermissionNames.RentalProfileEdit, AppPermissionNames.RentalAssetEdit))
+        {
+            EditBillingType = "개별",
+            EditCustomerName = "동일 모델 테스트 거래처"
+        };
+
+        vm.ApplyAssetLinkSelections(
+        [
+            new RentalBillingAssetOption
+            {
+                AssetId = firstAssetId,
+                ItemName = "SL-M3820ND",
+                MachineNumber = "MODEL-GROUP-001",
+                MonthlyFee = 22_000m
+            },
+            new RentalBillingAssetOption
+            {
+                AssetId = secondAssetId,
+                ItemName = "SL-M3820ND",
+                MachineNumber = "MODEL-GROUP-002",
+                MonthlyFee = 22_000m
+            }
+        ]);
+
+        var item = Assert.Single(vm.TemplateItems, current =>
+            current.IncludedAssetIds.Contains(firstAssetId) ||
+            current.IncludedAssetIds.Contains(secondAssetId));
+        Assert.Equal("개별", item.BillingLineMode);
+        Assert.Equal(2m, item.Quantity);
+        Assert.Equal(22_000m, item.UnitPrice);
+        Assert.Equal(44_000m, item.Amount);
+        Assert.Equal([firstAssetId, secondAssetId], item.IncludedAssetIds.OrderBy(id => id));
     }
 
     [Fact]

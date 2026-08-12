@@ -4,8 +4,10 @@
         Title="렌탈 장비 교체"
         Width="720"
         Height="560"
+        MinWidth="640"
+        MinHeight="400"
         WindowStartupLocation="CenterOwner"
-        ResizeMode="NoResize"
+        ResizeMode="CanResize"
         Background="#151F2E">
     <Window.Resources>
         <Style TargetType="TextBlock">
@@ -69,12 +71,20 @@
                 <TextBlock Text="렌탈 장비 교체" FontSize="20" FontWeight="Bold" Foreground="#66D9FF"/>
                 <TextBlock Text="기존 임대 장비의 거래처·설치 위치·청구 프로필을 새 장비로 승계하고, 기존 장비는 창고 상태로 정리합니다."
                            Margin="0,6,0,0"
-                           Foreground="#B8C6D8"/>
+                           Foreground="#B8C6D8"
+                           TextWrapping="NoWrap"
+                           TextTrimming="CharacterEllipsis"
+                           ToolTip="기존 임대 장비의 거래처·설치 위치·청구 프로필을 새 장비로 승계하고, 기존 장비는 창고 상태로 정리합니다."/>
             </StackPanel>
         </Border>
 
         <Border Grid.Row="1" Background="#1C2B43" BorderBrush="#33517C" BorderThickness="1" CornerRadius="8" Padding="16">
-            <Grid>
+            <ScrollViewer x:Name="RentalEquipmentReplacementBodyScrollViewer"
+                          HorizontalScrollBarVisibility="Auto"
+                          VerticalScrollBarVisibility="Auto">
+            <Grid x:Name="RentalEquipmentReplacementBodyContent"
+                  MinWidth="540"
+                  Width="{Binding ViewportWidth, ElementName=RentalEquipmentReplacementBodyScrollViewer}">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="12"/>
@@ -124,9 +134,14 @@
                          AcceptsReturn="True"
                          VerticalScrollBarVisibility="Auto"/>
             </Grid>
+            </ScrollViewer>
         </Border>
 
-        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
+        <StackPanel x:Name="RentalEquipmentReplacementFooter"
+                    Grid.Row="2"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="0,14,0,0">
             <Button Content="교체 실행" Style="{StaticResource TradePlanPrimaryButtonStyle}" Click="Confirm_Click"/>
             <Button Content="취소" Style="{StaticResource TradePlanSecondaryButtonStyle}" Click="Cancel_Click"/>
         </StackPanel>

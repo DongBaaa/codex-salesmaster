@@ -11,9 +11,14 @@ public sealed class LocalSyncOutboxEntry
     public string TenantCode { get; set; } = string.Empty;
     public string OfficeCode { get; set; } = string.Empty;
     public string ResponsibleOfficeCode { get; set; } = string.Empty;
+    public string BusinessDatabaseName { get; set; } = string.Empty;
+    public Guid SessionId { get; set; }
+    public Guid UserId { get; set; }
     public string Status { get; set; } = "Prepared";
     public string ErrorMessage { get; set; } = string.Empty;
     public DateTime PreparedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? SentAtUtc { get; set; }
     public DateTime? AcknowledgedAtUtc { get; set; }
+    public long AcceptedRevision { get; set; }
+    public DateTime? AcceptedUpdatedAtUtc { get; set; }
 }

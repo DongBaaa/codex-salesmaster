@@ -124,7 +124,10 @@
             </Grid>
         </Border>
 
-        <TabControl x:Name="SettingsTabs" Grid.Row="1" Margin="0,10,0,0">
+        <TabControl x:Name="SettingsTabs"
+                    Grid.Row="1"
+                    Margin="0,10,0,0"
+                    IsEnabled="{Binding CanInteract}">
             <TabItem Header="회사 설정">
                 <ScrollViewer Margin="10" VerticalScrollBarVisibility="Auto">
                     <StackPanel>
@@ -705,30 +708,39 @@
                                                 <ColumnDefinition Width="120"/>
                                                 <ColumnDefinition Width="*"/>
                                             </Grid.ColumnDefinitions>
-                                            <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto"/>
-                                                <RowDefinition Height="Auto"/>
-                                                <RowDefinition Height="Auto"/>
-                                                <RowDefinition Height="Auto"/>
-                                            </Grid.RowDefinitions>
+                                             <Grid.RowDefinitions>
+                                                 <RowDefinition Height="Auto"/>
+                                                 <RowDefinition Height="Auto"/>
+                                                 <RowDefinition Height="Auto"/>
+                                                 <RowDefinition Height="Auto"/>
+                                                 <RowDefinition Height="Auto"/>
+                                             </Grid.RowDefinitions>
 
                                             <Label Grid.Row="0" Grid.Column="0" Content="업체 코드"/>
                                             <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding EditingTenantCode}" IsReadOnly="True" Margin="0,0,0,8"/>
                                             <Label Grid.Row="1" Grid.Column="0" Content="표시 이름"/>
                                             <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding EditingTenantDisplayName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8" IsEnabled="{Binding CanManageTenantConfiguration}"/>
                                             <Label Grid.Row="2" Grid.Column="0" Content="저장 방식"/>
-                                            <ComboBox Grid.Row="2" Grid.Column="1"
-                                                      ItemsSource="{Binding TenantStorageModeOptions}"
-                                                      DisplayMemberPath="DisplayName"
-                                                      SelectedValuePath="Value"
-                                                      SelectedValue="{Binding EditingTenantStorageMode}"
-                                                      Margin="0,0,0,8"
-                                                      IsEnabled="{Binding CanManageTenantConfiguration}"/>
-                                            <Label Grid.Row="3" Grid.Column="0" Content="설명"/>
-                                            <TextBox Grid.Row="3" Grid.Column="1"
-                                                     Text="{Binding EditingTenantDescription, UpdateSourceTrigger=PropertyChanged}"
-                                                     Height="72"
-                                                     AcceptsReturn="True"
+                                             <ComboBox Grid.Row="2" Grid.Column="1"
+                                                       ItemsSource="{Binding TenantStorageModeOptions}"
+                                                       DisplayMemberPath="DisplayName"
+                                                       SelectedValuePath="Value"
+                                                       SelectedValue="{Binding EditingTenantStorageMode}"
+                                                       Margin="0,0,0,4"
+                                                       IsEnabled="False"
+                                                       ToolTip="저장 방식 변경은 데이터 이관과 서버 라우팅을 포함한 별도 운영 절차가 필요합니다."/>
+                                             <TextBlock Grid.Row="3"
+                                                        Grid.Column="1"
+                                                        Text="조회 전용입니다. 저장 방식 변경은 데이터 이관과 서버 라우팅을 포함한 별도 운영 절차로 진행해야 합니다."
+                                                        Foreground="#9FB3C8"
+                                                        FontSize="11"
+                                                        TextWrapping="Wrap"
+                                                        Margin="0,0,0,8"/>
+                                             <Label Grid.Row="4" Grid.Column="0" Content="설명"/>
+                                             <TextBox Grid.Row="4" Grid.Column="1"
+                                                      Text="{Binding EditingTenantDescription, UpdateSourceTrigger=PropertyChanged}"
+                                                      Height="72"
+                                                      AcceptsReturn="True"
                                                      TextWrapping="Wrap"
                                                      IsEnabled="{Binding CanManageTenantConfiguration}"/>
                                         </Grid>
@@ -1072,7 +1084,9 @@
                                  <Button Content="전체 재동기화"
                                          Style="{StaticResource TradePlanEditButtonStyle}"
                                         Margin="0,0,8,0"
-                                        Command="{Binding RunFullResyncCommand}"/>
+                                        Command="{Binding RunFullResyncCommand}"
+                                        IsEnabled="{Binding CanRunFullResync}"
+                                        ToolTip="{Binding FullResyncPermissionHint}"/>
                                  <Button Content="작업 이력 조회"
                                          Style="{StaticResource TradePlanSecondaryButtonStyle}"
                                         Margin="0,0,8,0"
@@ -1081,7 +1095,9 @@
                                         ToolTip="{Binding AuditLogLookupHint}"/>
                                  <Button Content="백업"
                                          Style="{StaticResource TradePlanSecondaryButtonStyle}"
-                                        Command="{Binding RunBackupCommand}"/>
+                                        Command="{Binding RunBackupCommand}"
+                                        IsEnabled="{Binding CanManageBackupData}"
+                                        ToolTip="관리자 또는 Data.BackupRestore 권한이 있는 계정만 실행할 수 있습니다."/>
                             </WrapPanel>
                         </Grid>
                     </Border>

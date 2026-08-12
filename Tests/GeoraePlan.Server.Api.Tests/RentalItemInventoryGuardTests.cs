@@ -68,7 +68,38 @@ public sealed class RentalItemInventoryGuardTests : IDisposable
     }
 
     [Fact]
-    public async Task ItemsController_UpdateToRentalAsset_RemovesExistingWarehouseStocks()
+    public async Task ItemsController_CreateStockItem_RejectsCurrentStockWithoutWarehouseRows()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        dbContext.Database.EnsureCreated();
+        var itemId = Guid.NewGuid();
+
+        var response = await new ItemsController(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext)).Create(
+            new ItemDto
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Unlocated stock item",
+                NameMatchKey = "UNLOCATEDSTOCKITEM",
+                ItemKind = ItemKinds.Product,
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                CurrentStock = 4m
+            },
+            CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(response.Result);
+        Assert.Contains("warehouse stock", badRequest.Value?.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.False(await dbContext.Items.IgnoreQueryFilters().AnyAsync(item => item.Id == itemId));
+        Assert.Empty(await dbContext.ItemWarehouseStocks.Where(stock => stock.ItemId == itemId).ToListAsync());
+    }
+
+    [Fact]
+    public async Task ItemsController_UpdateToRentalAsset_RemovesExistingWarehouseStocksAndLedgerEntries()
     {
         var currentUser = CreateAdminUser();
         await using var dbContext = CreateDbContext(currentUser);
@@ -96,6 +127,15 @@ public sealed class RentalItemInventoryGuardTests : IDisposable
             Quantity = 5m,
             Revision = 1
         });
+        dbContext.InventoryLedgerEntries.Add(new InventoryLedgerEntry
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            SourceType = "Invoice:Sales",
+            SourceDocumentId = Guid.NewGuid(),
+            QuantityDelta = -1m,
+            OccurredDate = new DateOnly(2026, 7, 26)
+        });
         await dbContext.SaveChangesAsync();
 
         var stored = await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id);
@@ -117,6 +157,423 @@ public sealed class RentalItemInventoryGuardTests : IDisposable
         Assert.Equal(0m, updated.CurrentStock);
         Assert.Equal(0m, updated.SafetyStock);
         Assert.Empty(await dbContext.ItemWarehouseStocks.Where(stock => stock.ItemId == item.Id).ToListAsync());
+        Assert.Empty(await dbContext.InventoryLedgerEntries.Where(entry => entry.ItemId == item.Id).ToListAsync());
+    }
+
+    [Fact]
+    public async Task ItemsController_EnableInventoryTracking_RejectsUnlocatedCurrentStock()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        dbContext.Database.EnsureCreated();
+
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Non inventory item",
+            NameMatchKey = "NONINVENTORYITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.NonStock,
+            Unit = "EA",
+            CurrentStock = 0m,
+            SafetyStock = 0m,
+            IsSale = true
+        };
+        dbContext.Items.Add(item);
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id);
+        var dto = stored.ToDto();
+        dto.ItemKind = ItemKinds.Product;
+        dto.TrackingType = ItemTrackingTypes.Stock;
+        dto.CurrentStock = 4m;
+        dto.ExpectedRevision = stored.Revision;
+
+        var response = await new ItemsController(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext)).Update(
+            item.Id,
+            dto,
+            CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(response.Result);
+        Assert.Contains("warehouse stock", badRequest.Value?.ToString(), StringComparison.OrdinalIgnoreCase);
+        dbContext.ChangeTracker.Clear();
+        var unchanged = await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id);
+        Assert.Equal(ItemTrackingTypes.NonStock, unchanged.TrackingType);
+        Assert.Equal(0m, unchanged.CurrentStock);
+        Assert.Empty(await dbContext.ItemWarehouseStocks.Where(stock => stock.ItemId == item.Id).ToListAsync());
+        Assert.Empty(await dbContext.InventoryLedgerEntries.Where(entry => entry.ItemId == item.Id).ToListAsync());
+    }
+
+    [Fact]
+    public async Task ItemsController_UpdateStockItem_RejectsCurrentStockDifferentFromWarehouseTotal()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        dbContext.Database.EnsureCreated();
+
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Authoritative warehouse item",
+            NameMatchKey = "AUTHORITATIVEWAREHOUSEITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            Unit = "EA",
+            CurrentStock = 5m,
+            IsSale = true
+        };
+        dbContext.Items.Add(item);
+        dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 5m,
+            Revision = 1
+        });
+        await dbContext.SaveChangesAsync();
+
+        var dto = item.ToDto();
+        dto.CurrentStock = 99m;
+        dto.ExpectedRevision = item.Revision;
+        var response = await new ItemsController(
+            dbContext,
+            new OfficeScopeService(currentUser, dbContext)).Update(
+            item.Id,
+            dto,
+            CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(response.Result);
+        Assert.Contains("warehouse stock total", badRequest.Value?.ToString(), StringComparison.OrdinalIgnoreCase);
+        dbContext.ChangeTracker.Clear();
+        Assert.Equal(5m, await dbContext.Items.IgnoreQueryFilters()
+            .Where(row => row.Id == item.Id)
+            .Select(row => row.CurrentStock)
+            .SingleAsync());
+        Assert.Equal(5m, await dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == item.Id)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task SyncPush_ItemsOnlyUpdateToRentalAsset_RemovesWarehouseStocksAndLedgerEntries()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        dbContext.Database.EnsureCreated();
+
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Synced convertible item",
+            NameMatchKey = "SYNCEDCONVERTIBLEITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            Unit = "EA",
+            CurrentStock = 5m,
+            SafetyStock = 1m,
+            IsSale = true
+        };
+        dbContext.Items.Add(item);
+        dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 5m,
+            Revision = 1
+        });
+        dbContext.InventoryLedgerEntries.Add(new InventoryLedgerEntry
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            SourceType = "InventoryTransfer:Out",
+            SourceDocumentId = Guid.NewGuid(),
+            QuantityDelta = -1m,
+            OccurredDate = new DateOnly(2026, 7, 26)
+        });
+        await dbContext.SaveChangesAsync();
+
+        var dto = item.ToDto();
+        dto.IsRental = true;
+        dto.CurrentStock = 12m;
+        dto.SafetyStock = 3m;
+        dto.ExpectedRevision = item.Revision;
+        dto.MutationId = $"tracking-disable:Item:{item.Id:N}";
+        dto.MutationCreatedAtUtc = DateTime.UtcNow;
+
+        var response = await CreateSyncController(dbContext, currentUser).Push(
+            new SyncPushRequest
+            {
+                DeviceId = "tracking-disable",
+                Items = [dto]
+            },
+            CancellationToken.None);
+
+        var result = AssertOk<SyncPushResult>(response);
+        Assert.Equal(0, result.ConflictCount);
+        dbContext.ChangeTracker.Clear();
+        var stored = await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id);
+        Assert.Equal(ItemTrackingTypes.Asset, stored.TrackingType);
+        Assert.Equal(0m, stored.CurrentStock);
+        Assert.Equal(0m, stored.SafetyStock);
+        Assert.Empty(await dbContext.ItemWarehouseStocks.Where(stock => stock.ItemId == item.Id).ToListAsync());
+        Assert.Empty(await dbContext.InventoryLedgerEntries.Where(entry => entry.ItemId == item.Id).ToListAsync());
+    }
+
+    [Fact]
+    public async Task SyncPush_CreateStockItemWithoutWarehouseRows_ZeroesUnlocatedCurrentStock()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        dbContext.Database.EnsureCreated();
+        var itemId = Guid.NewGuid();
+        var dto = new ItemDto
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Synced new stock item",
+            NameMatchKey = "SYNCEDNEWSTOCKITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            Unit = "EA",
+            CurrentStock = 7m,
+            MutationId = $"create-stock:Item:{itemId:N}",
+            MutationCreatedAtUtc = DateTime.UtcNow
+        };
+
+        var response = await CreateSyncController(dbContext, currentUser).Push(
+            new SyncPushRequest
+            {
+                DeviceId = "create-stock",
+                Items = [dto]
+            },
+            CancellationToken.None);
+
+        var result = AssertOk<SyncPushResult>(response);
+        Assert.Equal(0, result.ConflictCount);
+        dbContext.ChangeTracker.Clear();
+        var stored = await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == itemId);
+        Assert.Equal(ItemTrackingTypes.Stock, stored.TrackingType);
+        Assert.Equal(0m, stored.CurrentStock);
+        Assert.Empty(await dbContext.ItemWarehouseStocks.Where(stock => stock.ItemId == itemId).ToListAsync());
+    }
+
+    [Fact]
+    public async Task SyncPush_UpdateStockItemWithoutWarehousePayload_RecalculatesExistingWarehouseTotal()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        dbContext.Database.EnsureCreated();
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Synced authoritative warehouse item",
+            NameMatchKey = "SYNCEDAUTHORITATIVEWAREHOUSEITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            Unit = "EA",
+            CurrentStock = 5m,
+            IsSale = true
+        };
+        dbContext.Items.Add(item);
+        dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 5m,
+            Revision = 1
+        });
+        await dbContext.SaveChangesAsync();
+        var dto = item.ToDto();
+        dto.CurrentStock = 99m;
+        dto.ExpectedRevision = item.Revision;
+        dto.MutationId = $"update-stock:Item:{item.Id:N}";
+        dto.MutationCreatedAtUtc = DateTime.UtcNow;
+
+        var response = await CreateSyncController(dbContext, currentUser).Push(
+            new SyncPushRequest
+            {
+                DeviceId = "update-stock",
+                Items = [dto]
+            },
+            CancellationToken.None);
+
+        var result = AssertOk<SyncPushResult>(response);
+        Assert.Equal(0, result.ConflictCount);
+        dbContext.ChangeTracker.Clear();
+        Assert.Equal(5m, await dbContext.Items.IgnoreQueryFilters()
+            .Where(row => row.Id == item.Id)
+            .Select(row => row.CurrentStock)
+            .SingleAsync());
+        Assert.Equal(5m, await dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == item.Id)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task SyncPush_DuplicateNaturalKeyDeleteAliases_CannotBypassActiveReferenceGuard()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        dbContext.Database.EnsureCreated();
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Referenced natural key item",
+            NameMatchKey = "REFERENCEDNATURALKEYITEM",
+            SpecificationOriginal = "Model A",
+            SpecificationMatchKey = "MODELA",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            Unit = "EA",
+            CurrentStock = 5m,
+            IsSale = true
+        };
+        dbContext.Items.Add(item);
+        dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 5m,
+            Revision = 1
+        });
+        dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = $"reference-{item.Id:N}",
+            ItemId = item.Id,
+            AssetStatus = "Active"
+        });
+        await dbContext.SaveChangesAsync();
+
+        ItemDto BuildDeleteAlias(string suffix)
+        {
+            var alias = item.ToDto();
+            alias.Id = Guid.NewGuid();
+            alias.IsDeleted = true;
+            alias.Revision = item.Revision;
+            alias.ExpectedRevision = item.Revision;
+            alias.UpdatedAtUtc = DateTime.UtcNow.AddMinutes(1);
+            alias.MutationId = $"delete-alias:Item:{suffix}:{alias.Id:N}";
+            alias.MutationCreatedAtUtc = DateTime.UtcNow;
+            return alias;
+        }
+
+        var first = BuildDeleteAlias("first");
+        var second = BuildDeleteAlias("second");
+        var response = await CreateSyncController(dbContext, currentUser).Push(
+            new SyncPushRequest
+            {
+                DeviceId = "delete-alias",
+                Items = [first, second]
+            },
+            CancellationToken.None);
+
+        var result = AssertOk<SyncPushResult>(response);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(2, result.ConflictCount);
+        dbContext.ChangeTracker.Clear();
+        var stored = await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id);
+        Assert.False(stored.IsDeleted);
+        Assert.Equal(5m, stored.CurrentStock);
+        Assert.Equal(5m, await dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == item.Id)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.False(await dbContext.ProcessedSyncMutations.AnyAsync(receipt =>
+            receipt.MutationId == first.MutationId ||
+            receipt.MutationId == second.MutationId));
+    }
+
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(true, 4)]
+    public async Task SyncPush_EnableInventoryTracking_RecalculatesCurrentStockFromWarehouseRows(
+        bool includeWarehouseStock,
+        decimal expectedCurrentStock)
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        dbContext.Database.EnsureCreated();
+
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Synced inventory enable item",
+            NameMatchKey = "SYNCEDINVENTORYENABLEITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.NonStock,
+            Unit = "EA",
+            CurrentStock = 0m,
+            SafetyStock = 0m,
+            IsSale = true
+        };
+        dbContext.Items.Add(item);
+        await dbContext.SaveChangesAsync();
+
+        var dto = item.ToDto();
+        dto.ItemKind = ItemKinds.Product;
+        dto.TrackingType = ItemTrackingTypes.Stock;
+        dto.CurrentStock = 99m;
+        dto.ExpectedRevision = item.Revision;
+        dto.MutationId = $"tracking-enable:Item:{item.Id:N}:{includeWarehouseStock}";
+        dto.MutationCreatedAtUtc = DateTime.UtcNow;
+        var warehouseStocks = includeWarehouseStock
+            ? new List<ItemWarehouseStockDto>
+            {
+                new()
+                {
+                    ItemId = item.Id,
+                    WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 4m
+                }
+            }
+            : [];
+
+        var response = await CreateSyncController(dbContext, currentUser).Push(
+            new SyncPushRequest
+            {
+                DeviceId = "tracking-enable",
+                Items = [dto],
+                ItemWarehouseStocks = warehouseStocks
+            },
+            CancellationToken.None);
+
+        var result = AssertOk<SyncPushResult>(response);
+        Assert.Equal(0, result.ConflictCount);
+        dbContext.ChangeTracker.Clear();
+        var stored = await dbContext.Items.IgnoreQueryFilters().SingleAsync(row => row.Id == item.Id);
+        Assert.Equal(ItemTrackingTypes.Stock, stored.TrackingType);
+        Assert.Equal(expectedCurrentStock, stored.CurrentStock);
+        Assert.Equal(
+            includeWarehouseStock ? 1 : 0,
+            await dbContext.ItemWarehouseStocks.CountAsync(stock => stock.ItemId == item.Id));
+        var warehouseQuantities = await dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == item.Id)
+            .Select(stock => stock.Quantity)
+            .ToListAsync();
+        Assert.Equal(
+            expectedCurrentStock,
+            warehouseQuantities.Sum());
     }
 
     [Fact]

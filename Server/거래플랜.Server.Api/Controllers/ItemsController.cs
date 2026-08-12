@@ -19,11 +19,68 @@ public sealed class ItemsController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
     private readonly OfficeScopeService _officeScopeService;
+    private readonly ItemDuplicateMergeService? _duplicateMergeService;
 
     public ItemsController(AppDbContext dbContext, OfficeScopeService officeScopeService)
+        : this(dbContext, officeScopeService, null)
+    {
+    }
+
+    [ActivatorUtilitiesConstructor]
+    public ItemsController(
+        AppDbContext dbContext,
+        OfficeScopeService officeScopeService,
+        ItemDuplicateMergeService? duplicateMergeService)
     {
         _dbContext = dbContext;
         _officeScopeService = officeScopeService;
+        _duplicateMergeService = duplicateMergeService;
+    }
+
+    [HttpPost("duplicate-merge/preview")]
+    [Authorize(Policy = PermissionNames.ItemEdit)]
+    public async Task<ActionResult<ItemDuplicateMergePreviewDto>> PreviewDuplicateMerge(
+        [FromBody] ItemDuplicateMergePreviewRequestDto request,
+        CancellationToken cancellationToken)
+    {
+        if (!_officeScopeService.CanEditItems())
+            return Forbid();
+        if (_duplicateMergeService is null)
+            return Problem("Item duplicate merge service is unavailable.");
+
+        var outcome = await _duplicateMergeService.PreviewOutcomeAsync(request, cancellationToken);
+        return outcome.Status switch
+        {
+            ItemDuplicateMergeStatus.Success => Ok(outcome.Preview),
+            ItemDuplicateMergeStatus.Forbidden => Forbid(),
+            _ => BadRequest(new { error = outcome.Error, message = outcome.Message })
+        };
+    }
+
+    [HttpPost("duplicate-merge")]
+    [Authorize(Policy = PermissionNames.ItemEdit)]
+    public async Task<ActionResult<ItemDuplicateMergeResultDto>> MergeDuplicates(
+        [FromBody] ItemDuplicateMergeRequestDto request,
+        CancellationToken cancellationToken)
+    {
+        if (!_officeScopeService.CanEditItems())
+            return Forbid();
+        if (_duplicateMergeService is null)
+            return Problem("Item duplicate merge service is unavailable.");
+
+        var outcome = await _duplicateMergeService.MergeAsync(request, cancellationToken);
+        return outcome.Status switch
+        {
+            ItemDuplicateMergeStatus.Success => Ok(outcome.Result),
+            ItemDuplicateMergeStatus.Forbidden => Forbid(),
+            ItemDuplicateMergeStatus.Invalid => BadRequest(new { error = outcome.Error, message = outcome.Message }),
+            _ => Conflict(new
+            {
+                error = outcome.Error,
+                message = outcome.Message,
+                preview = outcome.Preview
+            })
+        };
     }
 
     [HttpGet]
@@ -194,14 +251,49 @@ public sealed class ItemsController : ControllerBase
         if (dto.IsDeleted)
             return SoftDeleteMutationGuard.RejectCreate("품목");
 
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
+
         var entity = new Item { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
         dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode);
         dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode);
-        dto.CategoryName = await ItemCategoryOptionGuard.EnsureActiveOptionAsync(_dbContext, dto.CategoryName, cancellationToken);
+        var requestedTrackingType = ItemOperationalPolicy.NormalizeTrackingType(
+            dto.TrackingType,
+            dto.ItemKind,
+            dto.CategoryName,
+            dto.IsRental);
+
+        dto.CategoryName = await ItemCategoryOptionGuard.EnsureActiveOptionAsync(
+            _dbContext,
+            dto.CategoryName,
+            cancellationToken);
+        var mutationCheck = await ProcessedSyncMutationRecorder.CheckAsync(
+            _dbContext,
+            dto,
+            nameof(Item),
+            cancellationToken);
+        if (mutationCheck.Status == DirectMutationStatus.Conflict)
+            return Conflict(ProcessedSyncMutationRecorder.BuildConflictResponse(mutationCheck));
+        if (mutationCheck.Status == DirectMutationStatus.Duplicate)
+            return await ResolveDuplicateItemAsync(mutationCheck, cancellationToken);
+
+        if (await ValidateCurrentStockMatchesWarehouseTotalAsync(
+                entity.Id,
+                requestedTrackingType,
+                dto.CurrentStock,
+                cancellationToken) is { } stockError)
+        {
+            return stockError;
+        }
+
         entity.Apply(dto);
         await RemoveWarehouseStocksIfNonInventoryAsync(entity, cancellationToken);
         _dbContext.Items.Add(entity);
+        ProcessedSyncMutationRecorder.Record(_dbContext, mutationCheck, entity.Id);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
 
@@ -211,23 +303,133 @@ public sealed class ItemsController : ControllerBase
     {
         if (!_officeScopeService.CanEditItems())
             return Forbid();
+        if (dto.Id != Guid.Empty && dto.Id != id)
+            return BadRequest("Item route id must match the body id.");
+
+        dto.Id = id;
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
 
         var entity = await _dbContext.Items.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
         if (!_officeScopeService.CanWriteOfficeForItems(entity.OfficeCode, entity.TenantCode))
             return Forbid();
-        if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Item)) is { } conflict)
-            return conflict;
         if (dto.IsDeleted)
             return SoftDeleteMutationGuard.RejectUpdate("품목");
+        if (!TryEvaluateRequestedItemScope(dto, entity, out var requestsDifferentScope, out var scopeError))
+            return BadRequest(scopeError);
+        if (requestsDifferentScope)
+            return BadRequest("Item tenant/office scope cannot be changed for an existing item.");
 
-        dto.TenantCode = _officeScopeService.ResolveTenantForCreate(dto.TenantCode, dto.OfficeCode, entity.TenantCode, entity.OfficeCode);
-        dto.OfficeCode = _officeScopeService.ResolveScopeForCreate(dto.OfficeCode, entity.OfficeCode);
-        dto.CategoryName = await ItemCategoryOptionGuard.EnsureActiveOptionAsync(_dbContext, dto.CategoryName, cancellationToken);
+        var previouslySupportedInventory = ItemOperationalPolicy.SupportsInventory(entity.TrackingType);
+        dto.TenantCode = entity.TenantCode;
+        dto.OfficeCode = entity.OfficeCode;
+        var requestedTrackingType = ItemOperationalPolicy.NormalizeTrackingType(
+            dto.TrackingType,
+            dto.ItemKind,
+            dto.CategoryName,
+            dto.IsRental);
+
+        dto.CategoryName = await ItemCategoryOptionGuard.EnsureActiveOptionAsync(
+            _dbContext,
+            dto.CategoryName,
+            cancellationToken);
+        var mutationCheck = await ProcessedSyncMutationRecorder.CheckAsync(
+            _dbContext,
+            dto,
+            nameof(Item),
+            cancellationToken);
+        if (mutationCheck.Status == DirectMutationStatus.Conflict)
+            return Conflict(ProcessedSyncMutationRecorder.BuildConflictResponse(mutationCheck));
+        if (mutationCheck.Status == DirectMutationStatus.Duplicate)
+            return await ResolveDuplicateItemAsync(mutationCheck, cancellationToken);
+        if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Item)) is { } conflict)
+            return conflict;
+
+        if (await ValidateCurrentStockMatchesWarehouseTotalAsync(
+                entity.Id,
+                requestedTrackingType,
+                dto.CurrentStock,
+                cancellationToken) is { } stockError)
+        {
+            return stockError;
+        }
+
         entity.Apply(dto);
+        var inventorySupportChanged =
+            previouslySupportedInventory != ItemOperationalPolicy.SupportsInventory(entity.TrackingType);
         await RemoveWarehouseStocksIfNonInventoryAsync(entity, cancellationToken);
+        await RemoveInventoryLedgerEntriesIfNonInventoryAsync(entity, cancellationToken);
+        ProcessedSyncMutationRecorder.Record(_dbContext, mutationCheck, entity.Id);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        if (inventorySupportChanged)
+            await new InventoryLedgerService(_dbContext).RebuildAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return Ok(entity.ToDto());
+    }
+
+    private static bool TryEvaluateRequestedItemScope(
+        ItemDto dto,
+        Item entity,
+        out bool requestsDifferentScope,
+        out string scopeError)
+    {
+        requestsDifferentScope = false;
+        scopeError = string.Empty;
+        var existingOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(entity.OfficeCode);
+        var requestedOfficeCode = existingOfficeCode;
+        if (!string.IsNullOrWhiteSpace(dto.OfficeCode) &&
+            !OfficeCodeCatalog.TryNormalizeScope(dto.OfficeCode, out requestedOfficeCode))
+        {
+            scopeError = "Item office scope is invalid.";
+            return false;
+        }
+
+        var existingTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(
+            entity.TenantCode,
+            TenantScopeCatalog.GetTenantCodeForOffice(existingOfficeCode));
+        var requestedTenantCode = existingTenantCode;
+        if (!string.IsNullOrWhiteSpace(dto.TenantCode) &&
+            !TenantScopeCatalog.TryNormalizeTenantCode(dto.TenantCode, out requestedTenantCode))
+        {
+            scopeError = "Item tenant scope is invalid.";
+            return false;
+        }
+
+        requestsDifferentScope =
+            !string.Equals(
+                requestedOfficeCode,
+                existingOfficeCode,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                requestedTenantCode,
+                existingTenantCode,
+                StringComparison.OrdinalIgnoreCase);
+        return true;
+    }
+
+    private async Task<ActionResult?> ValidateCurrentStockMatchesWarehouseTotalAsync(
+        Guid itemId,
+        string trackingType,
+        decimal requestedCurrentStock,
+        CancellationToken cancellationToken)
+    {
+        if (!ItemOperationalPolicy.SupportsInventory(trackingType))
+            return null;
+
+        var warehouseQuantities = await _dbContext.ItemWarehouseStocks
+            .AsNoTracking()
+            .Where(stock => stock.ItemId == itemId)
+            .Select(stock => stock.Quantity)
+            .ToListAsync(cancellationToken);
+        var warehouseTotal = warehouseQuantities.Sum();
+        if (requestedCurrentStock == warehouseTotal)
+            return null;
+
+        return BadRequest(
+            $"Current stock must match the warehouse stock total ({warehouseTotal}). Save warehouse stock separately.");
     }
 
     private async Task RemoveWarehouseStocksIfNonInventoryAsync(Item entity, CancellationToken cancellationToken)
@@ -242,6 +444,20 @@ public sealed class ItemsController : ControllerBase
             _dbContext.ItemWarehouseStocks.RemoveRange(warehouseStocks);
     }
 
+    private async Task RemoveInventoryLedgerEntriesIfNonInventoryAsync(
+        Item entity,
+        CancellationToken cancellationToken)
+    {
+        if (!entity.IsDeleted && ItemOperationalPolicy.SupportsInventory(entity.TrackingType))
+            return;
+
+        var ledgerEntries = await _dbContext.InventoryLedgerEntries
+            .Where(entry => entry.ItemId == entity.Id)
+            .ToListAsync(cancellationToken);
+        if (ledgerEntries.Count > 0)
+            _dbContext.InventoryLedgerEntries.RemoveRange(ledgerEntries);
+    }
+
     [HttpDelete("{id:guid}")]
     [Authorize(Policy = PermissionNames.ItemEdit)]
     public async Task<IActionResult> Delete(Guid id, [FromQuery] long? expectedRevision, CancellationToken cancellationToken)
@@ -249,10 +465,19 @@ public sealed class ItemsController : ControllerBase
         if (!_officeScopeService.CanEditItems())
             return Forbid();
 
-        var entity = await _dbContext.Items.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
+
+        var entity = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
         if (!_officeScopeService.CanWriteOfficeForItems(entity.OfficeCode, entity.TenantCode))
             return Forbid();
+        if (entity.IsDeleted)
+            return NoContent();
         if (OptimisticConcurrencyGuard.Check(this, entity, expectedRevision, nameof(Item)) is { } conflict)
             return conflict;
 
@@ -276,7 +501,34 @@ public sealed class ItemsController : ControllerBase
         if (warehouseStocks.Count > 0)
             _dbContext.ItemWarehouseStocks.RemoveRange(warehouseStocks);
 
+        await RemoveInventoryLedgerEntriesIfNonInventoryAsync(entity, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return NoContent();
+    }
+
+    private async Task<ActionResult<ItemDto>> ResolveDuplicateItemAsync(
+        DirectMutationCheck mutationCheck,
+        CancellationToken cancellationToken)
+    {
+        if (mutationCheck.ExistingReceipt is not null &&
+            Guid.TryParse(mutationCheck.ExistingReceipt.EntityId, out var entityId))
+        {
+            var entity = await _officeScopeService.ApplyItemScope(
+                    _dbContext.Items.AsNoTracking())
+                .FirstOrDefaultAsync(
+                    current => current.Id == entityId,
+                    cancellationToken);
+            if (entity is not null)
+                return Ok(entity.ToDto());
+        }
+
+        return Conflict(new DirectMutationConflictResponse
+        {
+            MutationId = mutationCheck.MutationId,
+            EntityName = nameof(Item),
+            EntityId = mutationCheck.RequestedEntityId,
+            Reason = "The processed mutation is unavailable in the current scope."
+        });
     }
 }

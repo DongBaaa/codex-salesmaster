@@ -113,6 +113,61 @@ public sealed class UiResponsivenessInfrastructureTests
     }
 
     [Fact]
+    public void RealtimeRevisionMonitor_UsesIsolatedLocalStateScope()
+    {
+        var mainWindow = ReadDesktopSource("MainWindow.xaml.cs");
+        var instanceLookupBody = ExtractBlock(
+            mainWindow,
+            "private Task<long> ResolveLocalLastSyncRevisionAsync(CancellationToken ct)",
+            "internal static async Task<long> ResolveLocalLastSyncRevisionAsync(");
+        var revisionLookupBody = ExtractBlock(
+            mainWindow,
+            "internal static async Task<long> ResolveLocalLastSyncRevisionAsync(",
+            "internal static async Task<T> RunIsolatedLocalStateOperationAsync<T>");
+        var isolatedOperationBody = ExtractBlock(
+            mainWindow,
+            "internal static async Task<T> RunIsolatedLocalStateOperationAsync<T>",
+            "public void ShowDeferredStartupNotifications()");
+
+        Assert.Contains("ResolveLocalLastSyncRevisionAsync(_serviceScopeFactory, ct)", instanceLookupBody, StringComparison.Ordinal);
+        Assert.Contains("RunIsolatedLocalStateOperationAsync(", revisionLookupBody, StringComparison.Ordinal);
+        Assert.Contains("local => local.GetSettingAsync(\"LastSyncRevision\", ct)", revisionLookupBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("_local.GetSettingAsync(\"LastSyncRevision\")", revisionLookupBody, StringComparison.Ordinal);
+        Assert.Contains("using var scope = serviceScopeFactory.CreateScope();", isolatedOperationBody, StringComparison.Ordinal);
+        Assert.Contains("scope.ServiceProvider.GetRequiredService<LocalStateService>()", isolatedOperationBody, StringComparison.Ordinal);
+        Assert.Contains("await operation(local).ConfigureAwait(false)", isolatedOperationBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RealtimeRevisionMonitor_ProductionWiringOwnsAndObservesItsCts()
+    {
+        var mainWindow = ReadDesktopSource("MainWindow.xaml.cs");
+        var startBody = ExtractBlock(
+            mainWindow,
+            "private void StartRealtimeRevisionMonitor()",
+            "private void StopRealtimeRevisionMonitor()");
+        var stopBody = ExtractBlock(
+            mainWindow,
+            "private void StopRealtimeRevisionMonitor()",
+            "internal static Task StartRealtimeRevisionMonitorTask(");
+
+        Assert.Contains("var cts = new CancellationTokenSource();", startBody, StringComparison.Ordinal);
+        Assert.Contains("_realtimeRevisionCts = cts;", startBody, StringComparison.Ordinal);
+        Assert.Contains("StartRealtimeRevisionMonitorTask(", startBody, StringComparison.Ordinal);
+        Assert.Contains("RunRealtimeRevisionMonitorAsync,", startBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("_realtimeRevisionCts.Token", startBody, StringComparison.Ordinal);
+
+        Assert.Contains("var cts = _realtimeRevisionCts;", stopBody, StringComparison.Ordinal);
+        Assert.Contains("var task = _realtimeRevisionTask;", stopBody, StringComparison.Ordinal);
+        Assert.Contains("_realtimeRevisionCts = null;", stopBody, StringComparison.Ordinal);
+        Assert.Contains("_realtimeRevisionTask = null;", stopBody, StringComparison.Ordinal);
+        Assert.Contains("cts.Cancel();", stopBody, StringComparison.Ordinal);
+        Assert.Contains("_realtimeRevisionDrainTask = ObserveAndDisposeRealtimeRevisionMonitorAsync(task, cts);", stopBody, StringComparison.Ordinal);
+        Assert.Contains("UiTaskHelper.Forget(", stopBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("finally", stopBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DesktopUpdate_StartAndHashValidationAreAsync()
     {
         var updateService = ReadDesktopSource("Services", "DesktopAppUpdateService.cs");
@@ -147,11 +202,22 @@ public sealed class UiResponsivenessInfrastructureTests
             executor,
             "private static IReadOnlyList<PrintQueue> LoadInstalledPrintQueues(",
             "private static PrintQueue? TryGetDefaultPrintQueue(");
+        var refreshHandlerBody = ExtractBlock(
+            printWindow,
+            "private void OnRefreshPrintersClick(object sender, RoutedEventArgs e)",
+            "private async Task RefreshPrintersAsync()");
+        var refreshBody = ExtractBlock(
+            printWindow,
+            "private async Task RefreshPrintersAsync()",
+            "private void OnPageModeChecked(object sender, RoutedEventArgs e)");
 
         Assert.Single(Regex.Matches(queueLoadBody, "GetPrintQueues\\(", RegexOptions.CultureInvariant));
         Assert.DoesNotContain("InstalledPrinterQueueTypeGroups", executor, StringComparison.Ordinal);
-        Assert.Contains("private async void OnRefreshPrintersClick", printWindow, StringComparison.Ordinal);
-        Assert.Contains("await Task.Run(_printerRefreshProvider)", printWindow, StringComparison.Ordinal);
+        Assert.Contains("=> UiTaskHelper.Run(", refreshHandlerBody, StringComparison.Ordinal);
+        Assert.Contains("this,", refreshHandlerBody, StringComparison.Ordinal);
+        Assert.Contains("RefreshPrintersAsync,", refreshHandlerBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("async void", refreshHandlerBody, StringComparison.Ordinal);
+        Assert.Contains("await Task.Run(_printerRefreshProvider)", refreshBody, StringComparison.Ordinal);
     }
 
     private static string ReadDesktopSource(params string[] relativeSegments)

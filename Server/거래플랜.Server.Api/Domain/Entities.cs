@@ -207,6 +207,8 @@ public sealed class Item : TrackedEntity
     public string ItemKind { get; set; } = ItemKinds.Product;
     public string TrackingType { get; set; } = ItemTrackingTypes.Stock;
     public string Unit { get; set; } = string.Empty;
+    public decimal BoxQuantity { get; set; }
+    public string StorageLocation { get; set; } = string.Empty;
     public decimal CurrentStock { get; set; }
     public decimal SafetyStock { get; set; }
     public decimal PurchasePrice { get; set; }
@@ -215,6 +217,8 @@ public sealed class Item : TrackedEntity
     public decimal PriceGradeA { get; set; }
     public decimal PriceGradeB { get; set; }
     public decimal PriceGradeC { get; set; }
+    public DateOnly? LastPurchaseDate { get; set; }
+    public DateOnly? LastSaleDate { get; set; }
     public string SimpleMemo { get; set; } = string.Empty;
     public bool IsRental { get; set; }
     public bool IsSale { get; set; }

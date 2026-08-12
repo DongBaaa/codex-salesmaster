@@ -59,6 +59,15 @@ public sealed partial class EnvironmentSettingsViewModel
     public ObservableCollection<SyncScopeStatusRow> SyncScopeStatuses { get; } = new();
     public ObservableCollection<DisplayOption> SyncCredentialOfficeOptions { get; } = new();
     public bool CanManageSyncCredentials => _session.IsLoggedIn && !_session.IsOfflineMode;
+    public bool CanRunFullResync =>
+        _session.IsLoggedIn &&
+        !_session.IsOfflineMode &&
+        _session.HasGlobalDataScope;
+    public string FullResyncPermissionHint => CanRunFullResync
+        ? "현재 로컬 캐시를 백업한 뒤 중앙 서버 기준으로 전체 재구성합니다."
+        : _session.IsOfflineMode
+            ? "오프라인 모드에서는 전체 재동기화를 실행할 수 없습니다."
+            : "전체 재동기화는 전체 데이터 조회 범위가 있는 계정만 실행할 수 있습니다.";
 
     private void InitializeSyncState()
     {
@@ -529,8 +538,6 @@ public sealed partial class EnvironmentSettingsViewModel
             StatusMessage = "동기화를 실행하는 중...";
             var syncOk = await _sync.TrySyncAsync();
             var dirtyCount = await _local.CountDirtyAsync(_session);
-            if (syncOk && dirtyCount == 0)
-                await _sync.RefreshSharedMirrorFromServerAsync();
 
             await RefreshSyncStateAsync();
             StatusMessage = dirtyCount > 0
@@ -613,9 +620,6 @@ public sealed partial class EnvironmentSettingsViewModel
         {
             StatusMessage = $"{target.ScopeDisplayName} 범위 동기화를 실행하는 중...";
             var result = await _sync.TrySyncScopeAsync(target.ScopeKey);
-            var dirtyCount = await _local.CountDirtyAsync();
-            if (result.Succeeded && dirtyCount == 0)
-                await _sync.RefreshSharedMirrorFromServerAsync();
 
             await RefreshSyncStateAsync();
             StatusMessage = result.Message;
@@ -730,7 +734,7 @@ public sealed partial class EnvironmentSettingsViewModel
             }
         };
 
-        if (window.ShowDialog() == true)
+        if (DialogWindowCloseHelper.ShowDialog(window) == true)
             await HandleDataIntegrityAlertActionAsync(window.RequestedAction, window.RequestedSummary, owner, result);
         else
             StatusMessage = $"운영 점검 알림 {result.TotalIssueCount:N0}건을 확인했습니다.";
@@ -850,30 +854,100 @@ public sealed partial class EnvironmentSettingsViewModel
         DataIntegrityIssueViewModel viewModel,
         Window owner)
     {
-        if (!issue.CanMergeDuplicates)
+        OfficeMutationResult result;
+        if (string.Equals(issue.Code, DataIntegrityIssueCodes.ItemDuplicateCandidate, StringComparison.OrdinalIgnoreCase))
         {
-            MessageBox.Show(
+            if (issue.ItemDuplicateComparison is null)
+            {
+                MessageBox.Show(
+                    owner,
+                    "품목 후보 비교 정보가 없습니다. 운영점검을 새로고침한 뒤 다시 시도하세요.",
+                    "운영 점검",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            viewModel.StatusMessage = "현재 후보·동기화 상태·연결 자료 권한을 읽기 전용으로 점검하는 중입니다.";
+            var review = await _dataIntegrity.PrepareItemDuplicateReviewAsync(issue, _session);
+            var comparisonWindow = new ItemDuplicateComparisonWindow(review) { Owner = owner };
+            var comparisonResult = DialogWindowCloseHelper.ShowDialog(comparisonWindow);
+            if (comparisonWindow.RequestedItemId.HasValue)
+            {
+                await OpenDataIntegrityFixTargetAsync(
+                    new DataIntegrityIssueDetail
+                    {
+                        DirectActionKind = DataIntegrityDirectActionKind.OpenInventoryItem,
+                        EntityId = comparisonWindow.RequestedItemId.Value
+                    },
+                    owner);
+                return;
+            }
+
+            if (comparisonResult != true || !comparisonWindow.SelectedCanonicalItemId.HasValue)
+                return;
+
+            var canonicalItemId = comparisonWindow.SelectedCanonicalItemId.Value;
+            var selectedCandidate = review.Comparison.Candidates
+                .FirstOrDefault(candidate => candidate.ItemId == canonicalItemId);
+            if (selectedCandidate is null)
+            {
+                MessageBox.Show(
+                    owner,
+                    "선택한 대표 품목을 비교 후보에서 찾지 못했습니다. 운영점검을 새로고침하세요.",
+                    "운영 점검",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            var itemResponse = MessageBox.Show(
                 owner,
-                "선택 항목은 자동 병합 대상이 아닙니다. 판단 정보를 확인한 뒤 원본 화면에서 수동 정리하세요.",
-                "운영 점검",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            return;
+                $"선택한 품목을 대표로 병합합니다.{Environment.NewLine}{Environment.NewLine}" +
+                $"대표: {selectedCandidate.NameAndSpecification} ({selectedCandidate.ItemId:N}){Environment.NewLine}" +
+                $"영향: {review.Comparison.SummaryText}{Environment.NewLine}{Environment.NewLine}" +
+                "병합 직전에 후보·revision·동기화·참조 상태를 다시 확인합니다. 검증이 통과하면 참조를 대표 품목으로 옮기고 나머지 후보를 삭제 처리합니다. 계속할까요?",
+                "운영 점검 품목 중복 병합",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (itemResponse != MessageBoxResult.Yes)
+                return;
+
+            viewModel.StatusMessage = "선택한 대표 품목과 최신 비교 스냅샷을 확인하는 중입니다.";
+            result = await _dataIntegrity.MergeDuplicateItemIssueAsync(
+                issue,
+                canonicalItemId,
+                review.Comparison.SnapshotToken,
+                _session);
+        }
+        else
+        {
+            if (!issue.CanMergeDuplicates)
+            {
+                MessageBox.Show(
+                    owner,
+                    "선택 항목은 자동 병합 대상이 아닙니다. 판단 정보를 확인한 뒤 원본 화면에서 수동 정리하세요.",
+                    "운영 점검",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            var response = MessageBox.Show(
+                owner,
+                $"선택한 중복 후보를 대표 항목 1건으로 병합합니다.{Environment.NewLine}{Environment.NewLine}" +
+                $"{issue.ReviewInfoDisplay}{Environment.NewLine}{Environment.NewLine}" +
+                "병합 후 참조 전표/렌탈/재고 내역은 대표 항목으로 이동하고 나머지 후보는 삭제 처리됩니다. 계속할까요?",
+                "운영 점검 중복 병합",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (response != MessageBoxResult.Yes)
+                return;
+
+            viewModel.StatusMessage = "중복 후보를 병합하는 중입니다.";
+            result = await _dataIntegrity.MergeDuplicateIssueAsync(issue, _session);
         }
 
-        var response = MessageBox.Show(
-            owner,
-            $"선택한 중복 후보를 대표 항목 1건으로 병합합니다.{Environment.NewLine}{Environment.NewLine}" +
-            $"{issue.ReviewInfoDisplay}{Environment.NewLine}{Environment.NewLine}" +
-            "병합 후 참조 전표/렌탈/재고 내역은 대표 항목으로 이동하고 나머지 후보는 삭제 처리됩니다. 계속할까요?",
-            "운영 점검 중복 병합",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning);
-        if (response != MessageBoxResult.Yes)
-            return;
-
-        viewModel.StatusMessage = "중복 후보를 병합하는 중입니다.";
-        var result = await _dataIntegrity.MergeDuplicateIssueAsync(issue, _session);
         if (!result.Success)
         {
             viewModel.StatusMessage = result.Message;
@@ -1073,6 +1147,13 @@ public sealed partial class EnvironmentSettingsViewModel
         if (IsBusy)
             return;
 
+        if (!CanRunFullResync)
+        {
+            StatusMessage = FullResyncPermissionHint;
+            await RefreshSyncStateAsync();
+            return;
+        }
+
         if (_session.IsOfflineMode)
         {
             StatusMessage = "오프라인 모드에서는 중앙 서버 기준 전체 재동기화를 실행할 수 없습니다.";
@@ -1137,6 +1218,12 @@ public sealed partial class EnvironmentSettingsViewModel
     {
         if (IsBusy)
             return;
+
+        if (!CanManageBackupData)
+        {
+            StatusMessage = "백업은 관리자 또는 Data.BackupRestore 권한이 있는 계정만 실행할 수 있습니다.";
+            return;
+        }
 
         IsBusy = true;
         try

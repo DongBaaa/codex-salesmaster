@@ -80,21 +80,23 @@ public sealed partial class RentalStateService
             };
         }
 
-        var backupPath = CreateLocalDbBackup("before-rental-workbook-rebuild");
-        var repairResult = new RentalCatalogRepairResult();
-        var rebuildResult = new RentalWorkbookRebuildResult
-        {
-            WorkbookPath = path,
-            BackupPath = backupPath,
-            ProcessedAtUtc = now,
-            ScopeIssues = scopeCheck.ScopeIssues.ToList(),
-            MissingInWorkbookAssets = context.Result.MissingInWorkbookAssets,
-            MissingInWorkbookCount = context.Result.MissingInWorkbookCount
-        };
-
         await AssetSaveLock.WaitAsync(ct);
         try
         {
+            var backupPath = await CreateLocalDbBackupAsync(
+                "before-rental-workbook-rebuild",
+                ct);
+            var repairResult = new RentalCatalogRepairResult();
+            var rebuildResult = new RentalWorkbookRebuildResult
+            {
+                WorkbookPath = path,
+                BackupPath = backupPath,
+                ProcessedAtUtc = now,
+                ScopeIssues = scopeCheck.ScopeIssues.ToList(),
+                MissingInWorkbookAssets = context.Result.MissingInWorkbookAssets,
+                MissingInWorkbookCount = context.Result.MissingInWorkbookCount
+            };
+
             var activeItems = await GetActiveItemsAsync(ct);
             var rebuildOperations = new List<RentalWorkbookRebuildOperation>();
 
@@ -153,7 +155,7 @@ public sealed partial class RentalStateService
                 .ToList();
 
             var touchedAssets = new List<LocalRentalAsset>();
-            await using var transaction = await _db.Database.BeginTransactionAsync(ct);
+            await using var transaction = await _db.BeginRuntimeMutationTransactionAsync(ct);
             try
             {
                 await ReserveRentalAssetUniqueValuesAsync(executableOperations, now, ct);
@@ -970,9 +972,15 @@ public sealed partial class RentalStateService
         return string.Join(Environment.NewLine, lines);
     }
 
-    private static string CreateLocalDbBackup(string prefix)
+    private async Task<string> CreateLocalDbBackupAsync(
+        string prefix,
+        CancellationToken ct)
     {
-        var source = AppPaths.LocalDbFile;
+        var source = _db.Database.GetDbConnection().DataSource;
+        if (string.IsNullOrWhiteSpace(source))
+            throw new FileNotFoundException("현재 로컬 DB 파일 경로를 확인할 수 없습니다.");
+
+        source = Path.GetFullPath(source);
         if (!File.Exists(source))
             throw new FileNotFoundException("로컬 DB 파일을 찾을 수 없습니다.", source);
 
@@ -981,7 +989,10 @@ public sealed partial class RentalStateService
         var destination = Path.Combine(AppPaths.BackupDir, $"거래플랜-{prefix}-{timestamp}.db");
         for (var sequence = 1; File.Exists(destination); sequence++)
             destination = Path.Combine(AppPaths.BackupDir, $"거래플랜-{prefix}-{timestamp}-{sequence:D2}.db");
-        File.Copy(source, destination, overwrite: false);
+        await BackupService.CreateConsistentSqliteBackupAsync(
+            source,
+            destination,
+            ct);
         BackupService.TrimManagedBackups();
         return destination;
     }

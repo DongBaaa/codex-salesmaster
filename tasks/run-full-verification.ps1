@@ -42,6 +42,96 @@ function Convert-OutputText {
     return (($Output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine)
 }
 
+function Invoke-WithDesktopTestEnvironment {
+    param(
+        [string]$ProjectRoot,
+        [scriptblock]$Script
+    )
+
+    $resolvedProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot)
+    $projectDrive = [System.IO.Path]::GetPathRoot($resolvedProjectRoot)
+    if ([string]::IsNullOrWhiteSpace($projectDrive)) {
+        throw "Project drive could not be resolved: $ProjectRoot"
+    }
+    $projectDriveRoot = [System.IO.Path]::GetFullPath($projectDrive)
+
+    $sandboxParent = [System.IO.Path]::GetFullPath(
+        (Join-Path $projectDriveRoot 'DevCaches\georaeplan-v1-tests')
+    )
+    $sandboxRoot = [System.IO.Path]::GetFullPath(
+        (Join-Path $sandboxParent ([guid]::NewGuid().ToString('N')))
+    )
+    if (-not [string]::Equals(
+        [System.IO.Path]::GetPathRoot($sandboxRoot),
+        $projectDriveRoot,
+        [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not $sandboxRoot.StartsWith(
+            $sandboxParent.TrimEnd('\') + '\',
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Desktop test sandbox is not on the project drive: $sandboxRoot"
+    }
+
+    $sandboxValues = [ordered]@{
+        GEORAEPLAN_TEST_MODE = '1'
+        GEORAEPLAN_APP_ROOT = Join-Path $sandboxRoot 'AppRoot'
+        GEORAEPLAN_TEMP_ROOT = Join-Path $sandboxRoot 'Temp'
+        GEORAEPLAN_DOWNLOADS_ROOT = Join-Path $sandboxRoot 'Downloads'
+        LOCALAPPDATA = Join-Path $sandboxRoot 'LocalAppData'
+        APPDATA = Join-Path $sandboxRoot 'AppData'
+        TEMP = Join-Path $sandboxRoot 'Temp'
+        TMP = Join-Path $sandboxRoot 'Temp'
+    }
+    foreach ($pathName in @('GEORAEPLAN_APP_ROOT', 'GEORAEPLAN_TEMP_ROOT', 'GEORAEPLAN_DOWNLOADS_ROOT', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP')) {
+        $path = [System.IO.Path]::GetFullPath([string]$sandboxValues[$pathName])
+        if (-not [string]::Equals(
+            [System.IO.Path]::GetPathRoot($path),
+            $projectDriveRoot,
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Desktop test path escaped the project drive: $pathName=$path"
+        }
+        $sandboxValues[$pathName] = $path
+    }
+
+    $previousValues = @{}
+    foreach ($name in $sandboxValues.Keys) {
+        $previousValues[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+    }
+
+    try {
+        foreach ($path in @(
+            $sandboxRoot,
+            $sandboxValues.GEORAEPLAN_APP_ROOT,
+            $sandboxValues.GEORAEPLAN_TEMP_ROOT,
+            $sandboxValues.GEORAEPLAN_DOWNLOADS_ROOT,
+            $sandboxValues.LOCALAPPDATA,
+            $sandboxValues.APPDATA)) {
+            New-Item -ItemType Directory -Force -Path $path | Out-Null
+        }
+
+        foreach ($name in $sandboxValues.Keys) {
+            [Environment]::SetEnvironmentVariable($name, [string]$sandboxValues[$name], 'Process')
+            $actualValue = [Environment]::GetEnvironmentVariable($name, 'Process')
+            if (-not [string]::Equals($actualValue, [string]$sandboxValues[$name], [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "Desktop test environment isolation failed: $name"
+            }
+        }
+
+        & $Script
+    }
+    finally {
+        foreach ($name in $sandboxValues.Keys) {
+            [Environment]::SetEnvironmentVariable($name, $previousValues[$name], 'Process')
+        }
+        $verifiedCleanupRoot = [System.IO.Path]::GetFullPath($sandboxRoot)
+        $isVerifiedSandbox = $verifiedCleanupRoot.StartsWith(
+            $sandboxParent.TrimEnd('\') + '\',
+            [System.StringComparison]::OrdinalIgnoreCase)
+        if ($isVerifiedSandbox -and (Test-Path -LiteralPath $verifiedCleanupRoot)) {
+            Remove-Item -LiteralPath $verifiedCleanupRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Invoke-VerificationStep {
     param(
         [string]$Name,
@@ -125,7 +215,9 @@ if (-not $shouldStop -and -not $SkipSolutionTests) {
     $shouldStop = $shouldStop -or ($StopOnFailure -and -not $steps[$steps.Count - 1].succeeded)
 
     $steps.Add((Invoke-VerificationStep -Name 'desktop-tests' -Command "$dotnet test $desktopTests" -Script {
-        & $dotnet test $desktopTests -c Debug --no-restore --logger 'console;verbosity=minimal'
+        Invoke-WithDesktopTestEnvironment -ProjectRoot $root -Script {
+            & $dotnet test $desktopTests -c Debug --no-restore --logger 'console;verbosity=minimal'
+        }
     })) | Out-Null
     $shouldStop = $shouldStop -or ($StopOnFailure -and -not $steps[$steps.Count - 1].succeeded)
 }
@@ -138,8 +230,8 @@ $shouldStop = $shouldStop -or ($StopOnFailure -and -not $steps[$steps.Count - 1]
 }
 
 if (-not $shouldStop) {
-$steps.Add((Invoke-VerificationStep -Name 'multi-pc-conflict-regression' -Command "$multiPcConflictScript -ProjectRoot $root" -Script {
-    & $multiPcConflictScript -ProjectRoot $root
+$steps.Add((Invoke-VerificationStep -Name 'multi-pc-conflict-contract-regression' -Command "$multiPcConflictScript -ProjectRoot $root -Mode Contract" -Script {
+    & $multiPcConflictScript -ProjectRoot $root -Mode Contract
 })) | Out-Null
 $shouldStop = $shouldStop -or ($StopOnFailure -and -not $steps[$steps.Count - 1].succeeded)
 }

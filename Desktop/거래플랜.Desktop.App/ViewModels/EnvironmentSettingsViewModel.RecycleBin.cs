@@ -1,5 +1,6 @@
 ﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Net.Http;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -18,7 +19,57 @@ public sealed partial class EnvironmentSettingsViewModel
     {
         public List<RecycleBinEntry> SucceededEntries { get; } = new();
         public List<string> Failures { get; } = new();
+        public Dictionary<
+            (RecycleBinEntityKind Kind, Guid EntityId),
+            List<string>>
+            EntryFailures { get; } = new();
+        public Dictionary<
+            (Guid EntityId, RecycleBinEntityKind Kind),
+            LocalStateService.ServerPurgeConfirmationFence>
+            PurgeConfirmationFences { get; } = new();
+        public bool RequiresAuthoritativeRefresh { get; set; }
+        public bool HasAmbiguousRestoreOutcome { get; set; }
+
+        public void AddEntryFailure(
+            RecycleBinEntry entry,
+            string message)
+        {
+            Failures.Add(message);
+            var key = (entry.Kind, entry.EntityId);
+            if (!EntryFailures.TryGetValue(
+                    key,
+                    out var messages))
+            {
+                messages = new List<string>();
+                EntryFailures.Add(key, messages);
+            }
+
+            messages.Add(message);
+        }
     }
+
+    internal sealed record RecycleBinSuccessfulLocalPurge(
+        RecycleBinEntry Entry,
+        LocalStateService.ServerPurgeConfirmationFence?
+            ConfirmationFence);
+
+    internal sealed record RecycleBinPurgeCascadeReconciliation(
+        IReadOnlySet<(
+            RecycleBinEntityKind Kind,
+            Guid EntityId)> CoveredEntries,
+        IReadOnlyList<string> RemainingServerFailures)
+    {
+        public int SucceededCount =>
+            CoveredEntries.Count;
+    }
+
+    internal sealed record RecycleBinConfirmedRestoreLocalApplyResult(
+        int SucceededCount,
+        IReadOnlyList<string> Failures,
+        bool HasLocalApplyFailure,
+        bool RequiresAuthoritativeRefresh,
+        bool AuthoritativeRefreshSucceeded,
+        string? AuthoritativeRefreshFailure);
 
     [ObservableProperty] private DisplayOption? _selectedRecycleBinTypeOption;
     [ObservableProperty] private string _recycleBinSearchText = string.Empty;
@@ -292,10 +343,8 @@ public sealed partial class EnvironmentSettingsViewModel
                 return;
             }
 
-            var syncSucceeded = await _sync.TrySyncAsync();
+            await _sync.TrySyncAsync();
             var hasPendingChanges = await _local.HasPendingSyncChangesAsync(_session);
-            if (syncSucceeded && !hasPendingChanges)
-                await _sync.RefreshSharedMirrorFromServerAsync();
 
             await ReloadRecycleBinAsync();
 
@@ -374,39 +423,146 @@ public sealed partial class EnvironmentSettingsViewModel
             }
 
             var serverMirror = await MirrorRecycleBinMutationToServerAsync("복원", orderedEntries);
-            var actionEntries = serverMirror.SucceededEntries;
-            var succeeded = 0;
-            var failures = new List<string>();
-            foreach (var entry in actionEntries)
-            {
-                try
-                {
-                    var result = await _local.RestoreRecycleBinEntryAsync(entry.Kind, entry.EntityId, _session);
-                    if (result.Success)
-                    {
-                        await _local.MarkRecycleBinServerMutationCleanAsync(entry.Kind, entry.EntityId);
-                        succeeded++;
-                    }
-                    else
-                    {
-                        failures.Add($"{entry.KindText} · {entry.Title}: {result.Message}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    failures.Add($"{entry.KindText} · {entry.Title}: 로컬 복원 반영 실패 - {ex.InnerException?.Message ?? ex.Message}");
-                }
-            }
-
+            var localApply = await ApplyConfirmedServerRestoresLocallyAsync(
+                serverMirror.SucceededEntries,
+                serverMirror.RequiresAuthoritativeRefresh,
+                entry => _local.RestoreRecycleBinEntryAsync(entry.Kind, entry.EntityId, _session),
+                entry => _local.MarkRecycleBinServerMutationCleanAsync(entry.Kind, entry.EntityId),
+                () => _sync.TryAuthoritativePullOnlyAsync(),
+                ReloadRecycleBinAsync);
+            var succeeded = localApply.SucceededCount;
+            var failures = localApply.Failures.ToList();
             failures.AddRange(serverMirror.Failures);
 
-            await ReloadRecycleBinAsync();
-            StatusMessage = BuildRecycleBinMutationStatusMessage("복원", orderedEntries.Count, succeeded, failures);
+            var mutationStatus = BuildRecycleBinMutationStatusMessage("복원", orderedEntries.Count, succeeded, failures);
+            if (localApply.HasLocalApplyFailure)
+            {
+                StatusMessage =
+                    "서버 복원은 확정됐지만 로컬 반영에 실패했습니다. 같은 복원을 반복하지 마세요. " +
+                    (serverMirror.HasAmbiguousRestoreOutcome
+                        ? "일부 다른 항목의 서버 복원 결과도 불확실합니다. "
+                        : string.Empty) +
+                    (localApply.AuthoritativeRefreshSucceeded
+                        ? "서버 최신 상태를 다시 불러왔습니다. "
+                        : $"{localApply.AuthoritativeRefreshFailure ?? "서버 최신 상태를 확인하지 못했습니다."} ") +
+                    mutationStatus;
+            }
+            else if (serverMirror.HasAmbiguousRestoreOutcome)
+            {
+                StatusMessage =
+                    "서버 복원 결과가 불확실합니다. 같은 복원을 반복하지 마세요. " +
+                    (localApply.AuthoritativeRefreshSucceeded
+                        ? "서버 최신 상태를 다시 불러왔습니다. "
+                        : $"{localApply.AuthoritativeRefreshFailure ?? "서버 최신 상태를 확인하지 못했습니다."} ") +
+                    mutationStatus;
+            }
+            else if (localApply.RequiresAuthoritativeRefresh)
+            {
+                StatusMessage =
+                    (localApply.AuthoritativeRefreshSucceeded
+                        ? "복원 충돌 후 서버 최신 상태를 다시 불러왔습니다. "
+                        : $"{localApply.AuthoritativeRefreshFailure ?? "복원 충돌 후 서버 최신 상태를 확인하지 못했습니다."} ") +
+                    mutationStatus;
+            }
+            else
+            {
+                StatusMessage = mutationStatus;
+            }
         }
         finally
         {
             IsBusy = false;
         }
+    }
+
+    internal static async Task<RecycleBinConfirmedRestoreLocalApplyResult>
+        ApplyConfirmedServerRestoresLocallyAsync(
+            IReadOnlyList<RecycleBinEntry> entries,
+            bool serverRequiresAuthoritativeRefresh,
+            Func<RecycleBinEntry, Task<OfficeMutationResult>> restoreAsync,
+            Func<RecycleBinEntry, Task> markCleanAsync,
+            Func<Task<bool>> authoritativeRefreshAsync,
+            Func<Task> reloadAsync)
+    {
+        var succeeded = 0;
+        var failures = new List<string>();
+        var hasLocalApplyFailure = false;
+        foreach (var entry in entries)
+        {
+            OfficeMutationResult result;
+            try
+            {
+                result = await restoreAsync(entry);
+            }
+            catch (Exception ex)
+            {
+                hasLocalApplyFailure = true;
+                failures.Add(
+                    $"{entry.KindText} · {entry.Title}: 서버 복원 확정 후 로컬 복원 반영 실패 - " +
+                    (ex.InnerException?.Message ?? ex.Message));
+                continue;
+            }
+
+            if (!result.Success)
+            {
+                hasLocalApplyFailure = true;
+                failures.Add(
+                    $"{entry.KindText} · {entry.Title}: 서버 복원은 확정됐지만 로컬 복원이 거부됐습니다. {result.Message}");
+                continue;
+            }
+
+            try
+            {
+                await markCleanAsync(entry);
+                succeeded++;
+            }
+            catch (Exception ex)
+            {
+                hasLocalApplyFailure = true;
+                failures.Add(
+                    $"{entry.KindText} · {entry.Title}: 서버 복원 확정 후 로컬 clean 반영 실패 - " +
+                    (ex.InnerException?.Message ?? ex.Message));
+            }
+        }
+
+        var requiresAuthoritativeRefresh =
+            serverRequiresAuthoritativeRefresh || hasLocalApplyFailure;
+        var authoritativeSyncSucceeded = false;
+        string? authoritativeRefreshFailure = null;
+        if (requiresAuthoritativeRefresh)
+        {
+            try
+            {
+                authoritativeSyncSucceeded = await authoritativeRefreshAsync();
+                if (!authoritativeSyncSucceeded)
+                    authoritativeRefreshFailure = "서버 최신 상태 동기화에 실패했습니다.";
+            }
+            catch (Exception ex)
+            {
+                authoritativeRefreshFailure =
+                    $"서버 최신 상태 동기화 실패 - {ex.InnerException?.Message ?? ex.Message}";
+            }
+        }
+
+        var reloadSucceeded = false;
+        try
+        {
+            await reloadAsync();
+            reloadSucceeded = true;
+        }
+        catch (Exception ex) when (requiresAuthoritativeRefresh)
+        {
+            authoritativeRefreshFailure =
+                $"서버 최신 상태 다시 불러오기 실패 - {ex.InnerException?.Message ?? ex.Message}";
+        }
+
+        return new RecycleBinConfirmedRestoreLocalApplyResult(
+            succeeded,
+            failures,
+            hasLocalApplyFailure,
+            requiresAuthoritativeRefresh,
+            requiresAuthoritativeRefresh && authoritativeSyncSucceeded && reloadSucceeded,
+            authoritativeRefreshFailure);
     }
 
     private async Task PermanentlyDeleteRecycleBinEntriesCoreAsync(IReadOnlyList<RecycleBinEntry> entries)
@@ -428,18 +584,81 @@ public sealed partial class EnvironmentSettingsViewModel
             }
 
             var serverMirror = await MirrorRecycleBinMutationToServerAsync("영구삭제", orderedEntries);
-            var actionEntries = serverMirror.SucceededEntries;
+            var actionEntries =
+                OrderSuccessfulPurgeEntriesForLocalApply(
+                    serverMirror.SucceededEntries);
             var failures = new List<string>();
-            var succeeded = 0;
+            var locallySuccessfulPurges =
+                new List<
+                    RecycleBinSuccessfulLocalPurge>();
+            var locallyCoveredEntries =
+                new HashSet<(
+                    RecycleBinEntityKind Kind,
+                    Guid EntityId)>();
             foreach (var entry in actionEntries)
             {
+                if (locallyCoveredEntries.Contains(
+                        (entry.Kind, entry.EntityId)))
+                {
+                    continue;
+                }
+
                 try
                 {
-                    var result = await _local.ApplyServerPurgeRecycleBinEntryAsync(entry.Kind, entry.EntityId);
+                    OfficeMutationResult result;
+                    LocalStateService
+                            .ServerPurgeConfirmationFence?
+                        confirmationFence = null;
+                    if (entry.Kind == RecycleBinEntityKind.Invoice)
+                    {
+                        if (!serverMirror.PurgeConfirmationFences.TryGetValue(
+                                (entry.EntityId, entry.Kind),
+                                out confirmationFence))
+                        {
+                            failures.Add(
+                                $"{entry.KindText} · {entry.Title}: 서버 요청 전 로컬 삭제 범위를 확인하지 못해 반영을 보류했습니다.");
+                            continue;
+                        }
+
+                        result =
+                            await _local.ApplyConfirmedServerPurgeRecycleBinEntryAsync(
+                                entry.Kind,
+                                entry.EntityId,
+                                entry.Revision,
+                                ResolveRecycleBinMutationDatabaseName(entry),
+                                confirmationFence);
+                    }
+                    else
+                    {
+                        result =
+                            await _local.ApplyServerPurgeRecycleBinEntryAsync(
+                                entry.Kind,
+                                entry.EntityId,
+                                entry.Revision,
+                                ResolveRecycleBinMutationDatabaseName(
+                                    entry));
+                    }
+
                     if (result.Success)
                     {
-                        await _local.MarkRecycleBinServerMutationCleanAsync(entry.Kind, entry.EntityId);
-                        succeeded++;
+                        locallySuccessfulPurges.Add(
+                            new RecycleBinSuccessfulLocalPurge(
+                                entry,
+                                confirmationFence));
+                        var currentReconciliation =
+                            ReconcileSuccessfulPurgeCascades(
+                                orderedEntries,
+                                locallySuccessfulPurges,
+                                [],
+                                new Dictionary<
+                                    (
+                                        RecycleBinEntityKind
+                                            Kind,
+                                        Guid EntityId),
+                                    List<string>>());
+                        locallyCoveredEntries.UnionWith(
+                            currentReconciliation
+                                .CoveredEntries);
                     }
                     else
                     {
@@ -452,15 +671,149 @@ public sealed partial class EnvironmentSettingsViewModel
                 }
             }
 
-            failures.AddRange(serverMirror.Failures);
+            var reconciliation =
+                ReconcileSuccessfulPurgeCascades(
+                    orderedEntries,
+                    locallySuccessfulPurges,
+                    serverMirror.Failures,
+                    serverMirror.EntryFailures);
+            failures.AddRange(
+                reconciliation
+                    .RemainingServerFailures);
 
             await ReloadRecycleBinAsync();
-            StatusMessage = BuildRecycleBinMutationStatusMessage("영구삭제", orderedEntries.Count, succeeded, failures);
+            StatusMessage = BuildRecycleBinMutationStatusMessage(
+                "영구삭제",
+                orderedEntries.Count,
+                reconciliation.SucceededCount,
+                failures);
         }
         finally
         {
             IsBusy = false;
         }
+    }
+
+    private static IReadOnlyList<RecycleBinEntry>
+        OrderSuccessfulPurgeEntriesForLocalApply(
+            IEnumerable<RecycleBinEntry> entries)
+        => entries
+            .OrderBy(entry =>
+                entry.Kind == RecycleBinEntityKind.Invoice
+                    ? 0
+                    : 1)
+            .ThenBy(entry =>
+                GetRecycleBinPurgeOrder(entry.Kind))
+            .ThenByDescending(entry =>
+                entry.DeletedAtUtc)
+            .ToList();
+
+    private static bool IsEntryCoveredByInvoicePurgeFence(
+        RecycleBinEntry entry,
+        LocalStateService.ServerPurgeConfirmationFence fence)
+    {
+        var entityType = entry.Kind switch
+        {
+            RecycleBinEntityKind.Invoice =>
+                "LocalInvoice",
+            RecycleBinEntityKind.Payment =>
+                "LocalPayment",
+            RecycleBinEntityKind.Transaction =>
+                "LocalTransaction",
+            _ => string.Empty
+        };
+        return !string.IsNullOrWhiteSpace(entityType) &&
+               fence.Entities.Any(current =>
+                   current.EntityId == entry.EntityId &&
+                   string.Equals(
+                       current.EntityType,
+                       entityType,
+                       StringComparison.Ordinal));
+    }
+
+    internal static RecycleBinPurgeCascadeReconciliation
+        ReconcileSuccessfulPurgeCascades(
+            IReadOnlyList<RecycleBinEntry> selectedEntries,
+            IReadOnlyList<RecycleBinSuccessfulLocalPurge>
+                locallySuccessfulPurges,
+            IReadOnlyList<string> serverFailures,
+            IReadOnlyDictionary<
+                (RecycleBinEntityKind Kind, Guid EntityId),
+                List<string>> serverEntryFailures)
+    {
+        var selectedKeys = selectedEntries
+            .Select(entry =>
+                (entry.Kind, entry.EntityId))
+            .ToHashSet();
+        var coveredEntries =
+            new HashSet<(
+                RecycleBinEntityKind Kind,
+                Guid EntityId)>();
+        foreach (var successful in
+                 locallySuccessfulPurges)
+        {
+            var successfulKey = (
+                successful.Entry.Kind,
+                successful.Entry.EntityId);
+            if (selectedKeys.Contains(successfulKey))
+                coveredEntries.Add(successfulKey);
+
+            if (successful.ConfirmationFence is not null)
+            {
+                foreach (var selected in selectedEntries
+                             .Where(current =>
+                                 IsEntryCoveredByInvoicePurgeFence(
+                                     current,
+                                     successful
+                                         .ConfirmationFence)))
+                {
+                    coveredEntries.Add(
+                        (selected.Kind,
+                            selected.EntityId));
+                }
+            }
+
+            var cascadeKind =
+                successful.Entry.Kind switch
+                {
+                    RecycleBinEntityKind.Payment =>
+                        RecycleBinEntityKind.Transaction,
+                    RecycleBinEntityKind.Transaction =>
+                        RecycleBinEntityKind.Payment,
+                    _ => (RecycleBinEntityKind?)null
+                };
+            if (cascadeKind.HasValue)
+            {
+                var cascadeKey = (
+                    cascadeKind.Value,
+                    successful.Entry.EntityId);
+                if (selectedKeys.Contains(cascadeKey))
+                    coveredEntries.Add(cascadeKey);
+            }
+        }
+
+        var remainingServerFailures =
+            serverFailures.ToList();
+        foreach (var coveredEntry in coveredEntries)
+        {
+            if (!serverEntryFailures.TryGetValue(
+                    coveredEntry,
+                    out var coveredFailureMessages))
+            {
+                continue;
+            }
+
+            foreach (var coveredFailureMessage in
+                     coveredFailureMessages)
+            {
+                remainingServerFailures.Remove(
+                    coveredFailureMessage);
+            }
+        }
+
+        return new RecycleBinPurgeCascadeReconciliation(
+            coveredEntries,
+            remainingServerFailures);
     }
 
     private void ApplyRecycleBinFilter()
@@ -669,6 +1022,48 @@ public sealed partial class EnvironmentSettingsViewModel
             return mirrorResult;
 
         var remainingTargets = targets.Values.ToList();
+        if (string.Equals(
+                action,
+                "영구삭제",
+                StringComparison.Ordinal))
+        {
+            foreach (var current in remainingTargets
+                         .Where(current =>
+                             current.Entry.Kind ==
+                             RecycleBinEntityKind.Invoice)
+                         .ToList())
+            {
+                try
+                {
+                    var confirmationFence =
+                        await _local
+                            .CaptureServerPurgeConfirmationFenceAsync(
+                                current.Entry.Kind,
+                                current.Entry.EntityId,
+                                ResolveRecycleBinMutationDatabaseName(
+                                    current.Entry));
+                    if (confirmationFence is null)
+                    {
+                        mirrorResult.Failures.Add(
+                            $"{current.Entry.KindText} · {current.Entry.Title}: 서버 요청 전 로컬 삭제 범위를 확인하지 못했습니다.");
+                        remainingTargets.Remove(current);
+                        continue;
+                    }
+
+                    mirrorResult.PurgeConfirmationFences[
+                        (current.Entry.EntityId,
+                            current.Entry.Kind)] =
+                        confirmationFence;
+                }
+                catch (Exception ex)
+                {
+                    mirrorResult.Failures.Add(
+                        $"{current.Entry.KindText} · {current.Entry.Title}: 서버 요청 전 로컬 삭제 범위 확인 실패 - {ex.InnerException?.Message ?? ex.Message}");
+                    remainingTargets.Remove(current);
+                }
+            }
+        }
+
         var groupedTargets = remainingTargets
             .GroupBy(current => ResolveRecycleBinMutationDatabaseName(current.Entry), StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -695,6 +1090,14 @@ public sealed partial class EnvironmentSettingsViewModel
                 }
                 catch (Exception ex)
                 {
+                    if (string.Equals(action, "복원", StringComparison.Ordinal))
+                    {
+                        mirrorResult.RequiresAuthoritativeRefresh = true;
+                        mirrorResult.HasAmbiguousRestoreOutcome |=
+                            ex is AmbiguousMutationOutcomeException or
+                            HttpRequestException { StatusCode: null };
+                    }
+
                     mirrorResult.Failures.Add(
                         $"Linux PC 서버 {action} 반영 실패({FormatRecycleBinMutationDatabaseLabel(businessDatabaseName)}): {ex.Message}" +
                         (groupTargets.Count > batch.Length
@@ -732,6 +1135,12 @@ public sealed partial class EnvironmentSettingsViewModel
     {
         if (result is null)
         {
+            if (string.Equals(action, "복원", StringComparison.Ordinal))
+            {
+                mirrorResult.RequiresAuthoritativeRefresh = true;
+                mirrorResult.HasAmbiguousRestoreOutcome = true;
+            }
+
             mirrorResult.Failures.Add($"Linux PC 서버 {action} 반영 결과를 확인하지 못했습니다.");
             return;
         }
@@ -741,8 +1150,12 @@ public sealed partial class EnvironmentSettingsViewModel
             if (result.SucceededCount >= batchTargets.Count)
                 mirrorResult.SucceededEntries.AddRange(batchTargets.Values.Select(current => current.Entry));
             else
+            {
+                if (string.Equals(action, "복원", StringComparison.Ordinal))
+                    mirrorResult.RequiresAuthoritativeRefresh = true;
                 mirrorResult.Failures.Add(result.Messages.FirstOrDefault()
                                           ?? $"Linux PC 서버 {action} 반영 중 실패한 항목이 있습니다.");
+            }
             return;
         }
 
@@ -761,12 +1174,23 @@ public sealed partial class EnvironmentSettingsViewModel
             if (itemResult.Success)
                 mirrorResult.SucceededEntries.Add(target.Entry);
             else
-                mirrorResult.Failures.Add($"{target.Entry.KindText} · {target.Entry.Title}: {itemResult.Message}");
+            {
+                if (string.Equals(action, "복원", StringComparison.Ordinal))
+                    mirrorResult.RequiresAuthoritativeRefresh = true;
+                mirrorResult.AddEntryFailure(
+                    target.Entry,
+                    $"{target.Entry.KindText} · {target.Entry.Title}: {itemResult.Message}");
+            }
         }
 
         foreach (var key in batchTargets.Keys.Where(key => !reported.Contains(key)))
         {
             var target = batchTargets[key];
+            if (string.Equals(action, "복원", StringComparison.Ordinal))
+            {
+                mirrorResult.RequiresAuthoritativeRefresh = true;
+                mirrorResult.HasAmbiguousRestoreOutcome = true;
+            }
             mirrorResult.Failures.Add($"{target.Entry.KindText} · {target.Entry.Title}: Linux PC 서버 {action} 결과를 확인하지 못했습니다.");
         }
     }

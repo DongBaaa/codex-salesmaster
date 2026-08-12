@@ -1,4 +1,7 @@
+using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using System.Text;
+using 거래플랜.Server.Api.Controllers;
 using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Security;
@@ -7,8 +10,11 @@ using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
 using Xunit;
 
 namespace GeoraePlan.Server.Api.Tests;
@@ -49,6 +55,51 @@ public sealed class ActiveUserJwtBearerEventsTests
         Assert.Equal(TenantScopeCatalog.Itworld, resolved.TenantCode);
         Assert.True(resolved.IsDedicatedBusinessDatabase);
         Assert.Equal("Host=itworld", resolved.ConnectionString);
+    }
+
+    [Fact]
+    public void TenantDatabaseConnectionResolver_RequiredDedicatedTenant_RejectsMissingConnection()
+    {
+        var resolver = CreateRequiredDedicatedResolver(
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
+
+        var error = Assert.Throws<InvalidOperationException>(
+            () => resolver.ResolveBusinessTenant(TenantScopeCatalog.Itworld));
+
+        Assert.Contains("requires a dedicated", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TenantDatabaseConnectionResolver_RequiredDedicatedTenant_RejectsCentralEquivalentConnection()
+    {
+        var resolver = CreateRequiredDedicatedResolver(
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                [TenantScopeCatalog.Itworld] =
+                    "Database=central;Host=DB-SERVER;Port=5432;Pooling=false"
+            });
+
+        Assert.Throws<InvalidOperationException>(
+            () => resolver.ResolveBusinessTenant(TenantScopeCatalog.Itworld));
+        Assert.Throws<InvalidOperationException>(
+            () => resolver.GetDedicatedBusinessConnections());
+    }
+
+    [Fact]
+    public void TenantDatabaseConnectionResolver_OptionalDedicatedTenant_AllowsCentralFallback()
+    {
+        var resolver = new TenantDatabaseConnectionResolver(
+            new TenantDatabaseRoutingOptions
+            {
+                UseSqlite = false,
+                DefaultConnectionString = "Host=db-server;Port=5432;Database=central"
+            },
+            new HttpContextAccessor());
+
+        var resolved = resolver.ResolveBusinessTenant(TenantScopeCatalog.Itworld);
+
+        Assert.False(resolved.IsDedicatedBusinessDatabase);
+        Assert.Equal("Host=db-server;Port=5432;Database=central", resolved.ConnectionString);
     }
 
     [Fact]
@@ -126,10 +177,11 @@ public sealed class ActiveUserJwtBearerEventsTests
         try
         {
             var userId = Guid.NewGuid();
+            long userRevision;
             await using (var dbContext = CreateDbContext(tempDb))
             {
                 await dbContext.Database.EnsureCreatedAsync();
-                dbContext.Users.Add(new UserAccount
+                var user = new UserAccount
                 {
                     Id = userId,
                     Username = "scope-token-user",
@@ -144,13 +196,16 @@ public sealed class ActiveUserJwtBearerEventsTests
                         new UserPermission { Permission = PermissionNames.CustomerEdit },
                         new UserPermission { Permission = PermissionNames.InvoiceEdit }
                     }
-                });
+                };
+                dbContext.Users.Add(user);
                 await dbContext.SaveChangesAsync();
+                userRevision = user.Revision;
             }
 
             var validator = new ActiveUserSessionValidator(CreateResolver(tempDb));
             var currentToken = CreateSessionPrincipal(
                 userId,
+                userRevision,
                 role: "User",
                 tenantCode: TenantScopeCatalog.UsenetGroup,
                 officeCode: OfficeCodeCatalog.Yeonsu,
@@ -162,6 +217,7 @@ public sealed class ActiveUserJwtBearerEventsTests
 
             var staleRoleToken = CreateSessionPrincipal(
                 userId,
+                userRevision,
                 role: "Admin",
                 tenantCode: TenantScopeCatalog.UsenetGroup,
                 officeCode: OfficeCodeCatalog.Yeonsu,
@@ -172,6 +228,7 @@ public sealed class ActiveUserJwtBearerEventsTests
 
             var staleOfficeToken = CreateSessionPrincipal(
                 userId,
+                userRevision,
                 role: "User",
                 tenantCode: TenantScopeCatalog.UsenetGroup,
                 officeCode: OfficeCodeCatalog.Usenet,
@@ -182,6 +239,7 @@ public sealed class ActiveUserJwtBearerEventsTests
 
             var staleScopeToken = CreateSessionPrincipal(
                 userId,
+                userRevision,
                 role: "User",
                 tenantCode: TenantScopeCatalog.UsenetGroup,
                 officeCode: OfficeCodeCatalog.Yeonsu,
@@ -192,6 +250,7 @@ public sealed class ActiveUserJwtBearerEventsTests
 
             var stalePermissionToken = CreateSessionPrincipal(
                 userId,
+                userRevision,
                 role: "User",
                 tenantCode: TenantScopeCatalog.UsenetGroup,
                 officeCode: OfficeCodeCatalog.Yeonsu,
@@ -209,13 +268,248 @@ public sealed class ActiveUserJwtBearerEventsTests
         }
     }
 
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task IsCurrentTokenAsync_RejectsInactiveTenantOrOffice(
+        bool deactivateTenant,
+        bool deactivateOffice)
+    {
+        var tempDb = Path.Combine(
+            Path.GetTempPath(),
+            $"georaeplan-inactive-scope-token-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var userId = Guid.NewGuid();
+            long userRevision;
+            await using (var dbContext = CreateDbContext(tempDb))
+            {
+                await dbContext.Database.EnsureCreatedAsync();
+                var user = new UserAccount
+                {
+                    Id = userId,
+                    Username = "inactive-scope-token-user",
+                    PasswordHash = "unused",
+                    Role = "User",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+                    IsActive = true
+                };
+                dbContext.Users.Add(user);
+                dbContext.TenantDefinitions.Add(new TenantDefinition
+                {
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    DisplayName = "USENET",
+                    StorageMode = TenantScopeCatalog.StorageSharedDatabase,
+                    IsActive = !deactivateTenant,
+                    IsDeleted = deactivateTenant
+                });
+                dbContext.TenantOfficeDefinitions.Add(new TenantOfficeDefinition
+                {
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    DisplayName = "USENET",
+                    IsActive = !deactivateOffice,
+                    IsDeleted = deactivateOffice
+                });
+                await dbContext.SaveChangesAsync();
+                userRevision = user.Revision;
+            }
+
+            var validator = new ActiveUserSessionValidator(CreateResolver(tempDb));
+            var token = CreateSessionPrincipal(
+                userId,
+                userRevision,
+                role: "User",
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Usenet,
+                scopeType: TenantScopeCatalog.ScopeOfficeOnly);
+
+            Assert.False(await validator.IsActiveUserAsync(userId, CancellationToken.None));
+            Assert.False(await validator.IsCurrentTokenAsync(userId, token, CancellationToken.None));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(tempDb))
+                File.Delete(tempDb);
+        }
+    }
+
+    [Fact]
+    public async Task PasswordReset_InvalidatesOldLoginToken_AndNewLoginTokenPasses()
+    {
+        var tempDb = Path.Combine(Path.GetTempPath(), $"georaeplan-password-revision-token-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var currentUser = new TestCurrentUserContext();
+            await using var dbContext = CreateDbContext(tempDb, currentUser);
+            await dbContext.Database.EnsureCreatedAsync();
+            var user = new UserAccount
+            {
+                Id = Guid.NewGuid(),
+                Username = "password-revision-user",
+                PasswordHash = BCrypt.Net.BCrypt.HashPassword("old-password"),
+                Role = "User",
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+                IsActive = true,
+                Permissions =
+                {
+                    new UserPermission { Permission = PermissionNames.CustomerEdit }
+                }
+            };
+            dbContext.Users.Add(user);
+            await dbContext.SaveChangesAsync();
+            var initialRevision = user.Revision;
+
+            var tokenFactory = CreateJwtTokenFactory();
+            var authController = new AuthController(dbContext, tokenFactory);
+            var oldLoginResponse = await authController.Login(
+                new LoginRequest
+                {
+                    Username = user.Username,
+                    Password = "old-password"
+                },
+                CancellationToken.None);
+            var oldLoginOk = Assert.IsType<OkObjectResult>(oldLoginResponse.Result);
+            var oldLogin = Assert.IsType<LoginResponse>(oldLoginOk.Value);
+            var oldPrincipal = ValidateLoginToken(oldLogin.AccessToken);
+            Assert.Equal(
+                initialRevision.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                oldPrincipal.FindFirstValue(JwtClaimTypes.UserRevision));
+
+            var validator = new ActiveUserSessionValidator(CreateResolver(tempDb));
+            Assert.True(await validator.IsCurrentTokenAsync(user.Id, oldPrincipal, CancellationToken.None));
+
+            var usersController = new UsersController(
+                dbContext,
+                currentUser,
+                new OfficeScopeService(currentUser, dbContext));
+            var passwordReset = await usersController.UpdatePassword(
+                user.Id,
+                new UpdateUserPasswordRequest
+                {
+                    ExpectedRevision = initialRevision,
+                    Password = "new-password"
+                },
+                CancellationToken.None);
+            Assert.IsType<NoContentResult>(passwordReset);
+
+            dbContext.ChangeTracker.Clear();
+            var updatedUser = await dbContext.Users
+                .Include(current => current.Permissions)
+                .SingleAsync(current => current.Id == user.Id);
+            Assert.True(updatedUser.Revision > initialRevision);
+            Assert.False(await validator.IsCurrentTokenAsync(user.Id, oldPrincipal, CancellationToken.None));
+
+            var events = new ActiveUserJwtBearerEvents(validator);
+            var staleContext = CreateTokenValidatedContext(oldPrincipal);
+            await events.TokenValidated(staleContext);
+            Assert.NotNull(staleContext.Result?.Failure);
+
+            var newLoginResponse = await authController.Login(
+                new LoginRequest
+                {
+                    Username = user.Username,
+                    Password = "new-password"
+                },
+                CancellationToken.None);
+            var newLoginOk = Assert.IsType<OkObjectResult>(newLoginResponse.Result);
+            var newLogin = Assert.IsType<LoginResponse>(newLoginOk.Value);
+            var newPrincipal = ValidateLoginToken(newLogin.AccessToken);
+            Assert.Equal(
+                updatedUser.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                newPrincipal.FindFirstValue(JwtClaimTypes.UserRevision));
+            Assert.True(await validator.IsCurrentTokenAsync(user.Id, newPrincipal, CancellationToken.None));
+
+            var freshContext = CreateTokenValidatedContext(newPrincipal);
+            await events.TokenValidated(freshContext);
+            Assert.Null(freshContext.Result?.Failure);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(tempDb))
+                File.Delete(tempDb);
+        }
+    }
+
+    [Fact]
+    public async Task TokenValidated_Fails_WhenUserRevisionClaimIsMissingOrMalformed()
+    {
+        var tempDb = Path.Combine(Path.GetTempPath(), $"georaeplan-invalid-revision-token-{Guid.NewGuid():N}.db");
+
+        try
+        {
+            var userId = Guid.NewGuid();
+            long userRevision;
+            await using (var dbContext = CreateDbContext(tempDb))
+            {
+                await dbContext.Database.EnsureCreatedAsync();
+                var user = new UserAccount
+                {
+                    Id = userId,
+                    Username = "invalid-revision-token-user",
+                    PasswordHash = "unused",
+                    Role = "User",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+                    IsActive = true
+                };
+                dbContext.Users.Add(user);
+                await dbContext.SaveChangesAsync();
+                userRevision = user.Revision;
+            }
+
+            var currentPrincipal = CreateSessionPrincipal(
+                userId,
+                userRevision,
+                role: "User",
+                tenantCode: TenantScopeCatalog.UsenetGroup,
+                officeCode: OfficeCodeCatalog.Usenet,
+                scopeType: TenantScopeCatalog.ScopeOfficeOnly);
+            var validator = new ActiveUserSessionValidator(CreateResolver(tempDb));
+            var events = new ActiveUserJwtBearerEvents(validator);
+
+            var missingRevisionPrincipal = new ClaimsPrincipal(new ClaimsIdentity(
+                currentPrincipal.Claims.Where(claim =>
+                    !string.Equals(claim.Type, JwtClaimTypes.UserRevision, StringComparison.Ordinal)),
+                JwtBearerDefaults.AuthenticationScheme));
+            var missingContext = CreateTokenValidatedContext(missingRevisionPrincipal);
+            await events.TokenValidated(missingContext);
+            Assert.NotNull(missingContext.Result?.Failure);
+
+            var malformedRevisionClaims = currentPrincipal.Claims
+                .Where(claim => !string.Equals(claim.Type, JwtClaimTypes.UserRevision, StringComparison.Ordinal))
+                .Append(new Claim(JwtClaimTypes.UserRevision, "not-a-revision"));
+            var malformedRevisionPrincipal = new ClaimsPrincipal(new ClaimsIdentity(
+                malformedRevisionClaims,
+                JwtBearerDefaults.AuthenticationScheme));
+            var malformedContext = CreateTokenValidatedContext(malformedRevisionPrincipal);
+            await events.TokenValidated(malformedContext);
+            Assert.NotNull(malformedContext.Result?.Failure);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(tempDb))
+                File.Delete(tempDb);
+        }
+    }
+
     [Fact]
     public async Task TokenValidated_Fails_WhenUserIdClaimIsMissingOrInactive()
     {
         var inactiveValidator = new StubActiveUserSessionValidator(false);
         var events = new ActiveUserJwtBearerEvents(inactiveValidator);
 
-        var missingUserIdContext = CreateTokenValidatedContext(null);
+        var missingUserIdContext = CreateTokenValidatedContext((Guid?)null);
         await events.TokenValidated(missingUserIdContext);
 
         Assert.NotNull(missingUserIdContext.Result?.Failure);
@@ -244,16 +538,22 @@ public sealed class ActiveUserJwtBearerEventsTests
 
     private static TokenValidatedContext CreateTokenValidatedContext(Guid? userId)
     {
+        var claims = new List<Claim>();
+        if (userId.HasValue)
+            claims.Add(new Claim(ClaimTypes.NameIdentifier, userId.Value.ToString()));
+        return CreateTokenValidatedContext(new ClaimsPrincipal(
+            new ClaimsIdentity(claims, JwtBearerDefaults.AuthenticationScheme)));
+    }
+
+    private static TokenValidatedContext CreateTokenValidatedContext(ClaimsPrincipal principal)
+    {
         var httpContext = new DefaultHttpContext();
         var scheme = new AuthenticationScheme(
             JwtBearerDefaults.AuthenticationScheme,
             JwtBearerDefaults.AuthenticationScheme,
             typeof(JwtBearerHandler));
         var context = new TokenValidatedContext(httpContext, scheme, new JwtBearerOptions());
-        var claims = new List<Claim>();
-        if (userId.HasValue)
-            claims.Add(new Claim(ClaimTypes.NameIdentifier, userId.Value.ToString()));
-        context.Principal = new ClaimsPrincipal(new ClaimsIdentity(claims, JwtBearerDefaults.AuthenticationScheme));
+        context.Principal = principal;
         return context;
     }
 
@@ -291,6 +591,19 @@ public sealed class ActiveUserJwtBearerEventsTests
             });
     }
 
+    private static TenantDatabaseConnectionResolver CreateRequiredDedicatedResolver(
+        IReadOnlyDictionary<string, string> dedicatedConnections)
+        => new(
+            new TenantDatabaseRoutingOptions
+            {
+                UseSqlite = false,
+                DefaultConnectionString =
+                    "Host=db-server;Port=5432;Database=central;Pooling=true",
+                DedicatedBusinessConnections = dedicatedConnections,
+                RequiredDedicatedTenantCodes = [TenantScopeCatalog.Itworld]
+            },
+            new HttpContextAccessor());
+
     private static ClaimsPrincipal CreatePrincipal(
         bool isAdmin,
         string scopeType,
@@ -311,6 +624,7 @@ public sealed class ActiveUserJwtBearerEventsTests
 
     private static ClaimsPrincipal CreateSessionPrincipal(
         Guid userId,
+        long userRevision,
         string role,
         string tenantCode,
         string officeCode,
@@ -324,7 +638,8 @@ public sealed class ActiveUserJwtBearerEventsTests
             new(ClaimTypes.Role, role),
             new("tenant", tenantCode),
             new("office", officeCode),
-            new("scope", scopeType)
+            new("scope", scopeType),
+            new(JwtClaimTypes.UserRevision, userRevision.ToString(System.Globalization.CultureInfo.InvariantCulture))
         };
         claims.AddRange(permissions.Select(permission => new Claim("perm", permission)));
 
@@ -332,11 +647,50 @@ public sealed class ActiveUserJwtBearerEventsTests
     }
 
     private static AppDbContext CreateDbContext(string sqliteDbPath)
+        => CreateDbContext(sqliteDbPath, new TestCurrentUserContext());
+
+    private static AppDbContext CreateDbContext(
+        string sqliteDbPath,
+        TestCurrentUserContext currentUser)
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseSqlite($"Data Source={sqliteDbPath}")
             .Options;
-        return new AppDbContext(options, new TestCurrentUserContext(), new RevisionClock());
+        return new AppDbContext(options, currentUser, new RevisionClock());
+    }
+
+    private static JwtTokenFactory CreateJwtTokenFactory()
+        => new(Options.Create(new JwtOptions
+        {
+            Issuer = "georaeplan-test",
+            Audience = "georaeplan-test-client",
+            SigningKey = "GeoraePlan_Test_Signing_Key_At_Least_32_Characters",
+            ExpirationMinutes = 60
+        }));
+
+    private static ClaimsPrincipal ValidateLoginToken(string accessToken)
+    {
+        var options = new JwtOptions
+        {
+            Issuer = "georaeplan-test",
+            Audience = "georaeplan-test-client",
+            SigningKey = "GeoraePlan_Test_Signing_Key_At_Least_32_Characters",
+            ExpirationMinutes = 60
+        };
+        return new JwtSecurityTokenHandler().ValidateToken(
+            accessToken,
+            new TokenValidationParameters
+            {
+                ValidateIssuerSigningKey = true,
+                IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(options.SigningKey)),
+                ValidateIssuer = true,
+                ValidIssuer = options.Issuer,
+                ValidateAudience = true,
+                ValidAudience = options.Audience,
+                ValidateLifetime = true,
+                ClockSkew = TimeSpan.Zero
+            },
+            out _);
     }
 
     private sealed class StubActiveUserSessionValidator(bool isActive) : IActiveUserSessionValidator

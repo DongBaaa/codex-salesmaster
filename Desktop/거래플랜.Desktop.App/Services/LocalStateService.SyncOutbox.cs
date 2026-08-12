@@ -95,6 +95,8 @@ public sealed partial class LocalStateService
             row.ErrorMessage = string.Empty;
             row.SentAtUtc = null;
             row.AcknowledgedAtUtc = null;
+            row.AcceptedRevision = 0;
+            row.AcceptedUpdatedAtUtc = null;
         }
 
         if (rows.Count == 0)
@@ -130,6 +132,8 @@ public sealed partial class LocalStateService
             row.ErrorMessage = string.Empty;
             row.SentAtUtc = null;
             row.AcknowledgedAtUtc = null;
+            row.AcceptedRevision = 0;
+            row.AcceptedUpdatedAtUtc = null;
         }
 
         if (rows.Count == 0)
@@ -150,6 +154,8 @@ public sealed partial class LocalStateService
             row.ErrorMessage = string.Empty;
             row.SentAtUtc = null;
             row.AcknowledgedAtUtc = null;
+            row.AcceptedRevision = 0;
+            row.AcceptedUpdatedAtUtc = null;
         }
 
         if (rows.Count == 0)
@@ -177,6 +183,8 @@ public sealed partial class LocalStateService
             row.ErrorMessage = string.Empty;
             row.SentAtUtc = null;
             row.AcknowledgedAtUtc = null;
+            row.AcceptedRevision = 0;
+            row.AcceptedUpdatedAtUtc = null;
         }
 
         if (rows.Count == 0)
@@ -229,22 +237,33 @@ public sealed partial class LocalStateService
         if (ids.Count == 0)
             return 0;
 
-        var rows = await _db.SyncOutboxEntries
+        var rowIds = await _db.SyncOutboxEntries
+            .AsNoTracking()
             .Where(entry => ids.Contains(entry.MutationId) && entry.Status != "Acknowledged")
+            .Select(entry => entry.Id)
             .ToListAsync(ct);
-        if (rows.Count == 0)
+        if (rowIds.Count == 0)
             return 0;
 
         var normalizedError = NormalizeOutboxErrorMessage(errorMessage);
-        foreach (var row in rows)
+        var affected = await _db.SyncOutboxEntries
+            .Where(entry => rowIds.Contains(entry.Id))
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(entry => entry.Status, "Failed")
+                    .SetProperty(entry => entry.ErrorMessage, normalizedError)
+                    .SetProperty(entry => entry.AcknowledgedAtUtc, (DateTime?)null)
+                    .SetProperty(entry => entry.AcceptedRevision, 0L)
+                    .SetProperty(entry => entry.AcceptedUpdatedAtUtc, (DateTime?)null),
+                ct);
+
+        foreach (var entry in _db.ChangeTracker.Entries<LocalSyncOutboxEntry>().ToList())
         {
-            row.Status = "Failed";
-            row.ErrorMessage = normalizedError;
-            row.AcknowledgedAtUtc = null;
+            if (rowIds.Contains(entry.Entity.Id))
+                entry.State = EntityState.Detached;
         }
 
-        await _db.SaveChangesAsync(ct);
-        return rows.Count;
+        return affected;
     }
 
     private static SyncOutboxListItem ToSyncOutboxListItem(LocalSyncOutboxEntry entry)

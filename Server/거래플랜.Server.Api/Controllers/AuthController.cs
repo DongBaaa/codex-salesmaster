@@ -1,5 +1,6 @@
 ﻿using 거래플랜.Server.Api.Data;
 using 거래플랜.Server.Api.Security;
+using 거래플랜.Server.Api.Domain;
 using 거래플랜.Shared.Contracts;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
@@ -40,7 +41,9 @@ public sealed class AuthController : ControllerBase
             .Include(x => x.Permissions)
             .FirstOrDefaultAsync(x => x.Username == username && x.IsActive && !x.IsDeleted, cancellationToken);
 
-        if (user is null || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
+        if (user is null ||
+            !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash) ||
+            !await IsTenantAndOfficeActiveAsync(user, cancellationToken))
         {
             return Unauthorized();
         }
@@ -64,10 +67,55 @@ public sealed class AuthController : ControllerBase
             .Include(x => x.Permissions)
             .FirstOrDefaultAsync(x => x.Id == userId && x.IsActive && !x.IsDeleted, cancellationToken);
 
-        if (user is null)
+        if (user is null ||
+            !await IsTenantAndOfficeActiveAsync(user, cancellationToken))
             return Unauthorized();
 
         var response = _jwtTokenFactory.Create(user);
         return Ok(response);
+    }
+
+    private async Task<bool> IsTenantAndOfficeActiveAsync(
+        UserAccount user,
+        CancellationToken cancellationToken)
+    {
+        var normalizedTenantCode =
+            TenantScopeCatalog.NormalizeTenantCodeOrDefault(user.TenantCode);
+        var normalizedOfficeCode =
+            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(user.OfficeCode);
+
+        var tenantState = await _dbContext.TenantDefinitions
+            .IgnoreQueryFilters()
+            .Where(current => current.TenantCode == normalizedTenantCode)
+            .Select(current => new
+            {
+                current.IsActive,
+                current.IsDeleted
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (tenantState is not null &&
+            (!tenantState.IsActive || tenantState.IsDeleted))
+        {
+            return false;
+        }
+
+        var officeState = await _dbContext.TenantOfficeDefinitions
+            .IgnoreQueryFilters()
+            .Where(current => current.OfficeCode == normalizedOfficeCode)
+            .Select(current => new
+            {
+                current.TenantCode,
+                current.IsActive,
+                current.IsDeleted
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+        return officeState is null ||
+               officeState.IsActive &&
+               !officeState.IsDeleted &&
+               string.Equals(
+                   TenantScopeCatalog.NormalizeTenantCodeOrDefault(
+                       officeState.TenantCode),
+                   normalizedTenantCode,
+                   StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -8,6 +8,7 @@ public sealed partial class MainViewModel
 {
     private void HandleBusinessDatabaseChanged(object? sender, EventArgs e)
     {
+        InvalidatePendingSyncStatusComposition();
         var dispatcher = Application.Current?.Dispatcher;
         if (dispatcher is not null && !dispatcher.CheckAccess())
             dispatcher.Invoke(RefreshCurrentUserDisplay);
@@ -30,53 +31,71 @@ public sealed partial class MainViewModel
         ClearBusinessDatabaseScopedUiState();
         RefreshCurrentUserDisplay();
 
-        if (!_session.IsOfflineMode)
+        try
         {
-            await _sync.TrySyncAsync();
-            await _sync.RefreshCurrentBusinessScopeFromServerAsync();
+            await LoadCustomersAsync(dataGateAlreadyHeld: true);
+            await LoadInvoiceFilterSettingsAsync(dataGateAlreadyHeld: true);
+            InvalidateInvoiceLedgerCaches();
+            await LoadInvoiceListCoreAsync(
+                forceReload: true,
+                dataGateAlreadyHeld: true);
+            await LoadCompanyProfileAsync();
         }
-
-        await LoadCustomersAsync();
-        await LoadInvoiceFilterSettingsAsync();
-        await LoadInvoiceListAsync();
-        await LoadCompanyProfileAsync();
+        catch
+        {
+            // The target cache may already be committed. Never leave a mixture of
+            // partially reloaded target rows in the UI; keep the target scope and
+            // expose a clean retry state instead.
+            ClearBusinessDatabaseScopedUiState();
+            RefreshCurrentUserDisplay();
+            throw;
+        }
     }
 
     private void ClearBusinessDatabaseScopedUiState()
     {
-        InvalidateInvoiceLedgerCaches();
-        _allCustomers.Clear();
-        _customerNameById.Clear();
-        FilteredCustomers.ReplaceWith(Array.Empty<LocalCustomer>());
-        InvoiceRows.ReplaceWith(Array.Empty<InvoiceListRow>());
-        FavoriteInvoices.ReplaceWith(Array.Empty<FavoriteInvoiceQuickItem>());
-        PreviewLines.Clear();
-        PaymentRows.Clear();
+        var wasSuppressingFilterAutoSave = _suppressFilterAutoSave;
+        _suppressFilterAutoSave = true;
+        try
+        {
+            InvalidateInvoiceLedgerCaches();
+            _allCustomers.Clear();
+            _customerNameById.Clear();
+            FilteredCustomers.ReplaceWith(Array.Empty<LocalCustomer>());
+            InvoiceRows.ReplaceWith(Array.Empty<InvoiceListRow>());
+            FavoriteInvoices.ReplaceWith(Array.Empty<FavoriteInvoiceQuickItem>());
+            PreviewLines.Clear();
+            PaymentRows.Clear();
 
-        SelectedCustomerFilter = null;
-        SelectedInvoiceRow = null;
-        SelectedFavoriteInvoice = null;
-        PaymentInvoice = null;
-        StatementInvoice = null;
+            SelectedCustomerFilter = null;
+            SelectedInvoiceRow = null;
+            SelectedFavoriteInvoice = null;
+            PaymentInvoice = null;
+            StatementInvoice = null;
 
-        PreviewCustomerName = string.Empty;
-        PreviewCustomerBizNumber = string.Empty;
-        PreviewCustomerPhone = string.Empty;
-        PreviewCustomerAddress = string.Empty;
-        PreviewCustomerNotes = string.Empty;
-        PreviewCustomerDepartment = string.Empty;
-        PreviewCustomerContactPerson = string.Empty;
-        PreviewCustomerContract = null;
-        PreviewCustomerAdvanceBalance = 0m;
-        PreviewCustomerReceivableBalance = 0m;
-        PreviewCustomerPayableBalance = 0m;
-        PreviewCustomerPrepaymentBalance = 0m;
-        PreviewSupplyAmount = 0m;
-        PreviewVatAmount = 0m;
-        PreviewTotalAmount = 0m;
-        PaymentTotalPaid = 0m;
-        PaymentBalance = 0m;
+            PreviewCustomerName = string.Empty;
+            PreviewCustomerBizNumber = string.Empty;
+            PreviewCustomerPhone = string.Empty;
+            PreviewCustomerAddress = string.Empty;
+            PreviewCustomerNotes = string.Empty;
+            PreviewCustomerDepartment = string.Empty;
+            PreviewCustomerContactPerson = string.Empty;
+            PreviewCustomerContract = null;
+            PreviewCustomerAdvanceBalance = 0m;
+            PreviewCustomerReceivableBalance = 0m;
+            PreviewCustomerPayableBalance = 0m;
+            PreviewCustomerPrepaymentBalance = 0m;
+            PreviewSupplyAmount = 0m;
+            PreviewVatAmount = 0m;
+            PreviewTotalAmount = 0m;
+            PaymentTotalPaid = 0m;
+            PaymentBalance = 0m;
 
-        FilterCustomerName = string.Empty;
+            FilterCustomerName = string.Empty;
+        }
+        finally
+        {
+            _suppressFilterAutoSave = wasSuppressingFilterAutoSave;
+        }
     }
 }

@@ -1,4 +1,5 @@
 using GeoraePlan.Mobile.App.Models;
+using GeoraePlan.Mobile.App.Services;
 using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
 using 거래플랜.Shared.Contracts;
@@ -8,6 +9,8 @@ namespace GeoraePlan.Mobile.App.Pages;
 public sealed class PaymentDraftPage : ContentPage
 {
     private readonly PaymentDraftViewModel _viewModel;
+    private readonly MobilePageLifecycleGate _lifecycle = new();
+    private bool _isSubscribed;
 
     public PaymentDraftPage(InvoiceDto invoice)
         : this()
@@ -20,7 +23,6 @@ public sealed class PaymentDraftPage : ContentPage
         GeoraePlanTheme.ApplyPage(this, "수금/지급 입력");
 
         _viewModel = ServiceHelper.GetRequiredService<PaymentDraftViewModel>();
-        _viewModel.SavedSuccessfully += HandleSavedSuccessfullyAsync;
         BindingContext = _viewModel;
         SetBinding(TitleProperty, new Binding(nameof(PaymentDraftViewModel.PageTitleText)));
 
@@ -179,6 +181,13 @@ public sealed class PaymentDraftPage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
+        _lifecycle.Enter();
+        if (!_isSubscribed)
+        {
+            _viewModel.SavedSuccessfully +=
+                HandleSavedSuccessfullyAsync;
+            _isSubscribed = true;
+        }
 
         await MobileErrorHandler.RunGuardedAsync(
             async () =>
@@ -190,7 +199,13 @@ await _viewModel.LoadAsync();
 
     protected override void OnDisappearing()
     {
-        _viewModel.SavedSuccessfully -= HandleSavedSuccessfullyAsync;
+        _lifecycle.Exit();
+        if (_isSubscribed)
+        {
+            _viewModel.SavedSuccessfully -=
+                HandleSavedSuccessfullyAsync;
+            _isSubscribed = false;
+        }
         base.OnDisappearing();
     }
 
@@ -207,10 +222,26 @@ await _viewModel.LoadAsync();
         }
     }
 
-    private async Task HandleSavedSuccessfullyAsync()
+    private async Task HandleSavedSuccessfullyAsync(
+        MobileOwnerCallbackContext ownerContext)
     {
-        if (Navigation.NavigationStack.Count > 1)
-            await Shell.Current.Navigation.PopAsync();
+        var lifecycleEpoch = _lifecycle.Capture();
+        Task? navigationTask = null;
+        var started = await ownerContext.TryCommitAsync(
+            () =>
+            {
+                _lifecycle.TryCommitTopPage(
+                    lifecycleEpoch,
+                    Navigation.NavigationStack,
+                    this,
+                    () =>
+                    {
+                        navigationTask =
+                            Navigation.PopAsync();
+                    });
+            });
+        if (started && navigationTask is not null)
+            await navigationTask;
     }
 
     private static Label CreateBoundSectionTitle(string bindingPath, double fontSize = 16)

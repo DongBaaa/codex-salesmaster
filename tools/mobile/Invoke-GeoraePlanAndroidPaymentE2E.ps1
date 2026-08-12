@@ -1310,51 +1310,138 @@ function New-TestFixture {
     param(
         [string]$BaseUrl,
         [hashtable]$Headers,
-        [string]$Stamp
+        [string]$Stamp,
+        [System.Collections.Generic.List[object]]$CleanupSteps
     )
 
     $customerName = "mobileecust$Stamp"
     $itemName = "mobileeitem$Stamp"
     $itemSpec = "mobileespec$Stamp"
+    $customerId = [guid]::NewGuid()
+    $itemId = [guid]::NewGuid()
+    $customer = [pscustomobject]@{ id = $customerId }
+    $item = [pscustomobject]@{ id = $itemId }
 
-    $customer = Invoke-Api -Method Post -BaseUrl $BaseUrl -Relative 'customers' -Headers $Headers -Body @{
-        id = ([guid]::NewGuid()).ToString()
-        tenantCode = 'USENET_GROUP'
-        officeCode = 'ALL'
-        responsibleOfficeCode = 'USENET'
-        nameOriginal = $customerName
-        phone = '010-0000-0000'
-        mobilePhone = '010-0000-0000'
-        notes = 'mobile android write e2e fixture'
+    try {
+        $customer = Invoke-Api -Method Post -BaseUrl $BaseUrl -Relative 'customers' -Headers $Headers -Body @{
+            id = $customerId.ToString()
+            tenantCode = 'USENET_GROUP'
+            officeCode = 'ALL'
+            responsibleOfficeCode = 'USENET'
+            nameOriginal = $customerName
+            phone = '010-0000-0000'
+            mobilePhone = '010-0000-0000'
+            notes = 'mobile android write e2e fixture'
+        }
+
+        $item = Invoke-Api -Method Post -BaseUrl $BaseUrl -Relative 'items' -Headers $Headers -Body @{
+            id = $itemId.ToString()
+            tenantCode = 'USENET_GROUP'
+            officeCode = 'ALL'
+            nameOriginal = $itemName
+            specificationOriginal = $itemSpec
+            categoryName = 'mobilee'
+            unit = 'EA'
+            currentStock = 0
+            safetyStock = 0
+            purchasePrice = 7000
+            salePrice = 11000
+            retailPrice = 12000
+            priceGradeA = 10000
+            priceGradeB = 9000
+            priceGradeC = 8000
+            isSale = $true
+            simpleMemo = ''
+            notes = 'mobile android write e2e fixture'
+        }
+
+        $stockPush = Invoke-Api -Method Post -BaseUrl $BaseUrl -Relative 'sync/push' -Headers $Headers -Body @{
+            deviceId = "mobile-payment-e2e-$Stamp"
+            itemWarehouseStocks = @(
+                @{
+                    itemId = $item.id
+                    warehouseCode = 'USENET_MAIN'
+                    quantity = 10
+                    updatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+                    revision = 0
+                    expectedRevision = 0
+                }
+            )
+        }
+        $stockPushConflictCount = if (
+            $stockPush -and
+            $null -ne $stockPush.conflictCount
+        ) {
+            [int]$stockPush.conflictCount
+        }
+        else {
+            0
+        }
+        if ($stockPushConflictCount -gt 0) {
+            throw (
+                '테스트 품목 창고 재고 생성 중 충돌이 발생했습니다. ' +
+                "conflictCount=$stockPushConflictCount")
+        }
+
+        $itemDetail = Invoke-Api `
+            -Method Get `
+            -BaseUrl $BaseUrl `
+            -Relative "items/$itemId/detail" `
+            -Headers $Headers
+        $mainWarehouseStocks = @(
+            $itemDetail.branchStocks |
+                Where-Object {
+                    [string]::Equals(
+                        [string]$_.warehouseCode,
+                        'USENET_MAIN',
+                        [StringComparison]::OrdinalIgnoreCase)
+                }
+        )
+        if (
+            $mainWarehouseStocks.Count -ne 1 -or
+            [decimal]$mainWarehouseStocks[0].quantity -ne 10 -or
+            [decimal]$itemDetail.item.currentStock -ne 10
+        ) {
+            throw (
+                '테스트 품목 창고 재고 생성 사후조건이 맞지 않습니다. ' +
+                "warehouseRows=$($mainWarehouseStocks.Count) " +
+                "warehouseQuantity=$(if ($mainWarehouseStocks.Count -eq 1) { [decimal]$mainWarehouseStocks[0].quantity } else { 'n/a' }) " +
+                "currentStock=$([decimal]$itemDetail.item.currentStock)")
+        }
+        $item = $itemDetail.item
+
+        return [pscustomobject]@{
+            Customer = $customer
+            Item = $item
+            CustomerName = $customerName
+            ItemName = $itemName
+            ItemSpec = $itemSpec
+        }
     }
-
-    $item = Invoke-Api -Method Post -BaseUrl $BaseUrl -Relative 'items' -Headers $Headers -Body @{
-        id = ([guid]::NewGuid()).ToString()
-        tenantCode = 'USENET_GROUP'
-        officeCode = 'ALL'
-        nameOriginal = $itemName
-        specificationOriginal = $itemSpec
-        categoryName = 'mobilee'
-        unit = 'EA'
-        currentStock = 10
-        safetyStock = 0
-        purchasePrice = 7000
-        salePrice = 11000
-        retailPrice = 12000
-        priceGradeA = 10000
-        priceGradeB = 9000
-        priceGradeC = 8000
-        isSale = $true
-        simpleMemo = ''
-        notes = 'mobile android write e2e fixture'
-    }
-
-    return [pscustomobject]@{
-        Customer = $customer
-        Item = $item
-        CustomerName = $customerName
-        ItemName = $itemName
-        ItemSpec = $itemSpec
+    catch {
+        $fixtureError = $_
+        $partialFixture = [pscustomobject]@{
+            Customer = $customer
+            Item = $item
+            CustomerName = $customerName
+            ItemName = $itemName
+            ItemSpec = $itemSpec
+        }
+        try {
+            Remove-TestData `
+                -BaseUrl $BaseUrl `
+                -Headers $Headers `
+                -Fixture $partialFixture `
+                -CleanupSteps $CleanupSteps
+        }
+        catch {
+            $CleanupSteps.Add([pscustomobject]@{
+                Target = 'partial-fixture'
+                Id = ''
+                Result = "cleanup-failed: $($_.Exception.Message)"
+            })
+        }
+        throw $fixtureError
     }
 }
 
@@ -1401,6 +1488,79 @@ function Wait-TestInvoiceCreated {
     throw '모바일 저장 후 서버 전표 조회에서 테스트 전표를 찾지 못했습니다.'
 }
 
+function Reset-TestItemWarehouseStocks {
+    param(
+        [string]$BaseUrl,
+        [hashtable]$Headers,
+        [string]$ItemId,
+        [System.Collections.Generic.List[object]]$CleanupSteps
+    )
+
+    $detail = Invoke-Api `
+        -Method Get `
+        -BaseUrl $BaseUrl `
+        -Relative "items/$ItemId/detail" `
+        -Headers $Headers `
+        -IgnoreNotFound
+    if ($null -eq $detail) {
+        return $null
+    }
+
+    $stocksToReset = @(
+        $detail.branchStocks |
+            Where-Object { [decimal]$_.quantity -ne 0 }
+    )
+    if ($stocksToReset.Count -gt 0) {
+        $stockPush = Invoke-Api `
+            -Method Post `
+            -BaseUrl $BaseUrl `
+            -Relative 'sync/push' `
+            -Headers $Headers `
+            -Body @{
+                deviceId = "mobile-payment-e2e-cleanup-$([guid]::NewGuid().ToString('N'))"
+                itemWarehouseStocks = @(
+                    $stocksToReset |
+                        ForEach-Object {
+                            @{
+                                itemId = [string]$_.itemId
+                                warehouseCode = [string]$_.warehouseCode
+                                quantity = 0
+                                updatedAtUtc = [DateTime]::UtcNow.ToString('o')
+                                revision = [long]$_.revision
+                                expectedRevision = [long]$_.revision
+                            }
+                        }
+                )
+            }
+        $conflictCount = if (
+            $stockPush -and
+            $null -ne $stockPush.conflictCount
+        ) {
+            [int]$stockPush.conflictCount
+        }
+        else {
+            0
+        }
+        if ($conflictCount -gt 0) {
+            throw (
+                '테스트 품목 창고 재고 정리 중 충돌이 발생했습니다. ' +
+                "conflictCount=$conflictCount")
+        }
+        $CleanupSteps.Add([pscustomobject]@{
+            Target = 'item-stock'
+            Id = $ItemId
+            Result = 'reset-warehouse-stocks'
+        })
+    }
+
+    return Invoke-Api `
+        -Method Get `
+        -BaseUrl $BaseUrl `
+        -Relative "items/$ItemId" `
+        -Headers $Headers `
+        -IgnoreNotFound
+}
+
 function Remove-TestData {
     param(
         [string]$BaseUrl,
@@ -1429,17 +1589,12 @@ function Remove-TestData {
 
         if ($Fixture.Item -and $Fixture.Item.id) {
             try {
-                $latestItem = Invoke-Api -Method Get -BaseUrl $BaseUrl -Relative "items/$($Fixture.Item.id)" -Headers $Headers -IgnoreNotFound
+                $latestItem = Reset-TestItemWarehouseStocks `
+                    -BaseUrl $BaseUrl `
+                    -Headers $Headers `
+                    -ItemId ([string]$Fixture.Item.id) `
+                    -CleanupSteps $CleanupSteps
                 if ($latestItem) {
-                    if ([decimal]$latestItem.currentStock -ne 0) {
-                        $stockResetPayload = $latestItem | ConvertTo-Json -Depth 30 | ConvertFrom-Json
-                        $stockResetPayload.currentStock = 0
-                        $stockResetPayload.expectedRevision = [long]$latestItem.revision
-                        $stockResetPayload.mutationId = ([guid]::NewGuid()).ToString()
-                        $stockResetPayload.mutationCreatedAtUtc = [DateTime]::UtcNow.ToString('o')
-                        $latestItem = Invoke-Api -Method Put -BaseUrl $BaseUrl -Relative "items/$($stockResetPayload.id)" -Headers $Headers -Body $stockResetPayload
-                        $CleanupSteps.Add([pscustomobject]@{ Target = 'item-stock'; Id = $latestItem.id; Result = 'reset-current-stock' })
-                    }
                     Invoke-Api -Method Delete -BaseUrl $BaseUrl -Relative ("items/$($latestItem.id)?expectedRevision=$($latestItem.revision)") -Headers $Headers -IgnoreNotFound | Out-Null
                     $CleanupSteps.Add([pscustomobject]@{ Target = 'item'; Id = $latestItem.id; Result = 'deleted' })
                 }
@@ -2070,6 +2225,36 @@ function Remove-TestPaymentData {
     }
 }
 
+function Resolve-E2ECleanupResult {
+    param(
+        [string]$ResultStatus,
+        [string]$ErrorMessage,
+        [object[]]$CleanupSteps
+    )
+
+    $failureCount = @(
+        $CleanupSteps |
+            Where-Object {
+                [string]$_.Result -match
+                    '(?i)(cleanup-failed|restart-failed)'
+            }
+    ).Count
+    if ($failureCount -gt 0) {
+        if ([string]::IsNullOrWhiteSpace($ErrorMessage)) {
+            $ErrorMessage = (
+                '테스트 데이터 또는 로컬 API 정리가 완료되지 않았습니다. ' +
+                "cleanupFailureCount=$failureCount")
+        }
+        $ResultStatus = 'FAIL'
+    }
+
+    return [pscustomobject]@{
+        ResultStatus = $ResultStatus
+        ErrorMessage = $ErrorMessage
+        CleanupFailureCount = $failureCount
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($EvidenceDirectory)) {
     $EvidenceDirectory = Join-Path $ProjectRoot '테스트 시행\기록'
 }
@@ -2112,7 +2297,11 @@ try {
     $headers = New-ApiSession -BaseUrl $BaseUrl -Username $Username -Password $Password
     $steps.Add([pscustomobject]@{ Step = 'api-login'; Result = 'PASS'; Detail = $BaseUrl })
 
-    $fixture = New-TestFixture -BaseUrl $BaseUrl -Headers $headers -Stamp $stamp
+    $fixture = New-TestFixture `
+        -BaseUrl $BaseUrl `
+        -Headers $headers `
+        -Stamp $stamp `
+        -CleanupSteps $cleanupSteps
     $steps.Add([pscustomobject]@{ Step = 'fixture-create'; Result = 'PASS'; Detail = "customer=$($fixture.Customer.id), item=$($fixture.Item.id)" })
 
     $createdInvoice = New-TestInvoice -BaseUrl $BaseUrl -Headers $headers -Fixture $fixture -VoucherKind $VoucherKind
@@ -2547,6 +2736,13 @@ finally {
         }
     }
 }
+
+$cleanupResult = Resolve-E2ECleanupResult `
+    -ResultStatus $resultStatus `
+    -ErrorMessage $errorMessage `
+    -CleanupSteps ($cleanupSteps.ToArray())
+$resultStatus = [string]$cleanupResult.ResultStatus
+$errorMessage = [string]$cleanupResult.ErrorMessage
 
 $result = [pscustomobject]@{
     CreatedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')

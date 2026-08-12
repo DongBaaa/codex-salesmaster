@@ -4,6 +4,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <DefineConstants>$(DefineConstants);GEORAEPLAN_CANONICALIZER_TESTING</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,5 +22,69 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\Desktop\거래플랜.Desktop.App\거래플랜.Desktop.App.csproj" />
+    <ProjectReference Include="..\..\Updater\거래플랜.Updater\거래플랜.Updater.csproj" />
+    <ProjectReference Include="..\..\tools\SyncDiag\SyncDiag.csproj"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Models\MobileSyncState.cs"
+             Link="MobileUnderTest\Models\MobileSyncState.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Models\PendingPaymentAttachmentRecord.cs"
+             Link="MobileUnderTest\Models\PendingPaymentAttachmentRecord.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\SyncCoordinator.cs"
+             Link="MobileUnderTest\Services\SyncCoordinator.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\CustomerContractCacheStore.cs"
+             Link="MobileUnderTest\Services\CustomerContractCacheStore.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileClientUpgradeRequiredException.cs"
+             Link="MobileUnderTest\Services\MobileClientUpgradeRequiredException.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileAppUpdateCheckResult.cs"
+             Link="MobileUnderTest\Services\MobileAppUpdateCheckResult.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileClientIdentityProvider.cs"
+             Link="MobileUnderTest\Services\MobileClientIdentityProvider.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileClientUpgradeRequiredSignal.cs"
+             Link="MobileUnderTest\Services\MobileClientUpgradeRequiredSignal.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileUpgradeRequiredResponseParser.cs"
+             Link="MobileUnderTest\Services\MobileUpgradeRequiredResponseParser.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileCompatibilityGateService.cs"
+             Link="MobileUnderTest\Services\MobileCompatibilityGateService.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\PaymentAttachmentUploadIntegrity.cs"
+             Link="MobileUnderTest\Services\PaymentAttachmentUploadIntegrity.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobilePaymentWriteAheadJournal.cs"
+             Link="MobileUnderTest\Services\MobilePaymentWriteAheadJournal.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileImmediatePaymentSaveResult.cs"
+             Link="MobileUnderTest\Services\MobileImmediatePaymentSaveResult.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobilePageLifecycleGate.cs"
+             Link="MobileUnderTest\Services\MobilePageLifecycleGate.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileSessionScopeFilter.cs"
+             Link="MobileUnderTest\Services\MobileSessionScopeFilter.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\OwnerBoundFileMutation.cs"
+             Link="MobileUnderTest\Services\OwnerBoundFileMutation.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobilePackageDownloadClient.cs"
+             Link="MobileUnderTest\Services\MobilePackageDownloadClient.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileUpdateGatePolicy.cs"
+             Link="MobileUnderTest\Services\MobileUpdateGatePolicy.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileUpdateGatePolicyStore.cs"
+             Link="MobileUnderTest\Services\MobileUpdateGatePolicyStore.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\ViewModels\MobileOwnerOperationGate.cs"
+             Link="MobileUnderTest\ViewModels\MobileOwnerOperationGate.cs" />
+    <Compile Include="..\..\tools\SyncDiag\IsolatedPreparationDatabaseLease.cs"
+             Link="SyncDiag\IsolatedPreparationDatabaseLease.cs" />
+    <Compile Include="..\..\tools\SyncDiag\IsolatedLegacyInvoiceSeedCanonicalizer.cs"
+             Link="SyncDiag\IsolatedLegacyInvoiceSeedCanonicalizer.cs" />
+    <Compile Include="..\..\tools\SyncDiag\IsolatedSeedRetryOutboxReconciler.cs"
+             Link="SyncDiag\IsolatedSeedRetryOutboxReconciler.cs" />
+    <Compile Include="..\..\tools\SyncDiag\IsolatedSeedRetryRentalAssetReconciler.cs"
+             Link="SyncDiag\IsolatedSeedRetryRentalAssetReconciler.cs" />
+    <Compile Include="..\..\tools\SyncDiag\IsolatedSeedRentalAssetBillingStatusNormalizer.cs"
+             Link="SyncDiag\IsolatedSeedRentalAssetBillingStatusNormalizer.cs" />
+    <Compile Include="..\..\tools\SyncDiag\IsolatedSeedSyncFailureDiagnostics.cs"
+             Link="SyncDiag\IsolatedSeedSyncFailureDiagnostics.cs" />
+    <Compile Include="..\..\tools\SyncDiag\IsolatedStoredCredentialReader.cs"
+             Link="SyncDiag\IsolatedStoredCredentialReader.cs" />
+    <Compile Include="..\..\tools\SyncDiag\IsolatedTestServerSqliteFinalizer.cs"
+             Link="SyncDiag\IsolatedTestServerSqliteFinalizer.cs" />
+    <Compile Include="..\..\tools\SyncDiag\ImmutableSqliteInspectionGuard.cs"
+             Link="SyncDiag\ImmutableSqliteInspectionGuard.cs" />
   </ItemGroup>
 </Project>

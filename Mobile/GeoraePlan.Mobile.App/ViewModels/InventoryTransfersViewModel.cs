@@ -10,6 +10,7 @@ public sealed class InventoryTransfersViewModel : ObservableObject
     private readonly JsonSyncStateStore _syncStateStore;
     private readonly SyncCoordinator _syncCoordinator;
     private readonly SessionStore _sessionStore;
+    private readonly MobileOwnerOperationGate _ownerOperations;
 
     private string _searchText = string.Empty;
     private string _statusMessage = "재고이동 서버 동기화 데이터를 불러올 준비가 되었습니다.";
@@ -22,6 +23,8 @@ public sealed class InventoryTransfersViewModel : ObservableObject
         _syncStateStore = syncStateStore;
         _syncCoordinator = syncCoordinator;
         _sessionStore = sessionStore;
+        _ownerOperations =
+            new MobileOwnerOperationGate(sessionStore);
         RefreshCommand = new AsyncCommand(RefreshAsync);
         SyncNowCommand = new AsyncCommand(SyncNowAsync);
     }
@@ -35,7 +38,11 @@ public sealed class InventoryTransfersViewModel : ObservableObject
     public string SearchText
     {
         get => _searchText;
-        set => SetProperty(ref _searchText, value);
+        set
+        {
+            EnsureCurrentOwner();
+            SetProperty(ref _searchText, value);
+        }
     }
 
     public string StatusMessage
@@ -113,44 +120,83 @@ public sealed class InventoryTransfersViewModel : ObservableObject
     public bool NeedsRefresh(TimeSpan maxAge)
         => !_lastRefreshUtc.HasValue || DateTime.UtcNow - _lastRefreshUtc.Value >= maxAge;
 
+    public MobileSessionOwner EnsureCurrentOwner()
+    {
+        var owner = _ownerOperations.EnsureCurrentOwner(
+            ResetForOwner);
+        IsBusy = _ownerOperations.IsBusy;
+        return owner;
+    }
+
+    public bool IsCurrentOwner(MobileSessionOwner owner)
+        => _ownerOperations.IsCurrent(owner);
+
     public async Task RefreshAsync()
     {
-        if (IsBusy)
+        var operation = _ownerOperations.TryBegin(
+            ResetForOwner,
+            deferRefreshWhenBusy: true);
+        IsBusy = _ownerOperations.IsBusy;
+        if (operation is null)
             return;
 
+        var runDeferredRefresh = false;
+        var searchTextSnapshot = SearchText;
+        var sessionSnapshot = _sessionStore.GetSnapshot();
         try
         {
-            IsBusy = true;
             StatusMessage = "재고이동 서버 동기화 데이터를 확인하고 있습니다.";
             var state = await _syncCoordinator.RefreshIfServerChangedAsync("inventory-transfers-page", TimeSpan.FromSeconds(5));
+            if (!_ownerOperations.CanCommit(operation))
+                return;
+
             if (ShouldHideCachedDataAfterSyncFailure(state))
             {
                 ClearTransferDisplay($"재고이동 데이터를 표시할 수 없습니다. {state.LastError}");
                 return;
             }
 
-            await LoadFromStateAsync(preserveSelection: true);
+            await LoadFromStateAsync(
+                operation,
+                preserveSelection: true,
+                sessionSnapshot,
+                searchTextSnapshot);
         }
         catch (Exception ex)
         {
-            StatusMessage = $"재고이동 화면 초기화 실패: {ex.Message}";
+            if (_ownerOperations.CanCommit(operation))
+                StatusMessage = $"재고이동 화면 초기화 실패: {ex.Message}";
         }
         finally
         {
-            IsBusy = false;
+            runDeferredRefresh = _ownerOperations.Complete(
+                operation,
+                ResetForOwner);
+            IsBusy = _ownerOperations.IsBusy;
+            if (runDeferredRefresh)
+                await RefreshAsync();
         }
     }
 
     public async Task SyncNowAsync()
     {
-        if (IsBusy)
+        var operation = _ownerOperations.TryBegin(
+            ResetForOwner,
+            deferRefreshWhenBusy: false);
+        IsBusy = _ownerOperations.IsBusy;
+        if (operation is null)
             return;
 
+        var runDeferredRefresh = false;
+        var searchTextSnapshot = SearchText;
+        var sessionSnapshot = _sessionStore.GetSnapshot();
         try
         {
-            IsBusy = true;
             StatusMessage = "재고이동 데이터를 서버와 동기화하는 중입니다.";
             var state = await _syncCoordinator.SynchronizeNowAsync();
+            if (!_ownerOperations.CanCommit(operation))
+                return;
+
             if (!string.IsNullOrWhiteSpace(state.LastError))
             {
                 StatusMessage = $"동기화 주의: {state.LastError}";
@@ -161,19 +207,35 @@ public sealed class InventoryTransfersViewModel : ObservableObject
                 }
             }
 
-            await LoadFromStateAsync(preserveSelection: true);
+            await LoadFromStateAsync(
+                operation,
+                preserveSelection: true,
+                sessionSnapshot,
+                searchTextSnapshot);
         }
         catch (Exception ex)
         {
-            StatusMessage = $"재고이동 동기화 실패: {ex.Message}";
+            if (_ownerOperations.CanCommit(operation))
+                StatusMessage = $"재고이동 동기화 실패: {ex.Message}";
         }
         finally
         {
-            IsBusy = false;
+            runDeferredRefresh = _ownerOperations.Complete(
+                operation,
+                ResetForOwner);
+            IsBusy = _ownerOperations.IsBusy;
+            if (runDeferredRefresh)
+                await RefreshAsync();
         }
     }
 
     public void ClearSelectedTransfer()
+    {
+        EnsureCurrentOwner();
+        ClearSelectedTransferCore();
+    }
+
+    private void ClearSelectedTransferCore()
     {
         SelectedTransfer = null;
         SelectedTransferLines.Clear();
@@ -183,14 +245,58 @@ public sealed class InventoryTransfersViewModel : ObservableObject
 
     public bool TryNavigateBackOneStep()
     {
+        EnsureCurrentOwner();
         if (!HasSelectedTransfer)
             return false;
 
-        ClearSelectedTransfer();
+        ClearSelectedTransferCore();
         return true;
     }
 
-    public Task SelectTransferAsync(InventoryTransferDto transfer)
+    public async Task SelectTransferAsync(InventoryTransferDto transfer)
+    {
+        if (transfer is null)
+            return;
+
+        var operation = _ownerOperations.TryBegin(
+            ResetForOwner,
+            deferRefreshWhenBusy: false);
+        IsBusy = _ownerOperations.IsBusy;
+        if (operation is null)
+            return;
+
+        var currentTransfer = Transfers.FirstOrDefault(
+            candidate => candidate.Id == transfer.Id);
+        if (currentTransfer is null)
+        {
+            _ownerOperations.Complete(
+                operation,
+                ResetForOwner);
+            IsBusy = _ownerOperations.IsBusy;
+            return;
+        }
+
+        var runDeferredRefresh = false;
+        try
+        {
+            if (!_ownerOperations.CanCommit(operation))
+                return;
+
+            ApplySelectedTransfer(currentTransfer);
+        }
+        finally
+        {
+            runDeferredRefresh = _ownerOperations.Complete(
+                operation,
+                ResetForOwner);
+            IsBusy = _ownerOperations.IsBusy;
+            if (runDeferredRefresh)
+                await RefreshAsync();
+        }
+    }
+
+    private void ApplySelectedTransfer(
+        InventoryTransferDto transfer)
     {
         SelectedTransfer = transfer;
         SelectedTransferLines.Clear();
@@ -199,23 +305,33 @@ public sealed class InventoryTransfersViewModel : ObservableObject
 
         OnPropertyChanged(nameof(SelectedTransferLinesHeight));
         StatusMessage = $"{SelectedTransferTitle} 이동내역을 확인 중입니다.";
-        return Task.CompletedTask;
     }
 
-    private async Task LoadFromStateAsync(bool preserveSelection)
+    private async Task LoadFromStateAsync(
+        MobileOwnerUiOperation operation,
+        bool preserveSelection,
+        SessionSnapshot sessionSnapshot,
+        string searchTextSnapshot)
     {
-        var state = await _syncStateStore.LoadAsync();
+        var state = await _syncStateStore.LoadAsync(
+            operation.Owner);
+        if (!_ownerOperations.CanCommit(operation))
+            return;
+
         state.Normalize();
-        var snapshot = _sessionStore.GetSnapshot();
 
         var selectedId = preserveSelection ? SelectedTransfer?.Id : null;
         var filtered = state.SyncedInventoryTransfers
-            .Where(transfer => MobileSessionScopeFilter.CanAccessInventoryTransfer(snapshot, transfer))
-            .Where(MatchesSearch)
+            .Where(transfer => MobileSessionScopeFilter.CanAccessInventoryTransfer(sessionSnapshot, transfer))
+            .Where(transfer => MatchesSearch(
+                transfer,
+                searchTextSnapshot))
             .OrderByDescending(x => x.TransferDate)
             .ThenByDescending(x => x.UpdatedAtUtc)
             .ThenByDescending(x => x.TransferNumber)
             .ToList();
+        if (!_ownerOperations.CanCommit(operation))
+            return;
 
         Transfers.Clear();
         foreach (var transfer in filtered)
@@ -225,7 +341,7 @@ public sealed class InventoryTransfersViewModel : ObservableObject
         {
             var matched = filtered.FirstOrDefault(x => x.Id == selectedId.Value);
             if (matched is not null)
-                await SelectTransferAsync(matched);
+                ApplySelectedTransfer(matched);
             else
                 ClearSelection();
         }
@@ -242,12 +358,14 @@ public sealed class InventoryTransfersViewModel : ObservableObject
         OnPropertyChanged(nameof(SummaryText));
     }
 
-    private bool MatchesSearch(InventoryTransferDto transfer)
+    private static bool MatchesSearch(
+        InventoryTransferDto transfer,
+        string searchText)
     {
-        if (string.IsNullOrWhiteSpace(SearchText))
+        if (string.IsNullOrWhiteSpace(searchText))
             return true;
 
-        var q = SearchText.Trim();
+        var q = searchText.Trim();
         return Contains(transfer.TransferNumber, q)
                || Contains(transfer.Memo, q)
                || Contains(transfer.TransferStatus, q)
@@ -263,7 +381,7 @@ public sealed class InventoryTransfersViewModel : ObservableObject
 
     private void ClearSelection()
     {
-        ClearSelectedTransfer();
+        ClearSelectedTransferCore();
     }
 
     private void ClearTransferDisplay(string message)
@@ -273,6 +391,20 @@ public sealed class InventoryTransfersViewModel : ObservableObject
         SelectedTransferLines.Clear();
         _lastRefreshUtc = DateTime.UtcNow;
         StatusMessage = message;
+        OnPropertyChanged(nameof(TransferListHeight));
+        OnPropertyChanged(nameof(SelectedTransferLinesHeight));
+        OnPropertyChanged(nameof(SummaryText));
+    }
+
+    private void ResetForOwner()
+    {
+        SearchText = string.Empty;
+        Transfers.Clear();
+        SelectedTransfer = null;
+        SelectedTransferLines.Clear();
+        _lastRefreshUtc = null;
+        StatusMessage =
+            "재고이동 서버 동기화 데이터를 불러올 준비가 되었습니다.";
         OnPropertyChanged(nameof(TransferListHeight));
         OnPropertyChanged(nameof(SelectedTransferLinesHeight));
         OnPropertyChanged(nameof(SummaryText));

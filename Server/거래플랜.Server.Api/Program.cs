@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using 거래플랜.Server.Api.Data;
+using 거래플랜.Server.Api.Middleware;
 using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Services;
 using 거래플랜.Shared.Contracts;
@@ -11,9 +12,21 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using Npgsql;
+using GeoraePlan.Tools.SyncDiag;
+
+if (args.Length > 0 &&
+    string.Equals(
+        args[0],
+        "--finalize-isolated-test-sqlite",
+        StringComparison.Ordinal))
+{
+    Environment.ExitCode = FinalizeIsolatedTestSqlite(args);
+    return;
+}
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -36,7 +49,15 @@ builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptio
 builder.Services.Configure<SecurityOptions>(builder.Configuration.GetSection(SecurityOptions.SectionName));
 builder.Services.Configure<SeedUsersOptions>(builder.Configuration.GetSection(SeedUsersOptions.SectionName));
 builder.Services.Configure<UpdateOptions>(builder.Configuration.GetSection(UpdateOptions.SectionName));
+builder.Services
+    .AddOptions<ClientCompatibilityOptions>()
+    .Bind(builder.Configuration.GetSection(ClientCompatibilityOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddSingleton<
+    IValidateOptions<ClientCompatibilityOptions>,
+    ClientCompatibilityOptionsValidator>();
 builder.Services.Configure<CentralFileStorageOptions>(builder.Configuration.GetSection(CentralFileStorageOptions.SectionName));
+builder.Services.Configure<StoredFileOrphanRecheckOptions>(builder.Configuration.GetSection(StoredFileOrphanRecheckOptions.SectionName));
 
 var dataProtectionKeyRingPath = builder.Configuration["DataProtection:KeyRingPath"];
 if (string.IsNullOrWhiteSpace(dataProtectionKeyRingPath) &&
@@ -67,7 +88,10 @@ var allowedCorsOrigins = securityOptions.AllowedCorsOrigins
     .ToArray();
 
 var connectionString = builder.Configuration.GetConnectionString("Default") ?? string.Empty;
-var dedicatedBusinessConnections = ResolveDedicatedBusinessConnections(builder.Configuration, connectionString);
+var dedicatedBusinessConnections =
+    DedicatedBusinessConnectionConfiguration.Resolve(
+        builder.Configuration,
+        connectionString);
 var sqliteFallbackEnabled = builder.Configuration.GetValue("Database:EnableSqliteFallback", true);
 var forceSqlite = string.Equals(Environment.GetEnvironmentVariable("ERP_DB_FALLBACK_SQLITE"), "1", StringComparison.Ordinal);
 var forcePostgres = string.Equals(Environment.GetEnvironmentVariable("ERP_FORCE_POSTGRES"), "1", StringComparison.Ordinal);
@@ -83,7 +107,10 @@ var tenantDatabaseRoutingOptions = new TenantDatabaseRoutingOptions
     UseSqlite = useSqlite,
     SqliteDbPath = sqliteDbPath,
     DefaultConnectionString = connectionString,
-    DedicatedBusinessConnections = dedicatedBusinessConnections
+    DedicatedBusinessConnections = dedicatedBusinessConnections,
+    RequiredDedicatedTenantCodes = !builder.Environment.IsDevelopment() && !useSqlite
+        ? [TenantScopeCatalog.Itworld]
+        : []
 };
 
 ValidateProductionSecurityConfiguration(
@@ -128,9 +155,14 @@ builder.Services.AddScoped<ICurrentUserContext, HttpCurrentUserContext>();
 builder.Services.AddScoped<OfficeScopeService>();
 builder.Services.AddScoped<OperationalLogScopeService>();
 builder.Services.AddScoped<InventoryLedgerService>();
+builder.Services.AddScoped<ItemDuplicateMergeService>();
 builder.Services.AddScoped<InvoiceStockSnapshotService>();
 builder.Services.AddScoped<RentalSettlementRecalculationService>();
 builder.Services.AddScoped<RentalAssignmentHistoryService>();
+builder.Services.AddSingleton<IStoredFileDeferredDeletionQueue, StoredFileDeferredDeletionQueue>();
+builder.Services.AddSingleton<IStoredFileDeletionLeaseProbe, StoredFileDeletionLeaseProbe>();
+builder.Services.AddScoped<StoredFileReferenceReconciler>();
+builder.Services.AddScoped<IStoredFileReferenceReconciler, BackupDeferredStoredFileReferenceReconciler>();
 builder.Services.AddScoped<IJwtTokenFactory, JwtTokenFactory>();
 builder.Services.AddScoped<IActiveUserSessionValidator, ActiveUserSessionValidator>();
 builder.Services.AddScoped<ActiveUserJwtBearerEvents>();
@@ -139,6 +171,7 @@ builder.Services.AddSingleton<RevisionClock>();
 builder.Services.AddSingleton<ICentralFileStorage, CentralFileStorage>();
 builder.Services.AddSingleton<DatabaseInitializationState>();
 builder.Services.AddHostedService<StartupQueryWarmupService>();
+builder.Services.AddHostedService<StoredFileOrphanRecheckService>();
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -291,12 +324,7 @@ var app = builder.Build();
 
 LogSecurityWarnings(app, connectionString, dedicatedBusinessConnections, jwtOptions, securityOptions, useSqlite, allowedCorsOrigins);
 
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
-
+app.UseMiddleware<DbUpdateConcurrencyExceptionMiddleware>();
 app.UseForwardedHeaders();
 
 if (securityOptions.AddSecurityHeaders)
@@ -331,27 +359,51 @@ if (securityOptions.AddSecurityHeaders)
     });
 }
 
+app.UseRouting();
+
 if (securityOptions.EnableRateLimiting)
 {
     app.UseRateLimiter();
 }
 
 app.UseCors("DesktopClient");
+app.UseMiddleware<DatabaseInitializationGateMiddleware>();
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseMiddleware<ClientCompatibilityGateMiddleware>();
 app.MapControllers();
-app.MapGet("/healthz", () => Results.Ok(new
+app.MapGet("/healthz", (
+    IOptions<ClientCompatibilityOptions> clientCompatibilityOptions) => Results.Ok(new
 {
     status = "ok",
+    fileDeletionLeaseProtocol = StoredFileDeletionLease.ProtocolVersion,
+    clientCompatibility = ClientCompatibilityReadinessSnapshot.Create(
+        clientCompatibilityOptions.Value),
     utc = DateTime.UtcNow
-})).AllowAnonymous();
+}))
+    .AllowAnonymous()
+    .WithMetadata(new AllowDuringDatabaseInitializationAttribute());
 
 app.MapGet("/readyz", async Task<IResult> (
     DatabaseInitializationState databaseInitializationState,
     IServiceScopeFactory scopeFactory,
+    IOptions<ClientCompatibilityOptions> clientCompatibilityOptions,
+    IHostEnvironment hostEnvironment,
     CancellationToken cancellationToken) =>
 {
     var snapshot = databaseInitializationState.CreateSnapshot();
+    var clientCompatibility =
+        ClientCompatibilityReadinessSnapshot.Create(
+            clientCompatibilityOptions.Value);
+    var testRuntimeAttestation =
+        MultiPcTestRuntimeAttestation.TryCreate(hostEnvironment);
     if (snapshot.Failed)
     {
         return Results.Json(new
@@ -359,6 +411,8 @@ app.MapGet("/readyz", async Task<IResult> (
             status = "not_ready",
             reason = "database_initialization_failed",
             databaseInitialization = snapshot,
+            clientCompatibility,
+            testRuntimeAttestation,
             utc = DateTime.UtcNow
         }, statusCode: StatusCodes.Status503ServiceUnavailable);
     }
@@ -370,6 +424,8 @@ app.MapGet("/readyz", async Task<IResult> (
             status = "starting",
             reason = snapshot.Started ? "database_initialization_running" : "database_initialization_not_started",
             databaseInitialization = snapshot,
+            clientCompatibility,
+            testRuntimeAttestation,
             utc = DateTime.UtcNow
         }, statusCode: StatusCodes.Status503ServiceUnavailable);
     }
@@ -385,18 +441,21 @@ app.MapGet("/readyz", async Task<IResult> (
                 status = "not_ready",
                 reason = "database_connection_unavailable",
                 databaseInitialization = snapshot,
+                clientCompatibility,
+                testRuntimeAttestation,
                 utc = DateTime.UtcNow
             }, statusCode: StatusCodes.Status503ServiceUnavailable);
         }
     }
-    catch (Exception ex)
+    catch (Exception)
     {
         return Results.Json(new
         {
             status = "not_ready",
             reason = "database_connection_check_failed",
-            message = ex.Message,
             databaseInitialization = snapshot,
+            clientCompatibility,
+            testRuntimeAttestation,
             utc = DateTime.UtcNow
         }, statusCode: StatusCodes.Status503ServiceUnavailable);
     }
@@ -404,15 +463,20 @@ app.MapGet("/readyz", async Task<IResult> (
     return Results.Ok(new
     {
         status = "ready",
+        fileDeletionLeaseProtocol = StoredFileDeletionLease.ProtocolVersion,
         databaseInitialization = snapshot,
+        clientCompatibility,
+        testRuntimeAttestation,
         utc = DateTime.UtcNow
     });
-}).AllowAnonymous();
+})
+    .AllowAnonymous()
+    .WithMetadata(new AllowDuringDatabaseInitializationAttribute());
 
 var databaseInitializationState = app.Services.GetRequiredService<DatabaseInitializationState>();
+databaseInitializationState.MarkStarted();
 var databaseInitializationTask = Task.Run(async () =>
 {
-    databaseInitializationState.MarkStarted();
     try
     {
         await DbInitializer.InitializeAsync(app.Services);
@@ -523,6 +587,40 @@ static void ValidateProductionSecurityConfiguration(
     if (ContainsInsecureConnectionStringSecret(connectionString))
         throw new InvalidOperationException("Production database password cannot use a sample or placeholder value.");
 
+    if (!dedicatedBusinessConnections.TryGetValue(
+            TenantScopeCatalog.Itworld,
+            out var itworldConnectionString) ||
+        string.IsNullOrWhiteSpace(itworldConnectionString))
+    {
+        throw new InvalidOperationException(
+            "Production requires a dedicated ITWORLD database connection.");
+    }
+
+    try
+    {
+        var centralIdentity = PhysicalDatabaseIdentity.FromConnectionInfo(new TenantDatabaseConnectionInfo
+        {
+            UseSqlite = false,
+            ConnectionString = connectionString
+        });
+        var itworldIdentity = PhysicalDatabaseIdentity.FromConnectionInfo(new TenantDatabaseConnectionInfo
+        {
+            UseSqlite = false,
+            ConnectionString = itworldConnectionString
+        });
+        if (string.Equals(centralIdentity, itworldIdentity, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Production ITWORLD database must be physically separate from the central database.");
+        }
+    }
+    catch (ArgumentException ex)
+    {
+        throw new InvalidOperationException(
+            "Production ITWORLD database connection is invalid.",
+            ex);
+    }
+
     if (!securityOptions.RequireHttpsForwardedProto)
         throw new InvalidOperationException("Production requires Security:RequireHttpsForwardedProto=true.");
 
@@ -591,30 +689,53 @@ static void LogSecurityWarnings(
     }
 }
 
-static IReadOnlyDictionary<string, string> ResolveDedicatedBusinessConnections(IConfiguration configuration, string defaultConnectionString)
-{
-    var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-    var connectionSection = configuration.GetSection("ConnectionStrings");
-
-    foreach (var tenantCode in TenantScopeCatalog.AllTenants)
-    {
-        if (string.Equals(tenantCode, TenantScopeCatalog.UsenetGroup, StringComparison.OrdinalIgnoreCase))
-            continue;
-
-        var candidate = (connectionSection[tenantCode] ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(candidate))
-            continue;
-
-        if (string.Equals(candidate, defaultConnectionString, StringComparison.OrdinalIgnoreCase))
-            continue;
-
-        result[tenantCode] = candidate;
-    }
-
-    return result;
-}
-
 static bool ContainsInsecureConnectionStringSecret(string connectionString)
     => connectionString.Contains("sm" + "_pass", StringComparison.OrdinalIgnoreCase) ||
        connectionString.Contains("CHANGE_THIS", StringComparison.OrdinalIgnoreCase) ||
        connectionString.Contains("__SET_SECURE_PASSWORD__", StringComparison.OrdinalIgnoreCase);
+
+static int FinalizeIsolatedTestSqlite(string[] commandLineArguments)
+{
+    if (commandLineArguments.Length != 2 ||
+        string.IsNullOrWhiteSpace(commandLineArguments[1]))
+    {
+        Console.Error.WriteLine(
+            "server_sqlite_finalize_error=The command requires exactly one canonical database path.");
+        return 2;
+    }
+
+    try
+    {
+        var result =
+            IsolatedTestServerSqliteFinalizer.FinalizeDatabase(
+                commandLineArguments[1]);
+        Console.WriteLine("server_sqlite_finalized=True");
+        Console.WriteLine(
+            $"checkpoint_busy={result.CheckpointBusy.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+        Console.WriteLine(
+            $"checkpoint_log_frames={result.CheckpointLogFrames.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+        Console.WriteLine(
+            $"checkpointed_frames={result.CheckpointedFrames.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+        Console.WriteLine($"journal_mode={result.JournalMode}");
+        Console.WriteLine($"quick_check={result.QuickCheck}");
+        Console.WriteLine(
+            $"sidecar_count={result.SidecarCount.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+        Console.WriteLine(
+            $"database_length={result.DatabaseLength.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+        Console.WriteLine($"database_sha256={result.DatabaseSha256}");
+        return 0;
+    }
+    catch (Exception ex)
+    {
+        var safeMessage = ex.Message
+            .Replace('\r', ' ')
+            .Replace('\n', ' ')
+            .Trim();
+        if (safeMessage.Length > 2000)
+            safeMessage = safeMessage[..2000];
+
+        Console.Error.WriteLine(
+            $"server_sqlite_finalize_error={ex.GetType().Name}: {safeMessage}");
+        return 1;
+    }
+}

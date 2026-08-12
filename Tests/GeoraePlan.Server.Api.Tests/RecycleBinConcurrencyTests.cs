@@ -42,7 +42,7 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         await dbContext.SaveChangesAsync();
 
         var stored = await dbContext.Customers.IgnoreQueryFilters().FirstAsync(x => x.Id == customer.Id);
-        var controller = CreateController(dbContext, currentUser);
+        var controller = CreateRawController(dbContext, currentUser);
 
         var response = await controller.Restore(
             new RecycleBinMutationRequest
@@ -65,6 +65,255 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         Assert.False(item.Success);
         Assert.Contains("새로고침 후 다시 시도", item.Message);
         Assert.Equal(0, payload.SucceededCount);
+    }
+
+    [Fact]
+    public async Task Restore_ResponseLossRetryAfterCommittedCustomerRestore_ReturnsConflictWithoutFurtherWrites()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "응답 유실 복원 거래처",
+            NameMatchKey = "응답유실복원거래처",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true
+        };
+        dbContext.Customers.Add(customer);
+        await dbContext.SaveChangesAsync();
+
+        var deletedRevision = customer.Revision;
+        var request = new RecycleBinMutationRequest
+        {
+            Items =
+            [
+                new RecycleBinMutationTargetDto
+                {
+                    EntityId = customer.Id,
+                    Kind = "customer",
+                    ExpectedRevision = deletedRevision
+                }
+            ]
+        };
+        var controller = CreateRawController(dbContext, currentUser);
+
+        var firstResponse = await controller.Restore(request, CancellationToken.None);
+        var firstPayload = Assert.IsType<RecycleBinMutationResultDto>(
+            Assert.IsType<OkObjectResult>(firstResponse.Result).Value);
+        Assert.True(Assert.Single(firstPayload.Results).Success);
+
+        dbContext.ChangeTracker.Clear();
+        var committed = await dbContext.Customers.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == customer.Id);
+        Assert.False(committed.IsDeleted);
+        Assert.True(committed.Revision > deletedRevision);
+
+        var retryResponse = await controller.Restore(request, CancellationToken.None);
+        var retryPayload = Assert.IsType<RecycleBinMutationResultDto>(
+            Assert.IsType<OkObjectResult>(retryResponse.Result).Value);
+        var retryResult = Assert.Single(retryPayload.Results);
+        Assert.False(retryResult.Success);
+        Assert.Contains("Expected revision mismatch", retryResult.Message, StringComparison.Ordinal);
+
+        dbContext.ChangeTracker.Clear();
+        var afterRetry = await dbContext.Customers.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == customer.Id);
+        Assert.False(afterRetry.IsDeleted);
+        Assert.Equal(committed.Revision, afterRetry.Revision);
+        Assert.Equal(committed.UpdatedAtUtc, afterRetry.UpdatedAtUtc);
+    }
+
+    [Fact]
+    public async Task Restore_OtherPcActivatedAndEditedCustomer_ReturnsConflictWithoutOverwritingActiveState()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "삭제 당시 거래처명",
+            NameMatchKey = "삭제당시거래처명",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true
+        };
+        dbContext.Customers.Add(customer);
+        await dbContext.SaveChangesAsync();
+        var deletedRevision = customer.Revision;
+
+        customer.IsDeleted = false;
+        customer.NameOriginal = "다른 PC 편집 거래처명";
+        customer.NameMatchKey = "다른PC편집거래처명";
+        await dbContext.SaveChangesAsync();
+        var activeRevision = customer.Revision;
+
+        var controller = CreateRawController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = customer.Id,
+                        Kind = "customer",
+                        ExpectedRevision = deletedRevision
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(
+            Assert.IsType<OkObjectResult>(response.Result).Value);
+        var result = Assert.Single(payload.Results);
+        Assert.False(result.Success);
+        Assert.Contains("Expected revision mismatch", result.Message, StringComparison.Ordinal);
+
+        dbContext.ChangeTracker.Clear();
+        var preserved = await dbContext.Customers.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == customer.Id);
+        Assert.False(preserved.IsDeleted);
+        Assert.Equal("다른 PC 편집 거래처명", preserved.NameOriginal);
+        Assert.Equal(activeRevision, preserved.Revision);
+    }
+
+    [Theory]
+    [InlineData("customer", "RestoreCustomerAsync", "customer")]
+    [InlineData("contract", "RestoreContractAsync", "contract")]
+    [InlineData("item", "RestoreItemAsync", "item")]
+    [InlineData("company-profile", "RestoreCompanyProfileAsync", "profile")]
+    [InlineData("customer-category", "RestoreCustomerCategoryAsync", "category")]
+    [InlineData("price-grade-option", "RestorePriceGradeOptionAsync", "option")]
+    [InlineData("trade-type-option", "RestoreTradeTypeOptionAsync", "option")]
+    [InlineData("item-category-option", "RestoreItemCategoryOptionAsync", "option")]
+    [InlineData("invoice", "RestoreInvoiceAsync", "invoice")]
+    [InlineData("payment", "RestorePaymentAsync", "payment")]
+    [InlineData("transaction", "RestoreTransactionAsync", "transaction")]
+    [InlineData("inventory-transfer", "RestoreInventoryTransferAsync", "transfer")]
+    [InlineData("rental-management-company", "RestoreRentalManagementCompanyAsync", "company")]
+    [InlineData("rental-billing-profile", "RestoreRentalBillingProfileAsync", "profile")]
+    [InlineData("rental-asset", "RestoreRentalAssetAsync", "asset")]
+    [InlineData("rental-billing-log", "RestoreRentalBillingLogAsync", "log")]
+    public void RestoreKinds_SourceGuard_RevisionCheckPrecedesActiveNoOp(
+        string kind,
+        string methodName,
+        string entityVariable)
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "Server",
+            "거래플랜.Server.Api",
+            "Controllers",
+            "RecycleBinController.cs"));
+        var methodStart = source.IndexOf(
+            $"private async Task<(bool Success, string Message)> {methodName}(",
+            StringComparison.Ordinal);
+        Assert.True(methodStart >= 0, $"Restore method not found for {kind}: {methodName}");
+        var methodEnd = source.IndexOf("\n    private ", methodStart + methodName.Length, StringComparison.Ordinal);
+        Assert.True(methodEnd > methodStart, $"Restore method boundary not found for {kind}: {methodName}");
+        var methodSource = source[methodStart..methodEnd];
+
+        var revisionCheck = methodSource.IndexOf(
+            $"EnsureRecycleBinMutationRevision({entityVariable}, target)",
+            StringComparison.Ordinal);
+        var activeNoOp = methodSource.IndexOf(
+            $"if (!{entityVariable}.IsDeleted)",
+            StringComparison.Ordinal);
+        Assert.True(revisionCheck >= 0, $"Revision check missing for {kind}.");
+        Assert.True(activeNoOp >= 0, $"Active no-op guard missing for {kind}.");
+        Assert.True(
+            revisionCheck < activeNoOp,
+            $"Revision check must precede active no-op for {kind}.");
+
+        if (string.Equals(kind, "inventory-transfer", StringComparison.Ordinal))
+        {
+            var routeScopeGuard = methodSource.IndexOf(
+                "CanMutateInventoryTransferFromRecycleBin(transfer",
+                StringComparison.Ordinal);
+            Assert.True(routeScopeGuard >= 0 && routeScopeGuard < revisionCheck);
+        }
+    }
+
+    [Theory]
+    [InlineData("customer")]
+    [InlineData("contract")]
+    [InlineData("item")]
+    [InlineData("company-profile")]
+    [InlineData("customer-category")]
+    [InlineData("price-grade-option")]
+    [InlineData("trade-type-option")]
+    [InlineData("item-category-option")]
+    [InlineData("invoice")]
+    [InlineData("payment")]
+    [InlineData("transaction")]
+    [InlineData("inventory-transfer")]
+    [InlineData("rental-management-company")]
+    [InlineData("rental-billing-profile")]
+    [InlineData("rental-asset")]
+    [InlineData("rental-billing-log")]
+    public async Task RestoreKinds_ActiveEntity_RequiresMatchingRevisionAndNeverWrites(string kind)
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        var target = await SeedActiveRestoreTargetAsync(kind, dbContext);
+        var originalRevision = target.Revision;
+        var originalUpdatedAt = target.UpdatedAtUtc;
+        var controller = CreateRawController(dbContext, currentUser);
+
+        var matchingResponse = await controller.Restore(
+            BuildRestoreRequest(kind, target.Id, originalRevision),
+            CancellationToken.None);
+        var matchingPayload = Assert.IsType<RecycleBinMutationResultDto>(
+            Assert.IsType<OkObjectResult>(matchingResponse.Result).Value);
+        Assert.True(Assert.Single(matchingPayload.Results).Success);
+
+        dbContext.ChangeTracker.Clear();
+        var afterMatching = Assert.IsAssignableFrom<TrackedEntity>(
+            await dbContext.FindAsync(target.GetType(), target.Id));
+        Assert.False(afterMatching.IsDeleted);
+        Assert.Equal(originalRevision, afterMatching.Revision);
+        Assert.Equal(originalUpdatedAt, afterMatching.UpdatedAtUtc);
+
+        var staleResponse = await controller.Restore(
+            BuildRestoreRequest(kind, target.Id, originalRevision + 1),
+            CancellationToken.None);
+        var stalePayload = Assert.IsType<RecycleBinMutationResultDto>(
+            Assert.IsType<OkObjectResult>(staleResponse.Result).Value);
+        var staleResult = Assert.Single(stalePayload.Results);
+        Assert.False(staleResult.Success);
+        Assert.Contains("Expected revision mismatch", staleResult.Message, StringComparison.Ordinal);
+
+        var afterStale = Assert.IsAssignableFrom<TrackedEntity>(
+            await dbContext.FindAsync(target.GetType(), target.Id));
+        Assert.False(afterStale.IsDeleted);
+        Assert.Equal(originalRevision, afterStale.Revision);
+        Assert.Equal(originalUpdatedAt, afterStale.UpdatedAtUtc);
+    }
+
+    [Fact]
+    public async Task Restore_CallerCancellation_IsRethrown()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        var target = await SeedActiveRestoreTargetAsync("customer", dbContext);
+        var controller = CreateRawController(dbContext, currentUser);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => controller.Restore(
+            BuildRestoreRequest("customer", target.Id, target.Revision),
+            cancellation.Token));
     }
 
     [Fact]
@@ -109,6 +358,62 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         Assert.False(result.Success);
         Assert.Contains("Expected revision mismatch", result.Message);
         Assert.Equal(0, payload.SucceededCount);
+    }
+
+    [Theory]
+    [InlineData("restore")]
+    [InlineData("purge")]
+    public async Task CustomerMutation_ReturnsFailedItem_WhenExpectedRevisionIsMissing(string action)
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "revision-required-recycle-customer",
+            NameMatchKey = "REVISIONREQUIREDRECYCLECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true
+        };
+        dbContext.Customers.Add(customer);
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.Customers.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == customer.Id);
+        var request = new RecycleBinMutationRequest
+        {
+            Items =
+            [
+                new RecycleBinMutationTargetDto
+                {
+                    EntityId = stored.Id,
+                    Kind = "customer",
+                    ExpectedRevision = 0
+                }
+            ]
+        };
+        var controller = CreateRawController(dbContext, currentUser);
+
+        var response = action == "restore"
+            ? await controller.Restore(request, CancellationToken.None)
+            : await controller.Purge(request, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var result = Assert.Single(payload.Results);
+        Assert.False(result.Success);
+        Assert.Contains("Expected revision is required", result.Message, StringComparison.Ordinal);
+
+        dbContext.ChangeTracker.Clear();
+        var preserved = await dbContext.Customers.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == stored.Id);
+        Assert.True(preserved.IsDeleted);
     }
 
     [Fact]
@@ -972,6 +1277,7 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         var adminUser = CreateAdminUser();
         await using (var seedDb = CreateDbContext(adminUser))
         {
+            SeedActiveSharingPolicyDefinitions(seedDb);
             seedDb.DataSharingPolicies.Add(new DataSharingPolicy
             {
                 Id = Guid.NewGuid(),
@@ -1051,6 +1357,7 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         var adminUser = CreateAdminUser();
         await using (var seedDb = CreateDbContext(adminUser))
         {
+            SeedActiveSharingPolicyDefinitions(seedDb);
             seedDb.DataSharingPolicies.Add(new DataSharingPolicy
             {
                 Id = Guid.NewGuid(),
@@ -1126,6 +1433,7 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         var adminUser = CreateAdminUser();
         await using (var seedDb = CreateDbContext(adminUser))
         {
+            SeedActiveSharingPolicyDefinitions(seedDb);
             seedDb.DataSharingPolicies.Add(new DataSharingPolicy
             {
                 Id = Guid.NewGuid(),
@@ -1200,6 +1508,7 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         var adminUser = CreateAdminUser();
         await using (var seedDb = CreateDbContext(adminUser))
         {
+            SeedActiveSharingPolicyDefinitions(seedDb);
             seedDb.DataSharingPolicies.Add(new DataSharingPolicy
             {
                 Id = Guid.NewGuid(),
@@ -1418,6 +1727,347 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         Assert.False(await dbContext.RecycleBinPurgeRecords
             .IgnoreQueryFilters()
             .AnyAsync(current => current.Kind == "rental-management-company" && current.EntityId == company.Id));
+    }
+
+    [Theory]
+    [InlineData("restore")]
+    [InlineData("purge")]
+    public async Task RentalManagementCompanyMutation_OfficeAdminCannotAffectOtherTenant(string action)
+    {
+        var currentUser = CreateOfficeOnlyAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var company = new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            Code = "ITWORLD-DIRECT-RENTAL-MGMT",
+            Name = "ITWORLD direct rental management company",
+            IsActive = false,
+            IsDeleted = true
+        };
+        dbContext.RentalManagementCompanies.Add(company);
+        await dbContext.SaveChangesAsync();
+
+        var storedBefore = await dbContext.RentalManagementCompanies.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == company.Id);
+        var controller = CreateController(dbContext, currentUser);
+        var request = new RecycleBinMutationRequest
+        {
+            Items =
+            [
+                new RecycleBinMutationTargetDto
+                {
+                    EntityId = company.Id,
+                    Kind = "rental-management-company",
+                    ExpectedRevision = storedBefore.Revision
+                }
+            ]
+        };
+
+        var response = string.Equals(action, "restore", StringComparison.Ordinal)
+            ? await controller.Restore(request, CancellationToken.None)
+            : await controller.Purge(request, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        Assert.False(Assert.Single(payload.Results).Success);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        var storedAfter = await dbContext.RentalManagementCompanies.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == company.Id);
+        Assert.True(storedAfter.IsDeleted);
+        Assert.False(storedAfter.IsActive);
+        Assert.Equal(storedBefore.Revision, storedAfter.Revision);
+        Assert.False(await dbContext.RecycleBinPurgeRecords
+            .IgnoreQueryFilters()
+            .AnyAsync(current => current.Kind == "rental-management-company" && current.EntityId == company.Id));
+    }
+
+    [Theory]
+    [InlineData("restore")]
+    [InlineData("purge")]
+    public async Task RentalManagementCompanyMutation_OfficeAdminCanAffectOwnTenant(string action)
+    {
+        var currentUser = CreateOfficeOnlyAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var company = new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = $"USENET-OWN-{action}",
+            Name = "USENET own rental management company",
+            IsActive = false,
+            IsDeleted = true
+        };
+        dbContext.RentalManagementCompanies.Add(company);
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.RentalManagementCompanies.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == company.Id);
+        var controller = CreateController(dbContext, currentUser);
+        var request = new RecycleBinMutationRequest
+        {
+            Items =
+            [
+                new RecycleBinMutationTargetDto
+                {
+                    EntityId = company.Id,
+                    Kind = "rental-management-company",
+                    ExpectedRevision = stored.Revision
+                }
+            ]
+        };
+
+        var response = string.Equals(action, "restore", StringComparison.Ordinal)
+            ? await controller.Restore(request, CancellationToken.None)
+            : await controller.Purge(request, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        Assert.True(Assert.Single(payload.Results).Success);
+        Assert.Equal(1, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        if (string.Equals(action, "restore", StringComparison.Ordinal))
+        {
+            var restored = await dbContext.RentalManagementCompanies.IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == company.Id);
+            Assert.False(restored.IsDeleted);
+            Assert.True(restored.IsActive);
+        }
+        else
+        {
+            Assert.False(await dbContext.RentalManagementCompanies.IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == company.Id));
+            Assert.True(await dbContext.RecycleBinPurgeRecords
+                .IgnoreQueryFilters()
+                .AnyAsync(current => current.Kind == "rental-management-company" && current.EntityId == company.Id));
+        }
+    }
+
+    [Theory]
+    [InlineData("restore")]
+    [InlineData("purge")]
+    public async Task RentalManagementCompanyMutation_GlobalAdminCanAffectOtherTenant(string action)
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var company = new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            Code = $"ITWORLD-GLOBAL-{action}",
+            Name = "ITWORLD global rental management company",
+            IsActive = false,
+            IsDeleted = true
+        };
+        dbContext.RentalManagementCompanies.Add(company);
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.RentalManagementCompanies.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == company.Id);
+        var controller = CreateController(dbContext, currentUser);
+        var request = new RecycleBinMutationRequest
+        {
+            Items =
+            [
+                new RecycleBinMutationTargetDto
+                {
+                    EntityId = company.Id,
+                    Kind = "rental-management-company",
+                    ExpectedRevision = stored.Revision
+                }
+            ]
+        };
+
+        var response = string.Equals(action, "restore", StringComparison.Ordinal)
+            ? await controller.Restore(request, CancellationToken.None)
+            : await controller.Purge(request, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        Assert.True(Assert.Single(payload.Results).Success);
+        Assert.Equal(1, payload.SucceededCount);
+    }
+
+    [Fact]
+    public async Task PurgeRentalManagementCompany_IgnoresSameCodeReferencesFromOtherTenant()
+    {
+        var currentUser = CreateOfficeOnlyAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var company = new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = "CROSS-TENANT-SHARED-CODE",
+            Name = "USENET shared code management company",
+            IsActive = false,
+            IsDeleted = true
+        };
+        var otherTenantProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            ProfileKey = "ITWORLD-SAME-MANAGEMENT-CODE",
+            CustomerName = "ITWORLD customer",
+            ManagementCompanyCode = company.Code
+        };
+        dbContext.RentalManagementCompanies.Add(company);
+        dbContext.RentalBillingProfiles.Add(otherTenantProfile);
+        await dbContext.SaveChangesAsync();
+
+        var stored = await dbContext.RentalManagementCompanies.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == company.Id);
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = company.Id,
+                        Kind = "rental-management-company",
+                        ExpectedRevision = stored.Revision
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        Assert.True(Assert.Single(payload.Results).Success);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.False(await dbContext.RentalManagementCompanies.IgnoreQueryFilters()
+            .AnyAsync(current => current.Id == company.Id));
+        Assert.True(await dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(current => current.Id == otherTenantProfile.Id));
+    }
+
+    [Fact]
+    public async Task GetAll_TenantAdminListsOnlyCurrentTenantRentalRows()
+    {
+        var seedUser = CreateAdminUser();
+        await using (var seedDb = CreateDbContext(seedUser))
+        {
+            var usenetProfileId = Guid.NewGuid();
+            var itworldProfileId = Guid.NewGuid();
+            seedDb.RentalManagementCompanies.AddRange(
+                new RentalManagementCompany
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    Code = "USENET-DELETED-MANAGEMENT",
+                    Name = "USENET deleted management",
+                    IsDeleted = true
+                },
+                new RentalManagementCompany
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    Code = "ITWORLD-DELETED-MANAGEMENT",
+                    Name = "ITWORLD deleted management",
+                    IsDeleted = true
+                });
+            seedDb.RentalBillingProfiles.AddRange(
+                new RentalBillingProfile
+                {
+                    Id = usenetProfileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = "USENET-DELETED-PROFILE",
+                    CustomerName = "USENET deleted profile",
+                    IsDeleted = true
+                },
+                new RentalBillingProfile
+                {
+                    Id = itworldProfileId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    ProfileKey = "ITWORLD-DELETED-PROFILE",
+                    CustomerName = "ITWORLD deleted profile",
+                    IsDeleted = true
+                });
+            seedDb.RentalAssets.AddRange(
+                new RentalAsset
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = "USENET-DELETED-ASSET",
+                    ManagementNumber = "USENET-DELETED-ASSET",
+                    IsDeleted = true
+                },
+                new RentalAsset
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    AssetKey = "ITWORLD-DELETED-ASSET",
+                    ManagementNumber = "ITWORLD-DELETED-ASSET",
+                    IsDeleted = true
+                });
+            seedDb.RentalBillingLogs.AddRange(
+                new RentalBillingLog
+                {
+                    Id = Guid.NewGuid(),
+                    BillingProfileId = usenetProfileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    BillingYearMonth = "202601",
+                    Note = "USENET-DELETED-LOG",
+                    IsDeleted = true
+                },
+                new RentalBillingLog
+                {
+                    Id = Guid.NewGuid(),
+                    BillingProfileId = itworldProfileId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    BillingYearMonth = "202602",
+                    Note = "ITWORLD-DELETED-LOG",
+                    IsDeleted = true
+                });
+            await seedDb.SaveChangesAsync();
+        }
+
+        var currentUser = CreateOfficeOnlyAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        var controller = CreateController(dbContext, currentUser);
+
+        var response = await controller.GetAll(null, null, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var entries = Assert.IsType<List<RecycleBinEntryDto>>(ok.Value);
+
+        Assert.Contains(entries, entry => entry.Title.Contains("USENET", StringComparison.Ordinal));
+        Assert.DoesNotContain(entries, entry => entry.Title.Contains("ITWORLD", StringComparison.Ordinal));
+        Assert.Equal(
+            4,
+            entries.Count(entry => entry.Kind is
+                "rental-management-company" or
+                "rental-billing-profile" or
+                "rental-asset" or
+                "rental-billing-log"));
     }
 
     [Theory]
@@ -1738,7 +2388,63 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
-    public async Task RestoreInvoice_RejectsVersionGroupOutsideInvoiceWriteScope()
+    public async Task RestoreInvoice_RejectsLinkedActiveCustomerOutsideCustomerWriteScope()
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateDeletedCustomerOutsideCurrentOffice();
+        customer.IsDeleted = false;
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "INV-ACTIVE-CUSTOMER-SCOPE-RESTORE-001",
+            VoucherType = VoucherType.Sales,
+            IsDeleted = true
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.Invoices.Add(invoice);
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.Restore(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = invoice.Id,
+                        Kind = "invoice"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var item = Assert.Single(payload.Results);
+        Assert.False(item.Success);
+        Assert.Contains("연결된 거래처", item.Message);
+        Assert.Equal(0, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.False(await dbContext.Customers.IgnoreQueryFilters()
+            .Where(current => current.Id == customer.Id)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+        Assert.True(await dbContext.Invoices.IgnoreQueryFilters()
+            .Where(current => current.Id == invoice.Id)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task RestoreInvoice_RestoresSelectedCompositeVersionScopeAndLeavesRawGroupCollisionDeleted()
     {
         var currentUser = CreateOfficeOnlyUser();
         await using var dbContext = CreateDbContext(currentUser);
@@ -1778,17 +2484,20 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         var ok = Assert.IsType<OkObjectResult>(response.Result);
         var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
         var item = Assert.Single(payload.Results);
-        Assert.False(item.Success);
-        Assert.Contains("전표 묶음", item.Message);
-        Assert.Equal(0, payload.SucceededCount);
+        Assert.True(item.Success, item.Message);
+        Assert.Equal(1, payload.SucceededCount);
 
         dbContext.ChangeTracker.Clear();
         var invoiceStates = await dbContext.Invoices
             .IgnoreQueryFilters()
             .Where(current => current.Id == visibleInvoice.Id || current.Id == hiddenInvoice.Id)
-            .ToDictionaryAsync(current => current.Id, current => current.IsDeleted);
-        Assert.True(invoiceStates[visibleInvoice.Id]);
-        Assert.True(invoiceStates[hiddenInvoice.Id]);
+            .ToDictionaryAsync(
+                current => current.Id,
+                current => new { current.IsDeleted, current.IsLatestVersion });
+        Assert.False(invoiceStates[visibleInvoice.Id].IsDeleted);
+        Assert.True(invoiceStates[visibleInvoice.Id].IsLatestVersion);
+        Assert.True(invoiceStates[hiddenInvoice.Id].IsDeleted);
+        Assert.True(invoiceStates[hiddenInvoice.Id].IsLatestVersion);
     }
 
     [Fact]
@@ -1888,7 +2597,7 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
     }
 
     [Fact]
-    public async Task PurgeInvoice_RejectsVersionGroupOutsideInvoiceWriteScope()
+    public async Task PurgeInvoice_RemovesSelectedCompositeVersionScopeAndLeavesRawGroupCollision()
     {
         var currentUser = CreateOfficeOnlyUser();
         await using var dbContext = CreateDbContext(currentUser);
@@ -1928,12 +2637,11 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         var ok = Assert.IsType<OkObjectResult>(response.Result);
         var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
         var item = Assert.Single(payload.Results);
-        Assert.False(item.Success);
-        Assert.Contains("전표 묶음", item.Message);
-        Assert.Equal(0, payload.SucceededCount);
+        Assert.True(item.Success, item.Message);
+        Assert.Equal(1, payload.SucceededCount);
 
         dbContext.ChangeTracker.Clear();
-        Assert.True(await dbContext.Invoices.IgnoreQueryFilters().AnyAsync(current => current.Id == visibleInvoice.Id));
+        Assert.False(await dbContext.Invoices.IgnoreQueryFilters().AnyAsync(current => current.Id == visibleInvoice.Id));
         Assert.True(await dbContext.Invoices.IgnoreQueryFilters().AnyAsync(current => current.Id == hiddenInvoice.Id));
     }
 
@@ -3967,6 +4675,184 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         Assert.False(await dbContext.PaymentAttachments.IgnoreQueryFilters().AnyAsync(current => current.Id == paymentAttachmentId));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PurgePayment_WhenPostCommitFileReconciliationFails_RemainsSuccessfulAndRetainsFile(
+        bool cancellationFailure)
+    {
+        var currentUser = CreateOfficeOnlyUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customer = CreateScopedCustomer("수금 파일 후처리 실패 거래처", OfficeCodeCatalog.Usenet);
+        var invoice = CreateScopedInvoice(customer.Id, OfficeCodeCatalog.Usenet, "INV-PAYMENT-PURGE-CLEANUP-FAILURE");
+        var payment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoice.Id,
+            PaymentDate = new DateOnly(2026, 7, 27),
+            Amount = 1000m,
+            IsDeleted = true
+        };
+        const string attachmentPath = "storage/payment-post-commit-cleanup-failure.bin";
+        var attachmentId = Guid.NewGuid();
+        dbContext.AddRange(
+            customer,
+            invoice,
+            payment,
+            new PaymentAttachment
+            {
+                Id = attachmentId,
+                PaymentId = payment.Id,
+                FileName = "payment-post-commit-cleanup-failure.bin",
+                StoragePath = attachmentPath,
+                IsDeleted = true
+            });
+        await dbContext.SaveChangesAsync();
+
+        var storage = new StubCentralFileStorage();
+        Exception cleanupException = cancellationFailure
+            ? new OperationCanceledException("deterministic post-commit cleanup cancellation")
+            : new InvalidOperationException("deterministic post-commit reference lookup failure");
+        var controller = CreateController(
+            dbContext,
+            currentUser,
+            storage,
+            new ThrowingStoredFileReferenceReconciler(cleanupException));
+
+        var response = await controller.Purge(
+            new RecycleBinMutationRequest
+            {
+                Items =
+                [
+                    new RecycleBinMutationTargetDto
+                    {
+                        EntityId = payment.Id,
+                        Kind = "payment"
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+        var result = Assert.Single(payload.Results);
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(1, payload.SucceededCount);
+
+        dbContext.ChangeTracker.Clear();
+        Assert.False(await dbContext.Payments.IgnoreQueryFilters().AnyAsync(current => current.Id == payment.Id));
+        Assert.False(await dbContext.PaymentAttachments.IgnoreQueryFilters().AnyAsync(current => current.Id == attachmentId));
+        Assert.True(await dbContext.RecycleBinPurgeRecords.AnyAsync(
+            current => current.Kind == "payment" && current.EntityId == payment.Id));
+        Assert.DoesNotContain(attachmentPath, storage.DeletedPaths);
+    }
+
+    [Fact]
+    public async Task PurgePayment_WhenPostCommitCleanupFails_PreservesDeletionCandidateForRestart()
+    {
+        var storageRoot = Path.Combine(
+            Path.GetTempPath(),
+            "georaeplan-recycle-precommit-tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(storageRoot);
+
+        try
+        {
+            var currentUser = CreateOfficeOnlyUser();
+            await using var dbContext = CreateDbContext(currentUser);
+
+            var customer = CreateScopedCustomer(
+                "수금 파일 commit 복구 거래처",
+                OfficeCodeCatalog.Usenet);
+            var invoice = CreateScopedInvoice(
+                customer.Id,
+                OfficeCodeCatalog.Usenet,
+                "INV-PAYMENT-PURGE-PRECOMMIT-RECOVERY");
+            var payment = new Payment
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = invoice.Id,
+                PaymentDate = new DateOnly(2026, 8, 4),
+                Amount = 1000m,
+                IsDeleted = true
+            };
+            var attachmentId = Guid.NewGuid();
+            var attachmentDirectory = Path.Combine(
+                storageRoot,
+                "payment-attachments",
+                payment.Id.ToString("N"));
+            Directory.CreateDirectory(attachmentDirectory);
+            var attachmentPath = Path.Combine(
+                attachmentDirectory,
+                $"{attachmentId:N}__precommit-recovery.bin");
+            await File.WriteAllTextAsync(
+                attachmentPath,
+                "precommit recovery evidence");
+
+            dbContext.AddRange(
+                customer,
+                invoice,
+                payment,
+                new PaymentAttachment
+                {
+                    Id = attachmentId,
+                    PaymentId = payment.Id,
+                    FileName = "precommit-recovery.bin",
+                    StoragePath = attachmentPath,
+                    IsDeleted = true
+                });
+            await dbContext.SaveChangesAsync();
+
+            var storage = new StubCentralFileStorage(storageRoot);
+            var queue = new StoredFileDeferredDeletionQueue(storage);
+            var controller = CreateController(
+                dbContext,
+                currentUser,
+                storage,
+                new ThrowingStoredFileReferenceReconciler(
+                    new InvalidOperationException(
+                        "deterministic post-commit cleanup failure")),
+                queue);
+
+            var response = await controller.Purge(
+                new RecycleBinMutationRequest
+                {
+                    Items =
+                    [
+                        new RecycleBinMutationTargetDto
+                        {
+                            EntityId = payment.Id,
+                            Kind = "payment"
+                        }
+                    ]
+                },
+                CancellationToken.None);
+
+            var ok = Assert.IsType<OkObjectResult>(response.Result);
+            var payload = Assert.IsType<RecycleBinMutationResultDto>(ok.Value);
+            var result = Assert.Single(payload.Results);
+            Assert.True(result.Success, result.Message);
+
+            dbContext.ChangeTracker.Clear();
+            Assert.False(await dbContext.Payments
+                .IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == payment.Id));
+            Assert.True(File.Exists(attachmentPath));
+
+            var restartedQueue =
+                new StoredFileDeferredDeletionQueue(storage);
+            Assert.Equal(
+                Path.GetFullPath(attachmentPath),
+                Assert.Single(restartedQueue.TakeBatch(8)));
+        }
+        finally
+        {
+            if (Directory.Exists(storageRoot))
+                Directory.Delete(storageRoot, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task PurgePayment_DoesNotDeleteSharedAttachmentStoragePathStillReferencedByAnotherPaymentAttachment()
     {
@@ -5752,17 +6638,144 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         Assert.False(await dbContext.InventoryLedgerEntries.AnyAsync(entry => entry.SourceDocumentId == transferId));
     }
 
-    private RecycleBinController CreateController(
+    private RevisionAwareRecycleBinClient CreateController(
         AppDbContext dbContext,
         TestCurrentUserContext currentUser,
-        StubCentralFileStorage? fileStorage = null)
+        StubCentralFileStorage? fileStorage = null,
+        IStoredFileReferenceReconciler? storedFileReferenceReconciler = null,
+        IStoredFileDeferredDeletionQueue? storedFileDeferredDeletionQueue = null)
         => new(
+            CreateRawController(
+                dbContext,
+                currentUser,
+                fileStorage,
+                storedFileReferenceReconciler,
+                storedFileDeferredDeletionQueue),
+            dbContext);
+
+    private RecycleBinController CreateRawController(
+        AppDbContext dbContext,
+        TestCurrentUserContext currentUser,
+        StubCentralFileStorage? fileStorage = null,
+        IStoredFileReferenceReconciler? storedFileReferenceReconciler = null,
+        IStoredFileDeferredDeletionQueue? storedFileDeferredDeletionQueue = null)
+    {
+        var resolvedFileStorage = fileStorage ?? new StubCentralFileStorage();
+        return new RecycleBinController(
             dbContext,
             new OfficeScopeService(currentUser, dbContext),
-            fileStorage ?? new StubCentralFileStorage(),
+            storedFileReferenceReconciler ??
+            new TestStoredFileReferenceReconciler(dbContext, resolvedFileStorage),
             new InventoryLedgerService(dbContext),
             new InvoiceStockSnapshotService(dbContext, new RevisionClock()),
-            new RentalSettlementRecalculationService(dbContext));
+            new RentalSettlementRecalculationService(dbContext),
+            storedFileDeferredDeletionQueue ??
+            NoOpStoredFileDeferredDeletionQueue.Instance);
+    }
+
+    private sealed class RevisionAwareRecycleBinClient
+    {
+        private readonly RecycleBinController _controller;
+        private readonly AppDbContext _dbContext;
+
+        public RevisionAwareRecycleBinClient(
+            RecycleBinController controller,
+            AppDbContext dbContext)
+        {
+            _controller = controller;
+            _dbContext = dbContext;
+        }
+
+        public Task<ActionResult<List<RecycleBinEntryDto>>> GetAll(
+            string? kind,
+            string? q,
+            CancellationToken cancellationToken)
+            => _controller.GetAll(kind, q, cancellationToken);
+
+        public async Task<ActionResult<RecycleBinMutationResultDto>> Restore(
+            RecycleBinMutationRequest request,
+            CancellationToken cancellationToken)
+        {
+            await PopulateCurrentRevisionsAsync(request, cancellationToken);
+            return await _controller.Restore(request, cancellationToken);
+        }
+
+        public async Task<ActionResult<RecycleBinMutationResultDto>> Purge(
+            RecycleBinMutationRequest request,
+            CancellationToken cancellationToken)
+        {
+            await PopulateCurrentRevisionsAsync(request, cancellationToken);
+            return await _controller.Purge(request, cancellationToken);
+        }
+
+        private async Task PopulateCurrentRevisionsAsync(
+            RecycleBinMutationRequest request,
+            CancellationToken cancellationToken)
+        {
+            foreach (var target in request.Items.Where(current => current.ExpectedRevision <= 0))
+            {
+                target.ExpectedRevision = await ResolveCurrentRevisionAsync(
+                    target,
+                    cancellationToken);
+            }
+        }
+
+        private Task<long> ResolveCurrentRevisionAsync(
+            RecycleBinMutationTargetDto target,
+            CancellationToken cancellationToken)
+            => NormalizeKind(target.Kind) switch
+            {
+                "customer" => GetRevisionAsync<Customer>(target.EntityId, cancellationToken),
+                "contract" => GetRevisionAsync<CustomerContract>(target.EntityId, cancellationToken),
+                "item" => GetRevisionAsync<Item>(target.EntityId, cancellationToken),
+                "company-profile" => GetRevisionAsync<CompanyProfile>(target.EntityId, cancellationToken),
+                "customer-category" => GetRevisionAsync<CustomerCategory>(target.EntityId, cancellationToken),
+                "price-grade-option" => GetRevisionAsync<PriceGradeOption>(target.EntityId, cancellationToken),
+                "trade-type-option" => GetRevisionAsync<TradeTypeOption>(target.EntityId, cancellationToken),
+                "item-category-option" => GetRevisionAsync<ItemCategoryOption>(target.EntityId, cancellationToken),
+                "invoice" => GetRevisionAsync<Invoice>(target.EntityId, cancellationToken),
+                "payment" => GetRevisionAsync<Payment>(target.EntityId, cancellationToken),
+                "transaction" => GetRevisionAsync<TransactionRecord>(target.EntityId, cancellationToken),
+                "inventory-transfer" => GetRevisionAsync<InventoryTransfer>(target.EntityId, cancellationToken),
+                "rental-management-company" => GetRevisionAsync<RentalManagementCompany>(target.EntityId, cancellationToken),
+                "rental-billing-profile" => GetRevisionAsync<RentalBillingProfile>(target.EntityId, cancellationToken),
+                "rental-asset" => GetRevisionAsync<RentalAsset>(target.EntityId, cancellationToken),
+                "rental-billing-log" => GetRevisionAsync<RentalBillingLog>(target.EntityId, cancellationToken),
+                _ => Task.FromResult(0L)
+            };
+
+        private async Task<long> GetRevisionAsync<TEntity>(
+            Guid entityId,
+            CancellationToken cancellationToken)
+            where TEntity : TrackedEntity
+            => await _dbContext.Set<TEntity>()
+                .IgnoreQueryFilters()
+                .Where(current => current.Id == entityId)
+                .Select(current => current.Revision)
+                .SingleOrDefaultAsync(cancellationToken);
+
+        private static string NormalizeKind(string? kind)
+            => (kind ?? string.Empty).Trim().ToLowerInvariant() switch
+            {
+                "customer" or "customers" or "거래처" => "customer",
+                "contract" or "contracts" or "customercontract" or "계약서" => "contract",
+                "item" or "items" or "품목" => "item",
+                "company-profile" or "companyprofile" or "companyprofiles" or "회사설정" => "company-profile",
+                "customer-category" or "customercategory" or "customercategories" or "고객분류" => "customer-category",
+                "price-grade-option" or "pricegradeoption" or "pricegradeoptions" or "가격등급" => "price-grade-option",
+                "trade-type-option" or "tradetypeoption" or "tradetypeoptions" or "거래구분" => "trade-type-option",
+                "item-category-option" or "itemcategoryoption" or "itemcategoryoptions" or "품목분류" => "item-category-option",
+                "invoice" or "invoices" or "전표" => "invoice",
+                "payment" or "payments" or "수금" or "지급" or "수금/지급" => "payment",
+                "transaction" or "transactions" or "거래내역" => "transaction",
+                "inventory-transfer" or "inventorytransfer" or "inventorytransfers" or "재고이동" => "inventory-transfer",
+                "rental-management-company" or "rentalmanagementcompany" or "rentalmanagementcompanies" or "렌탈관리업체" or "렌탈 관리업체" => "rental-management-company",
+                "rental-billing-profile" or "rentalbillingprofile" or "rental-profile" or "rentalprofile" or "렌탈청구프로필" or "렌탈 청구프로필" => "rental-billing-profile",
+                "rental-asset" or "rentalasset" or "렌탈자산" or "렌탈 자산" => "rental-asset",
+                "rental-billing-log" or "rentalbillinglog" or "rental-log" or "rentallog" or "렌탈청구로그" or "렌탈 청구로그" => "rental-billing-log",
+                _ => string.Empty
+            };
+    }
 
     private AppDbContext CreateDbContext(TestCurrentUserContext currentUser)
     {
@@ -5773,6 +6786,177 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         var dbContext = new AppDbContext(options, currentUser, new RevisionClock());
         dbContext.Database.EnsureCreated();
         return dbContext;
+    }
+
+    private static RecycleBinMutationRequest BuildRestoreRequest(
+        string kind,
+        Guid entityId,
+        long expectedRevision)
+        => new()
+        {
+            Items =
+            [
+                new RecycleBinMutationTargetDto
+                {
+                    EntityId = entityId,
+                    Kind = kind,
+                    ExpectedRevision = expectedRevision
+                }
+            ]
+        };
+
+    private static void SeedActiveSharingPolicyDefinitions(AppDbContext dbContext)
+    {
+        dbContext.TenantDefinitions.Add(new TenantDefinition
+        {
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            DisplayName = "Usenet Group",
+            IsActive = true
+        });
+        dbContext.TenantOfficeDefinitions.AddRange(
+            new TenantOfficeDefinition
+            {
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                DisplayName = "Usenet",
+                IsActive = true
+            },
+            new TenantOfficeDefinition
+            {
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                DisplayName = "Yeonsu",
+                IsActive = true
+            });
+    }
+
+    private static async Task<TrackedEntity> SeedActiveRestoreTargetAsync(
+        string kind,
+        AppDbContext dbContext)
+    {
+        var customer = new Customer
+        {
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = $"active-{kind}-customer",
+            NameMatchKey = $"ACTIVE{kind.Replace("-", string.Empty, StringComparison.Ordinal).ToUpperInvariant()}CUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var invoice = new Invoice
+        {
+            Customer = customer,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = $"ACTIVE-{Guid.NewGuid():N}",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 8, 9),
+            VersionGroupId = Guid.NewGuid(),
+            IsLatestVersion = true
+        };
+
+        TrackedEntity target = kind switch
+        {
+            "customer" => customer,
+            "contract" => new CustomerContract
+            {
+                Customer = customer,
+                ContractType = "active-contract",
+                FileName = "active.pdf"
+            },
+            "item" => new Item
+            {
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                NameOriginal = "active-item",
+                NameMatchKey = "ACTIVEITEM"
+            },
+            "company-profile" => new CompanyProfile
+            {
+                ProfileName = "active-profile",
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                TradeName = "active-company"
+            },
+            "customer-category" => new CustomerCategory { Name = "active-category" },
+            "price-grade-option" => new PriceGradeOption { Name = "active-price-grade" },
+            "trade-type-option" => new TradeTypeOption { Name = CustomerClassificationNormalizer.Sales },
+            "item-category-option" => new ItemCategoryOption { Name = "active-item-category" },
+            "invoice" => invoice,
+            "payment" => new Payment
+            {
+                Invoice = invoice,
+                PaymentDate = new DateOnly(2026, 8, 9),
+                Amount = 1000m
+            },
+            "transaction" => new TransactionRecord
+            {
+                Customer = customer,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 8, 9),
+                TransactionKind = "active-transaction"
+            },
+            "inventory-transfer" => new InventoryTransfer
+            {
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                TransferNumber = $"ACTIVE-{Guid.NewGuid():N}",
+                FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse
+            },
+            "rental-management-company" => new RentalManagementCompany
+            {
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = $"active-{Guid.NewGuid():N}",
+                Name = "active-rental-company"
+            },
+            "rental-billing-profile" => new RentalBillingProfile
+            {
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = $"active-{Guid.NewGuid():N}",
+                CustomerName = "active-rental-customer"
+            },
+            "rental-asset" => new RentalAsset
+            {
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                AssetKey = $"active-{Guid.NewGuid():N}",
+                ManagementId = $"active-{Guid.NewGuid():N}",
+                ManagementNumber = $"active-{Guid.NewGuid():N}"
+            },
+            "rental-billing-log" => new RentalBillingLog
+            {
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                BillingProfileId = Guid.NewGuid(),
+                BillingYearMonth = "2026-08"
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
+        };
+
+        dbContext.Add(target);
+        await dbContext.SaveChangesAsync();
+        return target;
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current is not null)
+        {
+            if (File.Exists(Path.Combine(current.FullName, "거래플랜.sln")))
+                return current.FullName;
+            current = current.Parent;
+        }
+
+        throw new DirectoryNotFoundException("거래플랜 repository root was not found.");
     }
 
     private static TestCurrentUserContext CreateAdminUser()
@@ -5940,12 +7124,75 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
             => IsAdmin || IsGodMode || Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase);
     }
 
-    private sealed class StubCentralFileStorage : ICentralFileStorage
+    private sealed class TestStoredFileReferenceReconciler(
+        AppDbContext dbContext,
+        ICentralFileStorage fileStorage) : IStoredFileReferenceReconciler
+    {
+        public async Task DeleteUnreferencedAsync(
+            IEnumerable<string> candidatePaths,
+            CancellationToken cancellationToken = default)
+        {
+            var paths = candidatePaths
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Select(path => path.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (paths.Count == 0)
+                return;
+
+            var referencedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            referencedPaths.UnionWith(await dbContext.CustomerContracts
+                .IgnoreQueryFilters()
+                .Where(contract => contract.StoragePath != null && paths.Contains(contract.StoragePath))
+                .Select(contract => contract.StoragePath!)
+                .ToListAsync(cancellationToken));
+            referencedPaths.UnionWith(await dbContext.TransactionAttachments
+                .IgnoreQueryFilters()
+                .Where(attachment => attachment.StoragePath != null && paths.Contains(attachment.StoragePath))
+                .Select(attachment => attachment.StoragePath!)
+                .ToListAsync(cancellationToken));
+            referencedPaths.UnionWith(await dbContext.PaymentAttachments
+                .IgnoreQueryFilters()
+                .Where(attachment => attachment.StoragePath != null && paths.Contains(attachment.StoragePath))
+                .Select(attachment => attachment.StoragePath!)
+                .ToListAsync(cancellationToken));
+            referencedPaths.UnionWith(await dbContext.InventoryTransfers
+                .IgnoreQueryFilters()
+                .Where(transfer => transfer.ReceiveEvidencePath != null && paths.Contains(transfer.ReceiveEvidencePath))
+                .Select(transfer => transfer.ReceiveEvidencePath!)
+                .ToListAsync(cancellationToken));
+
+            foreach (var path in paths.Where(path => !referencedPaths.Contains(path)))
+                fileStorage.DeleteIfExists(path);
+        }
+
+        public Task<PaymentAttachment?> FindPaymentAttachmentAsync(
+            Guid attachmentId,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult<PaymentAttachment?>(null);
+    }
+
+    private sealed class ThrowingStoredFileReferenceReconciler(Exception exception)
+        : IStoredFileReferenceReconciler
+    {
+        public Task DeleteUnreferencedAsync(
+            IEnumerable<string> candidatePaths,
+            CancellationToken cancellationToken = default)
+            => Task.FromException(exception);
+
+        public Task<PaymentAttachment?> FindPaymentAttachmentAsync(
+            Guid attachmentId,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult<PaymentAttachment?>(null);
+    }
+
+    private sealed class StubCentralFileStorage(string? rootPath = null)
+        : ICentralFileStorage
     {
         public List<string> DeletedPaths { get; } = new();
         public Action<string?>? OnDelete { get; init; }
 
-        public string RootPath => Path.GetTempPath();
+        public string RootPath { get; } = rootPath ?? Path.GetTempPath();
 
         public Task<string> SaveBytesAsync(string category, string tenantKey, Guid fileId, string? fileName, byte[] content, CancellationToken cancellationToken = default)
             => Task.FromResult(Path.Combine(RootPath, category, tenantKey, fileId.ToString("N"), fileName ?? "file.bin"));

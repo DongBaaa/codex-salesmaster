@@ -80,6 +80,149 @@ public sealed class LocalEntityConcurrencyGuardReloadTests
     }
 
     [Fact]
+    public async Task UpsertItem_RebasesOnlyToExactAcknowledgedServerIdentity()
+    {
+        PrepareAppRoot("georaeplan-local-entity-exact-ack-rebase");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.NewGuid();
+            var acceptedUpdatedAtUtc = DateTime.UtcNow.AddMinutes(-1);
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Acknowledged item",
+                NameMatchKey = "ACKNOWLEDGEDITEM",
+                Unit = "EA",
+                Revision = 150,
+                IsDirty = false,
+                IsDeleted = false,
+                CreatedAtUtc = acceptedUpdatedAtUtc.AddMinutes(-10),
+                UpdatedAtUtc = acceptedUpdatedAtUtc
+            });
+            db.SyncOutboxEntries.Add(new LocalSyncOutboxEntry
+            {
+                MutationId = $"test-ack-{Guid.NewGuid():N}",
+                DeviceId = "TEST-DEVICE",
+                EntityName = nameof(LocalItem),
+                EntityId = itemId,
+                ExpectedRevision = 100,
+                Status = "Acknowledged",
+                PreparedAtUtc = acceptedUpdatedAtUtc.AddSeconds(-2),
+                SentAtUtc = acceptedUpdatedAtUtc.AddSeconds(-1),
+                AcknowledgedAtUtc = acceptedUpdatedAtUtc.AddSeconds(1),
+                AcceptedRevision = 150,
+                AcceptedUpdatedAtUtc = acceptedUpdatedAtUtc
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var candidate = new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Acknowledged item edited",
+                NameMatchKey = "ACKNOWLEDGEDITEMEDITED",
+                Unit = "EA",
+                Revision = 100,
+                IsDeleted = false
+            };
+
+            var result = await local.UpsertItemAsync(candidate);
+
+            Assert.Equal(150, result.Revision);
+            var savedItem = await db.Items.AsNoTracking().SingleAsync(current => current.Id == itemId);
+            Assert.Equal("Acknowledged item edited", savedItem.NameOriginal);
+            Assert.Equal(150, savedItem.Revision);
+            Assert.True(savedItem.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task UpsertItem_LegacyAcknowledgementWithoutAcceptedIdentity_DoesNotRebase()
+    {
+        PrepareAppRoot("georaeplan-local-entity-legacy-ack-conflict");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.NewGuid();
+            var serverUpdatedAtUtc = DateTime.UtcNow.AddMinutes(-1);
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Server winner",
+                NameMatchKey = "SERVERWINNER",
+                Unit = "EA",
+                Revision = 150,
+                IsDirty = false,
+                IsDeleted = false,
+                CreatedAtUtc = serverUpdatedAtUtc.AddMinutes(-10),
+                UpdatedAtUtc = serverUpdatedAtUtc
+            });
+            db.SyncOutboxEntries.Add(new LocalSyncOutboxEntry
+            {
+                MutationId = $"legacy-ack-{Guid.NewGuid():N}",
+                DeviceId = "TEST-DEVICE",
+                EntityName = nameof(LocalItem),
+                EntityId = itemId,
+                ExpectedRevision = 100,
+                Status = "Acknowledged",
+                PreparedAtUtc = serverUpdatedAtUtc.AddSeconds(-2),
+                SentAtUtc = serverUpdatedAtUtc.AddSeconds(-1),
+                AcknowledgedAtUtc = serverUpdatedAtUtc
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var candidate = new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Stale local edit",
+                NameMatchKey = "STALELOCALEDIT",
+                Unit = "EA",
+                Revision = 100,
+                IsDeleted = false
+            };
+
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => local.UpsertItemAsync(candidate));
+            Assert.Contains("최신값을 다시 불러온 뒤", exception.Message, StringComparison.Ordinal);
+
+            var preserved = await db.Items.AsNoTracking().SingleAsync(current => current.Id == itemId);
+            Assert.Equal("Server winner", preserved.NameOriginal);
+            Assert.Equal(150, preserved.Revision);
+            Assert.False(preserved.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task DeleteItem_ReloadsTrackedItemBeforeRevisionCheck()
     {
         PrepareAppRoot("georaeplan-local-entity-reload-item");

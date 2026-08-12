@@ -7,6 +7,19 @@ namespace 거래플랜.Desktop.App.Services;
 
 public sealed class SyncDiagnosticExcelExportService
 {
+    private readonly Action<string> _opener;
+
+    public SyncDiagnosticExcelExportService()
+        : this(OpenWithShell)
+    {
+    }
+
+    internal SyncDiagnosticExcelExportService(Action<string> opener)
+    {
+        ArgumentNullException.ThrowIfNull(opener);
+        _opener = opener;
+    }
+
     public async Task<string> ExportAsync(
         IReadOnlyList<SyncDiagnosticListItem> events,
         SyncDiagnosticSummary summary,
@@ -31,7 +44,7 @@ public sealed class SyncDiagnosticExcelExportService
             Directory.CreateDirectory(directory);
 
         await Task.Run(() => workbook.SaveAs(filePath), ct);
-        OpenWithShell(filePath);
+        TryOpenExportedFile(filePath);
         return filePath;
     }
 
@@ -191,6 +204,18 @@ public sealed class SyncDiagnosticExcelExportService
                 $"missingTransactionRef {snapshot.MissingTransactionReferenceCount:N0}",
                 $"missingRentalItemRef {snapshot.MissingRentalItemReferenceCount:N0}"
             });
+
+    private void TryOpenExportedFile(string path)
+    {
+        try
+        {
+            _opener(path);
+        }
+        catch
+        {
+            // 파일 저장은 완료되었으므로, 기본 연결 프로그램 실행 실패는 진단 내보내기 실패로 처리하지 않습니다.
+        }
+    }
 
     private static void OpenWithShell(string path)
     {

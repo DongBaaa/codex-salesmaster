@@ -1354,6 +1354,7 @@ public sealed class OfficeScopeAndPagingTests : IDisposable
             VoucherType = VoucherType.Sales,
             VatMode = InvoiceVatModes.None,
             InvoiceDate = invoice.InvoiceDate,
+            ExpectedRevision = invoice.Revision,
             Memo = "after"
         }, CancellationToken.None);
 
@@ -1559,6 +1560,73 @@ public sealed class OfficeScopeAndPagingTests : IDisposable
         Assert.Equal(string.Empty, detail.CustomerName);
     }
 
+    [Theory]
+    [InlineData("active", true)]
+    [InlineData("tenant-inactive", false)]
+    [InlineData("tenant-deleted", false)]
+    [InlineData("source-office-inactive", false)]
+    [InlineData("source-office-deleted", false)]
+    [InlineData("target-office-inactive", false)]
+    [InlineData("target-office-deleted", false)]
+    public async Task SharingPolicyScope_RequiresActiveTenantAndBothActiveOffices(
+        string parentState,
+        bool expectedSharedAccess)
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu_user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+        await using var dbContext = CreateDbContext(currentUser);
+        var tenant = await dbContext.TenantDefinitions.SingleAsync();
+        var sourceOffice = await dbContext.TenantOfficeDefinitions
+            .SingleAsync(current => current.OfficeCode == OfficeCodeCatalog.Usenet);
+        var targetOffice = await dbContext.TenantOfficeDefinitions
+            .SingleAsync(current => current.OfficeCode == OfficeCodeCatalog.Yeonsu);
+        tenant.IsActive = parentState != "tenant-inactive";
+        tenant.IsDeleted = parentState == "tenant-deleted";
+        sourceOffice.IsActive = parentState != "source-office-inactive";
+        sourceOffice.IsDeleted = parentState == "source-office-deleted";
+        targetOffice.IsActive = parentState != "target-office-inactive";
+        targetOffice.IsDeleted = parentState == "target-office-deleted";
+        var policy = new DataSharingPolicy
+        {
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ShareCustomers = true,
+            AllowTargetWrite = true,
+            IsActive = true,
+            IsDeleted = false
+        };
+        dbContext.DataSharingPolicies.Add(policy);
+        await dbContext.SaveChangesAsync();
+        dbContext.ChangeTracker.Clear();
+
+        var service = new OfficeScopeService(currentUser, dbContext);
+
+        Assert.Equal(
+            expectedSharedAccess,
+            service.CanReadOfficeForCustomers(
+                OfficeCodeCatalog.Usenet,
+                TenantScopeCatalog.UsenetGroup));
+        Assert.Equal(
+            expectedSharedAccess,
+            service.CanWriteOfficeForCustomers(
+                OfficeCodeCatalog.Usenet,
+                TenantScopeCatalog.UsenetGroup));
+        Assert.Equal(
+            1,
+            await dbContext.DataSharingPolicies.IgnoreQueryFilters().CountAsync(current => current.Id == policy.Id));
+        Assert.True(await dbContext.DataSharingPolicies.IgnoreQueryFilters()
+            .Where(current => current.Id == policy.Id)
+            .Select(current => current.IsActive && !current.IsDeleted)
+            .SingleAsync());
+    }
+
     public void Dispose()
     {
         _connection.Dispose();
@@ -1573,6 +1641,32 @@ public sealed class OfficeScopeAndPagingTests : IDisposable
 
         var dbContext = new AppDbContext(options, currentUser, revisionClock);
         dbContext.Database.EnsureCreated();
+        if (!dbContext.TenantDefinitions.IgnoreQueryFilters().Any())
+        {
+            dbContext.TenantDefinitions.Add(new TenantDefinition
+            {
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                DisplayName = "USENET GROUP",
+                StorageMode = TenantScopeCatalog.StorageSharedDatabase,
+                IsActive = true
+            });
+            dbContext.TenantOfficeDefinitions.AddRange(
+                new TenantOfficeDefinition
+                {
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    DisplayName = "USENET",
+                    IsActive = true
+                },
+                new TenantOfficeDefinition
+                {
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Yeonsu,
+                    DisplayName = "YEONSU",
+                    IsActive = true
+                });
+            dbContext.SaveChanges();
+        }
         return dbContext;
     }
 

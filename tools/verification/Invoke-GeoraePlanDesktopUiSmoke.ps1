@@ -1,9 +1,16 @@
 ﻿param(
     [string]$AppExe = 'D:\거래플랜\테스트 시행\실행환경\App\거래플랜.Desktop.App.exe',
-    [string]$Username = 'usenet',
-    [string]$Password = '1234',
+    [string]$Username = '',
+    [string]$Password = '',
+    [switch]$EnableEphemeralAdminBootstrap,
+    [string]$EphemeralAdminPassword = '',
+    [string]$BootstrapContractPath = '',
+    [string]$BootstrapContractSha256 = '',
+    [switch]$ValidateEphemeralBootstrapContractOnly,
     [string]$EvidenceDirectory = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path 'output\desktop-ui-smoke'),
     [int]$TimeoutSec = 45,
+    [ValidateRange(1, 1800)]
+    [int]$InAppSelfTestTimeoutSec = 160,
     [switch]$StartServer,
     [string]$DotnetExe = 'D:\.dotnet-sdk\dotnet.exe',
     [string]$ServerDir = 'D:\거래플랜\테스트 시행\실행환경\Server',
@@ -12,26 +19,346 @@
     [int]$ServerPort = 19080,
     [switch]$UseInAppSelfTest,
     [string]$InAppSelfTestReportPath,
+    [string]$LoginInputMutexName = '',
     [switch]$AttachExisting,
     [switch]$KeepAppOpen
 )
 
 $ErrorActionPreference = 'Stop'
+foreach ($seedEnvironmentName in @(
+    [Environment]::GetEnvironmentVariables('Process').Keys)) {
+    if (([string]$seedEnvironmentName).StartsWith(
+        'SeedUsers__',
+        [System.StringComparison]::OrdinalIgnoreCase)) {
+        [Environment]::SetEnvironmentVariable(
+            [string]$seedEnvironmentName,
+            $null,
+            'Process')
+    }
+}
+foreach ($credentialEnvironmentName in @(
+    'GEORAEPLAN_TEST_USERNAME',
+    'GEORAEPLAN_TEST_PASSWORD'
+)) {
+    [Environment]::SetEnvironmentVariable(
+        $credentialEnvironmentName,
+        $null,
+        'Process')
+}
+
+function Get-BootstrapStringSha256 {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+        return ([System.BitConverter]::ToString(
+            $sha256.ComputeHash($bytes))).Replace('-', '')
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
+function Get-BootstrapDatabaseFileSetSha256 {
+    param([Parameter(Mandatory = $true)][string]$DatabasePath)
+
+    $entries = New-Object System.Collections.Generic.List[string]
+    foreach ($suffix in @('', '-wal', '-shm', '-journal')) {
+        $path = "$DatabasePath$suffix"
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $item = Get-Item -LiteralPath $path -Force
+            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            $entries.Add("$suffix`t$($item.Length)`t$hash")
+        }
+    }
+    if ($entries.Count -eq 0) {
+        throw 'Ephemeral admin bootstrap contract validation failed.'
+    }
+    return Get-BootstrapStringSha256 -Value ([string]::Join("`n", $entries))
+}
+
+function Assert-NoBootstrapReparsePoint {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $normalizedPath = [System.IO.Path]::GetFullPath($Path)
+    $root = [System.IO.Path]::GetPathRoot($normalizedPath)
+    $current = $root
+    foreach ($segment in $normalizedPath.Substring($root.Length).Split(
+        [char[]]@(
+            [System.IO.Path]::DirectorySeparatorChar,
+            [System.IO.Path]::AltDirectorySeparatorChar),
+        [System.StringSplitOptions]::RemoveEmptyEntries)) {
+        $current = Join-Path $current $segment
+        if (-not (Test-Path -LiteralPath $current)) {
+            throw 'Ephemeral admin bootstrap contract validation failed.'
+        }
+        $item = Get-Item -LiteralPath $current -Force
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Ephemeral admin bootstrap contract validation failed.'
+        }
+    }
+}
+
+function Read-BootstrapMarkerValues {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $values = @{}
+    foreach ($rawLine in Get-Content -LiteralPath $Path -Encoding UTF8) {
+        $line = ([string]$rawLine).Trim()
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $separatorIndex = $line.IndexOf('=')
+        if ($separatorIndex -le 0 -or $separatorIndex -eq ($line.Length - 1)) {
+            throw 'Ephemeral admin bootstrap contract validation failed.'
+        }
+        $key = $line.Substring(0, $separatorIndex).Trim()
+        if ($values.ContainsKey($key)) {
+            throw 'Ephemeral admin bootstrap contract validation failed.'
+        }
+        $values[$key] = $line.Substring($separatorIndex + 1).Trim()
+    }
+    return $values
+}
+
+function Remove-SeedUsersEnvironmentVariablesFromStartInfo {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Diagnostics.ProcessStartInfo]$StartInfo
+    )
+
+    foreach ($environmentName in @($StartInfo.EnvironmentVariables.Keys)) {
+        if (([string]$environmentName).StartsWith(
+            'SeedUsers__',
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+            [void]$StartInfo.EnvironmentVariables.Remove(
+                [string]$environmentName)
+        }
+    }
+}
+
+function Set-EphemeralAdminSeedEnvironment {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Diagnostics.ProcessStartInfo]$StartInfo,
+        [Parameter(Mandatory = $true)][string]$AdminPassword
+    )
+
+    Remove-SeedUsersEnvironmentVariablesFromStartInfo -StartInfo $StartInfo
+    $adminOnlySeedEnvironment = [ordered]@{
+        'SeedUsers__EnableSeedUsers' = 'true'
+        'SeedUsers__WarnOnDefaultPasswords' = 'false'
+        'SeedUsers__AdminOnlyBootstrap' = 'true'
+        'SeedUsers__AdminPassword' = $AdminPassword
+        'SeedUsers__UpdateExistingAdminPassword' = 'true'
+        'SeedUsers__UserPassword' = ''
+        'SeedUsers__ItwPassword' = ''
+        'SeedUsers__UpdateExistingItwPassword' = 'false'
+        'SeedUsers__UsenetUsername' = ''
+        'SeedUsers__UsenetPassword' = ''
+        'SeedUsers__UpdateExistingUsenetPassword' = 'false'
+    }
+    foreach ($entry in $adminOnlySeedEnvironment.GetEnumerator()) {
+        $StartInfo.EnvironmentVariables[[string]$entry.Key] = [string]$entry.Value
+    }
+}
+
+function Assert-EphemeralAdminBootstrapContract {
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptRoot,
+        [Parameter(Mandatory = $true)][string]$ServerDir,
+        [Parameter(Mandatory = $true)][string]$ServerDataRoot,
+        [Parameter(Mandatory = $true)][string]$ContractPath,
+        [Parameter(Mandatory = $true)][string]$ContractSha256
+    )
+
+    try {
+        $canonicalProjectRoot = [System.IO.Path]::GetFullPath(
+            (Join-Path $ScriptRoot '..\..'))
+        $canonicalExecutionRoot = [System.IO.Path]::GetFullPath(
+            (Join-Path $canonicalProjectRoot '테스트 시행\실행환경'))
+        $canonicalServerDir = [System.IO.Path]::GetFullPath(
+            (Join-Path $canonicalExecutionRoot 'Server'))
+        $canonicalServerDataRoot = [System.IO.Path]::GetFullPath(
+            (Join-Path $canonicalExecutionRoot 'ServerData'))
+        if (
+            -not [string]::Equals(
+                [System.IO.Path]::GetFullPath($ServerDir),
+                $canonicalServerDir,
+                [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals(
+                [System.IO.Path]::GetFullPath($ServerDataRoot),
+                $canonicalServerDataRoot,
+                [System.StringComparison]::OrdinalIgnoreCase)
+        ) {
+            throw 'invalid'
+        }
+
+        Assert-NoBootstrapReparsePoint -Path $ContractPath
+        $contract = Get-Content -LiteralPath $ContractPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+        $runId = [string]$contract.RunId
+        if ($runId -notmatch '^[0-9a-f]{32}$') { throw 'invalid' }
+        $canonicalRollbackRoot = [System.IO.Path]::GetFullPath(
+            (Join-Path $canonicalExecutionRoot "MultiPC\.rollback\$runId"))
+        $canonicalContractPath = Join-Path $canonicalRollbackRoot 'bootstrap-contract.json'
+        if (
+            -not [string]::Equals(
+                [System.IO.Path]::GetFullPath($ContractPath),
+                $canonicalContractPath,
+                [System.StringComparison]::OrdinalIgnoreCase) -or
+            $ContractSha256 -notmatch '^[0-9A-Fa-f]{64}$' -or
+            -not [string]::Equals(
+                (Get-FileHash -LiteralPath $ContractPath -Algorithm SHA256).Hash,
+                $ContractSha256,
+                [System.StringComparison]::OrdinalIgnoreCase)
+        ) { throw 'invalid' }
+
+        $canonicalMarkerPath = Join-Path $canonicalExecutionRoot '.georaeplan-runtime-ready'
+        $canonicalSnapshotPath = Join-Path $canonicalRollbackRoot 'server-before.db'
+        $canonicalServerDatabasePath = Join-Path $canonicalServerDir '거래플랜-local.db'
+        if (-not [string]::Equals(
+            [string]$contract.SchemaVersion,
+            '1',
+            [System.StringComparison]::Ordinal)) { throw 'invalid' }
+        $contractChecks = @(
+            @([string]$contract.ExecutionRoot, $canonicalExecutionRoot),
+            @([string]$contract.ServerDirectory, $canonicalServerDir),
+            @([string]$contract.ServerDataRoot, $canonicalServerDataRoot),
+            @([string]$contract.RuntimeMarkerPath, $canonicalMarkerPath),
+            @([string]$contract.SnapshotPath, $canonicalSnapshotPath)
+        )
+        foreach ($check in $contractChecks) {
+            if (-not [string]::Equals(
+                [System.IO.Path]::GetFullPath([string]$check[0]),
+                [System.IO.Path]::GetFullPath([string]$check[1]),
+                [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw 'invalid'
+            }
+        }
+
+        $serverDllPath = [System.IO.Path]::GetFullPath([string]$contract.ServerDllPath)
+        if (
+            -not [string]::Equals(
+                (Split-Path -Parent $serverDllPath),
+                $canonicalServerDir,
+                [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not $serverDllPath.EndsWith(
+                '.Server.Api.dll',
+                [System.StringComparison]::OrdinalIgnoreCase)
+        ) { throw 'invalid' }
+        foreach ($path in @(
+            $canonicalExecutionRoot,
+            $canonicalServerDir,
+            $canonicalServerDataRoot,
+            $canonicalMarkerPath,
+            $serverDllPath,
+            $canonicalRollbackRoot,
+            $canonicalSnapshotPath,
+            $canonicalServerDatabasePath)) {
+            Assert-NoBootstrapReparsePoint -Path $path
+        }
+
+        $marker = Read-BootstrapMarkerValues -Path $canonicalMarkerPath
+        if (
+            -not [string]::Equals([string]$contract.Role, 'A', [System.StringComparison]::Ordinal) -or
+            -not [string]::Equals([Environment]::GetEnvironmentVariable('GEORAEPLAN_MULTI_PC_E2E_ROLE', 'Process'), 'A', [System.StringComparison]::Ordinal) -or
+            -not [string]::Equals([Environment]::GetEnvironmentVariable('GEORAEPLAN_MULTI_PC_RUNTIME_ROOT', 'Process'), $canonicalExecutionRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals([Environment]::GetEnvironmentVariable('GEORAEPLAN_MULTI_PC_CERTIFICATION_ID', 'Process'), [string]$contract.CertificationId, [System.StringComparison]::Ordinal) -or
+            -not [string]::Equals([string]$marker.runtime_ready, 'True', [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals([string]$marker.runtime_root, $canonicalExecutionRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals([string]$marker.runtime_physical_root, $canonicalExecutionRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals([string]$marker.certification_id, [string]$contract.CertificationId, [System.StringComparison]::Ordinal) -or
+            -not [string]::Equals([string]$marker.server_dll_sha256, [string]$contract.ServerDllSha256, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals((Get-FileHash -LiteralPath $canonicalMarkerPath -Algorithm SHA256).Hash, [string]$contract.RuntimeMarkerSha256, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals((Get-FileHash -LiteralPath $serverDllPath -Algorithm SHA256).Hash, [string]$contract.ServerDllSha256, [System.StringComparison]::OrdinalIgnoreCase)
+        ) { throw 'invalid' }
+
+        $snapshotSha256 = Get-BootstrapDatabaseFileSetSha256 -DatabasePath $canonicalSnapshotPath
+        if (
+            -not [string]::Equals($snapshotSha256, [string]$contract.SnapshotSha256, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals((Get-BootstrapDatabaseFileSetSha256 -DatabasePath $canonicalServerDatabasePath), $snapshotSha256, [System.StringComparison]::OrdinalIgnoreCase)
+        ) { throw 'invalid' }
+
+        $createdAtUtc = [DateTimeOffset]::Parse(
+            [string]$contract.CreatedAtUtc,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::RoundtripKind)
+        $snapshotLastWriteUtc = [DateTimeOffset](Get-Item -LiteralPath $canonicalSnapshotPath).LastWriteTimeUtc
+        if (
+            $createdAtUtc -lt $snapshotLastWriteUtc.AddSeconds(-2) -or
+            $createdAtUtc -lt [DateTimeOffset]::UtcNow.AddMinutes(-5) -or
+            $createdAtUtc -gt [DateTimeOffset]::UtcNow.AddMinutes(5)
+        ) { throw 'invalid' }
+
+        return [pscustomobject]@{
+            ServerDllPath = $serverDllPath
+            ExecutionRoot = $canonicalExecutionRoot
+            SnapshotPath = $canonicalSnapshotPath
+            SnapshotSha256 = $snapshotSha256
+        }
+    }
+    catch {
+        throw 'Ephemeral admin bootstrap contract validation failed.'
+    }
+}
+
+if ($ValidateEphemeralBootstrapContractOnly) {
+    [void](Assert-EphemeralAdminBootstrapContract `
+        -ScriptRoot $PSScriptRoot `
+        -ServerDir $ServerDir `
+        -ServerDataRoot $ServerDataRoot `
+        -ContractPath $BootstrapContractPath `
+        -ContractSha256 $BootstrapContractSha256)
+    $probeStartInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    Set-EphemeralAdminSeedEnvironment `
+        -StartInfo $probeStartInfo `
+        -AdminPassword 'validation-only'
+    $seedKeys = @(
+        $probeStartInfo.EnvironmentVariables.Keys |
+            Where-Object {
+                ([string]$_).StartsWith(
+                    'SeedUsers__',
+                    [System.StringComparison]::OrdinalIgnoreCase)
+            } |
+            Sort-Object)
+    $expectedSeedKeys = @(
+        'SeedUsers__AdminOnlyBootstrap',
+        'SeedUsers__AdminPassword',
+        'SeedUsers__EnableSeedUsers',
+        'SeedUsers__ItwPassword',
+        'SeedUsers__UpdateExistingAdminPassword',
+        'SeedUsers__UpdateExistingItwPassword',
+        'SeedUsers__UpdateExistingUsenetPassword',
+        'SeedUsers__UsenetPassword',
+        'SeedUsers__UsenetUsername',
+        'SeedUsers__UserPassword',
+        'SeedUsers__WarnOnDefaultPasswords'
+    ) | Sort-Object
+    if ([string]::Join("`n", $seedKeys) -cne [string]::Join("`n", $expectedSeedKeys)) {
+        throw 'Ephemeral admin bootstrap seed environment validation failed.'
+    }
+    Write-Output 'PASS'
+    return
+}
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type @"
+using System;
 using System.Runtime.InteropServices;
+
 public static class GeoraePlanDesktopUiSmokeMouse {
     [DllImport("user32.dll")]
-    public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, System.UIntPtr dwExtraInfo);
+    public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
     [DllImport("user32.dll")]
-    public static extern bool SetForegroundWindow(System.IntPtr hWnd);
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")]
-    public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
     [DllImport("user32.dll")]
-    public static extern bool SetWindowPos(System.IntPtr hWnd, System.IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+    public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")]
+    public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 }
 "@
 
@@ -97,6 +424,144 @@ function Wait-HttpReady {
     return $false
 }
 
+function Stop-ExactProcessAndWait {
+    param(
+        [int]$ProcessId,
+        [long]$ExpectedStartTimeUtcTicks,
+        [int]$TimeoutMilliseconds = 15000
+    )
+
+    if ($ProcessId -le 0 -or $ExpectedStartTimeUtcTicks -le 0) {
+        throw '정리 대상 process identity가 유효하지 않습니다.'
+    }
+
+    $currentProcess = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if ($null -eq $currentProcess) {
+        return
+    }
+
+    $actualStartTimeUtcTicks = $currentProcess.StartTime.ToUniversalTime().Ticks
+    if ($actualStartTimeUtcTicks -ne $ExpectedStartTimeUtcTicks) {
+        return
+    }
+
+    $currentProcess.Kill()
+    if (-not $currentProcess.WaitForExit($TimeoutMilliseconds)) {
+        throw "exact process 종료 시간이 초과되었습니다: pid=$ProcessId"
+    }
+    $currentProcess.Refresh()
+    if (-not $currentProcess.HasExited) {
+        throw "exact process가 종료되지 않았습니다: pid=$ProcessId"
+    }
+}
+
+function Wait-LoopbackPortReleased {
+    param(
+        [int]$Port,
+        [int]$TimeoutSeconds = 30
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $listener = $null
+        try {
+            $listener = [System.Net.Sockets.TcpListener]::new(
+                [System.Net.IPAddress]::Loopback,
+                $Port)
+            $listener.Start()
+            return $true
+        }
+        catch {
+            Start-Sleep -Milliseconds 100
+        }
+        finally {
+            if ($null -ne $listener) {
+                try { $listener.Stop() } catch { }
+            }
+        }
+    }
+
+    return $false
+}
+
+function Invoke-HiddenSetApiBaseUrl {
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptPath,
+        [Parameter(Mandatory = $true)][string]$BaseUrl,
+        [Parameter(Mandatory = $true)][string[]]$AppSettingsPaths
+    )
+
+    $toPowerShellLiteral = {
+        param([Parameter(Mandatory = $true)][string]$Value)
+
+        return "'" + $Value.Replace("'", "''") + "'"
+    }
+    $scriptLiteral =
+        & $toPowerShellLiteral ([IO.Path]::GetFullPath($ScriptPath))
+    $baseUrlLiteral = & $toPowerShellLiteral $BaseUrl
+    $appSettingsLiterals = @(
+        $AppSettingsPaths |
+            ForEach-Object {
+                & $toPowerShellLiteral ([IO.Path]::GetFullPath($_))
+            }
+    )
+    if ($appSettingsLiterals.Count -eq 0) {
+        throw 'At least one appsettings path is required.'
+    }
+
+    $command = (
+        '$ProgressPreference = ''SilentlyContinue''; ' +
+        '$ErrorActionPreference = ''Stop''; & ' +
+        $scriptLiteral +
+        ' -BaseUrl ' +
+        $baseUrlLiteral +
+        ' -AppSettingsPaths @(' +
+        ($appSettingsLiterals -join ',') +
+        ') 3>&1 4>&1 5>&1 6>&1'
+    )
+    $encodedCommand = [Convert]::ToBase64String(
+        [Text.Encoding]::Unicode.GetBytes($command))
+    $windowsPowerShellPath = Join-Path `
+        ([Environment]::SystemDirectory) `
+        'WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $windowsPowerShellPath -PathType Leaf)) {
+        throw 'The absolute Windows PowerShell path was not found.'
+    }
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $windowsPowerShellPath
+    $startInfo.Arguments = (
+        '-NoProfile -NonInteractive -ExecutionPolicy Bypass ' +
+        "-EncodedCommand $encodedCommand"
+    )
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            throw 'The hidden Set-ApiBaseUrl process did not start.'
+        }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            StandardOutput = $stdout
+            StandardError = $stderr
+        }
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
 function Wait-FileReady {
     param(
         [string]$Path,
@@ -128,15 +593,23 @@ function Start-IsolatedTestServer {
         [string]$DotnetExe,
         [string]$ServerDir,
         [string]$ServerDataRoot,
-        [string]$ServerUrl
+        [string]$ServerDllPath,
+        [string]$ServerUrl,
+        [bool]$EnableEphemeralAdminBootstrap,
+        [string]$EphemeralAdminPassword
     )
 
     if (-not (Test-Path -LiteralPath $DotnetExe)) {
         throw "dotnet not found: $DotnetExe"
     }
 
-    $serverDll = Get-ChildItem -LiteralPath $ServerDir -Filter '*.Server.Api.dll' -File |
-        Select-Object -First 1 -ExpandProperty FullName
+    $serverDll = if ([string]::IsNullOrWhiteSpace($ServerDllPath)) {
+        Get-ChildItem -LiteralPath $ServerDir -Filter '*.Server.Api.dll' -File |
+            Select-Object -First 1 -ExpandProperty FullName
+    }
+    else {
+        [System.IO.Path]::GetFullPath($ServerDllPath)
+    }
     if ([string]::IsNullOrWhiteSpace($serverDll) -or -not (Test-Path -LiteralPath $serverDll)) {
         throw "Server dll not found in $ServerDir"
     }
@@ -147,31 +620,47 @@ function Start-IsolatedTestServer {
         'ASPNETCORE_URLS' = $ServerUrl
         'Kestrel__Endpoints__Http__Url' = $ServerUrl
         'ERP_DB_FALLBACK_SQLITE' = '1'
-        'SeedUsers__EnableSeedUsers' = 'true'
-        'SeedUsers__UsenetUsername' = 'usenet'
-        'SeedUsers__UsenetPassword' = 'CHANGE_THIS_USENET_PASSWORD'
-        'SeedUsers__UpdateExistingUsenetPassword' = 'true'
         'Logging__LogLevel__Default' = 'Warning'
         'Logging__LogLevel__Microsoft' = 'Warning'
         'Logging__LogLevel__Microsoft.EntityFrameworkCore' = 'Warning'
         'FileStorage__RootPath' = (Join-Path $ServerDataRoot 'FileStore')
         'Updates__StorageRoot' = (Join-Path $ServerDataRoot 'updates')
     }
-
-    $previousEnv = @{}
-    foreach ($key in $serverEnv.Keys) {
-        $previousEnv[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
-        [Environment]::SetEnvironmentVariable($key, [string]$serverEnv[$key], 'Process')
+    if ($EnableEphemeralAdminBootstrap -and
+        [string]::IsNullOrWhiteSpace($EphemeralAdminPassword)) {
+        throw 'Ephemeral admin bootstrap configuration is incomplete.'
+    }
+    if (-not $EnableEphemeralAdminBootstrap -and
+        -not [string]::IsNullOrEmpty($EphemeralAdminPassword)) {
+        throw 'Ephemeral admin bootstrap configuration is incomplete.'
     }
 
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
     try {
-        $argumentList = ('"{0}" --environment Development' -f $serverDll.Replace('"', '""'))
-        return Start-Process -FilePath $DotnetExe -ArgumentList $argumentList -WorkingDirectory $ServerDir -WindowStyle Hidden -PassThru
+        $startInfo.FileName = $DotnetExe
+        $startInfo.Arguments = ('"{0}" --environment Development' -f $serverDll.Replace('"', '""'))
+        $startInfo.WorkingDirectory = $ServerDir
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+        Remove-SeedUsersEnvironmentVariablesFromStartInfo -StartInfo $startInfo
+        foreach ($key in $serverEnv.Keys) {
+            $startInfo.EnvironmentVariables[$key] = [string]$serverEnv[$key]
+        }
+        if ($EnableEphemeralAdminBootstrap) {
+            Set-EphemeralAdminSeedEnvironment `
+                -StartInfo $startInfo `
+                -AdminPassword $EphemeralAdminPassword
+        }
+        $serverProcess = [Diagnostics.Process]::Start($startInfo)
+        if ($null -eq $serverProcess) {
+            throw 'The isolated test server process did not start.'
+        }
+        return $serverProcess
     }
     finally {
-        foreach ($key in $serverEnv.Keys) {
-            [Environment]::SetEnvironmentVariable($key, $previousEnv[$key], 'Process')
-        }
+        Remove-SeedUsersEnvironmentVariablesFromStartInfo -StartInfo $startInfo
+        $EphemeralAdminPassword = $null
     }
 }
 
@@ -215,6 +704,36 @@ function Get-ProcessWindow {
     )
 
     while ($stopwatch.Elapsed.TotalSeconds -lt $TimeoutSec) {
+        $processWindow = $null
+        try {
+            $process = Get-Process -Id $ProcessId -ErrorAction Stop
+            if ($process.MainWindowHandle -ne 0) {
+                $processWindow =
+                    [System.Windows.Automation.AutomationElement]::FromHandle(
+                        $process.MainWindowHandle)
+            }
+        }
+        catch {
+            $processWindow = $null
+        }
+
+        if ($null -ne $processWindow) {
+            $processWindowName = [string]$processWindow.Current.Name
+            if (
+                ($Contains -and
+                 $processWindowName.IndexOf(
+                     $Name,
+                     [System.StringComparison]::OrdinalIgnoreCase) -ge 0) -or
+                (-not $Contains -and
+                 [string]::Equals(
+                     $processWindowName,
+                     $Name,
+                     [System.StringComparison]::OrdinalIgnoreCase))
+            ) {
+                return $processWindow
+            }
+        }
+
         $topLevelWindows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
             [System.Windows.Automation.TreeScope]::Children,
             $condition)
@@ -254,6 +773,51 @@ function Get-ProcessWindow {
     }
 
     return $null
+}
+
+function Test-IsLoginWindow {
+    param(
+        [System.Windows.Automation.AutomationElement]$Window
+    )
+
+    if ($null -eq $Window) {
+        return $false
+    }
+
+    try {
+        $windowName = [string]$Window.Current.Name
+        if ($windowName.IndexOf('로그인', [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            return $true
+        }
+
+        $usernameBox = Find-FirstByAutomationId -Root $Window -AutomationId 'UsernameBox'
+        $passwordBox = Find-FirstByAutomationId -Root $Window -AutomationId 'PasswordBox'
+        return $null -ne $usernameBox -and $null -ne $passwordBox
+    }
+    catch {
+        return $false
+    }
+}
+
+function Test-IsMainWindow {
+    param(
+        [System.Windows.Automation.AutomationElement]$Window
+    )
+
+    if ($null -eq $Window -or (Test-IsLoginWindow -Window $Window)) {
+        return $false
+    }
+
+    try {
+        $customerSettingsButton =
+            Find-FirstByAutomationId -Root $Window -AutomationId 'CustomerSettingsButton'
+        $rentalManagementButton =
+            Find-FirstByAutomationId -Root $Window -AutomationId 'RentalManagementButton'
+        return $null -ne $customerSettingsButton -and $null -ne $rentalManagementButton
+    }
+    catch {
+        return $false
+    }
 }
 
 function Get-ProcessWindowNames {
@@ -309,16 +873,20 @@ function Wait-LoginOrMainWindow {
 
     $stopwatch = [Diagnostics.Stopwatch]::StartNew()
     while ($stopwatch.Elapsed.TotalSeconds -lt $TimeoutSec) {
-        $mainWindow = Get-ProcessWindow -ProcessId $ProcessId -Name '거래플랜' -Contains -TimeoutSec 1
-        if ($null -ne $mainWindow) {
-            if (([string]$mainWindow.Current.Name).IndexOf('로그인', [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
-                return [pscustomobject]@{ Kind = 'Main'; Window = $mainWindow }
-            }
+        $loginWindow = Get-ProcessWindow -ProcessId $ProcessId -Name '로그인' -Contains -TimeoutSec 1
+        if ($null -ne $loginWindow -and (Test-IsLoginWindow -Window $loginWindow)) {
+            return [pscustomobject]@{ Kind = 'Login'; Window = $loginWindow }
         }
 
-        $loginWindow = Get-ProcessWindow -ProcessId $ProcessId -Name '로그인' -Contains -TimeoutSec 1
-        if ($null -ne $loginWindow) {
-            return [pscustomobject]@{ Kind = 'Login'; Window = $loginWindow }
+        $mainWindow = Get-ProcessWindow -ProcessId $ProcessId -Name '거래플랜' -Contains -TimeoutSec 1
+        if ($null -ne $mainWindow) {
+            if (Test-IsLoginWindow -Window $mainWindow) {
+                return [pscustomobject]@{ Kind = 'Login'; Window = $mainWindow }
+            }
+
+            if (Test-IsMainWindow -Window $mainWindow) {
+                return [pscustomobject]@{ Kind = 'Main'; Window = $mainWindow }
+            }
         }
 
         Start-Sleep -Milliseconds 300
@@ -336,7 +904,7 @@ function Wait-MainWindowOnly {
     $stopwatch = [Diagnostics.Stopwatch]::StartNew()
     while ($stopwatch.Elapsed.TotalSeconds -lt $TimeoutSec) {
         $mainWindow = Get-ProcessWindow -ProcessId $ProcessId -Name '거래플랜' -Contains -TimeoutSec 1
-        if ($null -ne $mainWindow -and ([string]$mainWindow.Current.Name).IndexOf('로그인', [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        if ($null -ne $mainWindow -and (Test-IsMainWindow -Window $mainWindow)) {
             return $mainWindow
         }
 
@@ -591,36 +1159,117 @@ function Invoke-CustomerManagementMenuItem {
     return $false
 }
 
-function Set-ElementText {
+function Test-SameAutomationElement {
     param(
-        [System.Windows.Automation.AutomationElement]$Element,
-        [string]$Text
+        [System.Windows.Automation.AutomationElement]$Left,
+        [System.Windows.Automation.AutomationElement]$Right
     )
 
-    if ($null -eq $Element) { return $false }
+    if ($null -eq $Left -or $null -eq $Right) {
+        return $false
+    }
 
     try {
-        $valuePattern = $Element.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-        if ($null -ne $valuePattern -and -not $valuePattern.Current.IsReadOnly) {
-            $valuePattern.SetValue($Text)
-            return $true
+        $leftId = @($Left.GetRuntimeId())
+        $rightId = @($Right.GetRuntimeId())
+        if ($leftId.Count -ne $rightId.Count) {
+            return $false
         }
-    }
-    catch {
-        # PasswordBox 등 일부 컨트롤은 ValuePattern 입력이 제한됩니다.
-    }
-
-    try {
-        $Element.SetFocus()
-        Start-Sleep -Milliseconds 100
-        [System.Windows.Forms.SendKeys]::SendWait('^a')
-        [System.Windows.Forms.SendKeys]::SendWait($Text)
-        Start-Sleep -Milliseconds 100
+        for ($index = 0; $index -lt $leftId.Count; $index++) {
+            if ([int]$leftId[$index] -ne [int]$rightId[$index]) {
+                return $false
+            }
+        }
         return $true
     }
     catch {
         return $false
     }
+}
+
+function Assert-LoginInputTarget {
+    param(
+        [System.Windows.Automation.AutomationElement]$LoginWindow,
+        [System.Windows.Automation.AutomationElement]$Element,
+        [int]$ExpectedProcessId,
+        [string]$ExpectedAutomationId
+    )
+
+    if ($null -eq $LoginWindow -or $null -eq $Element) {
+        throw '로그인 입력 대상이 없습니다.'
+    }
+
+    $windowHandle = [IntPtr]$LoginWindow.Current.NativeWindowHandle
+    if (
+        $windowHandle -eq [IntPtr]::Zero -or
+        [int]$LoginWindow.Current.ProcessId -ne $ExpectedProcessId -or
+        [int]$Element.Current.ProcessId -ne $ExpectedProcessId -or
+        -not [string]::Equals(
+            [string]$Element.Current.AutomationId,
+            $ExpectedAutomationId,
+            [System.StringComparison]::Ordinal)
+    ) {
+        throw '로그인 입력 대상의 HWND/PID/AutomationId identity가 일치하지 않습니다.'
+    }
+
+    $nativeProcessId = [uint32]0
+    [void][GeoraePlanDesktopUiSmokeMouse]::GetWindowThreadProcessId(
+        $windowHandle,
+        [ref]$nativeProcessId)
+    if ([int]$nativeProcessId -ne $ExpectedProcessId) {
+        throw '로그인 창 HWND의 native process identity가 일치하지 않습니다.'
+    }
+
+    $resolvedElement = $LoginWindow.FindFirst(
+        [System.Windows.Automation.TreeScope]::Descendants,
+        (New-AndCondition @(
+            (New-Condition ([System.Windows.Automation.AutomationElement]::ProcessIdProperty) $ExpectedProcessId),
+            (New-Condition ([System.Windows.Automation.AutomationElement]::AutomationIdProperty) $ExpectedAutomationId)
+        )))
+    if (-not (Test-SameAutomationElement -Left $Element -Right $resolvedElement)) {
+        throw '로그인 입력 대상이 attested 로그인 창의 해당 AutomationId descendant가 아닙니다.'
+    }
+
+    return $windowHandle
+}
+
+function Set-ElementText {
+    param(
+        [System.Windows.Automation.AutomationElement]$LoginWindow,
+        [System.Windows.Automation.AutomationElement]$Element,
+        [string]$Text,
+        [int]$ExpectedProcessId,
+        [string]$ExpectedAutomationId
+    )
+
+    if ($null -eq $Element -or [string]::IsNullOrEmpty($Text)) {
+        return $false
+    }
+
+    [void](Assert-LoginInputTarget `
+        -LoginWindow $LoginWindow `
+        -Element $Element `
+        -ExpectedProcessId $ExpectedProcessId `
+        -ExpectedAutomationId $ExpectedAutomationId)
+
+    try {
+        $valuePattern = $Element.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        if ($null -eq $valuePattern -or $valuePattern.Current.IsReadOnly) {
+            return $false
+        }
+        $valuePattern.SetValue($Text)
+    }
+    catch {
+        return $false
+    }
+
+    Start-Sleep -Milliseconds 100
+    [void](Assert-LoginInputTarget `
+        -LoginWindow $LoginWindow `
+        -Element $Element `
+        -ExpectedProcessId $ExpectedProcessId `
+        -ExpectedAutomationId $ExpectedAutomationId)
+    return $true
 }
 
 function Close-Window {
@@ -823,6 +1472,7 @@ if (-not (Test-Path -LiteralPath $AppExe)) {
 $steps = New-Object System.Collections.Generic.List[object]
 $process = $null
 $serverProcess = $null
+$serverProcessStartTimeUtcTicks = 0L
 $previousAppEnv = @{}
 $passed = $false
 $errorText = ''
@@ -830,6 +1480,19 @@ $processLaunchStartedAt = $null
 
 try {
     $normalizedAppExe = [System.IO.Path]::GetFullPath($AppExe)
+    $validatedBootstrapContract = $null
+    if ($EnableEphemeralAdminBootstrap) {
+        if (-not $StartServer -or
+            [string]::IsNullOrWhiteSpace($EphemeralAdminPassword)) {
+            throw 'Ephemeral admin bootstrap configuration is incomplete.'
+        }
+        $validatedBootstrapContract = Assert-EphemeralAdminBootstrapContract `
+            -ScriptRoot $PSScriptRoot `
+            -ServerDir $ServerDir `
+            -ServerDataRoot $ServerDataRoot `
+            -ContractPath $BootstrapContractPath `
+            -ContractSha256 $BootstrapContractSha256
+    }
     if ($StartServer) {
         $port = Get-FreePort -StartingPort $ServerPort
         $serverUrl = "http://127.0.0.1:$port"
@@ -837,10 +1500,35 @@ try {
         $testRoot = Split-Path -Parent (Split-Path -Parent $AppExe)
         $setApiScript = Join-Path $testRoot 'Set-ApiBaseUrl.ps1'
         if ((Test-Path -LiteralPath $appSettings) -and (Test-Path -LiteralPath $setApiScript)) {
-            & powershell -NoProfile -ExecutionPolicy Bypass -File $setApiScript -BaseUrl $serverUrl -AppSettingsPaths @($appSettings) | Out-Null
+            $setApiResult = Invoke-HiddenSetApiBaseUrl `
+                -ScriptPath $setApiScript `
+                -BaseUrl $serverUrl `
+                -AppSettingsPaths @($appSettings)
+            $setApiStandardErrorPresent =
+                -not [string]::IsNullOrWhiteSpace(
+                    $setApiResult.StandardError)
+            if (
+                $setApiResult.ExitCode -ne 0 -or
+                $setApiStandardErrorPresent
+            ) {
+                throw (
+                    '테스트 앱 Api.BaseUrl 설정에 실패했습니다. ' +
+                    "exitCode=$($setApiResult.ExitCode) " +
+                    "stderrPresent=$setApiStandardErrorPresent")
+            }
         }
 
-        $serverProcess = Start-IsolatedTestServer -DotnetExe $DotnetExe -ServerDir $ServerDir -ServerDataRoot $ServerDataRoot -ServerUrl $serverUrl
+        $serverProcess = Start-IsolatedTestServer `
+            -DotnetExe $DotnetExe `
+            -ServerDir $ServerDir `
+            -ServerDataRoot $ServerDataRoot `
+            -ServerDllPath $(if ($null -eq $validatedBootstrapContract) { '' } else { [string]$validatedBootstrapContract.ServerDllPath }) `
+            -ServerUrl $serverUrl `
+            -EnableEphemeralAdminBootstrap ([bool]$EnableEphemeralAdminBootstrap) `
+            -EphemeralAdminPassword $EphemeralAdminPassword
+        $EphemeralAdminPassword = $null
+        $serverProcessStartTimeUtcTicks =
+            $serverProcess.StartTime.ToUniversalTime().Ticks
         Add-Step -Steps $steps -Name 'start-server' -Passed $true -Detail "pid=$($serverProcess.Id), url=$serverUrl"
         if (-not (Wait-HttpReady -Url ($serverUrl + '/healthz') -TimeoutSeconds 90)) {
             throw "테스트 서버 healthz 대기 실패: $serverUrl"
@@ -906,37 +1594,91 @@ try {
     }
 
     $mainWindow = $null
-    if ($startupWindow.Kind -eq 'Login') {
+    if ($startupWindow.Kind -eq 'Login' -or (Test-IsLoginWindow -Window $startupWindow.Window)) {
         $loginWindow = $startupWindow.Window
-        Add-Step -Steps $steps -Name 'login-window' -Passed $true -Detail 'found'
+        Add-Step -Steps $steps -Name 'login-window' -Passed $true -Detail "found; title=$([string]$loginWindow.Current.Name)"
 
-        $editControls = Find-AllByControlType -Root $loginWindow -ControlType ([System.Windows.Automation.ControlType]::Edit)
+        if (
+            [string]::IsNullOrWhiteSpace($Username) -or
+            [string]::IsNullOrWhiteSpace($Password)
+        ) {
+            throw '로그인 자격 증명은 명시적으로 전달되어야 합니다.'
+        }
+
         $usernameBox = Find-FirstByAutomationId -Root $loginWindow -AutomationId 'UsernameBox'
-        if ($null -eq $usernameBox -and $editControls.Count -gt 0) {
-            $usernameBox = $editControls[0]
-        }
-
         $passwordBox = Find-FirstByAutomationId -Root $loginWindow -AutomationId 'PasswordBox'
-        if ($null -eq $passwordBox -and $editControls.Count -gt 1) {
-            $passwordBox = $editControls[1]
-        }
-
         if ($null -eq $usernameBox -or $null -eq $passwordBox) {
-            throw "로그인 입력칸을 찾지 못했습니다. editCount=$($editControls.Count)"
+            throw 'AutomationId로 로그인 입력칸을 찾지 못했습니다.'
         }
 
-        if (-not (Set-ElementText -Element $usernameBox -Text $Username)) {
-            throw '아이디 입력 실패'
+        if ([string]::IsNullOrWhiteSpace($LoginInputMutexName)) {
+            $LoginInputMutexName = 'Local\GeoraePlan.DesktopUiSmoke.LoginInput.Standalone'
         }
-        if (-not (Set-ElementText -Element $passwordBox -Text $Password)) {
-            throw '비밀번호 입력 실패'
+        if ($LoginInputMutexName -notmatch '^Local\\GeoraePlan\.[A-Za-z0-9._-]{1,180}$') {
+            throw '로그인 입력 mutex 이름이 허용된 Local run scope 형식이 아닙니다.'
         }
 
-        $loginButton = Find-FirstByName -Root $loginWindow -Name '로그인'
-        if ($null -eq $loginButton -or -not (Invoke-Element $loginButton)) {
-            throw '로그인 버튼 실행 실패'
+        $loginInputMutex =
+            [System.Threading.Mutex]::new($false, $LoginInputMutexName)
+        $loginInputMutexAcquired = $false
+        try {
+            try {
+                $loginInputMutexAcquired =
+                    $loginInputMutex.WaitOne([TimeSpan]::FromSeconds(120))
+            }
+            catch [System.Threading.AbandonedMutexException] {
+                $loginInputMutexAcquired = $true
+            }
+            if (-not $loginInputMutexAcquired) {
+                throw 'run-scoped 로그인 입력 mutex 획득 시간이 초과되었습니다.'
+            }
+
+            Normalize-WindowForSmoke -Window $loginWindow
+            if (
+                -not (Set-ElementText `
+                    -LoginWindow $loginWindow `
+                    -Element $usernameBox `
+                    -Text $Username `
+                    -ExpectedProcessId $process.Id `
+                    -ExpectedAutomationId 'UsernameBox')
+            ) {
+                throw '아이디 입력 실패'
+            }
+            if (
+                -not (Set-ElementText `
+                    -LoginWindow $loginWindow `
+                    -Element $passwordBox `
+                    -Text $Password `
+                    -ExpectedProcessId $process.Id `
+                    -ExpectedAutomationId 'PasswordBox')
+            ) {
+                throw '비밀번호 입력 실패'
+            }
+
+            [void](Assert-LoginInputTarget `
+                -LoginWindow $loginWindow `
+                -Element $passwordBox `
+                -ExpectedProcessId $process.Id `
+                -ExpectedAutomationId 'PasswordBox')
+            $loginButton = Find-FirstByName -Root $loginWindow -Name '로그인'
+            if (
+                $null -eq $loginButton -or
+                [int]$loginButton.Current.ProcessId -ne [int]$process.Id -or
+                -not (Invoke-Element $loginButton)
+            ) {
+                throw '로그인 버튼 실행 실패'
+            }
+            Add-Step -Steps $steps -Name 'login-submit' -Passed $true -Detail 'submitted'
+            $Username = $null
+            $Password = $null
         }
-        Add-Step -Steps $steps -Name 'login-submit' -Passed $true -Detail 'submitted'
+        finally {
+            if ($loginInputMutexAcquired) {
+                try { $loginInputMutex.ReleaseMutex() } catch { }
+            }
+            $loginInputMutex.Dispose()
+        }
+
         $mainWindow = Wait-MainWindowOnly -ProcessId $process.Id -TimeoutSec 90
     }
     elseif ($startupWindow.Kind -eq 'Main') {
@@ -949,10 +1691,9 @@ try {
     }
 
     if ($null -eq $mainWindow) {
-        $windowNames = Get-ProcessWindowNames -ProcessId $process.Id
         $loginWindowAfterFailure = Get-ProcessWindow -ProcessId $process.Id -Name '로그인' -Contains -TimeoutSec 1
-        $loginTexts = Get-DescendantNames -Root $loginWindowAfterFailure -Limit 40
-        throw "메인 창을 찾지 못했습니다. windows=$($windowNames -join ', '); loginTexts=$($loginTexts -join ', ')"
+        $loginWindowRemained = $null -ne $loginWindowAfterFailure
+        throw "로그인 제출 후 메인 창을 찾지 못했습니다. pid=$($process.Id); loginWindowRemained=$loginWindowRemained"
     }
 
     Normalize-WindowForSmoke -Window $mainWindow
@@ -993,7 +1734,7 @@ try {
     Add-Step -Steps $steps -Name 'main-buttons' -Passed ($missingMainButtons.Count -eq 0) -Detail ($(if ($missingMainButtons.Count -eq 0) { 'all found' } else { 'missing: ' + ($missingMainButtons -join ', ') }))
 
     if ($UseInAppSelfTest) {
-        if (-not (Wait-FileReady -Path $InAppSelfTestReportPath -TimeoutSeconds 160)) {
+        if (-not (Wait-FileReady -Path $InAppSelfTestReportPath -TimeoutSeconds $InAppSelfTestTimeoutSec)) {
             Add-Step -Steps $steps -Name 'in-app-self-test' -Passed $false -Detail "report not created: $InAppSelfTestReportPath"
         }
         else {
@@ -1027,12 +1768,16 @@ catch {
     Add-Step -Steps $steps -Name 'exception' -Passed $false -Detail $errorText
 }
 finally {
+    $EphemeralAdminPassword = $null
+    $Username = $null
+    $Password = $null
+
     if (-not $KeepAppOpen -and -not $AttachExisting -and $null -ne $process -and -not $process.HasExited) {
         try {
             $process.CloseMainWindow() | Out-Null
-            Start-Sleep -Milliseconds 800
-            if (-not $process.HasExited) {
+            if (-not $process.WaitForExit(30000)) {
                 $process.Kill()
+                $process.WaitForExit(5000) | Out-Null
             }
         }
         catch {
@@ -1040,12 +1785,31 @@ finally {
         }
     }
 
-    if ($null -ne $serverProcess -and -not $serverProcess.HasExited) {
+    if ($null -ne $serverProcess) {
         try {
-            Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
+            Stop-ExactProcessAndWait `
+                -ProcessId $serverProcess.Id `
+                -ExpectedStartTimeUtcTicks $serverProcessStartTimeUtcTicks `
+                -TimeoutMilliseconds 15000
+            if (-not (Wait-LoopbackPortReleased -Port $port -TimeoutSeconds 30)) {
+                throw "테스트 서버 loopback 포트가 해제되지 않았습니다: $port"
+            }
+            Add-Step `
+                -Steps $steps `
+                -Name 'server-process-cleanup' `
+                -Passed $true `
+                -Detail "exact PID/start-time process exited; loopback port released"
         }
         catch {
-            # ignore cleanup failure
+            $passed = $false
+            if ([string]::IsNullOrWhiteSpace($errorText)) {
+                $errorText = $_.Exception.Message
+            }
+            Add-Step `
+                -Steps $steps `
+                -Name 'server-process-cleanup' `
+                -Passed $false `
+                -Detail $_.Exception.Message
         }
     }
 

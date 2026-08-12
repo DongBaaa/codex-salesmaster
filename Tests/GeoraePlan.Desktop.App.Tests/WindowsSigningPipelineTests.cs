@@ -64,7 +64,9 @@ public sealed class WindowsSigningPipelineTests
         AssertInOrder(
             buildSource,
             "Invoke-WindowsArtifactSigning -ProjectRoot $ProjectRoot -WindowsSigningConfigPath $WindowsSigningConfigPath -PackageRoot $packageRoot -RequireSigning:$RequireWindowsAuthenticode",
-            "Compress-Archive -Path (Join-Path $packageRoot '*') -DestinationPath $zipPath -CompressionLevel Optimal");
+            "Compress-Archive",
+            "-DestinationPath $stagedZipPath",
+            "-ArchivePath $stagedZipPath");
         Assert.Contains("'-WindowsSigningConfigPath', $WindowsSigningConfigPath", buildSource, StringComparison.Ordinal);
         Assert.Contains("'-RequireWindowsAuthenticode'", buildSource, StringComparison.Ordinal);
 
@@ -89,8 +91,17 @@ public sealed class WindowsSigningPipelineTests
 
         Assert.Contains("[string]$WindowsSigningConfigPath", publishSource, StringComparison.Ordinal);
         Assert.Contains("'-WindowsSigningConfigPath', $WindowsSigningConfigPath", publishSource, StringComparison.Ordinal);
-        Assert.Contains("'-RequireWindowsAuthenticode'", publishSource, StringComparison.Ordinal);
-        Assert.Contains("$windowsSigningCheckArgs += '-RequireTimestamp'", publishSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("AllowUnsignedWindowsArtifactsForLocalDevelopment", publishSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("$enforceWindowsAuthenticode", publishSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("if ($RequireWindowsAuthenticode)", publishSource, StringComparison.Ordinal);
+        AssertInOrder(
+            publishSource,
+            "$desktopArgs += '-RequireWindowsAuthenticode'",
+            "& powershell @desktopArgs",
+            "$windowsSigningCheckArgs += '-RequireSigned'",
+            "$windowsSigningCheckArgs += '-RequireTimestamp'",
+            "& powershell @windowsSigningCheckArgs",
+            "$updateAssetsScript = Join-Path $ProjectRoot 'tools\\release\\Publish-GeoraePlanUpdateAssets.ps1'");
     }
 
     [Fact]
@@ -105,8 +116,12 @@ public sealed class WindowsSigningPipelineTests
         Assert.Contains("RFC3161 timestamp URL must be an absolute HTTPS URL", source, StringComparison.Ordinal);
         Assert.Contains("Test-CodeSigningCertificate", source, StringComparison.Ordinal);
         Assert.Contains("Test-GeoraePlanWindowsSigning.ps1", source, StringComparison.Ordinal);
+        Assert.Contains("'App\\거래플랜.Desktop.App.exe'", source, StringComparison.Ordinal);
         Assert.Contains("windows_authenticode_signing=SKIPPED_NO_CERTIFICATE", source, StringComparison.Ordinal);
         Assert.Contains("windows_authenticode_signing=PASS", source, StringComparison.Ordinal);
+
+        var verifierSource = File.ReadAllText(RepositoryFile("tools", "release", "Test-GeoraePlanWindowsSigning.ps1"));
+        Assert.Contains("(Join-Path $packageRoot 'App\\거래플랜.Desktop.App.exe')", verifierSource, StringComparison.Ordinal);
     }
 
     [Fact]

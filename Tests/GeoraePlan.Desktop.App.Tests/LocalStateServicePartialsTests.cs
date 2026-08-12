@@ -1,12 +1,17 @@
 using System.Reflection;
 using System.Globalization;
+using System.Data.Common;
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.ViewModels;
 using 거래플랜.Shared.Contracts;
@@ -291,6 +296,11 @@ public sealed class LocalStateServicePartialsTests
 
         Assert.True(duplicateOnly.HasIssues);
         Assert.False(duplicateOnly.HasPassiveStartupNoticeIssues);
+        Assert.Equal(0, duplicateOnly.PassiveStartupNoticeIssueCount);
+        Assert.Equal(0, duplicateOnly.ErrorIssueCount);
+        Assert.Equal(2, duplicateOnly.WarningIssueCount);
+        Assert.Equal(2, duplicateOnly.ActionRequiredIssueCount);
+        Assert.Equal(0, duplicateOnly.InformationalIssueCount);
         Assert.Equal(string.Empty, duplicateOnly.PassiveStartupNoticeSignature);
 
         var actionable = new DataIntegrityScanResult(
@@ -306,7 +316,75 @@ public sealed class LocalStateServicePartialsTests
             ]);
 
         Assert.True(actionable.HasPassiveStartupNoticeIssues);
+        Assert.Equal(1, actionable.PassiveStartupNoticeIssueCount);
+        Assert.Equal(0, actionable.ErrorIssueCount);
+        Assert.Equal(1, actionable.WarningIssueCount);
         Assert.Equal($"{DataIntegrityIssueCodes.InvoiceAmountMismatch}:1", actionable.PassiveStartupNoticeSignature);
+    }
+
+    [Fact]
+    public void DataIntegrityScanResult_SeverityCounts_NormalizeWhitespaceAndUnknownAsWarning()
+    {
+        var result = new DataIntegrityScanResult(
+            DateTime.Now,
+            [],
+            [
+                new DataIntegrityIssueDetail { Severity = " Error " },
+                new DataIntegrityIssueDetail { Severity = " warning " },
+                new DataIntegrityIssueDetail { Severity = " INFO " },
+                new DataIntegrityIssueDetail { Severity = "Unexpected" },
+                new DataIntegrityIssueDetail { Severity = "   " }
+            ]);
+
+        Assert.Equal(5, result.TotalIssueCount);
+        Assert.Equal(1, result.ErrorIssueCount);
+        Assert.Equal(3, result.WarningIssueCount);
+        Assert.Equal(1, result.InformationalIssueCount);
+        Assert.Equal(
+            result.TotalIssueCount,
+            result.ErrorIssueCount + result.WarningIssueCount + result.InformationalIssueCount);
+        Assert.Equal(4, result.ActionRequiredIssueCount);
+        Assert.Equal("오류", result.Issues[0].SeverityDisplay);
+        Assert.Equal("주의", result.Issues[3].SeverityDisplay);
+    }
+
+    [Fact]
+    public void DataIntegrityScanResult_PassiveStartupStatus_WithErrorsRequiresDiagnosticsBeforeAffectedWork()
+    {
+        var result = new DataIntegrityScanResult(
+            DateTime.Now,
+            [],
+            [
+                new DataIntegrityIssueDetail { Severity = "Error" },
+                new DataIntegrityIssueDetail { Severity = "Warning" },
+                new DataIntegrityIssueDetail { Severity = "Info" }
+            ]);
+
+        var message = result.BuildPassiveStartupStatusMessage();
+
+        Assert.Contains("오류 1건, 주의 1건, 참고 1건", message, StringComparison.Ordinal);
+        Assert.Contains("모든 업무가 안전하다고 볼 수 없습니다", message, StringComparison.Ordinal);
+        Assert.Contains("저장·청구 업무 전", message, StringComparison.Ordinal);
+        Assert.Contains("동기화 진단 > 무결성 리포트", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DataIntegrityScanResult_PassiveStartupStatus_WithoutErrorsAllowsWorkAndOffersDetails()
+    {
+        var result = new DataIntegrityScanResult(
+            DateTime.Now,
+            [],
+            [
+                new DataIntegrityIssueDetail { Severity = " Warning " },
+                new DataIntegrityIssueDetail { Severity = "Info" }
+            ]);
+
+        var message = result.BuildPassiveStartupStatusMessage();
+
+        Assert.Contains("오류 0건, 주의 1건, 참고 1건", message, StringComparison.Ordinal);
+        Assert.Contains("업무는 계속할 수 있으며", message, StringComparison.Ordinal);
+        Assert.Contains("동기화 진단 > 무결성 리포트", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("모든 업무가 안전하다고 볼 수 없습니다", message, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -916,8 +994,8 @@ public sealed class LocalStateServicePartialsTests
         var rowsIndex = source.IndexOf("var invoiceRows = finalInvoices.Select(inv =>", StringComparison.Ordinal);
         var replaceIndex = source.IndexOf("InvoiceRows.ReplaceWith(rows);", StringComparison.Ordinal);
         var dashboardIndex = source.IndexOf("await RefreshDashboardMetricsAsync(canReuseAsAllInvoiceSet ? invoiceList : null, ct, forceReload);", StringComparison.Ordinal);
-        var favoritesIndex = source.IndexOf("await LoadInvoiceFavoritesAsync(canReuseAsAllInvoiceSet ? invoiceList : null, ct, forceReload);", StringComparison.Ordinal);
-        var financialIndex = source.IndexOf("await RefreshSelectedCustomerFinancialPreviewAsync();", StringComparison.Ordinal);
+        var favoritesIndex = source.IndexOf("await LoadInvoiceFavoritesAsync(canReuseAsAllInvoiceSet ? invoiceList : null, ct, forceReload, dataGateAlreadyHeld: true);", StringComparison.Ordinal);
+        var financialIndex = source.IndexOf("await RefreshSelectedCustomerFinancialPreviewAsync(ct, dataGateAlreadyHeld: true);", StringComparison.Ordinal);
 
         Assert.True(queryIndex > 0);
         Assert.True(customerMapIndex > queryIndex);
@@ -971,7 +1049,12 @@ public sealed class LocalStateServicePartialsTests
                 EditCustNotes = "이전 메모"
             };
 
-            await InvokePrivateInstanceTaskResultAsync(viewModel, "LoadPreviewAsync", null, 0);
+            await InvokePrivateInstanceTaskResultAsync(
+                viewModel,
+                "LoadPreviewAsync",
+                null,
+                0,
+                CancellationToken.None);
 
             Assert.Equal(string.Empty, viewModel.PreviewCustomerName);
             Assert.Equal(string.Empty, viewModel.PreviewCustomerBizNumber);
@@ -1000,10 +1083,11 @@ public sealed class LocalStateServicePartialsTests
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "georaeplan-main-selection-probe-" + Guid.NewGuid().ToString("N"));
         Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+        MainViewModel? viewModel = null;
+        var db = new LocalDbContext();
 
         try
         {
-            await using var db = new LocalDbContext();
             await db.Database.EnsureDeletedAsync();
             await db.Database.EnsureCreatedAsync();
 
@@ -1015,7 +1099,7 @@ public sealed class LocalStateServicePartialsTests
             var rental = new RentalStateService(db);
             var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
             using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
-            var viewModel = new MainViewModel(localState, sync, new BackupService(), rental, diagnostics, api, session);
+            viewModel = new MainViewModel(localState, sync, new BackupService(), rental, diagnostics, api, session);
 
             var customerId = Guid.Parse("92333333-3333-3333-3333-333333333333");
             var selectedInvoiceId = Guid.Parse("92444444-4444-4444-4444-444444444444");
@@ -1064,35 +1148,43 @@ public sealed class LocalStateServicePartialsTests
             var selectedBeforeRefresh = Assert.Single(viewModel.InvoiceRows);
             viewModel.SelectedInvoiceRow = selectedBeforeRefresh;
 
-            db.Invoices.Add(new LocalInvoice
+            await localState.OwnerScopeDataGate.WaitAsync();
+            try
             {
-                Id = newInvoiceId,
-                CustomerId = customerId,
-                TenantCode = TenantScopeCatalog.UsenetGroup,
-                OfficeCode = OfficeCodeCatalog.Usenet,
-                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
-                VoucherType = VoucherType.Sales,
-                InvoiceDate = DateOnly.FromDateTime(DateTime.Today),
-                InvoiceNumber = "KEEP-SELECTION-002",
-                TotalAmount = 220_000m,
-                SupplyAmount = 200_000m,
-                VatAmount = 20_000m,
-                IsLatestVersion = true,
-                IsConfirmed = true,
-                IsDeleted = false,
-                Lines =
+                db.Invoices.Add(new LocalInvoice
                 {
-                    new LocalInvoiceLine
+                    Id = newInvoiceId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = DateOnly.FromDateTime(DateTime.Today),
+                    InvoiceNumber = "KEEP-SELECTION-002",
+                    TotalAmount = 220_000m,
+                    SupplyAmount = 200_000m,
+                    VatAmount = 20_000m,
+                    IsLatestVersion = true,
+                    IsConfirmed = true,
+                    IsDeleted = false,
+                    Lines =
                     {
-                        ItemNameOriginal = "동기화 신규 품목",
-                        Quantity = 1m,
-                        UnitPrice = 220_000m,
-                        LineAmount = 220_000m,
-                        IsDeleted = false
+                        new LocalInvoiceLine
+                        {
+                            ItemNameOriginal = "동기화 신규 품목",
+                            Quantity = 1m,
+                            UnitPrice = 220_000m,
+                            LineAmount = 220_000m,
+                            IsDeleted = false
+                        }
                     }
-                }
-            });
-            await db.SaveChangesAsync();
+                });
+                await db.SaveChangesAsync();
+            }
+            finally
+            {
+                localState.OwnerScopeDataGate.Release();
+            }
 
             await viewModel.LoadInvoiceListCommand.ExecuteAsync(null);
 
@@ -1103,8 +1195,13 @@ public sealed class LocalStateServicePartialsTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
-            SqliteConnection.ClearAllPools();
+            await CleanupMainViewModelFixtureAsync(
+                viewModel is null
+                    ? null
+                    : () => viewModel.DrainPendingBackgroundWorkForShutdownAsync(),
+                db.DisposeAsync,
+                () => Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null),
+                SqliteConnection.ClearAllPools);
         }
     }
 
@@ -1113,10 +1210,11 @@ public sealed class LocalStateServicePartialsTests
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "georaeplan-main-latest-selection-probe-" + Guid.NewGuid().ToString("N"));
         Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+        MainViewModel? viewModel = null;
+        var db = new LocalDbContext();
 
         try
         {
-            await using var db = new LocalDbContext();
             await db.Database.EnsureDeletedAsync();
             await db.Database.EnsureCreatedAsync();
 
@@ -1128,7 +1226,7 @@ public sealed class LocalStateServicePartialsTests
             var rental = new RentalStateService(db);
             var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
             using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
-            var viewModel = new MainViewModel(localState, sync, new BackupService(), rental, diagnostics, api, session);
+            viewModel = new MainViewModel(localState, sync, new BackupService(), rental, diagnostics, api, session);
 
             var customerId = Guid.Parse("92666666-6666-6666-6666-666666666666");
             var versionGroupId = Guid.Parse("92777777-7777-7777-7777-777777777777");
@@ -1182,40 +1280,48 @@ public sealed class LocalStateServicePartialsTests
             Assert.Equal(versionGroupId, selectedBeforeRefresh.EffectiveVersionGroupId);
             viewModel.SelectedInvoiceRow = selectedBeforeRefresh;
 
-            var oldInvoice = await db.Invoices.SingleAsync(invoice => invoice.Id == oldInvoiceId);
-            oldInvoice.IsLatestVersion = false;
-            db.Invoices.Add(new LocalInvoice
+            await localState.OwnerScopeDataGate.WaitAsync();
+            try
             {
-                Id = latestInvoiceId,
-                VersionGroupId = versionGroupId,
-                VersionNumber = 2,
-                PreviousVersionId = oldInvoiceId,
-                CustomerId = customerId,
-                TenantCode = TenantScopeCatalog.UsenetGroup,
-                OfficeCode = OfficeCodeCatalog.Usenet,
-                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
-                VoucherType = VoucherType.Purchase,
-                InvoiceDate = DateOnly.FromDateTime(DateTime.Today.AddDays(-2)),
-                InvoiceNumber = "LATEST-SELECTION-001",
-                TotalAmount = 220_000m,
-                SupplyAmount = 200_000m,
-                VatAmount = 20_000m,
-                IsLatestVersion = true,
-                IsConfirmed = true,
-                IsDeleted = false,
-                Lines =
+                var oldInvoice = await db.Invoices.SingleAsync(invoice => invoice.Id == oldInvoiceId);
+                oldInvoice.IsLatestVersion = false;
+                db.Invoices.Add(new LocalInvoice
                 {
-                    new LocalInvoiceLine
+                    Id = latestInvoiceId,
+                    VersionGroupId = versionGroupId,
+                    VersionNumber = 2,
+                    PreviousVersionId = oldInvoiceId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    VoucherType = VoucherType.Purchase,
+                    InvoiceDate = DateOnly.FromDateTime(DateTime.Today.AddDays(-2)),
+                    InvoiceNumber = "LATEST-SELECTION-001",
+                    TotalAmount = 220_000m,
+                    SupplyAmount = 200_000m,
+                    VatAmount = 20_000m,
+                    IsLatestVersion = true,
+                    IsConfirmed = true,
+                    IsDeleted = false,
+                    Lines =
                     {
-                        ItemNameOriginal = "최신 승격 신규 품목",
-                        Quantity = 1m,
-                        UnitPrice = 220_000m,
-                        LineAmount = 220_000m,
-                        IsDeleted = false
+                        new LocalInvoiceLine
+                        {
+                            ItemNameOriginal = "최신 승격 신규 품목",
+                            Quantity = 1m,
+                            UnitPrice = 220_000m,
+                            LineAmount = 220_000m,
+                            IsDeleted = false
+                        }
                     }
-                }
-            });
-            await db.SaveChangesAsync();
+                });
+                await db.SaveChangesAsync();
+            }
+            finally
+            {
+                localState.OwnerScopeDataGate.Release();
+            }
 
             await viewModel.LoadInvoiceListCommand.ExecuteAsync(null);
 
@@ -1228,8 +1334,13 @@ public sealed class LocalStateServicePartialsTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
-            SqliteConnection.ClearAllPools();
+            await CleanupMainViewModelFixtureAsync(
+                viewModel is null
+                    ? null
+                    : () => viewModel.DrainPendingBackgroundWorkForShutdownAsync(),
+                db.DisposeAsync,
+                () => Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null),
+                SqliteConnection.ClearAllPools);
         }
     }
 
@@ -1238,10 +1349,11 @@ public sealed class LocalStateServicePartialsTests
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "georaeplan-main-latest-open-probe-" + Guid.NewGuid().ToString("N"));
         Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+        MainViewModel? viewModel = null;
+        var db = new LocalDbContext();
 
         try
         {
-            await using var db = new LocalDbContext();
             await db.Database.EnsureDeletedAsync();
             await db.Database.EnsureCreatedAsync();
 
@@ -1253,7 +1365,7 @@ public sealed class LocalStateServicePartialsTests
             var rental = new RentalStateService(db);
             var api = new ErpApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, session);
             using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
-            var viewModel = new MainViewModel(localState, sync, new BackupService(), rental, diagnostics, api, session);
+            viewModel = new MainViewModel(localState, sync, new BackupService(), rental, diagnostics, api, session);
 
             var customerId = Guid.Parse("92AAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA");
             var versionGroupId = Guid.Parse("92BBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB");
@@ -1305,40 +1417,48 @@ public sealed class LocalStateServicePartialsTests
             var selectedBeforeLatestVersion = Assert.Single(viewModel.InvoiceRows);
             viewModel.SelectedInvoiceRow = selectedBeforeLatestVersion;
 
-            var oldInvoice = await db.Invoices.SingleAsync(invoice => invoice.Id == oldInvoiceId);
-            oldInvoice.IsLatestVersion = false;
-            db.Invoices.Add(new LocalInvoice
+            await localState.OwnerScopeDataGate.WaitAsync();
+            try
             {
-                Id = latestInvoiceId,
-                VersionGroupId = versionGroupId,
-                VersionNumber = 2,
-                PreviousVersionId = oldInvoiceId,
-                CustomerId = customerId,
-                TenantCode = TenantScopeCatalog.UsenetGroup,
-                OfficeCode = OfficeCodeCatalog.Usenet,
-                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
-                VoucherType = VoucherType.Sales,
-                InvoiceDate = DateOnly.FromDateTime(DateTime.Today.AddDays(-2)),
-                InvoiceNumber = "LATEST-OPEN-001",
-                TotalAmount = 77_000m,
-                SupplyAmount = 70_000m,
-                VatAmount = 7_000m,
-                IsLatestVersion = true,
-                IsConfirmed = true,
-                IsDeleted = false,
-                Lines =
+                var oldInvoice = await db.Invoices.SingleAsync(invoice => invoice.Id == oldInvoiceId);
+                oldInvoice.IsLatestVersion = false;
+                db.Invoices.Add(new LocalInvoice
                 {
-                    new LocalInvoiceLine
+                    Id = latestInvoiceId,
+                    VersionGroupId = versionGroupId,
+                    VersionNumber = 2,
+                    PreviousVersionId = oldInvoiceId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = DateOnly.FromDateTime(DateTime.Today.AddDays(-2)),
+                    InvoiceNumber = "LATEST-OPEN-001",
+                    TotalAmount = 77_000m,
+                    SupplyAmount = 70_000m,
+                    VatAmount = 7_000m,
+                    IsLatestVersion = true,
+                    IsConfirmed = true,
+                    IsDeleted = false,
+                    Lines =
                     {
-                        ItemNameOriginal = "최신 열기 신규 품목",
-                        Quantity = 1m,
-                        UnitPrice = 77_000m,
-                        LineAmount = 77_000m,
-                        IsDeleted = false
+                        new LocalInvoiceLine
+                        {
+                            ItemNameOriginal = "최신 열기 신규 품목",
+                            Quantity = 1m,
+                            UnitPrice = 77_000m,
+                            LineAmount = 77_000m,
+                            IsDeleted = false
+                        }
                     }
-                }
-            });
-            await db.SaveChangesAsync();
+                });
+                await db.SaveChangesAsync();
+            }
+            finally
+            {
+                localState.OwnerScopeDataGate.Release();
+            }
 
             var latestInvoice = await viewModel.GetLatestSelectedInvoiceAsync();
 
@@ -1350,9 +1470,39 @@ public sealed class LocalStateServicePartialsTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
-            SqliteConnection.ClearAllPools();
+            await CleanupMainViewModelFixtureAsync(
+                viewModel is null
+                    ? null
+                    : () => viewModel.DrainPendingBackgroundWorkForShutdownAsync(),
+                db.DisposeAsync,
+                () => Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null),
+                SqliteConnection.ClearAllPools);
         }
+    }
+
+    [Fact]
+    public async Task MainViewModelFixtureCleanup_DrainFailureStillRunsRemainingCleanupAndRethrows()
+    {
+        var expected = new InvalidOperationException("deterministic drain failure");
+        var disposed = false;
+        var environmentReset = false;
+        var poolsCleared = false;
+
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            CleanupMainViewModelFixtureAsync(
+                () => Task.FromException(expected),
+                () =>
+                {
+                    disposed = true;
+                    return ValueTask.CompletedTask;
+                },
+                () => environmentReset = true,
+                () => poolsCleared = true));
+
+        Assert.Same(expected, actual);
+        Assert.True(disposed);
+        Assert.True(environmentReset);
+        Assert.True(poolsCleared);
     }
 
     [Fact]
@@ -1395,7 +1545,10 @@ public sealed class LocalStateServicePartialsTests
             });
             await db.SaveChangesAsync();
 
-            var shouldSkip = await InvokePrivateInstanceAsync<bool>(viewModel, "ShouldSkipImmediatePostLoginSyncAsync");
+            var shouldSkip = await InvokePrivateInstanceAsync<bool>(
+                viewModel,
+                "ShouldSkipImmediatePostLoginSyncAsync",
+                CancellationToken.None);
 
             Assert.False(shouldSkip);
         }
@@ -3433,7 +3586,8 @@ public sealed class LocalStateServicePartialsTests
         Assert.Contains("Grid.Row=\"3\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Content=\"{Binding ConfirmButtonLabel}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("IsDefault=\"True\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("선택한 장비를 추가하면 현재 거래처에 연결되고", xaml, StringComparison.Ordinal);
+        Assert.Contains("같은 업체 장비는 적용 즉시 현재 거래처에 연결되고", xaml, StringComparison.Ordinal);
+        Assert.Contains("렌탈 자산/설치현황 원장에 함께 저장됩니다.", xaml, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -3575,13 +3729,605 @@ public sealed class LocalStateServicePartialsTests
             var session = CreateAdminSession();
             var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
             var viewModel = new InventoryViewModel(local, session);
+            try
+            {
+                await viewModel.LoadAndSelectItemAsync(targetItemId);
 
-            await viewModel.LoadAndSelectItemAsync(targetItemId);
+                Assert.Equal("중복 테스트 토너", viewModel.SearchText);
+                Assert.NotNull(viewModel.SelectedItem);
+                Assert.Equal(targetItemId, viewModel.SelectedItem.Id);
+                Assert.All(viewModel.FilteredItems, row => Assert.Contains("중복 테스트 토너", row.NameOriginal, StringComparison.Ordinal));
+            }
+            finally
+            {
+                await viewModel.CancelPendingBackgroundWorkAsync();
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
 
-            Assert.Equal("중복 테스트 토너", viewModel.SearchText);
-            Assert.NotNull(viewModel.SelectedItem);
-            Assert.Equal(targetItemId, viewModel.SelectedItem.Id);
-            Assert.All(viewModel.FilteredItems, row => Assert.Contains("중복 테스트 토너", row.NameOriginal, StringComparison.Ordinal));
+    [Fact]
+    public async Task InventoryViewModel_SameItemRowReplacement_PreservesPendingDraftWithoutAutoSave()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-inventory-same-item-selection-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.Parse("b5100000-0000-0000-0000-000000000003");
+            db.ItemCategoryOptions.Add(
+                new LocalItemCategoryOption
+                {
+                    Id = Guid.Parse("b5100000-0000-0000-0000-000000000004"),
+                    Name = "test",
+                    SortOrder = 10,
+                    IsActive = true,
+                    IsDirty = false
+                });
+            db.Items.Add(
+                new LocalItem
+                {
+                    Id = itemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "same-item-selection-guard",
+                    NameMatchKey = "SAMEITEMSELECTIONGUARD",
+                    SpecificationOriginal = "A4",
+                    SpecificationMatchKey = "A4",
+                    CategoryName = "test",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    SimpleMemo = "INITIAL",
+                    Revision = 100,
+                    IsDeleted = false,
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var viewModel = new InventoryViewModel(local, session);
+            try
+            {
+            await viewModel.LoadAndSelectItemAsync(itemId);
+
+            viewModel.EditSimpleMemo = "PENDING";
+            Assert.True(viewModel.HasPendingChanges);
+
+            var selectedBeforeFilter = viewModel.SelectedItem;
+            viewModel.SearchText = "same-item";
+            for (var attempt = 0;
+                 attempt < 50 && ReferenceEquals(selectedBeforeFilter, viewModel.SelectedItem);
+                 attempt++)
+            {
+                await Task.Delay(20);
+            }
+
+            Assert.NotSame(selectedBeforeFilter, viewModel.SelectedItem);
+            Assert.Equal("PENDING", viewModel.EditSimpleMemo);
+            Assert.True(viewModel.HasPendingChanges);
+
+            var persistedBeforeSave = await db.Items
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == itemId);
+            Assert.Equal("INITIAL", persistedBeforeSave.SimpleMemo);
+            Assert.False(persistedBeforeSave.IsDirty);
+
+            var snapshot = typeof(InventoryViewModel)
+                .GetMethod("CaptureEditSnapshot", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(viewModel, null);
+            var saveTask = (Task<bool>)typeof(InventoryViewModel)
+                .GetMethod("SaveSnapshotAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(
+                    viewModel,
+                    [
+                        snapshot!,
+                        itemId,
+                        false,
+                        true,
+                        "saved",
+                        "denied",
+                        false,
+                        false
+                    ])!;
+            Assert.True(await saveTask, viewModel.StatusMessage);
+
+            Assert.Equal("PENDING", viewModel.EditSimpleMemo);
+            Assert.False(viewModel.HasPendingChanges);
+            var saved = await db.Items
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == itemId);
+            Assert.Equal("PENDING", saved.SimpleMemo);
+            Assert.True(saved.IsDirty);
+            Assert.Equal(100, saved.Revision);
+
+            var tracked = await db.Items.SingleAsync(item => item.Id == itemId);
+            tracked.SimpleMemo = "REMOTE";
+            tracked.Revision = saved.Revision + 100;
+            tracked.IsDirty = false;
+            await db.SaveChangesAsync();
+
+            viewModel.EditSimpleMemo = "SECOND-PENDING";
+            var remote = await db.Items
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == itemId);
+            viewModel.SelectedItem = new InventoryItemRow(
+                remote,
+                new Dictionary<string, decimal>(),
+                session.OfficeCode);
+
+            Assert.Equal("SECOND-PENDING", viewModel.EditSimpleMemo);
+            Assert.True(viewModel.HasPendingChanges);
+            Assert.Equal(remote.Revision, viewModel.SelectedItem.Source.Revision);
+
+            var autoSaved = await viewModel.TryAutoSaveOnCloseAsync();
+            Assert.False(autoSaved);
+            Assert.Contains("rev", viewModel.StatusMessage, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("SECOND-PENDING", viewModel.EditSimpleMemo);
+            Assert.True(viewModel.HasPendingChanges);
+
+            var persistedAfterConflict = await db.Items
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == itemId);
+            Assert.Equal("REMOTE", persistedAfterConflict.SimpleMemo);
+            Assert.Equal(remote.Revision, persistedAfterConflict.Revision);
+            Assert.False(persistedAfterConflict.IsDirty);
+            }
+            finally
+            {
+                await viewModel.CancelPendingBackgroundWorkAsync();
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task InventoryViewModel_PendingMetadataSave_PreservesLatestWarehouseAggregate()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-inventory-pending-stock-rebase-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.Parse("b5100000-0000-0000-0000-000000000005");
+            db.ItemCategoryOptions.Add(
+                new LocalItemCategoryOption
+                {
+                    Id = Guid.Parse("b5100000-0000-0000-0000-000000000006"),
+                    Name = "test",
+                    SortOrder = 10,
+                    IsActive = true,
+                    IsDirty = false
+                });
+            db.Items.Add(
+                new LocalItem
+                {
+                    Id = itemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Shared,
+                    NameOriginal = "pending-stock-rebase",
+                    NameMatchKey = "PENDINGSTOCKREBASE",
+                    SpecificationOriginal = "A4",
+                    SpecificationMatchKey = "A4",
+                    CategoryName = "test",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    SimpleMemo = "INITIAL",
+                    CurrentStock = 10m,
+                    Revision = 100,
+                    IsDeleted = false,
+                    IsDirty = false
+                });
+            db.ItemWarehouseStocks.Add(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemId,
+                    WarehouseCode = DomainConstants.WarehouseUsenetMain,
+                    Quantity = 10m,
+                    Revision = 100
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var viewModel = new InventoryViewModel(local, session);
+            try
+            {
+            await viewModel.LoadAndSelectItemAsync(itemId);
+            Assert.Equal(10m, viewModel.EditTotalStock);
+
+            viewModel.EditSimpleMemo = "PENDING";
+            await local.SetItemOfficeStockAsync(itemId, 20m, session.OfficeCode);
+
+            var refreshTask = (Task)typeof(InventoryViewModel)
+                .GetMethod("HandleInventoryStateChangedAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(viewModel, null)!;
+            await refreshTask;
+
+            Assert.Equal("PENDING", viewModel.EditSimpleMemo);
+            Assert.True(viewModel.HasPendingChanges);
+            Assert.Equal(20m, viewModel.EditTotalStock);
+
+            viewModel.EditSimpleMemo = "INITIAL";
+            Assert.False(viewModel.HasPendingChanges);
+            viewModel.EditSimpleMemo = "PENDING";
+
+            var snapshot = typeof(InventoryViewModel)
+                .GetMethod("CaptureEditSnapshot", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(viewModel, null);
+            var saveTask = (Task<bool>)typeof(InventoryViewModel)
+                .GetMethod("SaveSnapshotAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(
+                    viewModel,
+                    [
+                        snapshot!,
+                        itemId,
+                        false,
+                        false,
+                        "saved",
+                        "denied",
+                        false,
+                        false
+                    ])!;
+            Assert.True(await saveTask, viewModel.StatusMessage);
+
+            var saved = await db.Items
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == itemId);
+            var warehouseQuantities = await db.ItemWarehouseStocks
+                .AsNoTracking()
+                .Where(stock => stock.ItemId == itemId)
+                .Select(stock => stock.Quantity)
+                .ToListAsync();
+            var warehouseTotal = warehouseQuantities.Sum();
+            Assert.Equal("PENDING", saved.SimpleMemo);
+            Assert.Equal(20m, saved.CurrentStock);
+            Assert.Equal(20m, warehouseTotal);
+            }
+            finally
+            {
+                await viewModel.CancelPendingBackgroundWorkAsync();
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task LocalStateService_ScopedMetadataUpsert_PreservesExistingInventoryStock()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-item-metadata-stock-guard-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.Parse("b5100000-0000-0000-0000-000000000008");
+            db.ItemCategoryOptions.Add(
+                new LocalItemCategoryOption
+                {
+                    Id = Guid.Parse("b5100000-0000-0000-0000-000000000009"),
+                    Name = "test",
+                    SortOrder = 10,
+                    IsActive = true,
+                    IsDirty = false
+                });
+            db.Items.Add(
+                new LocalItem
+                {
+                    Id = itemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Shared,
+                    NameOriginal = "metadata-stock-guard",
+                    NameMatchKey = "METADATASTOCKGUARD",
+                    SpecificationOriginal = "A4",
+                    SpecificationMatchKey = "A4",
+                    CategoryName = "test",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    SimpleMemo = "INITIAL",
+                    CurrentStock = 20m,
+                    Revision = 100,
+                    IsDeleted = false,
+                    IsDirty = true
+                });
+            db.ItemWarehouseStocks.Add(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemId,
+                    WarehouseCode = DomainConstants.WarehouseUsenetMain,
+                    Quantity = 20m,
+                    Revision = 100
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            await local.UpsertItemAsync(
+                new LocalItem
+                {
+                    Id = itemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Shared,
+                    NameOriginal = "metadata-stock-guard",
+                    NameMatchKey = "METADATASTOCKGUARD",
+                    SpecificationOriginal = "A4",
+                    SpecificationMatchKey = "A4",
+                    CategoryName = "test",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    SimpleMemo = "PENDING",
+                    CurrentStock = 10m,
+                    Revision = 100,
+                    IsDeleted = false
+                },
+                session,
+                session.OfficeCode);
+
+            var saved = await db.Items
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == itemId);
+            var warehouseQuantities = await db.ItemWarehouseStocks
+                .AsNoTracking()
+                .Where(stock => stock.ItemId == itemId)
+                .Select(stock => stock.Quantity)
+                .ToListAsync();
+            Assert.Equal("PENDING", saved.SimpleMemo);
+            Assert.Equal(20m, saved.CurrentStock);
+            Assert.Equal(20m, warehouseQuantities.Sum());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task InventoryViewModel_RemoteRefreshFilteredOutItem_PreservesPendingDraft()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-inventory-filtered-draft-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.Parse("b5100000-0000-0000-0000-000000000007");
+            db.Items.Add(
+                new LocalItem
+                {
+                    Id = itemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Shared,
+                    NameOriginal = "filter-alpha",
+                    NameMatchKey = "FILTERALPHA",
+                    SpecificationOriginal = "A4",
+                    SpecificationMatchKey = "A4",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    SimpleMemo = "INITIAL",
+                    Revision = 100,
+                    IsDeleted = false,
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var viewModel = new InventoryViewModel(local, session);
+            try
+            {
+            await viewModel.LoadAndSelectItemAsync(itemId);
+            viewModel.SearchText = "filter-alpha";
+            viewModel.EditSimpleMemo = "PENDING";
+
+            var tracked = await db.Items.SingleAsync(item => item.Id == itemId);
+            tracked.NameOriginal = "filter-beta";
+            tracked.NameMatchKey = "FILTERBETA";
+            await db.SaveChangesAsync();
+
+            var refreshTask = (Task)typeof(InventoryViewModel)
+                .GetMethod("HandleInventoryStateChangedAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(viewModel, null)!;
+            await refreshTask;
+
+            Assert.Null(viewModel.SelectedItem);
+            Assert.Equal(itemId, viewModel.EditId);
+            Assert.Equal("PENDING", viewModel.EditSimpleMemo);
+            Assert.True(viewModel.HasPendingChanges);
+            Assert.Empty(viewModel.FilteredItems);
+
+            var persisted = await db.Items
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == itemId);
+            Assert.Equal("filter-beta", persisted.NameOriginal);
+            Assert.Equal("INITIAL", persisted.SimpleMemo);
+            Assert.False(persisted.IsDirty);
+
+            viewModel.SearchText = "filter-never-matches";
+            typeof(InventoryViewModel)
+                .GetMethod("ApplyFilter", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(viewModel, null);
+
+            var snapshot = typeof(InventoryViewModel)
+                .GetMethod("CaptureEditSnapshot", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(viewModel, null);
+            var saveTask = (Task<bool>)typeof(InventoryViewModel)
+                .GetMethod("SaveSnapshotAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(
+                    viewModel,
+                    [
+                        snapshot!,
+                        itemId,
+                        false,
+                        true,
+                        "saved",
+                        "denied",
+                        false,
+                        false
+                    ])!;
+            Assert.True(await saveTask, viewModel.StatusMessage);
+
+            Assert.Null(viewModel.SelectedItem);
+            Assert.Equal(itemId, viewModel.EditId);
+            Assert.Equal("PENDING", viewModel.EditSimpleMemo);
+            Assert.False(viewModel.HasPendingChanges);
+
+            var savedAfterExplicitSave = await db.Items
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == itemId);
+            Assert.Equal("PENDING", savedAfterExplicitSave.SimpleMemo);
+
+            Assert.True(await viewModel.TryAutoSaveOnCloseAsync());
+            var savedAfterClose = await db.Items
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == itemId);
+            Assert.Equal(savedAfterExplicitSave.Revision, savedAfterClose.Revision);
+            Assert.Equal("PENDING", savedAfterClose.SimpleMemo);
+
+            var acknowledgedAtUtc = DateTime.UtcNow;
+            db.SyncOutboxEntries.Add(
+                new LocalSyncOutboxEntry
+                {
+                    MutationId = $"test-ack-{Guid.NewGuid():N}",
+                    DeviceId = "TEST-DEVICE",
+                    EntityName = nameof(LocalItem),
+                    EntityId = itemId,
+                    ExpectedRevision = savedAfterClose.Revision,
+                    Status = "Acknowledged",
+                    PreparedAtUtc = acknowledgedAtUtc.AddSeconds(-1),
+                    SentAtUtc = acknowledgedAtUtc.AddMilliseconds(-100),
+                    AcknowledgedAtUtc = acknowledgedAtUtc,
+                    AcceptedRevision = 150,
+                    AcceptedUpdatedAtUtc = acknowledgedAtUtc
+                });
+            await db.SaveChangesAsync();
+
+            viewModel.EditSimpleMemo = "LOCAL-RACE";
+            var remoteWinnerInjected = false;
+            EventHandler? injectRemoteWinner = null;
+            injectRemoteWinner = (_, _) =>
+            {
+                local.InventoryStateChanged -= injectRemoteWinner;
+                remoteWinnerInjected = true;
+                db.Database.ExecuteSqlRaw(
+                    """
+                    UPDATE Items
+                    SET SimpleMemo = {0},
+                        Revision = {1},
+                        IsDirty = 0,
+                        UpdatedAtUtc = {2}
+                    WHERE Id = {3}
+                    """,
+                    "REMOTE-WINNER",
+                    200L,
+                    DateTime.UtcNow,
+                    itemId);
+            };
+            local.InventoryStateChanged += injectRemoteWinner;
+
+            var racingSnapshot = typeof(InventoryViewModel)
+                .GetMethod("CaptureEditSnapshot", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(viewModel, null);
+            var racingSaveTask = (Task<bool>)typeof(InventoryViewModel)
+                .GetMethod("SaveSnapshotAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(
+                    viewModel,
+                    [
+                        racingSnapshot!,
+                        itemId,
+                        false,
+                        true,
+                        "saved",
+                        "denied",
+                        false,
+                        false
+                    ])!;
+            Assert.True(await racingSaveTask, viewModel.StatusMessage);
+            Assert.True(remoteWinnerInjected);
+            Assert.False(viewModel.HasPendingChanges);
+
+            var remoteWinner = await db.Items
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == itemId);
+            Assert.Equal(200L, remoteWinner.Revision);
+            Assert.Equal("REMOTE-WINNER", remoteWinner.SimpleMemo);
+
+            viewModel.EditSimpleMemo = "LOCAL-AFTER-REMOTE";
+            var staleSnapshot = typeof(InventoryViewModel)
+                .GetMethod("CaptureEditSnapshot", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(viewModel, null);
+            var staleSaveTask = (Task<bool>)typeof(InventoryViewModel)
+                .GetMethod("SaveSnapshotAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(
+                    viewModel,
+                    [
+                        staleSnapshot!,
+                        itemId,
+                        false,
+                        false,
+                        "saved",
+                        "denied",
+                        false,
+                        false
+                    ])!;
+            Assert.False(await staleSaveTask);
+            Assert.Contains("최신값을 다시 불러온 뒤", viewModel.StatusMessage, StringComparison.Ordinal);
+
+            var preservedRemoteWinner = await db.Items
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == itemId);
+            Assert.Equal(200L, preservedRemoteWinner.Revision);
+            Assert.Equal("REMOTE-WINNER", preservedRemoteWinner.SimpleMemo);
+
+            viewModel.EditSimpleMemo = "LOCAL-RACE";
+            Assert.False(viewModel.HasPendingChanges);
+            var refreshAfterSave = (Task)typeof(InventoryViewModel)
+                .GetMethod("HandleInventoryStateChangedAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(viewModel, null)!;
+            await refreshAfterSave;
+
+            Assert.True(viewModel.IsNew);
+            Assert.NotEqual(itemId, viewModel.EditId);
+            }
+            finally
+            {
+                await viewModel.CancelPendingBackgroundWorkAsync();
+            }
         }
         finally
         {
@@ -4254,8 +5000,11 @@ public sealed class LocalStateServicePartialsTests
         }
     }
 
-    [Fact]
-    public async Task SyncService_ResolveItemWarehouseStockRevisionConflict_RebasesLocalNewerSnapshot()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SyncService_ResolveItemWarehouseStockRevisionConflict_RebasesOnlyMatchingLocalSnapshot(
+        bool localHasIndependentChange)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-stock-revision-retry-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -4272,12 +5021,13 @@ public sealed class LocalStateServicePartialsTests
             var localRevision = 20L;
             var serverRevision = 25L;
             var updatedAtUtc = new DateTime(2026, 6, 2, 13, 30, 0, DateTimeKind.Utc);
+            var localQuantity = localHasIndependentChange ? 99m : 3m;
 
             db.ItemWarehouseStocks.Add(new LocalItemWarehouseStock
             {
                 ItemId = itemId,
                 WarehouseCode = warehouseCode,
-                Quantity = 3m,
+                Quantity = localQuantity,
                 UpdatedAtUtc = updatedAtUtc,
                 Revision = localRevision
             });
@@ -4318,25 +5068,1930 @@ public sealed class LocalStateServicePartialsTests
             var diagnostics = new SyncDiagnosticsService(session);
             using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
 
-            var resolved = await InvokePrivateInstanceAsync<List<ConflictLogDto>>(
+            var preserveMethod = typeof(SyncService).GetMethod(
+                "ShouldPreserveConcurrentConflictAsync",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(preserveMethod);
+            var snapshotDictionaryType = preserveMethod!
+                .GetParameters()[1]
+                .ParameterType;
+            var concreteSnapshotDictionaryType = typeof(Dictionary<,>)
+                .MakeGenericType(snapshotDictionaryType.GetGenericArguments());
+            var emptyPreparedSnapshots =
+                Activator.CreateInstance(concreteSnapshotDictionaryType);
+            Assert.NotNull(emptyPreparedSnapshots);
+            var preserveTask = (Task<bool>)preserveMethod.Invoke(
+                sync,
+                [conflict, emptyPreparedSnapshots, CancellationToken.None])!;
+            Assert.False(await preserveTask);
+
+            var resolution = await InvokePrivateInstanceTaskResultAsync(
                 sync,
                 "ResolveItemWarehouseStockRevisionConflictsAsync",
                 new List<ConflictLogDto> { conflict },
                 CancellationToken.None);
-
-            Assert.NotNull(resolved);
-            Assert.Single(resolved!);
+            Assert.NotNull(resolution);
+            var resolved = Assert.IsAssignableFrom<IReadOnlyList<ConflictLogDto>>(
+                resolution!.GetType()
+                    .GetProperty("ResolvedConflicts")!
+                    .GetValue(resolution));
+            var retryRequired = Assert.IsAssignableFrom<IReadOnlyList<ConflictLogDto>>(
+                resolution.GetType()
+                    .GetProperty("RetryRequiredConflicts")!
+                    .GetValue(resolution));
 
             var storedStock = await db.ItemWarehouseStocks.AsNoTracking()
                 .SingleAsync(current => current.ItemId == itemId && current.WarehouseCode == warehouseCode);
-            Assert.Equal(serverRevision, storedStock.Revision);
-            Assert.Equal(3m, storedStock.Quantity);
+            if (localHasIndependentChange)
+            {
+                Assert.Empty(resolved);
+                Assert.Empty(retryRequired);
+                Assert.Equal(localRevision, storedStock.Revision);
+                Assert.Equal(localQuantity, storedStock.Quantity);
+            }
+            else
+            {
+                Assert.Single(resolved);
+                Assert.Single(retryRequired);
+                Assert.Equal(serverRevision, storedStock.Revision);
+                Assert.Equal(3m, storedStock.Quantity);
+            }
         }
         finally
         {
             Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
             SqliteConnection.ClearAllPools();
         }
+    }
+
+    [Theory]
+    [InlineData("stable")]
+    [InlineData("server-competing")]
+    [InlineData("local-concurrent")]
+    [InlineData("post-replay-local-concurrent")]
+    [InlineData("replay-ack-missing")]
+    [InlineData("replay-ack-alias")]
+    [InlineData("normal-pull-local-concurrent")]
+    public async Task SyncService_ItemWarehouseStockClientNewerConflict_ReplaysCompleteItemBeforeNormalPull(
+        string scenario)
+    {
+        var tempRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"georaeplan-sync-stock-safe-replay-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable(
+            "GEORAEPLAN_APP_ROOT",
+            tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.Parse(
+                "77775555-5555-5555-5555-555555555555");
+            var localUpdatedAt = new DateTime(
+                2026,
+                6,
+                2,
+                13,
+                30,
+                0,
+                DateTimeKind.Utc);
+            var keepServerCompeting = string.Equals(
+                scenario,
+                "server-competing",
+                StringComparison.Ordinal);
+            var changeLocalSiblingDuringPreparatoryPull = string.Equals(
+                scenario,
+                "local-concurrent",
+                StringComparison.Ordinal);
+            var changeLocalSiblingDuringReplayPush = string.Equals(
+                scenario,
+                "post-replay-local-concurrent",
+                StringComparison.Ordinal);
+            var omitReplayAcceptedKeys = string.Equals(
+                scenario,
+                "replay-ack-missing",
+                StringComparison.Ordinal);
+            var returnReplayAcceptedWarehouseAliases =
+                string.Equals(
+                    scenario,
+                    "replay-ack-alias",
+                    StringComparison.Ordinal);
+            var changeLocalSiblingDuringNormalPull =
+                string.Equals(
+                    scenario,
+                    "normal-pull-local-concurrent",
+                    StringComparison.Ordinal);
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Safe replay stock item",
+                NameMatchKey = "SAFEREPLAYSTOCKITEM",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                CurrentStock = 10m,
+                Revision = 20,
+                UpdatedAtUtc = localUpdatedAt
+            });
+            db.ItemWarehouseStocks.AddRange(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 3m,
+                    Revision = 20,
+                    UpdatedAtUtc = localUpdatedAt
+                },
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.YeonsuMainWarehouse,
+                    Quantity = 7m,
+                    Revision = 20,
+                    UpdatedAtUtc = localUpdatedAt
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateOnlineAdminSession();
+            var dispatcher = new SyncRequestDispatcher();
+            var localState = new LocalStateService(
+                db,
+                new OfficeAccessService(),
+                dispatcher,
+                session);
+            var rental = new RentalStateService(db);
+            var handler = new WarehouseStockSafeReplayHandler(
+                itemId,
+                localUpdatedAt,
+                keepServerCompeting,
+                changeLocalSiblingDuringPreparatoryPull
+                    ? async cancellationToken =>
+                    {
+                        await using var concurrentDb =
+                            new LocalDbContext();
+                        var sibling = await concurrentDb
+                            .ItemWarehouseStocks
+                            .SingleAsync(
+                                stock =>
+                                    stock.ItemId == itemId &&
+                                    stock.WarehouseCode ==
+                                    OfficeCodeCatalog
+                                        .YeonsuMainWarehouse,
+                                cancellationToken);
+                        sibling.Quantity = 9m;
+                        sibling.UpdatedAtUtc =
+                            localUpdatedAt.AddMinutes(1);
+                        await concurrentDb.SaveChangesAsync(
+                            cancellationToken);
+                    }
+                    : null,
+                afterReplayPushAsync:
+                    changeLocalSiblingDuringReplayPush
+                        ? async cancellationToken =>
+                        {
+                            await using var concurrentDb =
+                                new LocalDbContext();
+                            var sibling = await concurrentDb
+                                .ItemWarehouseStocks
+                                .SingleAsync(
+                                    stock =>
+                                        stock.ItemId == itemId &&
+                                        stock.WarehouseCode ==
+                                        OfficeCodeCatalog
+                                            .YeonsuMainWarehouse,
+                                    cancellationToken);
+                            sibling.Quantity = 9m;
+                            sibling.UpdatedAtUtc =
+                                localUpdatedAt.AddMinutes(1);
+                            await concurrentDb.SaveChangesAsync(
+                                cancellationToken);
+                        }
+                        : null,
+                duringNormalPullAsync:
+                    changeLocalSiblingDuringNormalPull
+                        ? async cancellationToken =>
+                        {
+                            await using var concurrentDb =
+                                new LocalDbContext();
+                            var sibling = await concurrentDb
+                                .ItemWarehouseStocks
+                                .SingleAsync(
+                                    stock =>
+                                        stock.ItemId == itemId &&
+                                        stock.WarehouseCode ==
+                                        OfficeCodeCatalog
+                                            .YeonsuMainWarehouse,
+                                    cancellationToken);
+                            sibling.Quantity = 9m;
+                            sibling.UpdatedAtUtc =
+                                localUpdatedAt.AddMinutes(2);
+                            await concurrentDb.SaveChangesAsync(
+                                cancellationToken);
+                        }
+                        : null,
+                omitReplayAcceptedKeys:
+                    omitReplayAcceptedKeys,
+                returnReplayAcceptedWarehouseAliases:
+                    returnReplayAcceptedWarehouseAliases);
+            var api = new ErpApiClient(
+                new HttpClient(handler)
+                {
+                    BaseAddress = new Uri("http://localhost/")
+                },
+                session);
+            var diagnostics = new SyncDiagnosticsService(session);
+            using var sync = new SyncService(
+                db,
+                localState,
+                rental,
+                api,
+                session,
+                dispatcher,
+                diagnostics);
+
+            var synced = await sync.TrySyncAsync();
+
+            if (keepServerCompeting ||
+                changeLocalSiblingDuringPreparatoryPull ||
+                changeLocalSiblingDuringReplayPush ||
+                omitReplayAcceptedKeys ||
+                changeLocalSiblingDuringNormalPull)
+            {
+                Assert.False(synced);
+                if (changeLocalSiblingDuringNormalPull)
+                {
+                    Assert.Equal(
+                        ["push:1", "pull:1", "push:2", "pull:2"],
+                        handler.Operations);
+                    Assert.Equal(2, handler.PushRequests.Count);
+                }
+                else if (changeLocalSiblingDuringReplayPush ||
+                    omitReplayAcceptedKeys)
+                {
+                    Assert.Equal(
+                        ["push:1", "pull:1", "push:2"],
+                        handler.Operations);
+                    Assert.Equal(2, handler.PushRequests.Count);
+                }
+                else
+                {
+                    Assert.Equal(
+                        ["push:1", "pull:1"],
+                        handler.Operations);
+                    Assert.Single(handler.PushRequests);
+                }
+            }
+            else
+            {
+                Assert.True(synced);
+                Assert.True(
+                    handler.Operations.Count >= 4,
+                    $"operations={string.Join(",", handler.Operations)}");
+                Assert.Equal(
+                    ["push:1", "pull:1", "push:2", "pull:2"],
+                    handler.Operations.Take(4));
+                Assert.All(
+                    handler.Operations.Skip(4),
+                    operation => Assert.StartsWith(
+                        "pull:",
+                        operation,
+                        StringComparison.Ordinal));
+                Assert.Equal(2, handler.PushRequests.Count);
+                var replayStocks =
+                    handler.PushRequests[1].ItemWarehouseStocks;
+                Assert.Equal(2, replayStocks.Count);
+                Assert.Contains(
+                    replayStocks,
+                    stock =>
+                        stock.WarehouseCode ==
+                        OfficeCodeCatalog.UsenetMainWarehouse &&
+                        stock.Quantity == 3m &&
+                        stock.ExpectedRevision == 21);
+                Assert.Contains(
+                    replayStocks,
+                    stock =>
+                        stock.WarehouseCode ==
+                        OfficeCodeCatalog.YeonsuMainWarehouse &&
+                        stock.Quantity == 7m &&
+                        stock.ExpectedRevision == 22);
+            }
+
+            var storedStocks = await db.ItemWarehouseStocks
+                .AsNoTracking()
+                .Where(stock => stock.ItemId == itemId)
+                .OrderBy(stock => stock.WarehouseCode)
+                .ToListAsync();
+            Assert.Equal(2, storedStocks.Count);
+            Assert.Equal(
+                3m,
+                storedStocks.Single(stock =>
+                        stock.WarehouseCode ==
+                        OfficeCodeCatalog.UsenetMainWarehouse)
+                    .Quantity);
+            Assert.Equal(
+                changeLocalSiblingDuringPreparatoryPull ||
+                changeLocalSiblingDuringReplayPush ||
+                changeLocalSiblingDuringNormalPull
+                    ? 9m
+                    : 7m,
+                storedStocks.Single(stock =>
+                        stock.WarehouseCode ==
+                        OfficeCodeCatalog.YeonsuMainWarehouse)
+                    .Quantity);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "GEORAEPLAN_APP_ROOT",
+                null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public void SyncService_ItemWarehouseStockKey_CanonicalizesKnownAliasWithoutCollapsingUnknown()
+    {
+        var itemId = Guid.Parse(
+            "77776666-6666-6666-6666-666666666666");
+
+        var canonicalKey = InvokePrivateStatic<string>(
+            typeof(SyncService),
+            "BuildItemWarehouseStockKey",
+            itemId,
+            OfficeCodeCatalog.UsenetMainWarehouse);
+        var aliasKey = InvokePrivateStatic<string>(
+            typeof(SyncService),
+            "BuildItemWarehouseStockKey",
+            itemId,
+            "  UZNET warehouse  ");
+        var unknownKey = InvokePrivateStatic<string>(
+            typeof(SyncService),
+            "BuildItemWarehouseStockKey",
+            itemId,
+            "  warehouse-x  ");
+
+        Assert.Equal(canonicalKey, aliasKey);
+        Assert.EndsWith(
+            "|WAREHOUSE-X",
+            unknownKey,
+            StringComparison.Ordinal);
+        Assert.NotEqual(canonicalKey, unknownKey);
+    }
+
+    [Fact]
+    public async Task SyncService_PulledWarehouseStock_MergesLegacyAliasIntoCanonicalRow()
+    {
+        var tempRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"georaeplan-sync-stock-alias-merge-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable(
+            "GEORAEPLAN_APP_ROOT",
+            tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.Parse(
+                "77777766-6666-6666-6666-666666666666");
+            var updatedAtUtc = new DateTime(
+                2026,
+                7,
+                1,
+                3,
+                0,
+                0,
+                DateTimeKind.Utc);
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Alias warehouse stock item",
+                NameMatchKey = "ALIASWAREHOUSESTOCKITEM",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                CurrentStock = 4m,
+                Revision = 10,
+                UpdatedAtUtc = updatedAtUtc.AddMinutes(-1),
+                IsDirty = false
+            });
+            db.ItemWarehouseStocks.Add(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemId,
+                    WarehouseCode = "UZNET warehouse",
+                    Quantity = 4m,
+                    Revision = 10,
+                    UpdatedAtUtc =
+                        updatedAtUtc.AddMinutes(-1)
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateOnlineAdminSession();
+            var dispatcher = new SyncRequestDispatcher();
+            var localState = new LocalStateService(
+                db,
+                new OfficeAccessService(),
+                dispatcher,
+                session);
+            var rental = new RentalStateService(db);
+            var api = new ErpApiClient(
+                new HttpClient(new CapturePushHandler())
+                {
+                    BaseAddress = new Uri("http://localhost/")
+                },
+                session);
+            var diagnostics =
+                new SyncDiagnosticsService(session);
+            using var sync = new SyncService(
+                db,
+                localState,
+                rental,
+                api,
+                session,
+                dispatcher,
+                diagnostics);
+
+            await InvokePrivateInstanceTaskResultAsync(
+                sync,
+                "UpsertPulledItemWarehouseStocksAsync",
+                new List<ItemWarehouseStockDto>
+                {
+                    new()
+                    {
+                        ItemId = itemId,
+                        WarehouseCode =
+                            OfficeCodeCatalog
+                                .UsenetMainWarehouse,
+                        Quantity = 5m,
+                        Revision = 12,
+                        UpdatedAtUtc = updatedAtUtc
+                    }
+                },
+                CancellationToken.None);
+
+            db.ChangeTracker.Clear();
+            var storedStocks = await db.ItemWarehouseStocks
+                .AsNoTracking()
+                .Where(stock => stock.ItemId == itemId)
+                .ToListAsync();
+            var storedStock = Assert.Single(storedStocks);
+            Assert.Equal(
+                OfficeCodeCatalog.UsenetMainWarehouse,
+                storedStock.WarehouseCode);
+            Assert.Equal(5m, storedStock.Quantity);
+            Assert.Equal(12, storedStock.Revision);
+
+            var storedItem = await db.Items
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == itemId);
+            Assert.Equal(5m, storedItem.CurrentStock);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "GEORAEPLAN_APP_ROOT",
+                null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SyncService_ItemWarehouseStockReplay_PropagatesBusinessDatabaseOverrideToPullAndPush()
+    {
+        var tempRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"georaeplan-sync-stock-replay-header-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable(
+            "GEORAEPLAN_APP_ROOT",
+            tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.Parse(
+                "77776666-6666-6666-6666-666666666666");
+            var localUpdatedAt = new DateTime(
+                2026,
+                6,
+                2,
+                14,
+                30,
+                0,
+                DateTimeKind.Utc);
+            var primary = new ItemWarehouseStockDto
+            {
+                ItemId = itemId,
+                WarehouseCode =
+                    OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 3m,
+                Revision = 20,
+                ExpectedRevision = 20,
+                UpdatedAtUtc = localUpdatedAt
+            };
+            var sibling = new ItemWarehouseStockDto
+            {
+                ItemId = itemId,
+                WarehouseCode =
+                    OfficeCodeCatalog.YeonsuMainWarehouse,
+                Quantity = 7m,
+                Revision = 20,
+                ExpectedRevision = 20,
+                UpdatedAtUtc = localUpdatedAt
+            };
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Replay header stock item",
+                NameMatchKey = "REPLAYHEADERSTOCKITEM",
+                ItemKind = ItemKinds.Product,
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                CurrentStock = primary.Quantity + sibling.Quantity,
+                Revision = 20,
+                UpdatedAtUtc = localUpdatedAt,
+                IsDirty = false
+            });
+            db.ItemWarehouseStocks.AddRange(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = primary.ItemId,
+                    WarehouseCode = primary.WarehouseCode,
+                    Quantity = primary.Quantity,
+                    Revision = primary.Revision,
+                    UpdatedAtUtc = primary.UpdatedAtUtc
+                },
+                new LocalItemWarehouseStock
+                {
+                    ItemId = sibling.ItemId,
+                    WarehouseCode = sibling.WarehouseCode,
+                    Quantity = sibling.Quantity,
+                    Revision = sibling.Revision,
+                    UpdatedAtUtc = sibling.UpdatedAtUtc
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateOnlineAdminSession();
+            var businessDatabaseNameOverride =
+                TenantScopeCatalog.GetDatabaseName(
+                    TenantScopeCatalog.Itworld);
+            var handler = new WarehouseStockSafeReplayHandler(
+                itemId,
+                localUpdatedAt,
+                keepCompeting: false,
+                expectedBusinessDatabaseOverride:
+                    businessDatabaseNameOverride,
+                emitInitialConflict: false);
+            var api = new ErpApiClient(
+                new HttpClient(handler)
+                {
+                    BaseAddress = new Uri("http://localhost/")
+                },
+                session);
+            var dispatcher = new SyncRequestDispatcher();
+            var localState = new LocalStateService(
+                db,
+                new OfficeAccessService(),
+                dispatcher,
+                session);
+            var rental = new RentalStateService(db);
+            var diagnostics = new SyncDiagnosticsService(session);
+            using var sync = new SyncService(
+                db,
+                localState,
+                rental,
+                api,
+                session,
+                dispatcher,
+                diagnostics);
+            var serverSnapshot = new ItemWarehouseStockDto
+            {
+                ItemId = itemId,
+                WarehouseCode =
+                    OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 2m,
+                Revision = 21,
+                ExpectedRevision = 21,
+                UpdatedAtUtc = localUpdatedAt.AddMinutes(-10)
+            };
+            var conflict = new ConflictLogDto
+            {
+                EntityName = "ItemWarehouseStock",
+                EntityId =
+                    $"{itemId:D}|{OfficeCodeCatalog.UsenetMainWarehouse}",
+                Reason =
+                    "Expected revision mismatch. client=20, server=21",
+                ClientJson = JsonSerializer.Serialize(primary),
+                ServerJson = JsonSerializer.Serialize(serverSnapshot)
+            };
+            var request = new SyncPushRequest
+            {
+                DeviceId = "stock-replay-header-test",
+                ItemWarehouseStocks = [primary, sibling]
+            };
+
+            await InvokePrivateInstanceTaskResultAsync(
+                sync,
+                "ReplayItemWarehouseStockSnapshotsBeforePullAsync",
+                api,
+                request,
+                session,
+                businessDatabaseNameOverride,
+                new List<ConflictLogDto> { conflict },
+                CancellationToken.None);
+
+            Assert.Equal(
+                ["pull:1", "push:1"],
+                handler.Operations);
+            Assert.Equal(2, handler.OverrideHeaderNames.Count);
+            Assert.All(
+                handler.OverrideHeaderNames,
+                headerName => Assert.False(
+                    string.IsNullOrWhiteSpace(headerName)));
+            Assert.Single(
+                handler.OverrideHeaderNames.Distinct(
+                    StringComparer.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "GEORAEPLAN_APP_ROOT",
+                null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SyncService_GeneralPush_PartialWarehouseStockAcknowledgement_BlocksPullAndPreservesAllRows()
+    {
+        var tempRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"georaeplan-sync-stock-partial-ack-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable(
+            "GEORAEPLAN_APP_ROOT",
+            tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.Parse(
+                "77776655-5555-5555-5555-555555555555");
+            var updatedAtUtc = new DateTime(
+                2026,
+                7,
+                2,
+                3,
+                0,
+                0,
+                DateTimeKind.Utc);
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Partial acknowledgement stock item",
+                NameMatchKey = "PARTIALACKNOWLEDGEMENTSTOCKITEM",
+                ItemKind = ItemKinds.Product,
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                CurrentStock = 10m,
+                Revision = 20,
+                UpdatedAtUtc = updatedAtUtc,
+                IsDirty = true
+            });
+            db.ItemWarehouseStocks.AddRange(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 3m,
+                    Revision = 20,
+                    UpdatedAtUtc = updatedAtUtc
+                },
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.YeonsuMainWarehouse,
+                    Quantity = 7m,
+                    Revision = 21,
+                    UpdatedAtUtc = updatedAtUtc
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateOnlineAdminSession();
+            var dispatcher = new SyncRequestDispatcher();
+            var localState = new LocalStateService(
+                db,
+                new OfficeAccessService(),
+                dispatcher,
+                session);
+            var handler =
+                new PartialWarehouseStockAcknowledgementHandler();
+            var api = new ErpApiClient(
+                new HttpClient(handler)
+                {
+                    BaseAddress = new Uri("http://localhost/")
+                },
+                session);
+            using var sync = new SyncService(
+                db,
+                localState,
+                new RentalStateService(db),
+                api,
+                session,
+                dispatcher,
+                new SyncDiagnosticsService(session));
+            Assert.False(await sync.TrySyncAsync());
+            Assert.False(await sync.TrySyncAsync());
+
+            Assert.Equal(2, handler.PushRequests.Count);
+            Assert.Equal(0, handler.PullCount);
+            Assert.All(
+                handler.PushRequests,
+                request => Assert.Equal(
+                    2,
+                    request.ItemWarehouseStocks.Count));
+            db.ChangeTracker.Clear();
+            var storedStocks = await db.ItemWarehouseStocks
+                .AsNoTracking()
+                .Where(stock => stock.ItemId == itemId)
+                .OrderBy(stock => stock.WarehouseCode)
+                .ToListAsync();
+            Assert.Equal(2, storedStocks.Count);
+            Assert.Contains(
+                storedStocks,
+                stock =>
+                    stock.WarehouseCode ==
+                    OfficeCodeCatalog.UsenetMainWarehouse &&
+                    stock.Quantity == 3m);
+            Assert.Contains(
+                storedStocks,
+                stock =>
+                    stock.WarehouseCode ==
+                    OfficeCodeCatalog.YeonsuMainWarehouse &&
+                    stock.Quantity == 7m);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "GEORAEPLAN_APP_ROOT",
+                null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SyncService_PartialWarehouseStockAcknowledgement_CrashBeforeRetryIntentRollsBackAcceptedState(
+        bool cancelDuringAtomicApply)
+    {
+        var tempRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"georaeplan-sync-stock-partial-ack-crash-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable(
+            "GEORAEPLAN_APP_ROOT",
+            tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.Parse(
+                "77776655-5555-5555-5555-555555555556");
+            var updatedAtUtc = new DateTime(
+                2026,
+                7,
+                2,
+                3,
+                30,
+                0,
+                DateTimeKind.Utc);
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal =
+                    "Partial acknowledgement crash stock item",
+                NameMatchKey =
+                    "PARTIALACKNOWLEDGEMENTCRASHSTOCKITEM",
+                ItemKind = ItemKinds.Product,
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                CurrentStock = 10m,
+                Revision = 20,
+                UpdatedAtUtc = updatedAtUtc,
+                IsDirty = true
+            });
+            db.ItemWarehouseStocks.AddRange(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 3m,
+                    Revision = 20,
+                    UpdatedAtUtc = updatedAtUtc
+                },
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.YeonsuMainWarehouse,
+                    Quantity = 7m,
+                    Revision = 21,
+                    UpdatedAtUtc = updatedAtUtc
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateOnlineAdminSession();
+            var dispatcher = new SyncRequestDispatcher();
+            var localState = new LocalStateService(
+                db,
+                new OfficeAccessService(),
+                dispatcher,
+                session);
+            var handler =
+                new PartialWarehouseStockAcknowledgementHandler();
+            var api = new ErpApiClient(
+                new HttpClient(handler)
+                {
+                    BaseAddress = new Uri("http://localhost/")
+                },
+                session);
+            using var cancellation = new CancellationTokenSource();
+            using var sync = new SyncService(
+                db,
+                localState,
+                new RentalStateService(db),
+                api,
+                session,
+                dispatcher,
+                new SyncDiagnosticsService(session))
+            {
+                AfterPartialWarehouseStockAcceptedSideEffectsAsyncForTesting =
+                    token =>
+                    {
+                        if (!cancelDuringAtomicApply)
+                        {
+                            throw new IOException(
+                                "Injected crash before stock retry intent.");
+                        }
+
+                        cancellation.Cancel();
+                        return Task.FromCanceled(token);
+                    }
+            };
+
+            Assert.False(
+                await sync.TrySyncAsync(cancellation.Token));
+            Assert.True(handler.PushRequests.Count >= 1);
+            Assert.Equal(0, handler.PullCount);
+
+            db.ChangeTracker.Clear();
+            var storedItem = await db.Items
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == itemId);
+            Assert.True(storedItem.IsDirty);
+            Assert.Equal(20, storedItem.Revision);
+            Assert.Equal(updatedAtUtc, storedItem.UpdatedAtUtc);
+
+            var outbox = await db.SyncOutboxEntries
+                .AsNoTracking()
+                .SingleAsync(entry =>
+                    entry.EntityName == nameof(LocalItem) &&
+                    entry.EntityId == itemId);
+            Assert.NotEqual("Acknowledged", outbox.Status);
+            Assert.Equal(0, outbox.AcceptedRevision);
+            Assert.Null(outbox.AcceptedUpdatedAtUtc);
+
+            var storedStocks = await db.ItemWarehouseStocks
+                .AsNoTracking()
+                .Where(stock => stock.ItemId == itemId)
+                .ToListAsync();
+            Assert.Equal(2, storedStocks.Count);
+            Assert.Equal(
+                10m,
+                storedStocks.Sum(stock => stock.Quantity));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "GEORAEPLAN_APP_ROOT",
+                null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SyncService_PartialWarehouseStockAcknowledgement_RetriesOnlyItemsOwningUnacknowledgedKeys()
+    {
+        var tempRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"georaeplan-sync-stock-partial-ack-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable(
+            "GEORAEPLAN_APP_ROOT",
+            tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var acceptedItemId = Guid.Parse(
+                "77776655-5555-5555-5555-555555555561");
+            var missingAckItemId = Guid.Parse(
+                "77776655-5555-5555-5555-555555555562");
+            var updatedAtUtc = new DateTime(
+                2026,
+                7,
+                2,
+                4,
+                0,
+                0,
+                DateTimeKind.Utc);
+            db.Items.AddRange(
+                new LocalItem
+                {
+                    Id = acceptedItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "Accepted stock item",
+                    NameMatchKey = "ACCEPTEDSTOCKITEM",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    CurrentStock = 3m,
+                    Revision = 20,
+                    UpdatedAtUtc = updatedAtUtc,
+                    IsDirty = true
+                },
+                new LocalItem
+                {
+                    Id = missingAckItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "Missing acknowledgement stock item",
+                    NameMatchKey =
+                        "MISSINGACKNOWLEDGEMENTSTOCKITEM",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    CurrentStock = 11m,
+                    Revision = 21,
+                    UpdatedAtUtc = updatedAtUtc,
+                    IsDirty = true
+                });
+            db.ItemWarehouseStocks.AddRange(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = acceptedItemId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 3m,
+                    Revision = 20,
+                    UpdatedAtUtc = updatedAtUtc
+                },
+                new LocalItemWarehouseStock
+                {
+                    ItemId = missingAckItemId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 4m,
+                    Revision = 21,
+                    UpdatedAtUtc = updatedAtUtc
+                },
+                new LocalItemWarehouseStock
+                {
+                    ItemId = missingAckItemId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.YeonsuMainWarehouse,
+                    Quantity = 7m,
+                    Revision = 21,
+                    UpdatedAtUtc = updatedAtUtc
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateOnlineAdminSession();
+            var dispatcher = new SyncRequestDispatcher();
+            var localState = new LocalStateService(
+                db,
+                new OfficeAccessService(),
+                dispatcher,
+                session);
+            await localState.SetSettingAsync(
+                "LastSyncRevision",
+                "30");
+            var handler =
+                new ScopedPartialWarehouseStockAcknowledgementHandler(
+                    missingAckItemId,
+                    OfficeCodeCatalog.YeonsuMainWarehouse);
+            var api = new ErpApiClient(
+                new HttpClient(handler)
+                {
+                    BaseAddress = new Uri("http://localhost/")
+                },
+                session);
+            using var sync = new SyncService(
+                db,
+                localState,
+                new RentalStateService(db),
+                api,
+                session,
+                dispatcher,
+                new SyncDiagnosticsService(session));
+            var lastSyncStatus = string.Empty;
+            sync.SyncStatusChanged += status => lastSyncStatus = status;
+
+            Assert.False(await sync.TrySyncAsync());
+            Assert.Single(handler.PushRequests);
+            Assert.Equal(0, handler.PullCount);
+
+            db.ChangeTracker.Clear();
+            var afterPartial = await db.Items
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(item =>
+                    item.Id == acceptedItemId ||
+                    item.Id == missingAckItemId)
+                .ToDictionaryAsync(item => item.Id);
+            Assert.False(afterPartial[acceptedItemId].IsDirty);
+            Assert.True(afterPartial[missingAckItemId].IsDirty);
+
+            var retrySucceeded = await sync.TrySyncAsync();
+            var lastSyncError = await localState.GetSettingAsync(
+                "Sync.LastError");
+            Assert.True(
+                retrySucceeded,
+                $"{lastSyncStatus} | {lastSyncError}");
+            Assert.Equal(2, handler.PushRequests.Count);
+            Assert.Equal(1, handler.PullCount);
+            var retry = handler.PushRequests[1];
+            Assert.Equal(
+                missingAckItemId,
+                Assert.Single(retry.Items).Id);
+            Assert.Equal(2, retry.ItemWarehouseStocks.Count);
+            Assert.All(
+                retry.ItemWarehouseStocks,
+                stock => Assert.Equal(
+                    missingAckItemId,
+                    stock.ItemId));
+            Assert.Contains(
+                retry.ItemWarehouseStocks,
+                stock =>
+                    stock.WarehouseCode ==
+                    OfficeCodeCatalog.UsenetMainWarehouse);
+            Assert.Contains(
+                retry.ItemWarehouseStocks,
+                stock =>
+                    stock.WarehouseCode ==
+                    OfficeCodeCatalog.YeonsuMainWarehouse);
+            Assert.DoesNotContain(
+                retry.Items,
+                item => item.Id == acceptedItemId);
+            Assert.DoesNotContain(
+                retry.ItemWarehouseStocks,
+                stock => stock.ItemId == acceptedItemId);
+
+            db.ChangeTracker.Clear();
+            Assert.All(
+                await db.Items
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .Where(item =>
+                        item.Id == acceptedItemId ||
+                        item.Id == missingAckItemId)
+                    .ToListAsync(),
+                item => Assert.False(item.IsDirty));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "GEORAEPLAN_APP_ROOT",
+                null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Theory]
+    [InlineData("missing-without-conflict", true)]
+    [InlineData("null", true)]
+    [InlineData("extra", true)]
+    [InlineData("duplicate", true)]
+    [InlineData("conflict-covered", false)]
+    [InlineData("complete-alias", false)]
+    public void SyncService_ItemWarehouseStockAcknowledgement_RequiresExactOrConflictCoveredKeys(
+        string scenario,
+        bool expectsIssue)
+    {
+        var itemId = Guid.Parse(
+            "77776654-4444-4444-4444-444444444444");
+        var submitted = new List<ItemWarehouseStockDto>
+        {
+            new()
+            {
+                ItemId = itemId,
+                WarehouseCode =
+                    OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 3m
+            },
+            new()
+            {
+                ItemId = itemId,
+                WarehouseCode =
+                    OfficeCodeCatalog.YeonsuMainWarehouse,
+                Quantity = 7m
+            }
+        };
+        var result = new SyncPushResult
+        {
+            AcceptedItemWarehouseStockKeys =
+            [
+                new SyncAcceptedItemWarehouseStockKeyDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.UsenetMainWarehouse
+                }
+            ]
+        };
+
+        switch (scenario)
+        {
+            case "missing-without-conflict":
+                break;
+            case "null":
+                result.AcceptedItemWarehouseStockKeys = null!;
+                break;
+            case "extra":
+                result.AcceptedItemWarehouseStockKeys.Add(
+                    new SyncAcceptedItemWarehouseStockKeyDto
+                    {
+                        ItemId = Guid.NewGuid(),
+                        WarehouseCode =
+                            OfficeCodeCatalog.UsenetMainWarehouse
+                    });
+                break;
+            case "duplicate":
+                result.AcceptedItemWarehouseStockKeys.Add(
+                    new SyncAcceptedItemWarehouseStockKeyDto
+                    {
+                        ItemId = itemId,
+                        WarehouseCode =
+                            OfficeCodeCatalog.UsenetMainWarehouse
+                    });
+                break;
+            case "conflict-covered":
+                result.ConflictCount = 1;
+                result.Conflicts.Add(new ConflictLogDto
+                {
+                    EntityName = "ItemWarehouseStock",
+                    EntityId =
+                        $"{itemId:D}|{OfficeCodeCatalog.YeonsuMainWarehouse}"
+                });
+                break;
+            case "complete-alias":
+                result.AcceptedItemWarehouseStockKeys.Add(
+                    new SyncAcceptedItemWarehouseStockKeyDto
+                    {
+                        ItemId = itemId,
+                        WarehouseCode = "연수 창고"
+                    });
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(
+                    nameof(scenario),
+                    scenario,
+                    "Unknown acknowledgement scenario.");
+        }
+
+        var method = typeof(SyncService).GetMethod(
+            "BuildItemWarehouseStockAcknowledgementIssue",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var issue = (string?)method!.Invoke(
+            null,
+            [submitted, result]);
+
+        Assert.Equal(expectsIssue, issue is not null);
+    }
+
+    [Theory]
+    [InlineData("empty", false)]
+    [InlineData("null", true)]
+    [InlineData("valid-extra", true)]
+    [InlineData("invalid-item-id", true)]
+    [InlineData("blank-warehouse", true)]
+    [InlineData("duplicate-logical-key", true)]
+    [InlineData("extra-conflict", true)]
+    public void SyncService_ItemWarehouseStockAcknowledgement_RejectsAnyResponseScopeWhenNothingWasSubmitted(
+        string scenario,
+        bool expectsIssue)
+    {
+        var itemId = Guid.Parse(
+            "77776654-4444-4444-4444-444444444445");
+        var result = new SyncPushResult();
+
+        switch (scenario)
+        {
+            case "empty":
+                break;
+            case "null":
+                result.AcceptedItemWarehouseStockKeys = null!;
+                break;
+            case "valid-extra":
+                result.AcceptedItemWarehouseStockKeys.Add(
+                    new SyncAcceptedItemWarehouseStockKeyDto
+                    {
+                        ItemId = itemId,
+                        WarehouseCode =
+                            OfficeCodeCatalog.UsenetMainWarehouse
+                    });
+                break;
+            case "invalid-item-id":
+                result.AcceptedItemWarehouseStockKeys.Add(
+                    new SyncAcceptedItemWarehouseStockKeyDto
+                    {
+                        ItemId = Guid.Empty,
+                        WarehouseCode =
+                            OfficeCodeCatalog.UsenetMainWarehouse
+                    });
+                break;
+            case "blank-warehouse":
+                result.AcceptedItemWarehouseStockKeys.Add(
+                    new SyncAcceptedItemWarehouseStockKeyDto
+                    {
+                        ItemId = itemId,
+                        WarehouseCode = " "
+                    });
+                break;
+            case "duplicate-logical-key":
+                result.AcceptedItemWarehouseStockKeys.AddRange(
+                [
+                    new SyncAcceptedItemWarehouseStockKeyDto
+                    {
+                        ItemId = itemId,
+                        WarehouseCode =
+                            OfficeCodeCatalog.UsenetMainWarehouse
+                    },
+                    new SyncAcceptedItemWarehouseStockKeyDto
+                    {
+                        ItemId = itemId,
+                        WarehouseCode = OfficeCodeCatalog.Usenet
+                    }
+                ]);
+                break;
+            case "extra-conflict":
+                result.ConflictCount = 1;
+                result.Conflicts.Add(new ConflictLogDto
+                {
+                    EntityName = "ItemWarehouseStock",
+                    EntityId =
+                        $"{itemId:D}|{OfficeCodeCatalog.UsenetMainWarehouse}"
+                });
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(
+                    nameof(scenario),
+                    scenario,
+                    "Unknown acknowledgement scenario.");
+        }
+
+        var method = typeof(SyncService).GetMethod(
+            "BuildItemWarehouseStockAcknowledgementIssue",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+        var issue = (string?)method!.Invoke(
+            null,
+            [
+                Array.Empty<ItemWarehouseStockDto>(),
+                result
+            ]);
+
+        Assert.Equal(expectsIssue, issue is not null);
+    }
+
+    [Fact]
+    public async Task SyncService_MissingServerWarehouseStockTombstone_RemovesOnlyMatchingRowAndCompletesPull()
+    {
+        var tempRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"georaeplan-sync-stock-tombstone-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable(
+            "GEORAEPLAN_APP_ROOT",
+            tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.Parse(
+                "77776644-4444-4444-4444-444444444444");
+            var updatedAtUtc = new DateTime(
+                2026,
+                7,
+                2,
+                4,
+                0,
+                0,
+                DateTimeKind.Utc);
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Tombstoned warehouse stock item",
+                NameMatchKey = "TOMBSTONEDWAREHOUSESTOCKITEM",
+                ItemKind = ItemKinds.Product,
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                CurrentStock = 10m,
+                Revision = 40,
+                UpdatedAtUtc = updatedAtUtc,
+                IsDirty = true
+            });
+            db.ItemWarehouseStocks.AddRange(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 3m,
+                    Revision = 42,
+                    UpdatedAtUtc = updatedAtUtc
+                },
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.YeonsuMainWarehouse,
+                    Quantity = 7m,
+                    Revision = 43,
+                    UpdatedAtUtc = updatedAtUtc
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateOnlineAdminSession();
+            var handler =
+                new MissingWarehouseStockTombstoneHandler(
+                    itemId,
+                    updatedAtUtc);
+            var dispatcher = new SyncRequestDispatcher();
+            var localState = new LocalStateService(
+                db,
+                new OfficeAccessService(),
+                dispatcher,
+                session);
+            var api = new ErpApiClient(
+                new HttpClient(handler)
+                {
+                    BaseAddress = new Uri("http://localhost/")
+                },
+                session);
+            using var sync = new SyncService(
+                db,
+                localState,
+                new RentalStateService(db),
+                api,
+                session,
+                dispatcher,
+                new SyncDiagnosticsService(session));
+
+            Assert.True(await sync.TrySyncAsync());
+
+            Assert.Equal(
+                ["push:1", "pull:1", "pull:2"],
+                handler.Operations);
+            db.ChangeTracker.Clear();
+            var storedStock = Assert.Single(
+                await db.ItemWarehouseStocks
+                    .AsNoTracking()
+                    .Where(stock => stock.ItemId == itemId)
+                    .ToListAsync());
+            Assert.Equal(
+                OfficeCodeCatalog.YeonsuMainWarehouse,
+                storedStock.WarehouseCode);
+            Assert.Equal(7m, storedStock.Quantity);
+            var storedItem = await db.Items
+                .AsNoTracking()
+                .SingleAsync(item => item.Id == itemId);
+            Assert.Equal(7m, storedItem.CurrentStock);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "GEORAEPLAN_APP_ROOT",
+                null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Theory]
+    [InlineData("target")]
+    [InlineData("sibling")]
+    public async Task SyncService_MissingServerWarehouseStockTombstone_PreservesConcurrentEdits(
+        string editedRow)
+    {
+        var tempRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"georaeplan-sync-stock-tombstone-race-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable(
+            "GEORAEPLAN_APP_ROOT",
+            tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.Parse(
+                "77776622-2222-2222-2222-222222222222");
+            var updatedAtUtc = new DateTime(
+                2026,
+                7,
+                2,
+                4,
+                30,
+                0,
+                DateTimeKind.Utc);
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Concurrent tombstone item",
+                NameMatchKey = "CONCURRENTTOMBSTONEITEM",
+                ItemKind = ItemKinds.Product,
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                CurrentStock = 10m,
+                Revision = 40,
+                UpdatedAtUtc = updatedAtUtc,
+                IsDirty = false
+            });
+            db.ItemWarehouseStocks.AddRange(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 3m,
+                    Revision = 42,
+                    UpdatedAtUtc = updatedAtUtc
+                },
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.YeonsuMainWarehouse,
+                    Quantity = 7m,
+                    Revision = 43,
+                    UpdatedAtUtc = updatedAtUtc
+                });
+            await db.SaveChangesAsync();
+
+            var session = CreateOnlineAdminSession();
+            var dispatcher = new SyncRequestDispatcher();
+            var localState = new LocalStateService(
+                db,
+                new OfficeAccessService(),
+                dispatcher,
+                session);
+            var api = new ErpApiClient(
+                new HttpClient(new SyncStatusHandler(0))
+                {
+                    BaseAddress = new Uri("http://localhost/")
+                },
+                session);
+            using var sync = new SyncService(
+                db,
+                localState,
+                new RentalStateService(db),
+                api,
+                session,
+                dispatcher,
+                new SyncDiagnosticsService(session));
+            sync.BeforeItemWarehouseStockTombstoneConditionalDeleteAsyncForTesting =
+                async cancellationToken =>
+                {
+                    await using var concurrentDb =
+                        new LocalDbContext();
+                    var concurrentStock = await concurrentDb
+                        .ItemWarehouseStocks
+                        .SingleAsync(
+                            stock =>
+                                stock.ItemId == itemId &&
+                                stock.WarehouseCode ==
+                                (editedRow == "target"
+                                    ? OfficeCodeCatalog
+                                        .UsenetMainWarehouse
+                                    : OfficeCodeCatalog
+                                        .YeonsuMainWarehouse),
+                            cancellationToken);
+                    concurrentStock.Quantity =
+                        editedRow == "target" ? 4m : 9m;
+                    concurrentStock.UpdatedAtUtc =
+                        updatedAtUtc.AddMinutes(1);
+                    var concurrentItem = await concurrentDb.Items
+                        .SingleAsync(
+                            item => item.Id == itemId,
+                            cancellationToken);
+                    concurrentItem.CurrentStock =
+                        editedRow == "target" ? 11m : 12m;
+                    await concurrentDb.SaveChangesAsync(
+                        cancellationToken);
+                };
+            var clientSnapshot = new ItemWarehouseStockDto
+            {
+                ItemId = itemId,
+                WarehouseCode =
+                    OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 3m,
+                Revision = 42,
+                ExpectedRevision = 42,
+                UpdatedAtUtc = updatedAtUtc
+            };
+            var serverTombstone = new ItemWarehouseStockDto
+            {
+                ItemId = itemId,
+                WarehouseCode =
+                    OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 0m,
+                Revision = 0,
+                ExpectedRevision = 42,
+                UpdatedAtUtc = DateTime.UnixEpoch,
+                IsDeleted = true
+            };
+            var conflict = new ConflictLogDto
+            {
+                EntityName = "ItemWarehouseStock",
+                EntityId =
+                    $"{itemId:D}|{OfficeCodeCatalog.UsenetMainWarehouse}",
+                Reason =
+                    "Expected revision mismatch. client=42, server=0. Server warehouse stock row no longer exists.",
+                ClientJson =
+                    JsonSerializer.Serialize(clientSnapshot),
+                ServerJson =
+                    JsonSerializer.Serialize(serverTombstone)
+            };
+
+            var outcome = await InvokePrivateInstanceTaskResultAsync(
+                sync,
+                "TryResolveItemWarehouseStockRevisionConflictAsync",
+                conflict,
+                CancellationToken.None);
+
+            Assert.Equal(
+                editedRow == "target"
+                    ? "Unresolved"
+                    : "ResolvedFromServer",
+                outcome?.ToString());
+            db.ChangeTracker.Clear();
+            var storedStocks = await db.ItemWarehouseStocks
+                .AsNoTracking()
+                .Where(stock => stock.ItemId == itemId)
+                .OrderBy(stock => stock.WarehouseCode)
+                .ToListAsync();
+            if (editedRow == "target")
+            {
+                Assert.Equal(2, storedStocks.Count);
+                Assert.Equal(
+                    4m,
+                    storedStocks.Single(stock =>
+                            stock.WarehouseCode ==
+                            OfficeCodeCatalog.UsenetMainWarehouse)
+                        .Quantity);
+                Assert.Equal(
+                    7m,
+                    storedStocks.Single(stock =>
+                            stock.WarehouseCode ==
+                            OfficeCodeCatalog.YeonsuMainWarehouse)
+                        .Quantity);
+                Assert.Equal(
+                    11m,
+                    await db.Items
+                        .AsNoTracking()
+                        .Where(item => item.Id == itemId)
+                        .Select(item => item.CurrentStock)
+                        .SingleAsync());
+            }
+            else
+            {
+                var storedStock = Assert.Single(storedStocks);
+                Assert.Equal(
+                    OfficeCodeCatalog.YeonsuMainWarehouse,
+                    storedStock.WarehouseCode);
+                Assert.Equal(9m, storedStock.Quantity);
+                Assert.Equal(
+                    9m,
+                    await db.Items
+                        .AsNoTracking()
+                        .Where(item => item.Id == itemId)
+                        .Select(item => item.CurrentStock)
+                        .SingleAsync());
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "GEORAEPLAN_APP_ROOT",
+                null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SyncService_ItemWarehouseStockReplay_UsesPushSessionAndExcludesReadOnlySibling()
+    {
+        var tempRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"georaeplan-sync-stock-readonly-sibling-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable(
+            "GEORAEPLAN_APP_ROOT",
+            tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.Parse(
+                "77776633-3333-3333-3333-333333333333");
+            var updatedAtUtc = new DateTime(
+                2026,
+                7,
+                2,
+                5,
+                0,
+                0,
+                DateTimeKind.Utc);
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                NameOriginal = "Read only sibling stock item",
+                NameMatchKey = "READONLYSIBLINGSTOCKITEM",
+                ItemKind = ItemKinds.Product,
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA",
+                CurrentStock = 16m,
+                Revision = 20,
+                UpdatedAtUtc = updatedAtUtc,
+                IsDirty = false
+            });
+            db.ItemWarehouseStocks.AddRange(
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 5m,
+                    Revision = 30,
+                    UpdatedAtUtc = updatedAtUtc.AddMinutes(-1)
+                },
+                new LocalItemWarehouseStock
+                {
+                    ItemId = itemId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.YeonsuMainWarehouse,
+                    Quantity = 11m,
+                    Revision = 21,
+                    UpdatedAtUtc = updatedAtUtc
+                });
+            await db.SaveChangesAsync();
+
+            var targetSession = CreateOnlineOfficeUserSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Yeonsu,
+                AppPermissionNames.ItemEdit);
+            var currentSession = CreateOnlineOfficeUserSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                AppPermissionNames.ItemEdit);
+            var serverConflictSnapshot =
+                new ItemWarehouseStockDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.YeonsuMainWarehouse,
+                    Quantity = 10m,
+                    Revision = 21,
+                    ExpectedRevision = 21,
+                    UpdatedAtUtc =
+                        updatedAtUtc.AddMinutes(-10)
+                };
+            var handler =
+                new ReadOnlySiblingWarehouseStockReplayHandler(
+                    itemId,
+                    serverConflictSnapshot,
+                    updatedAtUtc);
+            var dispatcher = new SyncRequestDispatcher();
+            var localState = new LocalStateService(
+                db,
+                new OfficeAccessService(),
+                dispatcher,
+                currentSession);
+            var api = new ErpApiClient(
+                new HttpClient(handler)
+                {
+                    BaseAddress = new Uri("http://localhost/")
+                },
+                targetSession);
+            using var sync = new SyncService(
+                db,
+                localState,
+                new RentalStateService(db),
+                api,
+                currentSession,
+                dispatcher,
+                new SyncDiagnosticsService(currentSession));
+            var clientSnapshot = new ItemWarehouseStockDto
+            {
+                ItemId = itemId,
+                WarehouseCode =
+                    OfficeCodeCatalog.YeonsuMainWarehouse,
+                Quantity = 11m,
+                Revision = 20,
+                ExpectedRevision = 20,
+                UpdatedAtUtc = updatedAtUtc
+            };
+            var conflict = new ConflictLogDto
+            {
+                EntityName = "ItemWarehouseStock",
+                EntityId =
+                    $"{itemId:D}|{OfficeCodeCatalog.YeonsuMainWarehouse}",
+                Reason =
+                    "Expected revision mismatch. client=20, server=21",
+                ClientJson =
+                    JsonSerializer.Serialize(clientSnapshot),
+                ServerJson =
+                    JsonSerializer.Serialize(
+                        serverConflictSnapshot)
+            };
+
+            await InvokePrivateInstanceTaskResultAsync(
+                sync,
+                "ReplayItemWarehouseStockSnapshotsBeforePullAsync",
+                api,
+                new SyncPushRequest
+                {
+                    DeviceId = "readonly-sibling-replay-test",
+                    ItemWarehouseStocks = [clientSnapshot]
+                },
+                targetSession,
+                null,
+                new List<ConflictLogDto> { conflict },
+                CancellationToken.None);
+
+            Assert.Equal(
+                ["pull:1", "push:1"],
+                handler.Operations);
+            var replayRequest =
+                Assert.Single(handler.PushRequests);
+            var replayStock =
+                Assert.Single(
+                    replayRequest.ItemWarehouseStocks);
+            Assert.Equal(
+                OfficeCodeCatalog.YeonsuMainWarehouse,
+                replayStock.WarehouseCode);
+            Assert.Equal(21, replayStock.ExpectedRevision);
+            db.ChangeTracker.Clear();
+            var readonlySibling = await db.ItemWarehouseStocks
+                .AsNoTracking()
+                .SingleAsync(stock =>
+                    stock.ItemId == itemId &&
+                    stock.WarehouseCode ==
+                    OfficeCodeCatalog.UsenetMainWarehouse);
+            Assert.Equal(5m, readonlySibling.Quantity);
+            Assert.Equal(30, readonlySibling.Revision);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "GEORAEPLAN_APP_ROOT",
+                null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Theory]
+    [InlineData("malformed-id")]
+    [InlineData("empty-warehouse")]
+    [InlineData("nonpositive-server-revision")]
+    [InlineData("mismatched-json-identity")]
+    public void SyncService_ItemWarehouseStockRevisionConflictClassifier_RejectsUnsafeShape(
+        string unsafeShape)
+    {
+        var itemId = Guid.Parse(
+            "77774444-4444-4444-4444-444444444444");
+        const string warehouseCode = "USENET";
+        var clientSnapshot = new ItemWarehouseStockDto
+        {
+            ItemId = itemId,
+            WarehouseCode = warehouseCode,
+            Quantity = 3m,
+            UpdatedAtUtc = new DateTime(
+                2026,
+                6,
+                2,
+                13,
+                30,
+                0,
+                DateTimeKind.Utc),
+            Revision = 20,
+            ExpectedRevision = 20
+        };
+        var serverSnapshot = new ItemWarehouseStockDto
+        {
+            ItemId = itemId,
+            WarehouseCode = warehouseCode,
+            Quantity = 2m,
+            UpdatedAtUtc = clientSnapshot.UpdatedAtUtc.AddMinutes(-10),
+            Revision = 25,
+            ExpectedRevision = 25
+        };
+        var entityId = $"{itemId:D}|{warehouseCode}";
+        switch (unsafeShape)
+        {
+            case "malformed-id":
+                entityId = "not-a-stock-key";
+                break;
+            case "empty-warehouse":
+                clientSnapshot.WarehouseCode = string.Empty;
+                serverSnapshot.WarehouseCode = string.Empty;
+                entityId = $"{itemId:D}|";
+                break;
+            case "nonpositive-server-revision":
+                serverSnapshot.Revision = 0;
+                break;
+            case "mismatched-json-identity":
+                serverSnapshot.ItemId = Guid.NewGuid();
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(
+                    nameof(unsafeShape),
+                    unsafeShape,
+                    "Unknown unsafe stock conflict shape.");
+        }
+
+        var conflict = new ConflictLogDto
+        {
+            EntityName = "ItemWarehouseStock",
+            EntityId = entityId,
+            Reason = "Expected revision mismatch. client=20, server=25",
+            ClientJson = JsonSerializer.Serialize(clientSnapshot),
+            ServerJson = JsonSerializer.Serialize(serverSnapshot)
+        };
+        var method = typeof(SyncService).GetMethod(
+            "TryGetItemWarehouseStockRevisionConflictSnapshots",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        object?[] arguments = [conflict, null, null];
+
+        var accepted = Assert.IsType<bool>(
+            method!.Invoke(null, arguments));
+
+        Assert.False(accepted);
+        Assert.Null(arguments[1]);
+        Assert.Null(arguments[2]);
     }
 
     [Fact]
@@ -5868,6 +8523,7 @@ public sealed class LocalStateServicePartialsTests
                 TransferNumber = "TR-PURGE-STOCK",
                 TransferDate = new DateOnly(2026, 6, 17),
                 TransferStatus = InventoryTransferStatusNormalizer.Pending,
+                IsDirty = false,
                 Lines =
                 {
                     new LocalInventoryTransferLine
@@ -5886,6 +8542,18 @@ public sealed class LocalStateServicePartialsTests
                 .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
                 .Select(stock => stock.Quantity)
                 .SingleAsync());
+            Assert.Equal(
+                1,
+                await db.InventoryTransfers
+                    .IgnoreQueryFilters()
+                    .Where(transfer =>
+                        transfer.Id == transferId)
+                    .ExecuteUpdateAsync(setters =>
+                        setters.SetProperty(
+                            transfer =>
+                                transfer.IsDirty,
+                            false)));
+            db.ChangeTracker.Clear();
 
             var purgeResult = await service.ApplyServerPurgeRecycleBinEntryAsync(
                 RecycleBinEntityKind.InventoryTransfer,
@@ -6090,7 +8758,9 @@ public sealed class LocalStateServicePartialsTests
             var invoiceId = Guid.Parse("b8740000-0000-0000-0000-000000000002");
             var transactionId = Guid.Parse("b8740000-0000-0000-0000-000000000003");
             var attachmentId = Guid.Parse("b8740000-0000-0000-0000-000000000004");
-            var attachmentDirectory = Path.Combine(tempRoot, "invoice-purge-attachments");
+            var attachmentDirectory = Path.Combine(
+                AppPaths.TransactionAttachmentsDir,
+                $"invoice-purge-attachments-{Guid.NewGuid():N}");
             Directory.CreateDirectory(attachmentDirectory);
             var attachmentFile = Path.Combine(attachmentDirectory, "invoice-purge-stale-transaction.txt");
             await File.WriteAllTextAsync(attachmentFile, "invoice purge stale transaction evidence");
@@ -6114,7 +8784,8 @@ public sealed class LocalStateServicePartialsTests
                 SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
                 VoucherType = VoucherType.Sales,
                 InvoiceDate = new DateOnly(2026, 6, 23),
-                IsDeleted = true
+                IsDeleted = true,
+                IsDirty = false
             });
             db.Transactions.Add(new LocalTransaction
             {
@@ -6129,7 +8800,8 @@ public sealed class LocalStateServicePartialsTests
                 LinkedInvoiceNumber = "INV-PURGE-STALE-TX",
                 ReceiptTotal = 1000m,
                 SettlementAmount = 1000m,
-                IsDeleted = true
+                IsDeleted = true,
+                IsDirty = false
             });
             db.TransactionAttachments.Add(new LocalTransactionAttachment
             {
@@ -6141,7 +8813,8 @@ public sealed class LocalStateServicePartialsTests
                 StoredPath = attachmentFile,
                 FileSize = new FileInfo(attachmentFile).Length,
                 UploadedAtUtc = DateTime.UtcNow,
-                IsDeleted = true
+                IsDeleted = true,
+                IsDirty = false
             });
             await db.SaveChangesAsync();
             db.ChangeTracker.Clear();
@@ -6184,7 +8857,9 @@ public sealed class LocalStateServicePartialsTests
             var invoiceId = Guid.Parse("b8720000-0000-0000-0000-000000000002");
             var paymentId = Guid.Parse("b8720000-0000-0000-0000-000000000003");
             var attachmentId = Guid.Parse("b8720000-0000-0000-0000-000000000004");
-            var attachmentDirectory = Path.Combine(tempRoot, "payment-purge-attachments");
+            var attachmentDirectory = Path.Combine(
+                AppPaths.TransactionAttachmentsDir,
+                $"payment-purge-attachments-{Guid.NewGuid():N}");
             Directory.CreateDirectory(attachmentDirectory);
             var attachmentFile = Path.Combine(attachmentDirectory, "payment-purge-stale-transaction.txt");
             await File.WriteAllTextAsync(attachmentFile, "payment purge stale transaction evidence");
@@ -6215,7 +8890,8 @@ public sealed class LocalStateServicePartialsTests
                 InvoiceId = invoiceId,
                 PaymentDate = new DateOnly(2026, 6, 23),
                 Amount = 1000m,
-                IsDeleted = true
+                IsDeleted = true,
+                IsDirty = false
             });
             db.Transactions.Add(new LocalTransaction
             {
@@ -6230,7 +8906,8 @@ public sealed class LocalStateServicePartialsTests
                 LinkedInvoiceNumber = "PAY-PURGE-STALE-TX",
                 ReceiptTotal = 1000m,
                 SettlementAmount = 1000m,
-                IsDeleted = true
+                IsDeleted = true,
+                IsDirty = false
             });
             db.TransactionAttachments.Add(new LocalTransactionAttachment
             {
@@ -6242,7 +8919,8 @@ public sealed class LocalStateServicePartialsTests
                 StoredPath = attachmentFile,
                 FileSize = new FileInfo(attachmentFile).Length,
                 UploadedAtUtc = DateTime.UtcNow,
-                IsDeleted = true
+                IsDeleted = true,
+                IsDirty = false
             });
             await db.SaveChangesAsync();
             db.ChangeTracker.Clear();
@@ -6284,7 +8962,9 @@ public sealed class LocalStateServicePartialsTests
             var customerId = Guid.Parse("b8730000-0000-0000-0000-000000000001");
             var paymentId = Guid.Parse("b8730000-0000-0000-0000-000000000002");
             var attachmentId = Guid.Parse("b8730000-0000-0000-0000-000000000003");
-            var attachmentDirectory = Path.Combine(tempRoot, "payment-purge-missing-payment");
+            var attachmentDirectory = Path.Combine(
+                AppPaths.TransactionAttachmentsDir,
+                $"payment-purge-missing-payment-{Guid.NewGuid():N}");
             Directory.CreateDirectory(attachmentDirectory);
             var attachmentFile = Path.Combine(attachmentDirectory, "payment-purge-missing-payment.txt");
             await File.WriteAllTextAsync(attachmentFile, "payment purge missing payment evidence");
@@ -6309,7 +8989,8 @@ public sealed class LocalStateServicePartialsTests
                 TransactionKind = PaymentFlowConstants.TransactionKindInvoiceReceipt,
                 ReceiptTotal = 1000m,
                 SettlementAmount = 1000m,
-                IsDeleted = true
+                IsDeleted = true,
+                IsDirty = false
             });
             db.TransactionAttachments.Add(new LocalTransactionAttachment
             {
@@ -6321,7 +9002,8 @@ public sealed class LocalStateServicePartialsTests
                 StoredPath = attachmentFile,
                 FileSize = new FileInfo(attachmentFile).Length,
                 UploadedAtUtc = DateTime.UtcNow,
-                IsDeleted = true
+                IsDeleted = true,
+                IsDirty = false
             });
             await db.SaveChangesAsync();
             db.ChangeTracker.Clear();
@@ -6363,7 +9045,9 @@ public sealed class LocalStateServicePartialsTests
             var invoiceId = Guid.Parse("b8710000-0000-0000-0000-000000000002");
             var transactionId = Guid.Parse("b8710000-0000-0000-0000-000000000003");
             var attachmentId = Guid.Parse("b8710000-0000-0000-0000-000000000004");
-            var attachmentDirectory = Path.Combine(tempRoot, "attachments");
+            var attachmentDirectory = Path.Combine(
+                AppPaths.TransactionAttachmentsDir,
+                $"transaction-purge-orphan-{Guid.NewGuid():N}");
             Directory.CreateDirectory(attachmentDirectory);
             var attachmentFile = Path.Combine(attachmentDirectory, "transaction-purge-orphan.txt");
             await File.WriteAllTextAsync(attachmentFile, "transaction purge orphan evidence");
@@ -6409,7 +9093,8 @@ public sealed class LocalStateServicePartialsTests
                 InvoiceId = invoiceId,
                 PaymentDate = new DateOnly(2026, 6, 23),
                 Amount = 1000m,
-                IsDeleted = true
+                IsDeleted = true,
+                IsDirty = false
             });
             db.TransactionAttachments.Add(new LocalTransactionAttachment
             {
@@ -6421,7 +9106,8 @@ public sealed class LocalStateServicePartialsTests
                 StoredPath = attachmentFile,
                 FileSize = new FileInfo(attachmentFile).Length,
                 UploadedAtUtc = DateTime.UtcNow,
-                IsDeleted = true
+                IsDeleted = true,
+                IsDirty = false
             });
             await db.SaveChangesAsync();
 
@@ -6476,6 +9162,8 @@ public sealed class LocalStateServicePartialsTests
             var transferLineId = Guid.Parse("b8d00000-0000-0000-0000-000000000001");
             var assetId = Guid.Parse("b8e00000-0000-0000-0000-000000000001");
             var profileId = Guid.Parse("b8f00000-0000-0000-0000-000000000001");
+            var priceGradeOptionId = Guid.Parse("b9000000-0000-0000-0000-000000000001");
+            var itemPriceGradeId = Guid.Parse("b9100000-0000-0000-0000-000000000001");
 
             db.Customers.Add(new LocalCustomer
             {
@@ -6496,6 +9184,7 @@ public sealed class LocalStateServicePartialsTests
                 SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
                 VoucherType = VoucherType.Sales,
                 InvoiceDate = new DateOnly(2026, 6, 23),
+                IsDirty = false,
                 Lines =
                 {
                     new LocalInvoiceLine
@@ -6518,6 +9207,7 @@ public sealed class LocalStateServicePartialsTests
                 TransferDate = new DateOnly(2026, 6, 23),
                 FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
                 ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                IsDirty = false,
                 Lines =
                 {
                     new LocalInventoryTransferLine
@@ -6586,7 +9276,7 @@ public sealed class LocalStateServicePartialsTests
                 ItemName = "A4-MFP",
                 ManagementNumber = "ITEM-PURGE-ORPHAN-001",
                 AssetStatus = "임대",
-                IsDirty = true
+                IsDirty = false
             });
             db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
             {
@@ -6612,7 +9302,26 @@ public sealed class LocalStateServicePartialsTests
                         Amount = 10000m
                     }
                 }),
-                IsDirty = true
+                IsDirty = false
+            });
+            db.PriceGradeOptions.Add(new LocalPriceGradeOption
+            {
+                Id = priceGradeOptionId,
+                Name = "A",
+                PriceSource = SelectionOptionDefaults.PriceSourceA,
+                SortOrder = 1,
+                IsActive = true
+            });
+            db.ItemPriceGrades.Add(new LocalItemPriceGrade
+            {
+                Id = itemPriceGradeId,
+                ItemId = itemId,
+                PriceGradeOptionId = priceGradeOptionId,
+                PriceGradeName = "A",
+                UnitPrice = 1000m,
+                IsActive = false,
+                IsDeleted = true,
+                IsDirty = false
             });
             await db.SaveChangesAsync();
 
@@ -6630,6 +9339,10 @@ public sealed class LocalStateServicePartialsTests
             Assert.Empty(await db.InventoryMovements.Where(current => current.ItemId == itemId).ToListAsync());
             Assert.Empty(await db.StockLayers.Where(current => current.ItemId == itemId).ToListAsync());
             Assert.Empty(await db.ItemWarehouseStocks.Where(current => current.ItemId == itemId).ToListAsync());
+            Assert.Empty(await db.ItemPriceGrades
+                .IgnoreQueryFilters()
+                .Where(current => current.ItemId == itemId)
+                .ToListAsync());
 
             var asset = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(current => current.Id == assetId);
             Assert.Null(asset.ItemId);
@@ -6684,7 +9397,7 @@ public sealed class LocalStateServicePartialsTests
                 ManagementNumber = "PURGE-ORPHAN-001",
                 AssetStatus = "임대",
                 BillingEligibilityStatus = "청구대상",
-                IsDirty = true
+                IsDirty = false
             });
             db.RentalBillingLogs.Add(new LocalRentalBillingLog
             {
@@ -6697,7 +9410,7 @@ public sealed class LocalStateServicePartialsTests
                 ScheduledDate = new DateOnly(2026, 6, 25),
                 Status = "예정",
                 BilledAmount = 10000m,
-                IsDirty = true
+                IsDirty = false
             });
             db.RentalAssetAssignmentHistories.Add(new LocalRentalAssetAssignmentHistory
             {
@@ -6710,7 +9423,7 @@ public sealed class LocalStateServicePartialsTests
                 BillingProfileDisplay = "누락된 프로필",
                 ItemName = "A4-MFP",
                 ManagementNumber = "PURGE-ORPHAN-001",
-                IsDirty = true
+                IsDirty = false
             });
             await db.SaveChangesAsync();
 
@@ -6779,7 +9492,7 @@ public sealed class LocalStateServicePartialsTests
                         IncludedAssetIds = [assetId]
                     }
                 }),
-                IsDirty = true
+                IsDirty = false
             });
             db.RentalAssetAssignmentHistories.Add(new LocalRentalAssetAssignmentHistory
             {
@@ -6792,7 +9505,7 @@ public sealed class LocalStateServicePartialsTests
                 BillingProfileDisplay = "자산 purge 프로필",
                 ItemName = "A4-MFP",
                 ManagementNumber = "PURGE-ASSET-001",
-                IsDirty = true
+                IsDirty = false
             });
             await db.SaveChangesAsync();
 
@@ -7309,8 +10022,11 @@ public sealed class LocalStateServicePartialsTests
         }
     }
 
-    [Fact]
-    public async Task SyncService_TryPrepareItemRevisionRetryAsync_RebasesNewerLocalItemAndRequeuesOutbox()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SyncService_TryPrepareItemRevisionRetryAsync_RebasesItemCatalogExtensionWireShapeAndRequeuesOutbox(
+        bool catalogExtensionSyncPending)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-item-retry-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -7346,11 +10062,33 @@ public sealed class LocalStateServicePartialsTests
                 CreatedAtUtc = serverUpdatedAtUtc.AddDays(-1),
                 UpdatedAtUtc = localUpdatedAtUtc,
                 Revision = localRevision,
-                IsDirty = true
+                IsDirty = true,
+                CatalogExtensionSyncPending = catalogExtensionSyncPending
             };
             db.Items.Add(item);
 
-            var clientSnapshot = LocalMappings.ToDto(item);
+            var clientSnapshot = InvokePrivateStatic<ItemDto>(
+                typeof(SyncService),
+                "MapItemForOutboundSync",
+                item);
+            if (catalogExtensionSyncPending)
+            {
+                Assert.Equal(0m, clientSnapshot.BoxQuantity);
+                Assert.Equal(string.Empty, clientSnapshot.StorageLocation);
+                Assert.Null(clientSnapshot.LastPurchaseDate);
+                Assert.True(clientSnapshot.LastPurchaseDateSpecified);
+                Assert.Null(clientSnapshot.LastSaleDate);
+                Assert.True(clientSnapshot.LastSaleDateSpecified);
+            }
+            else
+            {
+                Assert.Null(clientSnapshot.BoxQuantity);
+                Assert.Null(clientSnapshot.StorageLocation);
+                Assert.Null(clientSnapshot.LastPurchaseDate);
+                Assert.Null(clientSnapshot.LastPurchaseDateSpecified);
+                Assert.Null(clientSnapshot.LastSaleDate);
+                Assert.Null(clientSnapshot.LastSaleDateSpecified);
+            }
             clientSnapshot.ExpectedRevision = localRevision;
             clientSnapshot.MutationCreatedAtUtc = localUpdatedAtUtc;
             clientSnapshot.MutationId = InvokePrivateStatic<string>(
@@ -7431,6 +10169,7 @@ public sealed class LocalStateServicePartialsTests
             Assert.Equal("Supplies", storedItem.CategoryName);
             Assert.Equal("EA", storedItem.Unit);
             Assert.True(storedItem.IsDirty);
+            Assert.Equal(catalogExtensionSyncPending, storedItem.CatalogExtensionSyncPending);
             Assert.Equal("Prepared", outboxRow.Status);
             Assert.Equal(serverRevision, outboxRow.ExpectedRevision);
             Assert.True(string.IsNullOrWhiteSpace(outboxRow.ErrorMessage));
@@ -7817,7 +10556,7 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
-    public async Task SaveAssetAsync_DoesNotAppendMissingProfileAssetToExplicitMultiLineTemplate()
+    public async Task SaveAssetAsync_RejectsMissingProfileAssetInExplicitMultiLineTemplateWithoutSideEffects()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-asset-monthly-multiline-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -7877,6 +10616,8 @@ public sealed class LocalStateServicePartialsTests
                 CreateMonthlySyncAsset(missingAssetId, profileId, "A-002", 40000m),
                 CreateMonthlySyncAsset(secondLineAssetId, profileId, "A-003", 220000m));
             await db.SaveChangesAsync();
+            var initialProfileDirty = (await db.RentalBillingProfiles.IgnoreQueryFilters()
+                .FirstAsync(profile => profile.Id == profileId)).IsDirty;
 
             var session = new SessionState();
             session.SetOfflineSession(new UserSessionDto
@@ -7889,14 +10630,20 @@ public sealed class LocalStateServicePartialsTests
             });
 
             var rental = new RentalStateService(db);
-            var result = await rental.SaveAssetAsync(CreateMonthlySyncAsset(missingAssetId, profileId, "A-002", 40000m), session);
+            var result = await rental.SaveAssetAsync(CreateMonthlySyncAsset(missingAssetId, profileId, "A-002", 90000m), session);
 
-            Assert.True(result.Success, result.Message);
+            Assert.False(result.Success);
+            Assert.Contains("청구관리", result.Message, StringComparison.Ordinal);
+            var storedAsset = await db.RentalAssets.IgnoreQueryFilters()
+                .FirstAsync(asset => asset.Id == missingAssetId);
             var storedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters()
                 .FirstAsync(profile => profile.Id == profileId);
             var storedTemplateItems = rental.GetBillingTemplateItems(storedProfile);
 
+            Assert.Equal(40000m, storedAsset.MonthlyFee);
             Assert.Equal(330000m, storedProfile.MonthlyAmount);
+            Assert.Equal(initialProfileDirty, storedProfile.IsDirty);
+            Assert.Empty(await db.Items.IgnoreQueryFilters().ToListAsync());
             Assert.Equal(2, storedTemplateItems.Count);
             Assert.Equal(110000m, storedTemplateItems[0].Amount);
             Assert.Equal(220000m, storedTemplateItems[1].Amount);
@@ -8491,6 +11238,313 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task DataIntegrityIssueService_ScanAsync_TemplateAssetExistenceUsesActiveAssetsOutsideSessionOfficePrefilter()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-data-integrity-template-asset-existence-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("79a11111-1111-1111-1111-111111111111");
+            var activeCrossOfficeAssetId = Guid.Parse("79a22222-2222-2222-2222-222222222222");
+            var deletedAssetId = Guid.Parse("79a33333-3333-3333-3333-333333333333");
+            var missingAssetId = Guid.Parse("79a44444-4444-4444-4444-444444444444");
+            var externalProfileId = Guid.Parse("79a55555-5555-5555-5555-555555555555");
+
+            db.RentalBillingProfiles.AddRange(
+                new LocalRentalBillingProfile
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = "INTEGRITY-TEMPLATE-ASSET-EXISTENCE",
+                    CustomerName = "Template asset existence customer",
+                    InstallSiteName = "Template asset existence site",
+                    ItemName = "Printer",
+                    MonthlyAmount = 30_000m,
+                    BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                    {
+                        new()
+                        {
+                            DisplayItemName = "Active cross-office asset",
+                            Quantity = 1m,
+                            UnitPrice = 10_000m,
+                            Amount = 10_000m,
+                            IncludedAssetIds = [activeCrossOfficeAssetId]
+                        },
+                        new()
+                        {
+                            DisplayItemName = "Deleted asset",
+                            Quantity = 1m,
+                            UnitPrice = 10_000m,
+                            Amount = 10_000m,
+                            IncludedAssetIds = [deletedAssetId]
+                        },
+                        new()
+                        {
+                            DisplayItemName = "Missing asset",
+                            Quantity = 1m,
+                            UnitPrice = 10_000m,
+                            Amount = 10_000m,
+                            IncludedAssetIds = [missingAssetId]
+                        }
+                    }),
+                    IsDirty = false
+                },
+                new LocalRentalBillingProfile
+                {
+                    Id = externalProfileId,
+                    ProfileKey = "EXTERNAL-INTEGRITY-TEMPLATE-ASSET",
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    CustomerName = "External tenant profile customer",
+                    InstallSiteName = "External tenant site",
+                    ItemName = "External printer",
+                    MonthlyAmount = 90_000m,
+                    BillingTemplateJson = "[]",
+                    IsDirty = false
+                });
+            db.RentalAssets.AddRange(
+                new LocalRentalAsset
+                {
+                    Id = activeCrossOfficeAssetId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    BillingProfileId = externalProfileId,
+                    AssetKey = "ITWORLD|EXTERNAL-ACTIVE|SN-ACTIVE",
+                    CustomerName = "External asset secret customer",
+                    CurrentCustomerName = "External asset secret customer",
+                    ItemName = "External asset secret printer",
+                    ManagementNumber = "EXTERNAL-ASSET-SECRET-NUMBER",
+                    AssetStatus = "ACTIVE",
+                    MonthlyFee = 99_000m,
+                    IsDirty = false
+                },
+                new LocalRentalAsset
+                {
+                    Id = deletedAssetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ManagementCompanyCode = OfficeCodeCatalog.Yeonsu,
+                    AssetKey = "USENET|DELETED-CROSS-OFFICE|SN-DELETED",
+                    CustomerName = "Template asset existence customer",
+                    CurrentCustomerName = "Template asset existence customer",
+                    ItemName = "Printer",
+                    ManagementNumber = "DELETED-CROSS-OFFICE",
+                    AssetStatus = "ACTIVE",
+                    MonthlyFee = 10_000m,
+                    IsDeleted = true,
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(
+                CreateOfficeAdminSession(
+                    TenantScopeCatalog.UsenetGroup,
+                    OfficeCodeCatalog.Usenet));
+            var missingAssetIssues = result.Issues
+                .Where(issue => issue.Code == DataIntegrityIssueCodes.RentalTemplateMissingAsset)
+                .ToList();
+
+            Assert.DoesNotContain(missingAssetIssues, issue => issue.CurrentValue == activeCrossOfficeAssetId.ToString("D"));
+            Assert.Contains(missingAssetIssues, issue => issue.CurrentValue == deletedAssetId.ToString("D"));
+            Assert.Contains(missingAssetIssues, issue => issue.CurrentValue == missingAssetId.ToString("D"));
+            Assert.DoesNotContain(result.Issues, issue =>
+                issue.ProfileId == profileId &&
+                issue.Code is DataIntegrityIssueCodes.RentalAssetProfileScopeMismatch or
+                              DataIntegrityIssueCodes.RentalAssetTemplateMonthlyMismatch);
+            Assert.DoesNotContain(result.Issues, issue =>
+                issue.AssetId == activeCrossOfficeAssetId ||
+                issue.AssetDisplayName.Contains("EXTERNAL-ASSET-SECRET-NUMBER", StringComparison.Ordinal) ||
+                issue.CustomerName.Contains("External asset secret customer", StringComparison.Ordinal) ||
+                issue.Message.Contains("External asset secret", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task DataIntegrityIssueService_ScanAsync_BatchesMoreThanFiveHundredExternalTemplateAssetExistenceChecks()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-data-integrity-template-asset-batch-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("79b11111-1111-1111-1111-111111111111");
+            var externalAssetIds = Enumerable.Range(0, 501)
+                .Select(_ => Guid.NewGuid())
+                .ToList();
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                ProfileKey = "INTEGRITY-EXTERNAL-TEMPLATE-ASSET-BATCH",
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "External batch reference customer",
+                ItemName = "External batch reference item",
+                MonthlyAmount = 1m,
+                BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                {
+                    new()
+                    {
+                        DisplayItemName = "External batch reference item",
+                        Quantity = 1m,
+                        UnitPrice = 1m,
+                        Amount = 1m,
+                        IncludedAssetIds = externalAssetIds
+                    }
+                }),
+                IsDirty = false
+            });
+            db.RentalAssets.AddRange(externalAssetIds.Select((assetId, index) => new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                AssetKey = $"ITWORLD|INTEGRITY-EXTERNAL-BATCH-{index:D4}|{assetId:N}",
+                CustomerName = "External batch secret customer",
+                CurrentCustomerName = "External batch secret customer",
+                ItemName = "External batch secret item",
+                ManagementNumber = $"EXTERNAL-BATCH-SECRET-{index:D4}",
+                AssetStatus = "ACTIVE",
+                MonthlyFee = 1m,
+                IsDirty = false
+            }));
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(
+                CreateOfficeAdminSession(
+                    TenantScopeCatalog.UsenetGroup,
+                    OfficeCodeCatalog.Usenet));
+
+            Assert.DoesNotContain(result.Issues, issue =>
+                issue.ProfileId == profileId &&
+                issue.Code == DataIntegrityIssueCodes.RentalTemplateMissingAsset);
+            Assert.DoesNotContain(result.Issues, issue =>
+                externalAssetIds.Contains(issue.AssetId ?? Guid.Empty) ||
+                issue.AssetDisplayName.Contains("EXTERNAL-BATCH-SECRET", StringComparison.Ordinal) ||
+                issue.CustomerName.Contains("External batch secret customer", StringComparison.Ordinal) ||
+                issue.Message.Contains("External batch secret", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DataIntegrityIssueService_ScanAsync_RejectsDuplicateTemplateAssetReferences(
+        bool duplicateIncludedAssetIdsProperty)
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-data-integrity-template-duplicates-{duplicateIncludedAssetIdsProperty}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("79c11111-1111-1111-1111-111111111111");
+            var assetId = Guid.Parse("79c22222-2222-2222-2222-222222222222");
+            var billingTemplateJson = duplicateIncludedAssetIdsProperty
+                ? $"[{{\"DisplayItemName\":\"Duplicate property\",\"Quantity\":1,\"UnitPrice\":10000,\"Amount\":10000,\"IncludedAssetIds\":[\"{assetId:D}\"],\"includedassetids\":[]}}]"
+                : JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+                {
+                    new()
+                    {
+                        DisplayItemName = "First duplicate line",
+                        Quantity = 1m,
+                        UnitPrice = 10_000m,
+                        Amount = 10_000m,
+                        IncludedAssetIds = [assetId]
+                    },
+                    new()
+                    {
+                        DisplayItemName = "Second duplicate line",
+                        Quantity = 1m,
+                        UnitPrice = 10_000m,
+                        Amount = 10_000m,
+                        IncludedAssetIds = [assetId]
+                    }
+                });
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                ProfileKey = $"INTEGRITY-DUPLICATE-TEMPLATE-{duplicateIncludedAssetIdsProperty}",
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Duplicate template customer",
+                ItemName = "Duplicate template item",
+                MonthlyAmount = duplicateIncludedAssetIdsProperty ? 10_000m : 20_000m,
+                BillingTemplateJson = billingTemplateJson,
+                IsDirty = false
+            });
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                BillingProfileId = profileId,
+                AssetKey = $"USENET|INTEGRITY-DUPLICATE-TEMPLATE|{assetId:N}",
+                CustomerName = "Duplicate template customer",
+                CurrentCustomerName = "Duplicate template customer",
+                ItemName = "Duplicate template item",
+                ManagementNumber = "DUPLICATE-TEMPLATE-ASSET",
+                AssetStatus = "ACTIVE",
+                MonthlyFee = 10_000m,
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var result = await new DataIntegrityIssueService(db).ScanAsync(CreateAdminSession());
+
+            var issue = Assert.Single(result.Issues, current =>
+                current.ProfileId == profileId &&
+                current.Code == DataIntegrityIssueCodes.RentalBillingTemplateInvalid);
+            Assert.Equal("Error", issue.Severity);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task DataIntegrityIssueService_ScanAsync_DoesNotTreatRentalTemplateItemIdAsItemMasterReference()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-data-integrity-template-items-{Guid.NewGuid():N}");
@@ -8639,16 +11693,20 @@ public sealed class LocalStateServicePartialsTests
             await db.SaveChangesAsync();
 
             var service = new DataIntegrityIssueService(db);
-            var result = await service.ScanAsync(CreateYeonsuAdminSession());
+            var result = await service.ScanAsync(
+                CreateOfficeAdminSession(
+                    TenantScopeCatalog.UsenetGroup,
+                    OfficeCodeCatalog.Yeonsu));
 
             Assert.True(result.HasIssues);
             Assert.DoesNotContain(result.Issues, issue => string.Equals(issue.OfficeCode, OfficeCodeCatalog.Usenet, StringComparison.OrdinalIgnoreCase));
             Assert.DoesNotContain(result.Issues, issue => issue.ProfileId == usenetProfileId || issue.EntityId == usenetProfileId);
 
             var yeonsuIssue = Assert.Single(result.Issues, issue =>
-                issue.Code == DataIntegrityIssueCodes.RentalBillableAssetWithoutMonthlyFee &&
+                issue.Code == DataIntegrityIssueCodes.RentalAssetBillingEligibilityUnconfirmed &&
                 issue.AssetId == yeonsuAssetId);
             Assert.Equal(OfficeCodeCatalog.Yeonsu, yeonsuIssue.OfficeCode);
+            Assert.Equal("청구상태 확인 필요", yeonsuIssue.Title);
         }
         finally
         {
@@ -8681,7 +11739,10 @@ public sealed class LocalStateServicePartialsTests
             await db.SaveChangesAsync();
 
             var service = new DataIntegrityIssueService(db);
-            var result = await service.ScanAsync(CreateAdminSession());
+            var result = await service.ScanAsync(
+                CreateOfficeAdminSession(
+                    TenantScopeCatalog.UsenetGroup,
+                    OfficeCodeCatalog.Usenet));
 
             var zeroFeeIssues = result.Issues
                 .Where(issue => issue.Code == DataIntegrityIssueCodes.RentalBillableAssetWithoutMonthlyFee)
@@ -9806,6 +12867,98 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
+    public async Task SetItemOfficeStockAsync_ZeroRetainsExplicitWarehouseSnapshot()
+    {
+        var tempRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"georaeplan-zero-manual-stock-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(
+                db,
+                new OfficeAccessService(),
+                new SyncRequestDispatcher(),
+                session);
+            var itemId = Guid.Parse(
+                "81299999-aaaa-bbbb-cccc-000000000001");
+            var updatedAtUtc = new DateTime(
+                2026,
+                7,
+                30,
+                8,
+                15,
+                0,
+                DateTimeKind.Utc);
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Explicit zero stock item",
+                NameMatchKey = "EXPLICITZEROSTOCKITEM",
+                ItemKind = ItemKinds.Product,
+                TrackingType = ItemTrackingTypes.Stock,
+                CurrentStock = 9m,
+                IsSale = true,
+                IsDirty = false,
+                Revision = 41,
+                Unit = "EA",
+                CreatedAtUtc = updatedAtUtc.AddDays(-1),
+                UpdatedAtUtc = updatedAtUtc
+            });
+            db.ItemWarehouseStocks.Add(new LocalItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode =
+                    OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 9m,
+                Revision = 37,
+                UpdatedAtUtc = updatedAtUtc
+            });
+            await db.SaveChangesAsync();
+
+            var result = await service.SetItemOfficeStockAsync(
+                itemId,
+                0m,
+                OfficeCodeCatalog.Usenet);
+
+            Assert.NotNull(result);
+            db.ChangeTracker.Clear();
+
+            var stock = Assert.Single(
+                await db.ItemWarehouseStocks
+                    .Where(current => current.ItemId == itemId)
+                    .ToListAsync());
+            Assert.Equal(
+                OfficeCodeCatalog.UsenetMainWarehouse,
+                stock.WarehouseCode);
+            Assert.Equal(0m, stock.Quantity);
+            Assert.Equal(37, stock.Revision);
+
+            var item = await db.Items
+                .IgnoreQueryFilters()
+                .SingleAsync(current => current.Id == itemId);
+            Assert.Equal(0m, item.CurrentStock);
+            Assert.True(item.IsDirty);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "GEORAEPLAN_APP_ROOT",
+                null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SetItemOfficeStockAsync_RejectsNegativeManualStock()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-negative-manual-stock-{Guid.NewGuid():N}");
@@ -9992,7 +13145,7 @@ public sealed class LocalStateServicePartialsTests
                 CurrentStock = 2m,
                 Revision = 7,
                 UpdatedAtUtc = localUpdatedAt,
-                IsDirty = false
+                IsDirty = true
             });
             db.ItemWarehouseStocks.Add(new LocalItemWarehouseStock
             {
@@ -10036,7 +13189,14 @@ public sealed class LocalStateServicePartialsTests
             Assert.Equal(5m, storedStock.Quantity);
             Assert.Equal(12, storedStock.Revision);
             Assert.Equal(serverUpdatedAt, storedStock.UpdatedAtUtc);
-            Assert.Empty(await db.SyncOutboxEntries.AsNoTracking().ToListAsync());
+            var acknowledgedOutbox =
+                Assert.Single(
+                    await db.SyncOutboxEntries
+                        .AsNoTracking()
+                        .ToListAsync());
+            Assert.Equal(
+                "Acknowledged",
+                acknowledgedOutbox.Status);
             Assert.Equal("20", await localState.GetSettingAsync("LastSyncRevision"));
         }
         finally
@@ -10257,7 +13417,7 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
-    public void SyncService_DispatcherRequestsAreHandledOnlyAfterStart()
+    public async Task SyncService_DispatcherRequestsAreHandledOnlyAfterStart()
     {
         using var db = new LocalDbContext();
         var session = new SessionState();
@@ -10287,6 +13447,8 @@ public sealed class LocalStateServicePartialsTests
         dispatcher.RequestDebouncedSync();
 
         Assert.True(startedSync.HasActiveOrQueuedSync);
+        await startedSync.StopAndDrainAsync().WaitAsync(
+            TimeSpan.FromSeconds(15));
     }
 
     [Fact]
@@ -10303,6 +13465,8 @@ public sealed class LocalStateServicePartialsTests
             await db.Database.EnsureCreatedAsync();
 
             var session = CreateOnlineAdminSession();
+            var userId = Guid.Parse("83633333-3333-3333-3333-333333333333");
+            session.User!.UserId = userId;
             var dispatcher = new SyncRequestDispatcher();
             var localState = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
             var rental = new RentalStateService(db);
@@ -10315,8 +13479,11 @@ public sealed class LocalStateServicePartialsTests
             const string itemMutationId = "device|LocalItem|item";
             const string customerMutationId = "device|LocalCustomer|customer";
             var now = DateTime.UtcNow;
+            var preparedAtUtc = now.AddSeconds(-1);
+            var businessDatabaseName = TenantScopeCatalog.GetDatabaseName(
+                session.SelectedBusinessDatabaseName);
 
-            var request = new SyncPushRequest();
+            var request = new SyncPushRequest { DeviceId = "device" };
             request.Items.Add(new ItemDto
             {
                 Id = itemId,
@@ -10355,7 +13522,11 @@ public sealed class LocalStateServicePartialsTests
                     TenantCode = TenantScopeCatalog.UsenetGroup,
                     OfficeCode = OfficeCodeCatalog.Usenet,
                     ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    BusinessDatabaseName = businessDatabaseName,
+                    SessionId = session.SessionId,
+                    UserId = userId,
                     Status = "Sent",
+                    PreparedAtUtc = preparedAtUtc,
                     SentAtUtc = now
                 },
                 new LocalSyncOutboxEntry
@@ -10369,7 +13540,11 @@ public sealed class LocalStateServicePartialsTests
                     TenantCode = TenantScopeCatalog.UsenetGroup,
                     OfficeCode = OfficeCodeCatalog.Usenet,
                     ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    BusinessDatabaseName = businessDatabaseName,
+                    SessionId = session.SessionId,
+                    UserId = userId,
                     Status = "Sent",
+                    PreparedAtUtc = preparedAtUtc,
                     SentAtUtc = now
                 });
             await db.SaveChangesAsync();
@@ -10399,8 +13574,12 @@ public sealed class LocalStateServicePartialsTests
 
             Assert.Equal("Acknowledged", itemOutbox.Status);
             Assert.NotNull(itemOutbox.AcknowledgedAtUtc);
+            Assert.Equal(5, itemOutbox.AcceptedRevision);
+            Assert.Equal(now.AddSeconds(1), itemOutbox.AcceptedUpdatedAtUtc);
             Assert.Equal("Sent", customerOutbox.Status);
             Assert.Null(customerOutbox.AcknowledgedAtUtc);
+            Assert.Equal(0, customerOutbox.AcceptedRevision);
+            Assert.Null(customerOutbox.AcceptedUpdatedAtUtc);
         }
         finally
         {
@@ -10410,7 +13589,7 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
-    public async Task RepairMissingItemMastersFromOperationalReferencesAsync_DoesNotRecoverSoftDeletedItems()
+    public async Task RepairMissingItemMastersFromOperationalReferencesAsync_RecoversSoftDeletedReferencedItem()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-missing-item-repair-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -10446,6 +13625,12 @@ public sealed class LocalStateServicePartialsTests
                 TrackingType = ItemTrackingTypes.NonStock,
                 Unit = "EA"
             });
+            db.ItemCategoryOptions.Add(new LocalItemCategoryOption
+            {
+                Id = Guid.NewGuid(),
+                Name = SelectionOptionDefaults.DefaultItemCategories[0].Name,
+                IsDirty = false
+            });
             await db.SaveChangesAsync();
 
             await service.SaveInvoiceAsync(new LocalInvoice
@@ -10479,13 +13664,86 @@ public sealed class LocalStateServicePartialsTests
 
             var repairResult = await service.RepairMissingItemMastersFromOperationalReferencesAsync(session);
 
+            Assert.True(repairResult.HasChanges);
+            Assert.Equal(0, repairResult.CreatedCount);
+            Assert.Equal(1, repairResult.RecoveredDeletedCount);
+            Assert.False(await db.Items.IgnoreQueryFilters()
+                .Where(current => current.Id == itemId)
+                .Select(current => current.IsDeleted)
+                .SingleAsync());
+            Assert.Single(await service.GetItemsAsync(session));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RepairMissingItemMastersFromOperationalReferencesAsync_DoesNotRestoreDeletedItemOutsideOfficeScope()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-missing-item-repair-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var itemId = Guid.Parse("80677777-7777-7777-7777-777777777777");
+            var invoiceId = Guid.Parse("80788888-8888-8888-8888-888888888888");
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = "Out of scope deleted item",
+                NameMatchKey = "OUTOFSCOPEDELETEDITEM",
+                TrackingType = ItemTrackingTypes.NonStock,
+                Unit = "EA",
+                IsDeleted = true,
+                IsDirty = true
+            });
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = invoiceId,
+                CustomerId = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 8, 5),
+                IsLatestVersion = true,
+                IsConfirmed = true
+            });
+            db.InvoiceLines.Add(new LocalInvoiceLine
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = invoiceId,
+                ItemId = itemId,
+                ItemNameOriginal = "Out of scope deleted item",
+                ItemTrackingType = ItemTrackingTypes.NonStock,
+                Unit = "EA",
+                Quantity = 1m,
+                UnitPrice = 100m,
+                LineAmount = 100m
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateUserSession(AppPermissionNames.ItemEdit);
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var repairResult = await service.RepairMissingItemMastersFromOperationalReferencesAsync(session);
+
             Assert.False(repairResult.HasChanges);
             Assert.Equal(0, repairResult.RecoveredDeletedCount);
+            Assert.Equal(1, repairResult.SkippedOutOfScopeCount);
             Assert.True(await db.Items.IgnoreQueryFilters()
                 .Where(current => current.Id == itemId)
                 .Select(current => current.IsDeleted)
                 .SingleAsync());
-            Assert.Empty(await service.GetItemsAsync(session));
         }
         finally
         {
@@ -10561,6 +13819,493 @@ public sealed class LocalStateServicePartialsTests
             var customerPriceMap = await service.GetLatestPurchasePriceByItemForCustomerAsync(vendorAId, session);
             Assert.True(customerPriceMap.TryGetValue(itemId, out var latestVendorAPrice));
             Assert.Equal(39000m, latestVendorAPrice);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task GetItemConfirmedInvoiceDatesAsync_ReturnsLatestQualifyingDatesAndIncludesZeroPriceLines()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-item-invoice-dates-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var customerId = Guid.Parse("80bbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+            var itemId = Guid.Parse("80cccccc-cccc-cccc-cccc-cccccccccccc");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Invoice date customer",
+                NameMatchKey = "INVOICEDATECUSTOMER"
+            });
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Invoice date item",
+                NameMatchKey = "INVOICEDATEITEM",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA"
+            });
+            db.Invoices.AddRange(
+                BuildItemHistoryInvoice(customerId, itemId, VoucherType.Purchase, new DateOnly(2026, 5, 1), 100m),
+                BuildItemHistoryInvoice(customerId, itemId, VoucherType.Purchase, new DateOnly(2026, 5, 10), 0m),
+                BuildItemHistoryInvoice(customerId, itemId, VoucherType.Sales, new DateOnly(2026, 5, 8), 0m),
+                BuildItemHistoryInvoice(customerId, itemId, VoucherType.Purchase, new DateOnly(2026, 5, 20), 100m, isDeleted: true),
+                BuildItemHistoryInvoice(customerId, itemId, VoucherType.Sales, new DateOnly(2026, 5, 21), 100m, isLatestVersion: false),
+                BuildItemHistoryInvoice(customerId, itemId, VoucherType.Sales, new DateOnly(2026, 5, 22), 100m, isConfirmed: false),
+                BuildItemHistoryInvoice(customerId, itemId, VoucherType.Purchase, new DateOnly(2026, 5, 23), 100m, isLineDeleted: true));
+            await db.SaveChangesAsync();
+
+            var result = await service.GetItemConfirmedInvoiceDatesAsync(itemId, session);
+
+            Assert.Equal(new DateOnly(2026, 5, 10), result.LastPurchaseDate);
+            Assert.Equal(new DateOnly(2026, 5, 8), result.LastSaleDate);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task GetItemConfirmedInvoiceDatesAsync_EnforcesTenantAndReadableOrResponsibleOfficeScope()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-item-invoice-date-scope-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateUserSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var customerId = Guid.Parse("80dddddd-dddd-dddd-dddd-dddddddddddd");
+            var itemId = Guid.Parse("80eeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Scoped invoice customer",
+                NameMatchKey = "SCOPEDINVOICECUSTOMER"
+            });
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Scoped invoice item",
+                NameMatchKey = "SCOPEDINVOICEITEM",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA"
+            });
+            db.Invoices.AddRange(
+                BuildItemHistoryInvoice(
+                    customerId,
+                    itemId,
+                    VoucherType.Purchase,
+                    new DateOnly(2026, 6, 5),
+                    100m,
+                    officeCode: OfficeCodeCatalog.Yeonsu,
+                    responsibleOfficeCode: OfficeCodeCatalog.Usenet),
+                BuildItemHistoryInvoice(
+                    customerId,
+                    itemId,
+                    VoucherType.Sales,
+                    new DateOnly(2026, 6, 6),
+                    100m,
+                    officeCode: OfficeCodeCatalog.Shared,
+                    responsibleOfficeCode: OfficeCodeCatalog.Yeonsu),
+                BuildItemHistoryInvoice(
+                    customerId,
+                    itemId,
+                    VoucherType.Purchase,
+                    new DateOnly(2026, 6, 20),
+                    100m,
+                    officeCode: OfficeCodeCatalog.Yeonsu,
+                    responsibleOfficeCode: OfficeCodeCatalog.Yeonsu),
+                BuildItemHistoryInvoice(
+                    customerId,
+                    itemId,
+                    VoucherType.Sales,
+                    new DateOnly(2026, 6, 21),
+                    100m,
+                    tenantCode: TenantScopeCatalog.Itworld,
+                    officeCode: OfficeCodeCatalog.Shared,
+                    responsibleOfficeCode: OfficeCodeCatalog.Itworld));
+            await db.SaveChangesAsync();
+
+            var result = await service.GetItemConfirmedInvoiceDatesAsync(itemId, session);
+
+            Assert.Equal(new DateOnly(2026, 6, 5), result.LastPurchaseDate);
+            Assert.Equal(new DateOnly(2026, 6, 6), result.LastSaleDate);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task ItemInvoiceHistoryQueries_GlobalScopeUseSelectedItemsTenant()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-global-item-invoice-history-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var customerId = Guid.Parse("80f11111-1111-1111-1111-111111111111");
+            var itemId = Guid.Parse("80f22222-2222-2222-2222-222222222222");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = "ITWORLD history customer",
+                NameMatchKey = "ITWORLDHISTORYCUSTOMER",
+                TradeType = CustomerTradeTypes.Purchase
+            });
+            db.Items.Add(new LocalItem
+            {
+                Id = itemId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = "ITWORLD history item",
+                NameMatchKey = "ITWORLDHISTORYITEM",
+                TrackingType = ItemTrackingTypes.Stock,
+                Unit = "EA"
+            });
+            db.Invoices.AddRange(
+                BuildItemHistoryInvoice(
+                    customerId,
+                    itemId,
+                    VoucherType.Purchase,
+                    new DateOnly(2026, 6, 25),
+                    42000m,
+                    tenantCode: TenantScopeCatalog.Itworld,
+                    officeCode: OfficeCodeCatalog.Itworld,
+                    responsibleOfficeCode: OfficeCodeCatalog.Itworld),
+                BuildItemHistoryInvoice(
+                    customerId,
+                    itemId,
+                    VoucherType.Sales,
+                    new DateOnly(2026, 6, 26),
+                    52000m,
+                    tenantCode: TenantScopeCatalog.Itworld,
+                    officeCode: OfficeCodeCatalog.Itworld,
+                    responsibleOfficeCode: OfficeCodeCatalog.Itworld));
+            await db.SaveChangesAsync();
+
+            var dates = await service.GetItemConfirmedInvoiceDatesAsync(itemId, session);
+            var prices = await service.GetItemVendorPurchasePricesAsync(itemId, session);
+
+            Assert.Equal(new DateOnly(2026, 6, 25), dates.LastPurchaseDate);
+            Assert.Equal(new DateOnly(2026, 6, 26), dates.LastSaleDate);
+            Assert.Equal(42000m, Assert.Single(prices).UnitPrice);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task ItemInvoiceHistoryQueries_NonGlobalScopeDenyCrossTenantAndUnreadableItems()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-denied-item-invoice-history-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateUserSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var customerId = Guid.Parse("80f33333-3333-3333-3333-333333333333");
+            var crossTenantItemId = Guid.Parse("80f44444-4444-4444-4444-444444444444");
+            var unreadableOfficeItemId = Guid.Parse("80f55555-5555-5555-5555-555555555555");
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = "Denied history customer",
+                NameMatchKey = "DENIEDHISTORYCUSTOMER",
+                TradeType = CustomerTradeTypes.Purchase
+            });
+            db.Items.AddRange(
+                new LocalItem
+                {
+                    Id = crossTenantItemId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = "Cross tenant item",
+                    NameMatchKey = "CROSSTENANTITEM",
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA"
+                },
+                new LocalItem
+                {
+                    Id = unreadableOfficeItemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Yeonsu,
+                    NameOriginal = "Unreadable office item",
+                    NameMatchKey = "UNREADABLEOFFICEITEM",
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA"
+                });
+            db.Invoices.Add(
+                BuildItemHistoryInvoice(
+                    customerId,
+                    crossTenantItemId,
+                    VoucherType.Purchase,
+                    new DateOnly(2026, 6, 27),
+                    43000m,
+                    tenantCode: TenantScopeCatalog.Itworld,
+                    officeCode: OfficeCodeCatalog.Itworld,
+                    responsibleOfficeCode: OfficeCodeCatalog.Itworld));
+            await db.SaveChangesAsync();
+
+            var crossTenantDates = await service.GetItemConfirmedInvoiceDatesAsync(crossTenantItemId, session);
+            var crossTenantPrices = await service.GetItemVendorPurchasePricesAsync(crossTenantItemId, session);
+            var unreadableOfficeDates = await service.GetItemConfirmedInvoiceDatesAsync(unreadableOfficeItemId, session);
+            var unreadableOfficePrices = await service.GetItemVendorPurchasePricesAsync(unreadableOfficeItemId, session);
+
+            Assert.Null(crossTenantDates.LastPurchaseDate);
+            Assert.Null(crossTenantDates.LastSaleDate);
+            Assert.Empty(crossTenantPrices);
+            Assert.Null(unreadableOfficeDates.LastPurchaseDate);
+            Assert.Null(unreadableOfficeDates.LastSaleDate);
+            Assert.Empty(unreadableOfficePrices);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task ItemInvoiceHistoryChanged_PublisherRaisesSubscribedHandler()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-item-invoice-history-event-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var eventCount = 0;
+            service.ItemInvoiceHistoryChanged += (_, _) => eventCount++;
+
+            var published = service.TryPublishItemInvoiceHistoryChanged();
+
+            Assert.True(published);
+            Assert.Equal(1, eventCount);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task ItemInvoiceHistoryChanged_ThrowingFirstSubscriber_DoesNotSuppressHealthyLaterSubscriber()
+    {
+        var tempRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"georaeplan-item-invoice-history-event-isolation-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(
+                db,
+                new OfficeAccessService(),
+                new SyncRequestDispatcher(),
+                session);
+            var throwingSubscriberCount = 0;
+            var healthySubscriberCount = 0;
+            service.ItemInvoiceHistoryChanged += (_, _) =>
+            {
+                throwingSubscriberCount++;
+                throw new InvalidOperationException(
+                    "simulated first invoice-history subscriber failure");
+            };
+            service.ItemInvoiceHistoryChanged +=
+                (_, _) => healthySubscriberCount++;
+
+            var exception = Record.Exception(
+                () => service.TryPublishItemInvoiceHistoryChanged());
+
+            Assert.Null(exception);
+            Assert.Equal(1, throwingSubscriberCount);
+            Assert.Equal(1, healthySubscriberCount);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "GEORAEPLAN_APP_ROOT",
+                null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public void ServerPurgePlanGuard_CoversEveryNonInvoiceRecycleBinKind()
+    {
+        var method = typeof(LocalStateService).GetMethod(
+            "GetServerPurgePlanGuardKinds",
+            BindingFlags.Static |
+            BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        var guardedKinds =
+            Assert.IsAssignableFrom<
+                IReadOnlySet<RecycleBinEntityKind>>(
+                method.Invoke(null, null));
+        var expectedKinds = Enum
+            .GetValues<RecycleBinEntityKind>()
+            .Where(kind =>
+                kind != RecycleBinEntityKind.Invoice)
+            .ToHashSet();
+
+        Assert.Equal(
+            expectedKinds.OrderBy(kind => kind),
+            guardedKinds.OrderBy(kind => kind));
+    }
+
+    [Fact]
+    public void DesktopDataChangeNotifier_ForwardsAcrossSeparateValidatedScopes()
+    {
+        var options = new DbContextOptionsBuilder<LocalDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .Options;
+        var services = new ServiceCollection();
+        services.AddSingleton(CreateAdminSession());
+        services.AddSingleton<OfficeAccessService>();
+        services.AddSingleton<SyncRequestDispatcher>();
+        services.AddSingleton<DesktopDataChangeNotifier>();
+        services.AddScoped(_ => new LocalDbContext(options));
+        services.AddScoped<LocalStateService>();
+
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateScopes = true,
+            ValidateOnBuild = true
+        });
+        using var uiScope = provider.CreateScope();
+        using var syncScope = provider.CreateScope();
+        var uiLocal = uiScope.ServiceProvider.GetRequiredService<LocalStateService>();
+        var syncLocal = syncScope.ServiceProvider.GetRequiredService<LocalStateService>();
+        Assert.NotSame(uiLocal, syncLocal);
+        Assert.Same(
+            uiScope.ServiceProvider.GetRequiredService<DesktopDataChangeNotifier>(),
+            syncScope.ServiceProvider.GetRequiredService<DesktopDataChangeNotifier>());
+
+        var invoiceHistoryEventCount = 0;
+        var inventoryEventCount = 0;
+        EventHandler invoiceHistoryHandler = (_, _) => invoiceHistoryEventCount++;
+        EventHandler inventoryHandler = (_, _) => inventoryEventCount++;
+        uiLocal.ItemInvoiceHistoryChanged += invoiceHistoryHandler;
+        uiLocal.InventoryStateChanged += inventoryHandler;
+
+        Assert.True(syncLocal.TryPublishItemInvoiceHistoryChanged());
+        Assert.True(syncLocal.TryPublishInventoryStateChanged());
+        Assert.Equal(1, invoiceHistoryEventCount);
+        Assert.Equal(1, inventoryEventCount);
+
+        uiLocal.ItemInvoiceHistoryChanged -= invoiceHistoryHandler;
+        uiLocal.InventoryStateChanged -= inventoryHandler;
+        Assert.True(syncLocal.TryPublishItemInvoiceHistoryChanged());
+        Assert.True(syncLocal.TryPublishInventoryStateChanged());
+        Assert.Equal(1, invoiceHistoryEventCount);
+        Assert.Equal(1, inventoryEventCount);
+    }
+
+    [Fact]
+    public async Task InventoryStateChangeCapture_CollectsWithoutPublishingUntilExplicitPostCommitPublish()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-inventory-event-capture-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var service = new LocalStateService(
+                db,
+                new OfficeAccessService(),
+                new SyncRequestDispatcher(),
+                session);
+            var eventCount = 0;
+            service.InventoryStateChanged += (_, _) => eventCount++;
+
+            using (var capture = service.CaptureInventoryStateChanges())
+            {
+                InvokePrivateInstance(service, "RaiseInventoryStateChanged");
+                Assert.True(capture.HasChanges);
+                Assert.Equal(0, eventCount);
+            }
+
+            Assert.Equal(0, eventCount);
+            Assert.True(service.TryPublishInventoryStateChanged());
+            Assert.Equal(1, eventCount);
         }
         finally
         {
@@ -11753,11 +15498,18 @@ public sealed class LocalStateServicePartialsTests
             using var sync = new SyncService(db, localState, rental, api, session, dispatcher, diagnostics);
             var viewModel = new MainViewModel(localState, sync, new BackupService(), rental, diagnostics, api, session);
 
-            InvokePrivateInstance(viewModel, "InitializeInvoiceOfficeFilterOptions");
+            try
+            {
+                InvokePrivateInstance(viewModel, "InitializeInvoiceOfficeFilterOptions");
 
-            Assert.Equal(OfficeCodeCatalog.Yeonsu, viewModel.SelectedInvoiceOfficeFilterCode);
-            Assert.Contains(viewModel.InvoiceOfficeFilterOptions, option => string.Equals(option.Code, OfficeCodeCatalog.Shared, StringComparison.OrdinalIgnoreCase));
-            Assert.Contains(viewModel.InvoiceOfficeFilterOptions, option => string.Equals(option.Code, OfficeCodeCatalog.Yeonsu, StringComparison.OrdinalIgnoreCase));
+                Assert.Equal(OfficeCodeCatalog.Yeonsu, viewModel.SelectedInvoiceOfficeFilterCode);
+                Assert.Contains(viewModel.InvoiceOfficeFilterOptions, option => string.Equals(option.Code, OfficeCodeCatalog.Shared, StringComparison.OrdinalIgnoreCase));
+                Assert.Contains(viewModel.InvoiceOfficeFilterOptions, option => string.Equals(option.Code, OfficeCodeCatalog.Yeonsu, StringComparison.OrdinalIgnoreCase));
+            }
+            finally
+            {
+                await viewModel.DrainPendingBackgroundWorkForShutdownAsync();
+            }
         }
         finally
         {
@@ -12093,7 +15845,7 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Fact]
-    public async Task RentalBillingViewModel_ReloadPreservesUnsavedEditor_WhenSelectedRowLeavesFilterResult()
+    public async Task RentalBillingViewModel_ReloadPreservesOrphanedDraftAndDisablesRowActions_WhenSelectedRowLeavesFilterResult()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-billing-reload-draft-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -12150,8 +15902,15 @@ public sealed class LocalStateServicePartialsTests
             await viewModel.ReloadCommand.ExecuteAsync(null);
 
             Assert.Empty(viewModel.Rows);
-            Assert.NotNull(viewModel.SelectedRow);
+            Assert.Null(viewModel.SelectedRow);
             Assert.Equal("사용자 입력 청구 메모", viewModel.EditNotes);
+            Assert.False(viewModel.CanSave);
+            Assert.False(viewModel.CanDeleteSelected);
+            Assert.False(viewModel.CanStartBillingSelected);
+            Assert.False(viewModel.CanHoldSelected);
+            Assert.False(viewModel.CanRegisterSettlementSelected);
+            Assert.False(viewModel.CanMarkCompletedSelected);
+            Assert.False(viewModel.CanOpenAssetLinkDialog);
         }
         finally
         {
@@ -12198,21 +15957,280 @@ public sealed class LocalStateServicePartialsTests
             var rental = new RentalStateService(db, local);
             var viewModel = new RentalAssetViewModel(rental, local, new RentalDocumentService(), null!, session);
 
-            await viewModel.LoadAsync();
-            await viewModel.ReloadCommand.ExecuteAsync(null);
-            viewModel.SelectedRow = Assert.Single(viewModel.Rows);
-            viewModel.EditNotes = "사용자 입력 자산 메모";
+            try
+            {
+                await viewModel.LoadAsync();
+                await viewModel.ReloadCommand.ExecuteAsync(null);
+                viewModel.SelectedRow = Assert.Single(viewModel.Rows);
+                await viewModel.WaitForEditAutoSaveQuiescenceAsync();
+                viewModel.EditNotes = "사용자 입력 자산 메모";
 
-            viewModel.SearchText = "검색결과없음";
-            await viewModel.ReloadCommand.ExecuteAsync(null);
+                viewModel.SearchText = "검색결과없음";
+                await viewModel.ReloadCommand.ExecuteAsync(null);
 
-            Assert.Empty(viewModel.Rows);
-            Assert.NotNull(viewModel.SelectedRow);
-            Assert.Equal("사용자 입력 자산 메모", viewModel.EditNotes);
+                Assert.Empty(viewModel.Rows);
+                Assert.NotNull(viewModel.SelectedRow);
+                Assert.Equal("사용자 입력 자산 메모", viewModel.EditNotes);
+            }
+            finally
+            {
+                await viewModel.CancelPendingBackgroundWorkAsync();
+            }
         }
         finally
         {
             Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalAssetViewModel_CancelPendingBackgroundWorkAsync_DrainsBlockedSelectedDetailLoad()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-asset-background-drain-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        var assetId = Guid.NewGuid();
+        var queryGate = new RentalAssetReadQueryGate(assetId);
+        var options = new DbContextOptionsBuilder<LocalDbContext>()
+            .UseSqlite($"Data Source={Path.Combine(tempRoot, "거래플랜.db")}")
+            .AddInterceptors(queryGate)
+            .Options;
+
+        try
+        {
+            await using var db = new LocalDbContext(options);
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "ASSET-BACKGROUND-DRAIN",
+                CustomerName = "종료 drain 거래처",
+                ItemName = "종료 drain 복합기",
+                ManagementNumber = "BACKGROUND-DRAIN-001",
+                AssetStatus = "임대진행중",
+                BillingEligibilityStatus = "청구대상",
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateUserSession(
+                TenantScopeCatalog.UsenetGroup,
+                OfficeCodeCatalog.Usenet,
+                TenantScopeCatalog.ScopeOfficeOnly);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var viewModel = new RentalAssetViewModel(rental, local, new RentalDocumentService(), null!, session);
+
+            try
+            {
+                await viewModel.LoadAsync();
+                queryGate.Arm();
+                viewModel.SelectedRow = Assert.Single(viewModel.Rows);
+                await queryGate.WaitUntilBlockedAsync(TimeSpan.FromSeconds(10));
+
+                var drainTask = viewModel.CancelPendingBackgroundWorkAsync();
+
+                Assert.False(drainTask.IsCompleted);
+                queryGate.Release();
+                await drainTask.WaitAsync(TimeSpan.FromSeconds(10));
+            }
+            finally
+            {
+                queryGate.Release();
+                await viewModel.CancelPendingBackgroundWorkAsync();
+            }
+        }
+        finally
+        {
+            queryGate.Release();
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalAssetViewModel_ExternalRefreshBeforeDebounce_ReschedulesPendingAutoSave()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-asset-external-refresh-autosave-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        var saveSignal = new ArmedSaveChangesSignal();
+        var databasePath = Path.Combine(tempRoot, "거래플랜.db");
+        var options = new DbContextOptionsBuilder<LocalDbContext>()
+            .UseSqlite($"Data Source={databasePath}")
+            .AddInterceptors(saveSignal)
+            .Options;
+
+        try
+        {
+            var assetId = Guid.NewGuid();
+            await using var db = new LocalDbContext(options);
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "ASSET-EXTERNAL-REFRESH-AUTOSAVE",
+                CustomerName = "외부 갱신 자동저장 거래처",
+                ItemName = "외부 갱신 자동저장 복합기",
+                ManagementNumber = "EXTERNAL-REFRESH-AUTOSAVE-001",
+                AssetStatus = "임대진행중",
+                BillingEligibilityStatus = "청구대상",
+                Notes = "저장 전 메모",
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateUserSession(AppPermissionNames.RentalAssetEdit);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var viewModel = new RentalAssetViewModel(rental, local, new RentalDocumentService(), null!, session);
+
+            try
+            {
+                await viewModel.LoadAndSelectAssetAsync(assetId);
+                await viewModel.WaitForEditAutoSaveQuiescenceAsync();
+
+                const string pendingNotes = "외부 갱신 뒤에도 추가 입력 없이 자동저장";
+                saveSignal.Arm();
+                viewModel.EditNotes = pendingNotes;
+
+                var refreshMethod = typeof(RentalAssetViewModel).GetMethod(
+                    "RefreshAfterRentalStateChangedAsync",
+                    BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert.NotNull(refreshMethod);
+                var refreshTask = Assert.IsAssignableFrom<Task>(refreshMethod!.Invoke(viewModel, null));
+                await refreshTask.WaitAsync(TimeSpan.FromSeconds(10));
+
+                Assert.Equal(pendingNotes, viewModel.EditNotes);
+                Assert.True(viewModel.HasPendingChanges);
+
+                await saveSignal.WaitForSaveAsync(TimeSpan.FromSeconds(3));
+                await viewModel.WaitForEditAutoSaveQuiescenceAsync();
+
+                await using var verificationDb = new LocalDbContext(options);
+                var storedNotes = await verificationDb.RentalAssets
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .Where(asset => asset.Id == assetId)
+                    .Select(asset => asset.Notes)
+                    .SingleAsync();
+                Assert.Equal(pendingNotes, storedNotes);
+                Assert.False(viewModel.HasPendingChanges);
+                Assert.Equal(1, saveSignal.SaveCount);
+
+                const string intentionallyCanceledNotes = "의도적으로 취소한 자동저장 예약";
+                viewModel.EditNotes = intentionallyCanceledNotes;
+                viewModel.CancelPendingEditAutoSave();
+
+                var refreshAfterIntentionalCancel = Assert.IsAssignableFrom<Task>(
+                    refreshMethod.Invoke(viewModel, null));
+                await refreshAfterIntentionalCancel.WaitAsync(TimeSpan.FromSeconds(10));
+                await viewModel.WaitForEditAutoSaveQuiescenceAsync();
+
+                Assert.Equal(intentionallyCanceledNotes, viewModel.EditNotes);
+                Assert.True(viewModel.HasPendingChanges);
+                Assert.Equal(1, saveSignal.SaveCount);
+            }
+            finally
+            {
+                await viewModel.CancelPendingBackgroundWorkAsync();
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalAssetViewModel_CancelPendingEditAutoSave_ClearsOwnerActiveRescheduleButLaterEditCanSave()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-asset-owner-cancel-autosave-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        var assetId = Guid.NewGuid();
+        var queryGate = new RentalAssetReadQueryGate(assetId);
+        var saveSignal = new ArmedSaveChangesSignal();
+        var options = new DbContextOptionsBuilder<LocalDbContext>()
+            .UseSqlite($"Data Source={Path.Combine(tempRoot, "거래플랜.db")}")
+            .AddInterceptors(queryGate, saveSignal)
+            .Options;
+
+        try
+        {
+            await using var db = new LocalDbContext(options);
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "ASSET-OWNER-CANCEL-AUTOSAVE",
+                CustomerName = "소유권 취소 자동저장 거래처",
+                ItemName = "소유권 취소 자동저장 복합기",
+                ManagementNumber = "OWNER-CANCEL-AUTOSAVE-001",
+                AssetStatus = "임대진행중",
+                BillingEligibilityStatus = "청구대상",
+                Notes = "저장 전 메모",
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+
+            var session = CreateUserSession(AppPermissionNames.RentalAssetEdit);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var viewModel = new RentalAssetViewModel(rental, local, new RentalDocumentService(), null!, session);
+
+            try
+            {
+                await viewModel.LoadAndSelectAssetAsync(assetId);
+                await viewModel.WaitForEditAutoSaveQuiescenceAsync();
+
+                saveSignal.Arm();
+                queryGate.Arm();
+                var reloadTask = viewModel.ReloadCommand.ExecuteAsync(null);
+                await queryGate.WaitUntilBlockedAsync(TimeSpan.FromSeconds(10));
+                Assert.True(viewModel.IsEditAutoSaveOwnershipActive);
+
+                const string intentionallyCanceledNotes = "owner active 중 의도적으로 취소한 자동저장";
+                viewModel.EditNotes = intentionallyCanceledNotes;
+                viewModel.CancelPendingEditAutoSave();
+
+                queryGate.Release();
+                await reloadTask.WaitAsync(TimeSpan.FromSeconds(10));
+                await viewModel.WaitForEditAutoSaveQuiescenceAsync();
+
+                Assert.Equal(intentionallyCanceledNotes, viewModel.EditNotes);
+                Assert.True(viewModel.HasPendingChanges);
+                Assert.Equal(0, saveSignal.SaveCount);
+
+                const string laterEditNotes = "취소 이후 새 편집은 다시 자동저장";
+                viewModel.EditNotes = laterEditNotes;
+                await saveSignal.WaitForSaveAsync(TimeSpan.FromSeconds(3));
+                await viewModel.WaitForEditAutoSaveQuiescenceAsync();
+
+                Assert.Equal(1, saveSignal.SaveCount);
+                Assert.False(viewModel.HasPendingChanges);
+            }
+            finally
+            {
+                queryGate.Release();
+                await viewModel.CancelPendingBackgroundWorkAsync();
+            }
+        }
+        finally
+        {
+            queryGate.Release();
             SqliteConnection.ClearAllPools();
         }
     }
@@ -12244,61 +16262,1218 @@ public sealed class LocalStateServicePartialsTests
             var rental = new RentalStateService(db, local);
             var viewModel = new RentalAssetViewModel(rental, local, new RentalDocumentService(), null!, session);
 
-            await viewModel.LoadAsync();
-            await viewModel.ReloadCommand.ExecuteAsync(null);
+            try
+            {
+                await viewModel.LoadAsync();
+                await viewModel.ReloadCommand.ExecuteAsync(null);
 
-            Assert.Equal(
-                new[] { "SEL-001", "SEL-002", "SEL-003" },
-                viewModel.Rows.Select(row => row.Source.ManagementNumber).ToArray());
-            Assert.False(viewModel.CanDeleteChecked);
-            Assert.False(viewModel.DeleteCheckedCommand.CanExecute(null));
+                Assert.Equal(
+                    new[] { "SEL-001", "SEL-002", "SEL-003" },
+                    viewModel.Rows.Select(row => row.Source.ManagementNumber).ToArray());
+                Assert.False(viewModel.CanDeleteChecked);
+                Assert.False(viewModel.DeleteCheckedCommand.CanExecute(null));
 
-            var canExecuteChangedCount = 0;
-            viewModel.DeleteCheckedCommand.CanExecuteChanged += (_, _) => canExecuteChangedCount++;
-            viewModel.Rows[0].IsSelected = true;
-            viewModel.Rows[2].IsSelected = true;
+                var canExecuteChangedCount = 0;
+                viewModel.DeleteCheckedCommand.CanExecuteChanged += (_, _) => canExecuteChangedCount++;
+                viewModel.Rows[0].IsSelected = true;
+                viewModel.Rows[2].IsSelected = true;
 
-            Assert.True(canExecuteChangedCount > 0);
-            Assert.True(viewModel.CanDeleteChecked);
-            Assert.True(viewModel.DeleteCheckedCommand.CanExecute(null));
-            var checkedIdsBeforeReload = viewModel.Rows
-                .Where(row => row.IsSelected)
-                .Select(row => row.Source.Id)
-                .OrderBy(id => id)
-                .ToArray();
-
-            await db.RentalAssets
-                .IgnoreQueryFilters()
-                .Where(asset => asset.Id == assetBId)
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(asset => asset.Revision, 2)
-                    .SetProperty(asset => asset.Notes, "재조회 후에도 체크 선택과 정렬 유지"));
-
-            await viewModel.ReloadCommand.ExecuteAsync(null);
-
-            Assert.Equal(
-                new[] { "SEL-001", "SEL-002", "SEL-003" },
-                viewModel.Rows.Select(row => row.Source.ManagementNumber).ToArray());
-            Assert.Equal(
-                checkedIdsBeforeReload,
-                viewModel.Rows
+                Assert.True(canExecuteChangedCount > 0);
+                Assert.True(viewModel.CanDeleteChecked);
+                Assert.True(viewModel.DeleteCheckedCommand.CanExecute(null));
+                var checkedIdsBeforeReload = viewModel.Rows
                     .Where(row => row.IsSelected)
                     .Select(row => row.Source.Id)
                     .OrderBy(id => id)
-                    .ToArray());
-            Assert.True(viewModel.CanDeleteChecked);
-            Assert.True(viewModel.DeleteCheckedCommand.CanExecute(null));
+                    .ToArray();
 
-            foreach (var row in viewModel.Rows)
-                row.IsSelected = false;
+                await db.RentalAssets
+                    .IgnoreQueryFilters()
+                    .Where(asset => asset.Id == assetBId)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(asset => asset.Revision, 2)
+                        .SetProperty(asset => asset.Notes, "재조회 후에도 체크 선택과 정렬 유지"));
 
-            Assert.False(viewModel.CanDeleteChecked);
-            Assert.False(viewModel.DeleteCheckedCommand.CanExecute(null));
+                await viewModel.ReloadCommand.ExecuteAsync(null);
+
+                Assert.Equal(
+                    new[] { "SEL-001", "SEL-002", "SEL-003" },
+                    viewModel.Rows.Select(row => row.Source.ManagementNumber).ToArray());
+                Assert.Equal(
+                    checkedIdsBeforeReload,
+                    viewModel.Rows
+                        .Where(row => row.IsSelected)
+                        .Select(row => row.Source.Id)
+                        .OrderBy(id => id)
+                        .ToArray());
+                Assert.True(viewModel.CanDeleteChecked);
+                Assert.True(viewModel.DeleteCheckedCommand.CanExecute(null));
+
+                foreach (var row in viewModel.Rows)
+                    row.IsSelected = false;
+
+                Assert.False(viewModel.CanDeleteChecked);
+                Assert.False(viewModel.DeleteCheckedCommand.CanExecute(null));
+            }
+            finally
+            {
+                await viewModel.CancelPendingBackgroundWorkAsync();
+            }
         }
         finally
         {
             Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
             SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalBillingViewModel_ApplyAssetLinkSelectionsAndSaveAsync_PersistsMutableAndReferenceOnlyAssetsAccurately()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-billing-asset-link-vm-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.Parse("b2000000-0000-0000-0000-000000000001");
+            var mutableAssetId = Guid.Parse("b2000000-0000-0000-0000-000000000002");
+            var referenceAssetId = Guid.Parse("b2000000-0000-0000-0000-000000000003");
+            var signedDate = new DateOnly(2026, 7, 1);
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "VM 장비 연결 거래처",
+                NameMatchKey = "VMBILLINGASSETLINKCUSTOMER",
+                IsDirty = false
+            });
+            db.CustomerContracts.Add(new LocalCustomerContract
+            {
+                CustomerId = customerId,
+                ContractType = "렌탈계약서",
+                SignedDate = signedDate,
+                IsPrimary = true,
+                IsDirty = false
+            });
+            db.RentalAssets.AddRange(
+                new LocalRentalAsset
+                {
+                    Id = mutableAssetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Shared,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = "VM-LINK-MUTABLE",
+                    ItemName = "수정 가능 복합기",
+                    ManagementNumber = "VM-LINK-001",
+                    AssetStatus = "임대진행중",
+                    BillingEligibilityStatus = "청구대상",
+                    MonthlyFee = 11_000m,
+                    Notes = "수정 가능 장비 저장 전 메모",
+                    IsDirty = false
+                },
+                new LocalRentalAsset
+                {
+                    Id = referenceAssetId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    AssetKey = "VM-LINK-REFERENCE",
+                    ItemName = "참조 전용 복합기",
+                    ManagementNumber = "VM-LINK-002",
+                    AssetStatus = "임대진행중",
+                    BillingEligibilityStatus = "청구대상",
+                    MonthlyFee = 22_000m,
+                    Notes = "참조 전용 장비 원본 메모",
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+
+            var profileOnlySession = CreateUserSession(AppPermissionNames.RentalProfileEdit);
+            var profileOnlyLocal = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), profileOnlySession);
+            var rental = new RentalStateService(db, profileOnlyLocal);
+            var profileOnlyViewModel = new RentalBillingViewModel(rental, profileOnlyLocal, profileOnlySession);
+            RentalBillingViewModel? viewModel = null;
+            try
+            {
+                InvokePrivateInstance(profileOnlyViewModel, "NewProfile");
+
+                var denied = await profileOnlyViewModel.ApplyAssetLinkSelectionsAndSaveAsync(
+                [
+                    new RentalBillingAssetOption
+                    {
+                        AssetId = mutableAssetId,
+                        ItemName = "수정 가능 복합기"
+                    }
+                ]);
+
+                Assert.False(denied);
+                Assert.Contains("렌탈 자산 편집", profileOnlyViewModel.StatusMessage, StringComparison.Ordinal);
+                Assert.Empty(await db.RentalBillingProfiles.IgnoreQueryFilters().ToListAsync());
+
+                var editSession = CreateUserSession(
+                    AppPermissionNames.RentalProfileEdit,
+                    AppPermissionNames.RentalAssetEdit);
+                var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), editSession);
+                rental = new RentalStateService(db, local);
+                viewModel = new RentalBillingViewModel(rental, local, editSession);
+                InvokePrivateInstance(viewModel, "NewProfile");
+                viewModel.EditCustomerId = customerId;
+                viewModel.EditCustomerName = "VM 장비 연결 거래처";
+                viewModel.EditOfficeCode = OfficeCodeCatalog.Usenet;
+                viewModel.EditContractDate = signedDate.ToDateTime(TimeOnly.MinValue);
+                var newProfileId = viewModel.EditId;
+                var stateChanges = new List<RentalStateChangedEventArgs>();
+                rental.StateChanged += (_, args) => stateChanges.Add(args);
+
+                var saved = await viewModel.ApplyAssetLinkSelectionsAndSaveAsync(
+                [
+                    new RentalBillingAssetOption
+                    {
+                        AssetId = mutableAssetId,
+                        ItemName = "수정 가능 복합기",
+                        ManagementNumber = "VM-LINK-001",
+                        MonthlyFee = 55_000m,
+                        Notes = "수정 가능 장비 저장 후 메모"
+                    },
+                    new RentalBillingAssetOption
+                    {
+                        AssetId = referenceAssetId,
+                        ItemName = "참조 전용 복합기",
+                        ManagementNumber = "VM-LINK-002",
+                        MonthlyFee = 66_000m,
+                        Notes = "참조 전용 선택값은 원본에 저장하지 않음",
+                        // The persisted tenant is authoritative even if a stale UI clone
+                        // temporarily lost its reference-only flag.
+                        IsReferenceOnly = false
+                    }
+                ]);
+
+                Assert.True(saved, viewModel.StatusMessage);
+                Assert.Contains("장비 2대를 저장했습니다", viewModel.StatusMessage, StringComparison.Ordinal);
+                Assert.Contains("1대는 청구 연결과 자산 원장에 반영", viewModel.StatusMessage, StringComparison.Ordinal);
+                Assert.Contains("1대는 참조 전용으로 청구 프로필에만 포함", viewModel.StatusMessage, StringComparison.Ordinal);
+                var stateChanged = Assert.Single(
+                    stateChanges,
+                    args => ReferenceEquals(args.Origin, viewModel));
+                Assert.Same(viewModel, stateChanged.Origin);
+
+                await using var verificationDb = new LocalDbContext();
+                var persistedProfile = await verificationDb.RentalBillingProfiles
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .SingleAsync(profile => profile.Id == newProfileId);
+                var persistedTemplate = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(
+                    persistedProfile.BillingTemplateJson) ?? [];
+                var persistedAssetIds = persistedTemplate
+                    .SelectMany(item => item.IncludedAssetIds)
+                    .Where(id => id != Guid.Empty)
+                    .Distinct()
+                    .OrderBy(id => id)
+                    .ToArray();
+                Assert.Equal(new[] { mutableAssetId, referenceAssetId }.OrderBy(id => id), persistedAssetIds);
+
+                var persistedMutableAsset = await verificationDb.RentalAssets
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .SingleAsync(asset => asset.Id == mutableAssetId);
+                Assert.Equal(55_000m, persistedMutableAsset.MonthlyFee);
+                Assert.Equal("수정 가능 장비 저장 후 메모", persistedMutableAsset.Notes);
+                Assert.Equal(newProfileId, persistedMutableAsset.BillingProfileId);
+                Assert.Equal(customerId, persistedMutableAsset.CustomerId);
+
+                var persistedReferenceAsset = await verificationDb.RentalAssets
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .SingleAsync(asset => asset.Id == referenceAssetId);
+                Assert.Equal(22_000m, persistedReferenceAsset.MonthlyFee);
+                Assert.Equal("참조 전용 장비 원본 메모", persistedReferenceAsset.Notes);
+                Assert.Null(persistedReferenceAsset.BillingProfileId);
+                Assert.Null(persistedReferenceAsset.CustomerId);
+                Assert.Equal(TenantScopeCatalog.Itworld, persistedReferenceAsset.TenantCode);
+                Assert.Equal(OfficeCodeCatalog.Itworld, persistedReferenceAsset.OfficeCode);
+                Assert.Equal(OfficeCodeCatalog.Itworld, persistedReferenceAsset.ResponsibleOfficeCode);
+            }
+            finally
+            {
+                var viewModels = new[]
+                {
+                    viewModel,
+                    profileOnlyViewModel
+                }
+                    .Where(candidate => candidate is not null)
+                    .Cast<RentalBillingViewModel>()
+                    .ToArray();
+                foreach (var billingViewModel in viewModels)
+                    billingViewModel.CancelPendingBackgroundWork();
+                foreach (var billingViewModel in viewModels)
+                {
+                    await InvokePrivateInstanceTaskResultAsync(
+                        billingViewModel,
+                        "CancelAndDrainPendingSelectionLoadsAsync");
+                }
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalBillingSave_FailsClosed_WhenSelectedAssetWasDeletedBeforeSave()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-billing-deleted-race-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            var customerId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            const decimal originalMonthlyFee = 25_000m;
+            const string originalCustomerName = "삭제 경합 원본 거래처";
+            const string originalNotes = "삭제 경합 원본 메모";
+
+            await using (var seedDb = new LocalDbContext())
+            {
+                await seedDb.Database.EnsureDeletedAsync();
+                await seedDb.Database.EnsureCreatedAsync();
+                seedDb.Customers.Add(new LocalCustomer
+                {
+                    Id = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "삭제 경합 청구 거래처",
+                    NameMatchKey = "DELETEDRACEBILLINGCUSTOMER",
+                    IsDirty = false
+                });
+                seedDb.RentalAssets.Add(new LocalRentalAsset
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ManagementCompanyCode = OfficeCodeCatalog.Yeonsu,
+                    AssetKey = "DELETED-RACE-ASSET",
+                    CustomerName = originalCustomerName,
+                    CurrentCustomerName = originalCustomerName,
+                    ItemName = "삭제 경합 복합기",
+                    ManagementNumber = "DELETED-RACE-001",
+                    AssetStatus = "임대진행중",
+                    BillingEligibilityStatus = "청구대상",
+                    MonthlyFee = originalMonthlyFee,
+                    Notes = originalNotes,
+                    IsDirty = false
+                });
+                await seedDb.SaveChangesAsync();
+            }
+
+            var staleSelection = new RentalBillingAssetOption
+            {
+                AssetId = assetId,
+                ItemName = "삭제 경합 복합기",
+                ManagementNumber = "DELETED-RACE-001",
+                CustomerId = customerId,
+                MonthlyFee = 99_000m,
+                Notes = "저장되면 안 되는 메모",
+                IsReferenceOnly = false
+            };
+
+            await using (var raceDb = new LocalDbContext())
+            {
+                await raceDb.RentalAssets
+                    .IgnoreQueryFilters()
+                    .Where(asset => asset.Id == assetId)
+                    .ExecuteUpdateAsync(setters => setters.SetProperty(asset => asset.IsDeleted, true));
+            }
+
+            await using var db = new LocalDbContext();
+            var session = CreateUserSession(
+                AppPermissionNames.RentalProfileEdit,
+                AppPermissionNames.RentalAssetEdit);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var viewModel = new RentalBillingViewModel(rental, local, session);
+            InvokePrivateInstance(viewModel, "NewProfile");
+            viewModel.EditCustomerId = customerId;
+            viewModel.EditCustomerName = "삭제 경합 청구 거래처";
+            viewModel.EditOfficeCode = OfficeCodeCatalog.Usenet;
+
+            var viewModelSaved = await viewModel.ApplyAssetLinkSelectionsAndSaveAsync([staleSelection]);
+
+            Assert.False(viewModelSaved);
+            Assert.Contains("삭제", viewModel.StatusMessage, StringComparison.Ordinal);
+            Assert.Contains("새로고침", viewModel.StatusMessage, StringComparison.Ordinal);
+
+            var serviceProfile = new LocalRentalBillingProfile
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customerId,
+                CustomerName = "삭제 경합 청구 거래처",
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                BillingType = "묶음",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                BillingTemplateJson = rental.SerializeBillingTemplateItems(
+                [
+                    new RentalBillingTemplateItemModel
+                    {
+                        DisplayItemName = "삭제 경합 복합기",
+                        Quantity = 1m,
+                        UnitPrice = 99_000m,
+                        Amount = 99_000m,
+                        IncludedAssetIds = [assetId]
+                    }
+                ]),
+                MonthlyAmount = 99_000m
+            };
+            var serviceResult = await rental.SaveBillingProfileAsync(
+                serviceProfile,
+                session,
+                [
+                    new RentalBillingAssetLinkEdit
+                    {
+                        AssetId = assetId,
+                        CustomerId = customerId,
+                        CustomerName = "삭제 경합 청구 거래처",
+                        MonthlyFee = 99_000m,
+                        Notes = "저장되면 안 되는 메모"
+                    }
+                ]);
+
+            Assert.False(serviceResult.Success);
+            Assert.Contains("삭제", serviceResult.Message, StringComparison.Ordinal);
+
+            await using var verificationDb = new LocalDbContext();
+            Assert.Empty(await verificationDb.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().ToListAsync());
+            var persistedAsset = await verificationDb.RentalAssets
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(asset => asset.Id == assetId);
+            Assert.True(persistedAsset.IsDeleted);
+            Assert.Null(persistedAsset.BillingProfileId);
+            Assert.Null(persistedAsset.CustomerId);
+            Assert.Equal(originalCustomerName, persistedAsset.CustomerName);
+            Assert.Equal(originalCustomerName, persistedAsset.CurrentCustomerName);
+            Assert.Equal(originalMonthlyFee, persistedAsset.MonthlyFee);
+            Assert.Equal(originalNotes, persistedAsset.Notes);
+            Assert.Equal(TenantScopeCatalog.UsenetGroup, persistedAsset.TenantCode);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, persistedAsset.OfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, persistedAsset.ResponsibleOfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Yeonsu, persistedAsset.ManagementCompanyCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalStateService_SaveBillingProfile_RollsBackAndDetachesNewProfile_WhenAssetIsDeletedAfterProfileInsert()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-billing-insert-delete-race-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "INSERT 삭제 경합 거래처",
+                NameMatchKey = "INSERTDELETERACECUSTOMER",
+                IsDirty = false
+            });
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "TX-INSERT-DELETE-RACE",
+                CustomerName = "INSERT 삭제 경합 원본",
+                CurrentCustomerName = "INSERT 삭제 경합 원본",
+                ItemName = "INSERT 삭제 경합 복합기",
+                ManagementNumber = "TX-INSERT-DELETE-001",
+                AssetStatus = "임대진행중",
+                BillingEligibilityStatus = "청구대상",
+                MonthlyFee = 31_000m,
+                Notes = "INSERT 삭제 경합 원본 메모",
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TRIGGER rental_profile_insert_delete_asset_race
+                AFTER INSERT ON RentalBillingProfiles
+                BEGIN
+                    UPDATE RentalAssets
+                    SET IsDeleted = 1
+                    WHERE AssetKey = 'TX-INSERT-DELETE-RACE';
+                END;
+                """);
+
+            var session = CreateUserSession(
+                AppPermissionNames.RentalProfileEdit,
+                AppPermissionNames.RentalAssetEdit);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var stateChangedCount = 0;
+            rental.StateChanged += (_, _) => stateChangedCount++;
+            var profile = new LocalRentalBillingProfile
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customerId,
+                CustomerName = "INSERT 삭제 경합 거래처",
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                BillingType = "묶음",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                BillingTemplateJson = rental.SerializeBillingTemplateItems(
+                [
+                    new RentalBillingTemplateItemModel
+                    {
+                        DisplayItemName = "INSERT 삭제 경합 복합기",
+                        Quantity = 1m,
+                        UnitPrice = 99_000m,
+                        Amount = 99_000m,
+                        IncludedAssetIds = [assetId]
+                    }
+                ]),
+                MonthlyAmount = 99_000m,
+                Notes = "rollback 대상 신규 프로필"
+            };
+
+            var result = await rental.SaveBillingProfileAsync(
+                profile,
+                session,
+                [
+                    new RentalBillingAssetLinkEdit
+                    {
+                        AssetId = assetId,
+                        CustomerId = customerId,
+                        CustomerName = "INSERT 삭제 경합 거래처",
+                        MonthlyFee = 99_000m,
+                        Notes = "저장되면 안 되는 메모"
+                    }
+                ]);
+
+            Assert.False(result.Success);
+            Assert.Contains("삭제", result.Message, StringComparison.Ordinal);
+            Assert.Equal(0, stateChangedCount);
+            Assert.DoesNotContain(
+                db.ChangeTracker.Entries<LocalRentalBillingProfile>(),
+                entry => entry.Entity.Id == profile.Id);
+
+            await db.SaveChangesAsync();
+
+            Assert.Empty(await db.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().ToListAsync());
+            var persistedAsset = await db.RentalAssets
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(asset => asset.Id == assetId);
+            Assert.False(persistedAsset.IsDeleted);
+            Assert.Null(persistedAsset.BillingProfileId);
+            Assert.Null(persistedAsset.CustomerId);
+            Assert.Equal("INSERT 삭제 경합 원본", persistedAsset.CustomerName);
+            Assert.Equal("INSERT 삭제 경합 원본", persistedAsset.CurrentCustomerName);
+            Assert.Equal(31_000m, persistedAsset.MonthlyFee);
+            Assert.Equal("INSERT 삭제 경합 원본 메모", persistedAsset.Notes);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalStateService_SaveBillingProfile_RollsBackExistingProfile_WhenOtherOfficeAssetLinksAfterProfileUpdate()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-billing-update-scope-race-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var primaryAssetId = Guid.NewGuid();
+            var racedAssetId = Guid.NewGuid();
+            var profileId = Guid.NewGuid();
+            var templateItem = new RentalBillingTemplateItemModel
+            {
+                DisplayItemName = "UPDATE scope 경합 복합기",
+                Quantity = 1m,
+                UnitPrice = 44_000m,
+                Amount = 44_000m,
+                IncludedAssetIds = [primaryAssetId]
+            };
+            var rental = new RentalStateService(db);
+            var templateJson = rental.SerializeBillingTemplateItems([templateItem]);
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "UPDATE scope 경합 거래처",
+                NameMatchKey = "UPDATESCOPERACECUSTOMER",
+                IsDirty = false
+            });
+            db.RentalAssets.AddRange(
+                new LocalRentalAsset
+                {
+                    Id = primaryAssetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = "TX-SCOPE-RACE-PRIMARY",
+                    ItemName = "UPDATE scope 경합 기본 자산",
+                    ManagementNumber = "TX-SCOPE-PRIMARY-001",
+                    AssetStatus = "임대진행중",
+                    BillingEligibilityStatus = "청구대상",
+                    MonthlyFee = 44_000m,
+                    Notes = "기본 자산 원본 메모",
+                    IsDirty = false
+                },
+                new LocalRentalAsset
+                {
+                    Id = racedAssetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = "TX-SCOPE-RACE-SECONDARY",
+                    CustomerName = "다른 자산 원본 거래처",
+                    CurrentCustomerName = "다른 자산 원본 거래처",
+                    ItemName = "UPDATE scope 경합 다른 자산",
+                    ManagementNumber = "TX-SCOPE-SECONDARY-001",
+                    AssetStatus = "임대진행중",
+                    BillingEligibilityStatus = "청구대상",
+                    MonthlyFee = 57_000m,
+                    Notes = "다른 자산 원본 메모",
+                    IsDirty = false
+                });
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                CustomerId = customerId,
+                CustomerName = "UPDATE scope 경합 거래처",
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = "TX-SCOPE-RACE-PROFILE",
+                ItemName = "UPDATE scope 경합 복합기",
+                BillingType = "묶음",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                BillingTemplateJson = templateJson,
+                MonthlyAmount = 44_000m,
+                Notes = "기존 프로필 원본 메모",
+                IsActive = true,
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TRIGGER rental_profile_update_scope_asset_race
+                AFTER UPDATE ON RentalBillingProfiles
+                BEGIN
+                    UPDATE RentalAssets
+                    SET OfficeCode = 'YEONSU',
+                        ResponsibleOfficeCode = 'YEONSU',
+                        ManagementCompanyCode = 'YEONSU',
+                        BillingProfileId = NEW.Id
+                    WHERE AssetKey = 'TX-SCOPE-RACE-SECONDARY';
+                END;
+                """);
+
+            var candidate = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(profile => profile.Id == profileId);
+            candidate.Notes = "저장되면 안 되는 프로필 메모";
+            var session = CreateUserSession(
+                AppPermissionNames.RentalProfileEdit,
+                AppPermissionNames.RentalAssetEdit);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            rental = new RentalStateService(db, local);
+            var stateChangedCount = 0;
+            rental.StateChanged += (_, _) => stateChangedCount++;
+
+            var result = await rental.SaveBillingProfileAsync(
+                candidate,
+                session,
+                [
+                    new RentalBillingAssetLinkEdit
+                    {
+                        AssetId = primaryAssetId,
+                        CustomerId = customerId,
+                        CustomerName = "UPDATE scope 경합 거래처",
+                        MonthlyFee = 88_000m,
+                        Notes = "저장되면 안 되는 기본 자산 메모"
+                    }
+                ]);
+
+            Assert.False(result.Success);
+            Assert.Contains("권한", result.Message, StringComparison.Ordinal);
+            Assert.Equal(0, stateChangedCount);
+
+            var trackedProfile = Assert.Single(
+                db.ChangeTracker.Entries<LocalRentalBillingProfile>(),
+                entry => entry.Entity.Id == profileId);
+            Assert.Equal(EntityState.Unchanged, trackedProfile.State);
+            Assert.Equal("기존 프로필 원본 메모", trackedProfile.Entity.Notes);
+
+            await db.SaveChangesAsync();
+
+            var persistedProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(profile => profile.Id == profileId);
+            Assert.Equal("기존 프로필 원본 메모", persistedProfile.Notes);
+            Assert.Equal(44_000m, persistedProfile.MonthlyAmount);
+
+            var primaryAsset = await db.RentalAssets
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(asset => asset.Id == primaryAssetId);
+            Assert.Null(primaryAsset.BillingProfileId);
+            Assert.Null(primaryAsset.CustomerId);
+            Assert.Equal(44_000m, primaryAsset.MonthlyFee);
+            Assert.Equal("기본 자산 원본 메모", primaryAsset.Notes);
+
+            var racedAsset = await db.RentalAssets
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(asset => asset.Id == racedAssetId);
+            Assert.Null(racedAsset.BillingProfileId);
+            Assert.Null(racedAsset.CustomerId);
+            Assert.Equal(OfficeCodeCatalog.Usenet, racedAsset.OfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, racedAsset.ResponsibleOfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, racedAsset.ManagementCompanyCode);
+            Assert.Equal("다른 자산 원본 거래처", racedAsset.CustomerName);
+            Assert.Equal(57_000m, racedAsset.MonthlyFee);
+            Assert.Equal("다른 자산 원본 메모", racedAsset.Notes);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalStateService_SaveBillingProfile_RollsBack_WhenAssetMovesToUnauthorizedPreviousProfileAfterPrecheck()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-billing-previous-profile-race-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var customerId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var currentProfileId = Guid.NewGuid();
+            var previousProfileId = Guid.NewGuid();
+            var rental = new RentalStateService(db);
+            var templateJson = rental.SerializeBillingTemplateItems(
+            [
+                new RentalBillingTemplateItemModel
+                {
+                    DisplayItemName = "이전 프로필 권한 경합 복합기",
+                    Quantity = 1m,
+                    UnitPrice = 63_000m,
+                    Amount = 63_000m,
+                    IncludedAssetIds = [assetId]
+                }
+            ]);
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "이전 프로필 권한 경합 거래처",
+                NameMatchKey = "PREVIOUSPROFILEPERMISSIONRACECUSTOMER",
+                IsDirty = false
+            });
+            db.RentalAssets.Add(new LocalRentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = "TX-PREVIOUS-PROFILE-RACE",
+                CustomerName = "이전 프로필 이동 전 거래처",
+                CurrentCustomerName = "이전 프로필 이동 전 거래처",
+                ItemName = "이전 프로필 권한 경합 복합기",
+                ManagementNumber = "TX-PREVIOUS-PROFILE-001",
+                AssetStatus = "임대진행중",
+                BillingEligibilityStatus = "청구대상",
+                MonthlyFee = 63_000m,
+                Notes = "이전 프로필 이동 전 메모",
+                IsDirty = false
+            });
+            db.RentalBillingProfiles.AddRange(
+                new LocalRentalBillingProfile
+                {
+                    Id = currentProfileId,
+                    CustomerId = customerId,
+                    CustomerName = "이전 프로필 권한 경합 거래처",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = "CURRENT-PROFILE-PERMISSION-RACE",
+                    ItemName = "이전 프로필 권한 경합 복합기",
+                    BillingType = "묶음",
+                    BillingAdvanceMode = "후불",
+                    BillingDay = 25,
+                    BillingCycleMonths = 1,
+                    BillingTemplateJson = templateJson,
+                    MonthlyAmount = 63_000m,
+                    Notes = "현재 프로필 원본 메모",
+                    IsActive = true,
+                    IsDirty = false
+                },
+                new LocalRentalBillingProfile
+                {
+                    Id = previousProfileId,
+                    CustomerName = "권한 없는 이전 프로필",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ManagementCompanyCode = OfficeCodeCatalog.Yeonsu,
+                    ProfileKey = "UNAUTHORIZED-PREVIOUS-PROFILE",
+                    ItemName = "권한 없는 이전 프로필 품목",
+                    BillingType = "묶음",
+                    BillingAdvanceMode = "후불",
+                    BillingDay = 25,
+                    BillingCycleMonths = 1,
+                    MonthlyAmount = 10_000m,
+                    IsActive = true,
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TRIGGER rental_profile_update_previous_profile_race
+                AFTER UPDATE ON RentalBillingProfiles
+                WHEN NEW.Id = (SELECT Id FROM RentalBillingProfiles WHERE ProfileKey <> 'UNAUTHORIZED-PREVIOUS-PROFILE' LIMIT 1)
+                BEGIN
+                    UPDATE RentalAssets
+                    SET BillingProfileId = (
+                        SELECT Id
+                        FROM RentalBillingProfiles
+                        WHERE ProfileKey = 'UNAUTHORIZED-PREVIOUS-PROFILE'
+                        LIMIT 1
+                    )
+                    WHERE AssetKey = 'TX-PREVIOUS-PROFILE-RACE';
+                END;
+                """);
+
+            var candidate = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(profile => profile.Id == currentProfileId);
+            candidate.Notes = "저장되면 안 되는 현재 프로필 메모";
+            var session = CreateUserSession(
+                AppPermissionNames.RentalProfileEdit,
+                AppPermissionNames.RentalAssetEdit);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            rental = new RentalStateService(db, local);
+            var stateChangedCount = 0;
+            rental.StateChanged += (_, _) => stateChangedCount++;
+
+            var result = await rental.SaveBillingProfileAsync(
+                candidate,
+                session,
+                [
+                    new RentalBillingAssetLinkEdit
+                    {
+                        AssetId = assetId,
+                        CustomerId = customerId,
+                        CustomerName = "이전 프로필 권한 경합 거래처",
+                        MonthlyFee = 91_000m,
+                        Notes = "저장되면 안 되는 자산 메모"
+                    }
+                ]);
+
+            Assert.False(result.Success);
+            Assert.Contains("다른 청구 프로필", result.Message, StringComparison.Ordinal);
+            Assert.Equal(0, stateChangedCount);
+
+            await db.SaveChangesAsync();
+
+            var persistedCurrentProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(profile => profile.Id == currentProfileId);
+            Assert.Equal("현재 프로필 원본 메모", persistedCurrentProfile.Notes);
+            var persistedAsset = await db.RentalAssets
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(asset => asset.Id == assetId);
+            Assert.Null(persistedAsset.BillingProfileId);
+            Assert.Null(persistedAsset.CustomerId);
+            Assert.Equal("이전 프로필 이동 전 거래처", persistedAsset.CustomerName);
+            Assert.Equal(63_000m, persistedAsset.MonthlyFee);
+            Assert.Equal("이전 프로필 이동 전 메모", persistedAsset.Notes);
+            Assert.Equal(OfficeCodeCatalog.Usenet, persistedAsset.OfficeCode);
+            Assert.Equal(OfficeCodeCatalog.Usenet, persistedAsset.ResponsibleOfficeCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalStateService_SaveBillingProfile_PreservesExistingPendingTrackerChanges_WhenFailingClosed()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-billing-pending-tracker-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+            var customerId = Guid.NewGuid();
+            var targetAssetId = Guid.NewGuid();
+            var unrelatedAssetId = Guid.NewGuid();
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "pending tracker 거래처",
+                NameMatchKey = "PENDINGTRACKERCUSTOMER",
+                IsDirty = false
+            });
+            db.RentalAssets.AddRange(
+                new LocalRentalAsset
+                {
+                    Id = targetAssetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = "PENDING-TARGET-ASSET",
+                    ItemName = "pending target",
+                    ManagementNumber = "PENDING-TARGET-001",
+                    AssetStatus = "임대진행중",
+                    BillingEligibilityStatus = "청구대상",
+                    MonthlyFee = 10_000m,
+                    Notes = "pending target original",
+                    IsDirty = false
+                },
+                new LocalRentalAsset
+                {
+                    Id = unrelatedAssetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = "PENDING-UNRELATED-ASSET",
+                    ItemName = "pending unrelated",
+                    ManagementNumber = "PENDING-UNRELATED-001",
+                    AssetStatus = "임대진행중",
+                    BillingEligibilityStatus = "청구대상",
+                    MonthlyFee = 20_000m,
+                    Notes = "pending unrelated original",
+                    IsDirty = false
+                });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            var targetAsset = await db.RentalAssets.SingleAsync(asset => asset.Id == targetAssetId);
+            var unrelatedAsset = await db.RentalAssets.SingleAsync(asset => asset.Id == unrelatedAssetId);
+            targetAsset.MonthlyFee = 11_000m;
+            unrelatedAsset.Notes = "caller pending unrelated memo";
+            var addedCustomer = new LocalCustomer
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "caller pending added customer",
+                NameMatchKey = "CALLERPENDINGADDEDCUSTOMER",
+                IsDirty = true
+            };
+            db.Customers.Add(addedCustomer);
+
+            var session = CreateUserSession(
+                AppPermissionNames.RentalProfileEdit,
+                AppPermissionNames.RentalAssetEdit);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var stateChangedCount = 0;
+            rental.StateChanged += (_, _) => stateChangedCount++;
+            var profile = new LocalRentalBillingProfile
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customerId,
+                CustomerName = "pending tracker 거래처",
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                BillingType = "묶음",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                BillingTemplateJson = rental.SerializeBillingTemplateItems(
+                [
+                    new RentalBillingTemplateItemModel
+                    {
+                        DisplayItemName = "pending target",
+                        Quantity = 1m,
+                        UnitPrice = 99_000m,
+                        Amount = 99_000m,
+                        IncludedAssetIds = [targetAssetId]
+                    }
+                ])
+            };
+
+            var result = await rental.SaveBillingProfileAsync(
+                profile,
+                session,
+                [new RentalBillingAssetLinkEdit { AssetId = targetAssetId, MonthlyFee = 99_000m }]);
+
+            Assert.False(result.Success);
+            Assert.True(result.ConcurrencyConflict);
+            Assert.Contains("저장되지 않은 변경", result.Message, StringComparison.Ordinal);
+            Assert.Equal(0, stateChangedCount);
+            Assert.Equal(EntityState.Modified, db.Entry(targetAsset).State);
+            Assert.Equal(EntityState.Modified, db.Entry(unrelatedAsset).State);
+            Assert.Equal(EntityState.Added, db.Entry(addedCustomer).State);
+            Assert.DoesNotContain(
+                db.ChangeTracker.Entries<LocalRentalBillingProfile>(),
+                entry => entry.Entity.Id == profile.Id);
+
+            await using (var verificationDb = new LocalDbContext())
+            {
+                Assert.Empty(await verificationDb.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().ToListAsync());
+                var databaseTarget = await verificationDb.RentalAssets.AsNoTracking()
+                    .SingleAsync(asset => asset.Id == targetAssetId);
+                Assert.Equal(10_000m, databaseTarget.MonthlyFee);
+            }
+
+            await db.SaveChangesAsync();
+
+            await using var persistedDb = new LocalDbContext();
+            Assert.NotNull(await persistedDb.Customers.IgnoreQueryFilters().AsNoTracking()
+                .SingleOrDefaultAsync(customer => customer.Id == addedCustomer.Id));
+            Assert.Equal(11_000m, (await persistedDb.RentalAssets.AsNoTracking()
+                .SingleAsync(asset => asset.Id == targetAssetId)).MonthlyFee);
+            Assert.Equal("caller pending unrelated memo", (await persistedDb.RentalAssets.AsNoTracking()
+                .SingleAsync(asset => asset.Id == unrelatedAssetId)).Notes);
+            Assert.Empty(await persistedDb.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().ToListAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalStateService_SaveBillingProfile_CancellationAfterAssetMutation_RollsBackAndCleansTracker()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-billing-cancel-cleanup-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            var customerId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            await using (var seedDb = new LocalDbContext())
+            {
+                await seedDb.Database.EnsureDeletedAsync();
+                await seedDb.Database.EnsureCreatedAsync();
+                seedDb.Customers.Add(new LocalCustomer
+                {
+                    Id = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "cancel cleanup 거래처",
+                    NameMatchKey = "CANCELCLEANUPCUSTOMER",
+                    IsDirty = false
+                });
+                seedDb.RentalAssets.Add(new LocalRentalAsset
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = "CANCEL-CLEANUP-ASSET",
+                    CustomerName = "cancel cleanup 원본",
+                    CurrentCustomerName = "cancel cleanup 원본",
+                    ItemName = "cancel cleanup 복합기",
+                    ManagementNumber = "CANCEL-CLEANUP-001",
+                    AssetStatus = "임대진행중",
+                    BillingEligibilityStatus = "청구대상",
+                    MonthlyFee = 72_000m,
+                    Notes = "cancel cleanup 원본 메모",
+                    IsDirty = false
+                });
+                await seedDb.SaveChangesAsync();
+            }
+
+            using var cancellationSource = new CancellationTokenSource();
+            var interceptor = new CancelOnSecondRentalBillingSaveInterceptor(cancellationSource);
+            var options = new DbContextOptionsBuilder<LocalDbContext>()
+                .UseSqlite($"Data Source={AppPaths.LocalDbFile}")
+                .AddInterceptors(interceptor)
+                .Options;
+            await using var db = new LocalDbContext(options);
+            var session = CreateUserSession(
+                AppPermissionNames.RentalProfileEdit,
+                AppPermissionNames.RentalAssetEdit);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var rental = new RentalStateService(db, local);
+            var stateChangedCount = 0;
+            rental.StateChanged += (_, _) => stateChangedCount++;
+            var profile = new LocalRentalBillingProfile
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customerId,
+                CustomerName = "cancel cleanup 거래처",
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                BillingType = "묶음",
+                BillingAdvanceMode = "후불",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                BillingTemplateJson = rental.SerializeBillingTemplateItems(
+                [
+                    new RentalBillingTemplateItemModel
+                    {
+                        DisplayItemName = "cancel cleanup 복합기",
+                        Quantity = 1m,
+                        UnitPrice = 95_000m,
+                        Amount = 95_000m,
+                        IncludedAssetIds = [assetId]
+                    }
+                ])
+            };
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                rental.SaveBillingProfileAsync(
+                    profile,
+                    session,
+                    [
+                        new RentalBillingAssetLinkEdit
+                        {
+                            AssetId = assetId,
+                            CustomerId = customerId,
+                            CustomerName = "cancel cleanup 거래처",
+                            MonthlyFee = 95_000m,
+                            Notes = "저장되면 안 되는 cancel 메모"
+                        }
+                    ],
+                    cancellationSource.Token));
+
+            Assert.Equal(0, stateChangedCount);
+            Assert.DoesNotContain(
+                db.ChangeTracker.Entries<LocalRentalBillingProfile>(),
+                entry => entry.Entity.Id == profile.Id);
+            Assert.Empty(db.ChangeTracker.Entries<LocalRentalAssetAssignmentHistory>());
+            var trackedAsset = Assert.Single(
+                db.ChangeTracker.Entries<LocalRentalAsset>(),
+                entry => entry.Entity.Id == assetId);
+            Assert.Equal(EntityState.Unchanged, trackedAsset.State);
+            Assert.Null(trackedAsset.Entity.BillingProfileId);
+            Assert.Equal(72_000m, trackedAsset.Entity.MonthlyFee);
+            Assert.Equal("cancel cleanup 원본 메모", trackedAsset.Entity.Notes);
+
+            await db.SaveChangesAsync(CancellationToken.None);
+
+            Assert.Empty(await db.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().ToListAsync());
+            Assert.Empty(await db.RentalAssetAssignmentHistories.IgnoreQueryFilters().AsNoTracking().ToListAsync());
+            var persistedAsset = await db.RentalAssets.IgnoreQueryFilters().AsNoTracking()
+                .SingleAsync(asset => asset.Id == assetId);
+            Assert.Null(persistedAsset.BillingProfileId);
+            Assert.Null(persistedAsset.CustomerId);
+            Assert.Equal("cancel cleanup 원본", persistedAsset.CustomerName);
+            Assert.Equal(72_000m, persistedAsset.MonthlyFee);
+            Assert.Equal("cancel cleanup 원본 메모", persistedAsset.Notes);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    private sealed class CancelOnSecondRentalBillingSaveInterceptor(CancellationTokenSource cancellationSource)
+        : SaveChangesInterceptor
+    {
+        private int _saveCount;
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref _saveCount) != 2)
+                return ValueTask.FromResult(result);
+
+            cancellationSource.Cancel();
+            return ValueTask.FromException<InterceptionResult<int>>(
+                new OperationCanceledException(cancellationSource.Token));
         }
     }
 
@@ -12388,6 +17563,47 @@ public sealed class LocalStateServicePartialsTests
         });
     }
 
+    private static LocalInvoice BuildItemHistoryInvoice(
+        Guid customerId,
+        Guid itemId,
+        VoucherType voucherType,
+        DateOnly invoiceDate,
+        decimal unitPrice,
+        string tenantCode = TenantScopeCatalog.UsenetGroup,
+        string officeCode = OfficeCodeCatalog.Usenet,
+        string responsibleOfficeCode = OfficeCodeCatalog.Usenet,
+        bool isDeleted = false,
+        bool isLatestVersion = true,
+        bool isConfirmed = true,
+        bool isLineDeleted = false)
+        => new()
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customerId,
+            TenantCode = tenantCode,
+            OfficeCode = officeCode,
+            ResponsibleOfficeCode = responsibleOfficeCode,
+            VoucherType = voucherType,
+            InvoiceDate = invoiceDate,
+            IsDeleted = isDeleted,
+            IsLatestVersion = isLatestVersion,
+            IsConfirmed = isConfirmed,
+            Lines =
+            {
+                new LocalInvoiceLine
+                {
+                    ItemId = itemId,
+                    ItemNameOriginal = "Invoice date item",
+                    ItemTrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    Quantity = 1m,
+                    UnitPrice = unitPrice,
+                    LineAmount = unitPrice,
+                    IsDeleted = isLineDeleted
+                }
+            }
+        };
+
     private static SessionState CreateOnlineAdminSession()
     {
         var session = new SessionState();
@@ -12402,6 +17618,24 @@ public sealed class LocalStateServicePartialsTests
         return session;
     }
 
+    private static SessionState CreateOnlineOfficeUserSession(
+        string tenantCode,
+        string officeCode,
+        params string[] permissions)
+    {
+        var session = new SessionState();
+        session.SetSession("test-token", new UserSessionDto
+        {
+            Username = "online-office-user",
+            Role = DomainConstants.RoleUser,
+            TenantCode = tenantCode,
+            OfficeCode = officeCode,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = permissions.ToList()
+        });
+        return session;
+    }
+
     private static SessionState CreateAdminSession()
     {
         var session = new SessionState();
@@ -12412,6 +17646,22 @@ public sealed class LocalStateServicePartialsTests
             TenantCode = TenantScopeCatalog.UsenetGroup,
             OfficeCode = OfficeCodeCatalog.Usenet,
             ScopeType = TenantScopeCatalog.ScopeAdmin
+        });
+        return session;
+    }
+
+    private static SessionState CreateOfficeAdminSession(
+        string tenantCode,
+        string officeCode)
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            Username = "office-admin",
+            Role = DomainConstants.RoleAdmin,
+            TenantCode = tenantCode,
+            OfficeCode = officeCode,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
         });
         return session;
     }
@@ -12574,6 +17824,16 @@ public sealed class LocalStateServicePartialsTests
                 var json = JsonSerializer.Serialize(new SyncPushResult
                 {
                     AcceptedCount = LastPushRequest?.ItemWarehouseStocks.Count ?? 0,
+                    AcceptedItemWarehouseStockKeys =
+                        LastPushRequest?.ItemWarehouseStocks
+                            .Select(stock =>
+                                new SyncAcceptedItemWarehouseStockKeyDto
+                                {
+                                    ItemId = stock.ItemId,
+                                    WarehouseCode =
+                                        stock.WarehouseCode
+                                })
+                            .ToList() ?? [],
                     CurrentServerRevision = 1
                 });
 
@@ -12588,6 +17848,706 @@ public sealed class LocalStateServicePartialsTests
                 Content = new StringContent("{}", Encoding.UTF8, "application/json")
             };
         }
+    }
+
+    private sealed class PartialWarehouseStockAcknowledgementHandler
+        : HttpMessageHandler
+    {
+        public List<SyncPushRequest> PushRequests { get; } = [];
+        public int PullCount { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.RequestUri?.AbsolutePath.Equals(
+                    "/sync/push",
+                    StringComparison.OrdinalIgnoreCase) == true)
+            {
+                var pushRequest = await request.Content!
+                    .ReadFromJsonAsync<SyncPushRequest>(
+                        cancellationToken: cancellationToken);
+                if (pushRequest is null)
+                    throw new InvalidOperationException(
+                        "Expected a sync push request.");
+
+                PushRequests.Add(pushRequest);
+                var acceptedStock =
+                    pushRequest.ItemWarehouseStocks.First();
+                return new HttpResponseMessage(
+                    System.Net.HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(
+                        new SyncPushResult
+                        {
+                            AcceptedCount =
+                                pushRequest.Items.Count,
+                            AcceptedRevisions =
+                                pushRequest.Items
+                                    .Select(item =>
+                                        new SyncAcceptedRevisionDto
+                                        {
+                                            EntityName = "Item",
+                                            EntityId = item.Id,
+                                            Revision =
+                                                Math.Max(
+                                                    30,
+                                                    item.Revision + 1),
+                                            UpdatedAtUtc =
+                                                item.UpdatedAtUtc
+                                        })
+                                    .ToList(),
+                            CurrentServerRevision = 30,
+                            AcceptedItemWarehouseStockKeys =
+                            [
+                                new SyncAcceptedItemWarehouseStockKeyDto
+                                {
+                                    ItemId = acceptedStock.ItemId,
+                                    WarehouseCode =
+                                        acceptedStock.WarehouseCode
+                                }
+                            ]
+                        })
+                };
+            }
+
+            if (request.RequestUri?.AbsolutePath.Equals(
+                    "/sync/pull",
+                    StringComparison.OrdinalIgnoreCase) == true)
+            {
+                PullCount++;
+                return new HttpResponseMessage(
+                    System.Net.HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(
+                        new SyncPullResponse
+                        {
+                            CurrentServerRevision = 30
+                        })
+                };
+            }
+
+            return new HttpResponseMessage(
+                System.Net.HttpStatusCode.NotFound);
+        }
+    }
+
+    private sealed class
+        ScopedPartialWarehouseStockAcknowledgementHandler(
+            Guid initiallyUnacknowledgedItemId,
+            string initiallyUnacknowledgedWarehouseCode)
+        : HttpMessageHandler
+    {
+        public List<SyncPushRequest> PushRequests { get; } = [];
+        public int PullCount { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.RequestUri?.AbsolutePath.Equals(
+                    "/sync/push",
+                    StringComparison.OrdinalIgnoreCase) == true)
+            {
+                var pushRequest = await request.Content!
+                    .ReadFromJsonAsync<SyncPushRequest>(
+                        cancellationToken: cancellationToken);
+                if (pushRequest is null)
+                {
+                    throw new InvalidOperationException(
+                        "Expected a sync push request.");
+                }
+
+                PushRequests.Add(pushRequest);
+                var isInitialPush = PushRequests.Count == 1;
+                var acceptedStocks = isInitialPush
+                    ? pushRequest.ItemWarehouseStocks
+                        .Where(stock =>
+                            stock.ItemId !=
+                            initiallyUnacknowledgedItemId ||
+                            !string.Equals(
+                                stock.WarehouseCode,
+                                initiallyUnacknowledgedWarehouseCode,
+                                StringComparison.OrdinalIgnoreCase))
+                        .ToList()
+                    : pushRequest.ItemWarehouseStocks;
+                return new HttpResponseMessage(
+                    System.Net.HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(
+                        new SyncPushResult
+                        {
+                            AcceptedCount =
+                                pushRequest.Items.Count,
+                            AcceptedRevisions =
+                                pushRequest.Items
+                                    .Select(item =>
+                                        new SyncAcceptedRevisionDto
+                                        {
+                                            EntityName = "Item",
+                                            EntityId = item.Id,
+                                            Revision =
+                                                Math.Max(
+                                                    30 +
+                                                    PushRequests.Count,
+                                                    item.Revision +
+                                                    1),
+                                            UpdatedAtUtc =
+                                                item.UpdatedAtUtc
+                                        })
+                                    .ToList(),
+                            CurrentServerRevision =
+                                30 + PushRequests.Count,
+                            AcceptedItemWarehouseStockKeys =
+                                acceptedStocks
+                                    .Select(stock =>
+                                        new
+                                            SyncAcceptedItemWarehouseStockKeyDto
+                                            {
+                                                ItemId =
+                                                    stock.ItemId,
+                                                WarehouseCode =
+                                                    stock
+                                                        .WarehouseCode
+                                            })
+                                    .ToList()
+                        })
+                };
+            }
+
+            if (request.RequestUri?.AbsolutePath.Equals(
+                    "/sync/pull",
+                    StringComparison.OrdinalIgnoreCase) == true)
+            {
+                PullCount++;
+                return new HttpResponseMessage(
+                    System.Net.HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(
+                        new SyncPullResponse
+                        {
+                            CurrentServerRevision = 32
+                        })
+                };
+            }
+
+            return new HttpResponseMessage(
+                System.Net.HttpStatusCode.NotFound);
+        }
+    }
+
+    private sealed class MissingWarehouseStockTombstoneHandler(
+        Guid itemId,
+        DateTime updatedAtUtc)
+        : HttpMessageHandler
+    {
+        public List<string> Operations { get; } = [];
+        private int _pushCount;
+        private int _pullCount;
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.RequestUri?.AbsolutePath.Equals(
+                    "/sync/push",
+                    StringComparison.OrdinalIgnoreCase) == true)
+            {
+                _pushCount++;
+                Operations.Add($"push:{_pushCount}");
+                var pushRequest = await request.Content!
+                    .ReadFromJsonAsync<SyncPushRequest>(
+                        cancellationToken: cancellationToken);
+                if (pushRequest is null)
+                    throw new InvalidOperationException(
+                        "Expected a sync push request.");
+
+                var deletedStock =
+                    pushRequest.ItemWarehouseStocks.Single(stock =>
+                        stock.ItemId == itemId &&
+                        stock.WarehouseCode ==
+                        OfficeCodeCatalog.UsenetMainWarehouse);
+                var acceptedStock =
+                    pushRequest.ItemWarehouseStocks.Single(stock =>
+                        stock.ItemId == itemId &&
+                        stock.WarehouseCode ==
+                        OfficeCodeCatalog.YeonsuMainWarehouse);
+                var expectedRevision =
+                    deletedStock.ExpectedRevision > 0
+                        ? deletedStock.ExpectedRevision
+                        : deletedStock.Revision;
+                var tombstone = new ItemWarehouseStockDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 0m,
+                    UpdatedAtUtc = DateTime.UnixEpoch,
+                    Revision = 0,
+                    ExpectedRevision = expectedRevision,
+                    IsDeleted = true
+                };
+                return new HttpResponseMessage(
+                    System.Net.HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(
+                        new SyncPushResult
+                        {
+                            AcceptedCount =
+                                pushRequest.Items.Count,
+                            AcceptedRevisions =
+                                pushRequest.Items
+                                    .Select(item =>
+                                        new SyncAcceptedRevisionDto
+                                        {
+                                            EntityName = "Item",
+                                            EntityId = item.Id,
+                                            Revision =
+                                                Math.Max(
+                                                    50,
+                                                    item.Revision + 1),
+                                            UpdatedAtUtc =
+                                                item.UpdatedAtUtc
+                                        })
+                                    .ToList(),
+                            ConflictCount = 1,
+                            CurrentServerRevision = 50,
+                            Conflicts =
+                            [
+                                new ConflictLogDto
+                                {
+                                    EntityName =
+                                        "ItemWarehouseStock",
+                                    EntityId =
+                                        $"{itemId:D}|{OfficeCodeCatalog.UsenetMainWarehouse}",
+                                    Reason =
+                                        $"Expected revision mismatch. client={expectedRevision}, server=0. Server warehouse stock row no longer exists.",
+                                    ClientJson =
+                                        JsonSerializer.Serialize(
+                                            deletedStock),
+                                    ServerJson =
+                                        JsonSerializer.Serialize(
+                                            tombstone)
+                                }
+                            ],
+                            AcceptedItemWarehouseStockKeys =
+                            [
+                                new SyncAcceptedItemWarehouseStockKeyDto
+                                {
+                                    ItemId = acceptedStock.ItemId,
+                                    WarehouseCode =
+                                        acceptedStock.WarehouseCode
+                                }
+                            ]
+                        })
+                };
+            }
+
+            if (request.RequestUri?.AbsolutePath.Equals(
+                    "/sync/pull",
+                    StringComparison.OrdinalIgnoreCase) == true)
+            {
+                _pullCount++;
+                Operations.Add($"pull:{_pullCount}");
+                return new HttpResponseMessage(
+                    System.Net.HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(
+                        new SyncPullResponse
+                        {
+                            CurrentServerRevision = 50,
+                            Items =
+                            [
+                                new ItemDto
+                                {
+                                    Id = itemId,
+                                    TenantCode =
+                                        TenantScopeCatalog
+                                            .UsenetGroup,
+                                    OfficeCode =
+                                        OfficeCodeCatalog.Usenet,
+                                    NameOriginal =
+                                        "Tombstoned warehouse stock item",
+                                    NameMatchKey =
+                                        "TOMBSTONEDWAREHOUSESTOCKITEM",
+                                    ItemKind = ItemKinds.Product,
+                                    TrackingType =
+                                        ItemTrackingTypes.Stock,
+                                    Unit = "EA",
+                                    CurrentStock = 7m,
+                                    Revision = 50,
+                                    UpdatedAtUtc = updatedAtUtc
+                                }
+                            ],
+                            ItemWarehouseStocks =
+                            [
+                                new ItemWarehouseStockDto
+                                {
+                                    ItemId = itemId,
+                                    WarehouseCode =
+                                        OfficeCodeCatalog
+                                            .YeonsuMainWarehouse,
+                                    Quantity = 7m,
+                                    Revision = 43,
+                                    ExpectedRevision = 43,
+                                    UpdatedAtUtc = updatedAtUtc
+                                }
+                            ]
+                        })
+                };
+            }
+
+            return new HttpResponseMessage(
+                System.Net.HttpStatusCode.NotFound);
+        }
+    }
+
+    private sealed class ReadOnlySiblingWarehouseStockReplayHandler(
+        Guid itemId,
+        ItemWarehouseStockDto serverConflictSnapshot,
+        DateTime updatedAtUtc)
+        : HttpMessageHandler
+    {
+        public List<string> Operations { get; } = [];
+        public List<SyncPushRequest> PushRequests { get; } = [];
+        private int _pullCount;
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.RequestUri?.AbsolutePath.Equals(
+                    "/sync/pull",
+                    StringComparison.OrdinalIgnoreCase) == true)
+            {
+                _pullCount++;
+                Operations.Add($"pull:{_pullCount}");
+                return new HttpResponseMessage(
+                    System.Net.HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(
+                        new SyncPullResponse
+                        {
+                            CurrentServerRevision = 31,
+                            ItemWarehouseStocks =
+                            [
+                                new ItemWarehouseStockDto
+                                {
+                                    ItemId = itemId,
+                                    WarehouseCode =
+                                        OfficeCodeCatalog
+                                            .UsenetMainWarehouse,
+                                    Quantity = 5m,
+                                    Revision = 30,
+                                    ExpectedRevision = 30,
+                                    UpdatedAtUtc =
+                                        updatedAtUtc.AddMinutes(-1)
+                                },
+                                serverConflictSnapshot
+                            ]
+                        })
+                };
+            }
+
+            if (request.RequestUri?.AbsolutePath.Equals(
+                    "/sync/push",
+                    StringComparison.OrdinalIgnoreCase) == true)
+            {
+                var pushRequest = await request.Content!
+                    .ReadFromJsonAsync<SyncPushRequest>(
+                        cancellationToken: cancellationToken);
+                if (pushRequest is null)
+                    throw new InvalidOperationException(
+                        "Expected a sync push request.");
+
+                PushRequests.Add(pushRequest);
+                Operations.Add($"push:{PushRequests.Count}");
+                return new HttpResponseMessage(
+                    System.Net.HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(
+                        new SyncPushResult
+                        {
+                            CurrentServerRevision = 31,
+                            AcceptedItemWarehouseStockKeys =
+                                pushRequest.ItemWarehouseStocks
+                                    .Select(stock =>
+                                        new SyncAcceptedItemWarehouseStockKeyDto
+                                        {
+                                            ItemId = stock.ItemId,
+                                            WarehouseCode =
+                                                stock.WarehouseCode
+                                        })
+                                    .ToList()
+                        })
+                };
+            }
+
+            return new HttpResponseMessage(
+                System.Net.HttpStatusCode.NotFound);
+        }
+    }
+
+    private sealed class WarehouseStockSafeReplayHandler : HttpMessageHandler
+    {
+        private readonly Guid _itemId;
+        private readonly DateTime _localUpdatedAt;
+        private readonly bool _keepCompeting;
+        private readonly Func<CancellationToken, Task>?
+            _duringPreparatoryPullAsync;
+        private readonly Func<CancellationToken, Task>?
+            _afterReplayPushAsync;
+        private readonly Func<CancellationToken, Task>?
+            _duringNormalPullAsync;
+        private readonly string?
+            _expectedBusinessDatabaseOverride;
+        private readonly bool _emitInitialConflict;
+        private readonly bool _omitReplayAcceptedKeys;
+        private readonly bool
+            _returnReplayAcceptedWarehouseAliases;
+        private int _pullCount;
+
+        public WarehouseStockSafeReplayHandler(
+            Guid itemId,
+            DateTime localUpdatedAt,
+            bool keepCompeting,
+            Func<CancellationToken, Task>?
+                duringPreparatoryPullAsync = null,
+            Func<CancellationToken, Task>?
+                afterReplayPushAsync = null,
+            Func<CancellationToken, Task>?
+                duringNormalPullAsync = null,
+            string? expectedBusinessDatabaseOverride = null,
+            bool emitInitialConflict = true,
+            bool omitReplayAcceptedKeys = false,
+            bool returnReplayAcceptedWarehouseAliases = false)
+        {
+            _itemId = itemId;
+            _localUpdatedAt = localUpdatedAt;
+            _keepCompeting = keepCompeting;
+            _duringPreparatoryPullAsync =
+                duringPreparatoryPullAsync;
+            _afterReplayPushAsync = afterReplayPushAsync;
+            _duringNormalPullAsync = duringNormalPullAsync;
+            _expectedBusinessDatabaseOverride =
+                expectedBusinessDatabaseOverride;
+            _emitInitialConflict = emitInitialConflict;
+            _omitReplayAcceptedKeys =
+                omitReplayAcceptedKeys;
+            _returnReplayAcceptedWarehouseAliases =
+                returnReplayAcceptedWarehouseAliases;
+        }
+
+        public List<string> Operations { get; } = [];
+        public List<SyncPushRequest> PushRequests { get; } = [];
+        public List<string> OverrideHeaderNames { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (_expectedBusinessDatabaseOverride is not null)
+            {
+                var matchingHeaderNames = request.Headers
+                    .Where(header => header.Value.Any(value =>
+                        string.Equals(
+                            value,
+                            _expectedBusinessDatabaseOverride,
+                            StringComparison.Ordinal)))
+                    .Select(header => header.Key)
+                    .ToList();
+                OverrideHeaderNames.Add(
+                    matchingHeaderNames.Count == 1
+                        ? matchingHeaderNames[0]
+                        : string.Empty);
+            }
+
+            if (request.RequestUri?.AbsolutePath.Equals(
+                    "/sync/push",
+                    StringComparison.OrdinalIgnoreCase) == true)
+            {
+                var pushRequest = await request.Content!
+                    .ReadFromJsonAsync<SyncPushRequest>(
+                        cancellationToken: cancellationToken);
+                if (pushRequest is null)
+                    throw new InvalidOperationException(
+                        "Expected a sync push request.");
+
+                PushRequests.Add(pushRequest);
+                Operations.Add($"push:{PushRequests.Count}");
+                SyncPushResult result;
+                if (_emitInitialConflict &&
+                    PushRequests.Count == 1)
+                {
+                    var primary = pushRequest.ItemWarehouseStocks
+                        .Single(stock =>
+                            stock.ItemId == _itemId &&
+                            stock.WarehouseCode ==
+                            OfficeCodeCatalog.UsenetMainWarehouse);
+                    var serverSnapshot =
+                        CreateStock(
+                            OfficeCodeCatalog.UsenetMainWarehouse,
+                            quantity: 2m,
+                            revision: 21);
+                    result = new SyncPushResult
+                    {
+                        AcceptedCount = 0,
+                        ConflictCount = 1,
+                        CurrentServerRevision = 22,
+                        AcceptedItemWarehouseStockKeys =
+                            pushRequest.ItemWarehouseStocks
+                                .Where(stock =>
+                                    stock.ItemId != primary.ItemId ||
+                                    !string.Equals(
+                                        stock.WarehouseCode,
+                                        primary.WarehouseCode,
+                                        StringComparison.OrdinalIgnoreCase))
+                                .Select(stock =>
+                                    new SyncAcceptedItemWarehouseStockKeyDto
+                                    {
+                                        ItemId = stock.ItemId,
+                                        WarehouseCode =
+                                            stock.WarehouseCode
+                                    })
+                                .ToList(),
+                        Conflicts =
+                        [
+                            new ConflictLogDto
+                            {
+                                EntityName = "ItemWarehouseStock",
+                                EntityId =
+                                    $"{_itemId:D}|{OfficeCodeCatalog.UsenetMainWarehouse}",
+                                Reason =
+                                    "Expected revision mismatch. client=20, server=21",
+                                ClientJson =
+                                    JsonSerializer.Serialize(primary),
+                                ServerJson =
+                                    JsonSerializer.Serialize(serverSnapshot)
+                            }
+                        ]
+                    };
+                }
+                else
+                {
+                    result = new SyncPushResult
+                    {
+                        AcceptedCount = 0,
+                        CurrentServerRevision = 24,
+                        AcceptedItemWarehouseStockKeys =
+                            _omitReplayAcceptedKeys &&
+                            PushRequests.Count == 2
+                                ? []
+                                : pushRequest.ItemWarehouseStocks
+                                    .Select(stock =>
+                                        new SyncAcceptedItemWarehouseStockKeyDto
+                                        {
+                                            ItemId = stock.ItemId,
+                                            WarehouseCode =
+                                                _returnReplayAcceptedWarehouseAliases &&
+                                                PushRequests.Count == 2
+                                                    ? ToWarehouseAlias(
+                                                        stock.WarehouseCode)
+                                                    : stock.WarehouseCode
+                                        })
+                                    .ToList()
+                    };
+                }
+
+                if (PushRequests.Count == 2 &&
+                    _afterReplayPushAsync is not null)
+                {
+                    await _afterReplayPushAsync(
+                        cancellationToken);
+                }
+
+                return JsonResponse(result);
+            }
+
+            if (request.RequestUri?.AbsolutePath.Equals(
+                    "/sync/pull",
+                    StringComparison.OrdinalIgnoreCase) == true)
+            {
+                _pullCount++;
+                Operations.Add($"pull:{_pullCount}");
+                var preparatoryPull = _pullCount == 1;
+                var primaryQuantity = preparatoryPull
+                    ? _keepCompeting ? 4m : 2m
+                    : 3m;
+                var response = new SyncPullResponse
+                {
+                    CurrentServerRevision =
+                        preparatoryPull ? 22 : 24,
+                    ItemWarehouseStocks =
+                    [
+                        CreateStock(
+                            OfficeCodeCatalog.UsenetMainWarehouse,
+                            primaryQuantity,
+                            preparatoryPull ? 21 : 23),
+                        CreateStock(
+                            OfficeCodeCatalog.YeonsuMainWarehouse,
+                            quantity: 7m,
+                            revision: preparatoryPull ? 22 : 24)
+                    ]
+                };
+                if (preparatoryPull &&
+                    _duringPreparatoryPullAsync is not null)
+                {
+                    await _duringPreparatoryPullAsync(
+                        cancellationToken);
+                }
+                else if (!preparatoryPull &&
+                         _duringNormalPullAsync is not null)
+                {
+                    await _duringNormalPullAsync(
+                        cancellationToken);
+                }
+
+                return JsonResponse(response);
+            }
+
+            return new HttpResponseMessage(
+                System.Net.HttpStatusCode.NotFound)
+            {
+                Content = new StringContent(
+                    "{}",
+                    Encoding.UTF8,
+                    "application/json")
+            };
+        }
+
+        private ItemWarehouseStockDto CreateStock(
+            string warehouseCode,
+            decimal quantity,
+            long revision)
+            => new()
+            {
+                ItemId = _itemId,
+                WarehouseCode = warehouseCode,
+                Quantity = quantity,
+                Revision = revision,
+                ExpectedRevision = revision,
+                UpdatedAtUtc = _localUpdatedAt.AddMinutes(-10)
+            };
+
+        private static string ToWarehouseAlias(
+            string warehouseCode)
+            => warehouseCode switch
+            {
+                OfficeCodeCatalog.UsenetMainWarehouse =>
+                    "UZNET main warehouse",
+                OfficeCodeCatalog.YeonsuMainWarehouse =>
+                    "연수 창고",
+                _ => warehouseCode
+            };
+
+        private static HttpResponseMessage JsonResponse<T>(T value)
+            => new(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    JsonSerializer.Serialize(value),
+                    Encoding.UTF8,
+                    "application/json")
+            };
     }
 
     private sealed class WarehouseStockPushThenPullHandler : HttpMessageHandler
@@ -12617,7 +18577,33 @@ public sealed class LocalStateServicePartialsTests
                 LastPushRequest = await request.Content!.ReadFromJsonAsync<SyncPushRequest>(cancellationToken: cancellationToken);
                 var json = JsonSerializer.Serialize(new SyncPushResult
                 {
-                    AcceptedCount = LastPushRequest?.ItemWarehouseStocks.Count ?? 0,
+                    AcceptedCount =
+                        LastPushRequest?.Items.Count ?? 0,
+                    AcceptedRevisions =
+                        LastPushRequest?.Items
+                            .Select(item =>
+                                new SyncAcceptedRevisionDto
+                                {
+                                    EntityName = "Item",
+                                    EntityId = item.Id,
+                                    Revision =
+                                        Math.Max(
+                                            20,
+                                            item.Revision + 1),
+                                    UpdatedAtUtc =
+                                        item.UpdatedAtUtc
+                                })
+                            .ToList() ?? [],
+                    AcceptedItemWarehouseStockKeys =
+                        LastPushRequest?.ItemWarehouseStocks
+                            .Select(stock =>
+                                new SyncAcceptedItemWarehouseStockKeyDto
+                                {
+                                    ItemId = stock.ItemId,
+                                    WarehouseCode =
+                                        stock.WarehouseCode
+                                })
+                            .ToList() ?? [],
                     CurrentServerRevision = 20
                 });
 
@@ -12672,6 +18658,155 @@ public sealed class LocalStateServicePartialsTests
             {
                 Content = new StringContent("{}", Encoding.UTF8, "application/json")
             };
+        }
+    }
+
+    private static async Task CleanupMainViewModelFixtureAsync(
+        Func<Task>? drainAsync,
+        Func<ValueTask> disposeDbAsync,
+        Action resetEnvironment,
+        Action clearPools)
+    {
+        ExceptionDispatchInfo? primaryFailure = null;
+        var secondaryFailureCount = 0;
+
+        void CaptureFailure(Exception exception)
+        {
+            if (primaryFailure is null)
+            {
+                primaryFailure = ExceptionDispatchInfo.Capture(exception);
+                return;
+            }
+
+            try
+            {
+                primaryFailure.SourceException.Data[
+                    $"MainViewModelFixtureCleanupFailure{++secondaryFailureCount}"] = exception;
+            }
+            catch
+            {
+                // Preserve the first failure even if diagnostic attachment fails.
+            }
+        }
+
+        try
+        {
+            if (drainAsync is not null)
+                await drainAsync();
+        }
+        catch (Exception exception)
+        {
+            CaptureFailure(exception);
+        }
+
+        try
+        {
+            await disposeDbAsync();
+        }
+        catch (Exception exception)
+        {
+            CaptureFailure(exception);
+        }
+
+        try
+        {
+            resetEnvironment();
+        }
+        catch (Exception exception)
+        {
+            CaptureFailure(exception);
+        }
+
+        try
+        {
+            clearPools();
+        }
+        catch (Exception exception)
+        {
+            CaptureFailure(exception);
+        }
+
+        primaryFailure?.Throw();
+    }
+
+    private sealed class RentalAssetReadQueryGate(Guid assetId) : DbCommandInterceptor
+    {
+        private readonly Guid _assetId = assetId;
+        private readonly TaskCompletionSource _blocked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _armed;
+
+        public void Arm() => Volatile.Write(ref _armed, 1);
+
+        public Task WaitUntilBlockedAsync(TimeSpan timeout)
+            => _blocked.Task.WaitAsync(timeout);
+
+        public void Release() => _released.TrySetResult();
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (Volatile.Read(ref _armed) == 1 &&
+                command.CommandText.Contains("RentalAssets", StringComparison.OrdinalIgnoreCase) &&
+                command.Parameters.Cast<DbParameter>().Any(parameter =>
+                    Guid.TryParse(parameter.Value?.ToString(), out var parameterId) &&
+                    parameterId == _assetId) &&
+                Interlocked.Exchange(ref _armed, 0) == 1)
+            {
+                _blocked.TrySetResult();
+                await _released.Task;
+            }
+
+            return result;
+        }
+    }
+
+    private sealed class ArmedSaveChangesSignal : DbCommandInterceptor
+    {
+        private readonly TaskCompletionSource _saved = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _armed;
+        private int _saveCount;
+
+        public int SaveCount => Volatile.Read(ref _saveCount);
+
+        public void Arm() => Volatile.Write(ref _armed, 1);
+
+        public Task WaitForSaveAsync(TimeSpan timeout)
+            => _saved.Task.WaitAsync(timeout);
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            ObserveRentalAssetUpdate(command);
+            return ValueTask.FromResult(result);
+        }
+
+        public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            ObserveRentalAssetUpdate(command);
+            return ValueTask.FromResult(result);
+        }
+
+        private void ObserveRentalAssetUpdate(DbCommand command)
+        {
+            if (Volatile.Read(ref _armed) == 0 ||
+                !command.CommandText.Contains("UPDATE \"RentalAssets\"", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            Interlocked.Increment(ref _saveCount);
+            _saved.TrySetResult();
         }
     }
 

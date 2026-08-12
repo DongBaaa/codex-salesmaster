@@ -1,6 +1,8 @@
 ﻿param(
     [string]$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
     [string]$AdbPath,
+    [string]$ApkAnalyzerPath,
+    [string]$JavaSdkDirectory,
     [string]$ApkPath,
     [string]$PackageName = 'kr.georaeplan.mobile',
     [string]$Username = 'usenet',
@@ -44,6 +46,178 @@ function Resolve-AdbPath {
     }
 
     throw 'adb.exe를 찾지 못했습니다. Android SDK platform-tools 경로를 확인하세요.'
+}
+
+function Resolve-ApkAnalyzerPath {
+    param(
+        [string]$ProjectRoot,
+        [string]$RequestedPath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
+        if (-not (Test-Path -LiteralPath $RequestedPath -PathType Leaf)) {
+            throw "지정한 apkanalyzer를 찾지 못했습니다: $RequestedPath"
+        }
+        return (Resolve-Path -LiteralPath $RequestedPath).Path
+    }
+
+    $sdkCandidates = [System.Collections.Generic.List[string]]::new()
+    foreach ($candidate in @($env:ANDROID_SDK_ROOT, $env:ANDROID_HOME)) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            $sdkCandidates.Add($candidate) | Out-Null
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $sdkCandidates.Add((Join-Path $env:LOCALAPPDATA 'Android\Sdk')) | Out-Null
+        $sdkCandidates.Add((Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\android-sdk')) | Out-Null
+    }
+    $sdkCandidates.Add((Join-Path $ProjectRoot '.android-sdk')) | Out-Null
+    $sdkCandidates.Add((Join-Path $ProjectRoot '.tooling\android-sdk')) | Out-Null
+
+    foreach ($sdkRoot in $sdkCandidates | Select-Object -Unique) {
+        if ([string]::IsNullOrWhiteSpace($sdkRoot) -or -not (Test-Path -LiteralPath $sdkRoot -PathType Container)) {
+            continue
+        }
+
+        $directCandidates = @(
+            (Join-Path $sdkRoot 'cmdline-tools\latest\bin\apkanalyzer.bat'),
+            (Join-Path $sdkRoot 'cmdline-tools\latest\bin\apkanalyzer'),
+            (Join-Path $sdkRoot 'tools\bin\apkanalyzer.bat'),
+            (Join-Path $sdkRoot 'tools\bin\apkanalyzer')
+        )
+        foreach ($candidate in $directCandidates) {
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                return (Resolve-Path -LiteralPath $candidate).Path
+            }
+        }
+
+        $commandLineToolsRoot = Join-Path $sdkRoot 'cmdline-tools'
+        if (-not (Test-Path -LiteralPath $commandLineToolsRoot -PathType Container)) {
+            continue
+        }
+
+        $analyzer = Get-ChildItem -LiteralPath $commandLineToolsRoot -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -in @('apkanalyzer.bat', 'apkanalyzer') } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+        if ($null -ne $analyzer) {
+            return $analyzer.FullName
+        }
+    }
+
+    throw 'apkanalyzer를 찾지 못했습니다. Android SDK command-line tools를 설치하거나 -ApkAnalyzerPath를 지정하세요.'
+}
+
+function ConvertTo-PositiveAndroidVersionCode {
+    param(
+        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)][string]$SourceName
+    )
+
+    $normalized = $Value.Trim()
+    [long]$versionCode = 0
+    if ($normalized -notmatch '^\d+$' -or
+        -not [long]::TryParse($normalized, [ref]$versionCode) -or
+        $versionCode -le 0) {
+        throw "$SourceName versionCode가 양의 정수가 아닙니다."
+    }
+
+    return $versionCode
+}
+
+function Resolve-JavaHomeForApkAnalyzer {
+    param([string]$RequestedPath)
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
+        $requestedJava = Join-Path $RequestedPath 'bin\java.exe'
+        if (-not (Test-Path -LiteralPath $requestedJava -PathType Leaf)) {
+            $requestedJava = Join-Path $RequestedPath 'bin\java'
+        }
+        if (-not (Test-Path -LiteralPath $requestedJava -PathType Leaf)) {
+            throw "지정한 Java SDK를 찾지 못했습니다: $RequestedPath"
+        }
+        return (Resolve-Path -LiteralPath $RequestedPath).Path
+    }
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    foreach ($candidate in @($env:JAVA_HOME)) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            $candidates.Add($candidate) | Out-Null
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+        $candidates.Add((Join-Path $env:ProgramFiles 'Android\Android Studio\jbr')) | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace(${env:ProgramFiles(x86)})) {
+        $candidates.Add((Join-Path ${env:ProgramFiles(x86)} 'Android\Android Studio\jbr')) | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $candidates.Add((Join-Path $env:LOCALAPPDATA 'Programs\Android Studio\jbr')) | Out-Null
+    }
+
+    foreach ($commandName in @('java', 'javac', 'keytool')) {
+        $command = Get-Command $commandName -ErrorAction SilentlyContinue
+        if ($null -ne $command) {
+            $candidates.Add((Split-Path -Parent (Split-Path -Parent $command.Source))) | Out-Null
+        }
+    }
+
+    foreach ($candidate in $candidates | Select-Object -Unique) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+
+        $javaExecutable = Join-Path $candidate 'bin\java.exe'
+        if (-not (Test-Path -LiteralPath $javaExecutable -PathType Leaf)) {
+            $javaExecutable = Join-Path $candidate 'bin\java'
+        }
+        if (Test-Path -LiteralPath $javaExecutable -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    throw 'apkanalyzer 실행용 Java를 찾지 못했습니다. JDK 17+를 설치하거나 -JavaSdkDirectory를 지정하세요.'
+}
+
+function Get-ApkManifestMetadata {
+    param(
+        [Parameter(Mandatory = $true)][string]$ApkAnalyzerPath,
+        [Parameter(Mandatory = $true)][string]$ApkPath,
+        [Parameter(Mandatory = $true)][string]$JavaHome
+    )
+
+    $previousJavaHome = $env:JAVA_HOME
+    $previousPath = $env:PATH
+    try {
+        $env:JAVA_HOME = $JavaHome
+        $env:PATH = (Join-Path $JavaHome 'bin') + [System.IO.Path]::PathSeparator + $env:PATH
+
+        $applicationIdOutput = & $ApkAnalyzerPath manifest application-id $ApkPath 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "apkanalyzer application-id 조회 실패(exit=$LASTEXITCODE)."
+        }
+        $applicationId = (($applicationIdOutput | Out-String).Trim())
+        if ($applicationId -notmatch '^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$') {
+            throw 'APK applicationId를 단일 유효 값으로 확인하지 못했습니다.'
+        }
+
+        $versionCodeOutput = & $ApkAnalyzerPath manifest version-code $ApkPath 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "apkanalyzer version-code 조회 실패(exit=$LASTEXITCODE)."
+        }
+
+        return [pscustomobject]@{
+            ApplicationId = $applicationId
+            VersionCode = ConvertTo-PositiveAndroidVersionCode `
+                -Value (($versionCodeOutput | Out-String).Trim()) `
+                -SourceName 'APK'
+        }
+    }
+    finally {
+        $env:JAVA_HOME = $previousJavaHome
+        $env:PATH = $previousPath
+    }
 }
 
 function Resolve-ApkPath {
@@ -150,9 +324,15 @@ function Install-MobileApk {
         [switch]$RequireUpdateInPlace
     )
 
-    $installArgs = @('-s', $DeviceId, 'install', '-r', '-d', $ApkPath)
+    $installArgs = @('-s', $DeviceId, 'install', '-r')
+    if (-not $RequireUpdateInPlace) {
+        $installArgs += '-d'
+    }
+    $installArgs += $ApkPath
 
-    try { Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'pm', 'trim-caches', '1024M') | Out-Null } catch {}
+    if (-not $RequireUpdateInPlace) {
+        try { Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'pm', 'trim-caches', '1024M') | Out-Null } catch {}
+    }
 
     try {
         Invoke-Adb -AdbPath $AdbPath -Arguments $installArgs | Out-Null
@@ -197,6 +377,33 @@ function Assert-MobilePackageInstalled {
     }
 
     throw "Android update-in-place 검증은 기존 설치본이 있어야 합니다. 패키지를 먼저 설치한 뒤 다시 실행하세요: $PackageName"
+}
+
+function Get-InstalledMobileVersionCode {
+    param(
+        [Parameter(Mandatory = $true)][string]$AdbPath,
+        [Parameter(Mandatory = $true)][string]$DeviceId,
+        [Parameter(Mandatory = $true)][string]$PackageName
+    )
+
+    $output = Invoke-Adb -AdbPath $AdbPath -Arguments @(
+        '-s',
+        $DeviceId,
+        'shell',
+        'dumpsys',
+        'package',
+        $PackageName)
+    $text = ($output -join "`n")
+    $match = [regex]::Match(
+        $text,
+        '(?m)^\s*versionCode=(?<value>\d+)\b')
+    if (-not $match.Success) {
+        throw "설치된 Android 패키지의 versionCode를 확인하지 못했습니다: $PackageName"
+    }
+
+    return ConvertTo-PositiveAndroidVersionCode `
+        -Value $match.Groups['value'].Value `
+        -SourceName '설치본'
 }
 
 
@@ -397,7 +604,8 @@ function Wait-UiContainsAll {
         [string]$Name,
         [string[]]$Needles,
         [string]$StepName,
-        [int]$TimeoutSeconds = 60
+        [int]$TimeoutSeconds = 60,
+        [switch]$AllowTimeout
     )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
@@ -429,8 +637,15 @@ function Wait-UiContainsAll {
 
     if ($lastDump) {
         Copy-Item -LiteralPath $lastDump.Path -Destination (Join-Path $EvidenceDirectory "$Name.xml") -Force
+        if ($AllowTimeout) {
+            return $null
+        }
         Assert-UiContains -Content $lastDump.Content -Needles $Needles -StepName $StepName
         return $lastDump
+    }
+
+    if ($AllowTimeout) {
+        return $null
     }
 
     throw "$StepName 확인 실패. UI 덤프를 가져오지 못했습니다."
@@ -711,21 +926,23 @@ function Dismiss-AndroidAnrDialog {
     param(
         [string]$AdbPath,
         [string]$DeviceId,
-        [string]$Content
+        [string]$Content,
+        [switch]$AllowTargetAppRecovery
     )
 
     if (-not $Content.Contains("isn't responding")) {
         return $false
     }
 
-    $buttonText = 'Wait'
-    if ($Content.Contains("Pixel Launcher isn't responding") -or
-        $Content.Contains('com.google.android.apps.nexuslauncher')) {
-        $buttonText = 'Close app'
+    $isLauncherAnr = $Content.Contains("Pixel Launcher isn't responding") -or
+        $Content.Contains('com.google.android.apps.nexuslauncher')
+    if (-not $isLauncherAnr -and -not $AllowTargetAppRecovery) {
+        throw '거래플랜 Android smoke 중 대상 앱 ANR을 감지했습니다. 자동으로 숨기지 않고 실패 처리합니다.'
     }
 
+    $buttonText = 'Close app'
     $buttonPoint = Get-NodeCenterByText -Content $Content -Text $buttonText -ClassName 'android.widget.Button'
-    if (-not $buttonPoint -and $buttonText -ne 'Wait') {
+    if (-not $buttonPoint) {
         $buttonPoint = Get-NodeCenterByText -Content $Content -Text 'Wait' -ClassName 'android.widget.Button'
     }
     if (-not $buttonPoint) {
@@ -733,7 +950,7 @@ function Dismiss-AndroidAnrDialog {
     }
 
     Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $buttonPoint.X -Y $buttonPoint.Y
-    if ($buttonText -eq 'Close app' -and -not [string]::IsNullOrWhiteSpace($script:GeoraePlanMobilePackageName)) {
+    if (-not [string]::IsNullOrWhiteSpace($script:GeoraePlanMobilePackageName)) {
         Start-Sleep -Seconds 2
         Start-MobileApp -AdbPath $AdbPath -DeviceId $DeviceId -PackageName $script:GeoraePlanMobilePackageName
     }
@@ -1046,6 +1263,7 @@ function Open-HomeActionAndAssert {
         [string]$DeviceId,
         [string]$EvidenceDirectory,
         [string]$Timestamp,
+        [pscustomobject]$Screen,
         [string]$HomeContent,
         [string]$ButtonText,
         [string]$StepName,
@@ -1068,7 +1286,31 @@ function Open-HomeActionAndAssert {
     $Steps.Add([pscustomobject]@{ Step = $StepName; Result = 'PASS'; Detail = $screenDump.Path })
 
     Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'keyevent', 'KEYCODE_BACK') | Out-Null
-    $homeAgain = Wait-UiContainsAll -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-smoke-$Timestamp-after-$safeStepName" -Needles @('홈') -StepName "$StepName 이후 홈 복귀" -TimeoutSeconds 15
+    # 상세 화면의 큰 MAUI 시각 트리를 제거하는 동안 두 번째 터치 입력을 연속으로
+    # 보내면 저사양 기기에서 입력 ANR을 유발할 수 있다. 먼저 뒤로 가기 완료를
+    # 기다리고, 실제 홈 복귀가 되지 않았을 때만 하단 홈 탭을 보조 경로로 사용한다.
+    $homeAgain = Wait-UiContainsAll `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-smoke-$Timestamp-after-$safeStepName-back" `
+        -Needles @('홈', '판매 작성', '구매 작성', '수금/지급') `
+        -StepName "$StepName 이후 뒤로 가기 홈 복귀" `
+        -TimeoutSeconds 15 `
+        -AllowTimeout
+    if ($homeAgain) {
+        return $homeAgain.Content
+    }
+
+    Tap-BottomTab -AdbPath $AdbPath -DeviceId $DeviceId -Screen $Screen -XRatio 0.10
+    $homeAgain = Wait-UiContainsAll `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-smoke-$Timestamp-after-$safeStepName" `
+        -Needles @('홈', '판매 작성', '구매 작성', '수금/지급') `
+        -StepName "$StepName 이후 홈 복귀" `
+        -TimeoutSeconds 30
     return $homeAgain.Content
 }
 
@@ -1094,17 +1336,59 @@ if ($ExerciseSyncNow -or -not [string]::IsNullOrWhiteSpace($ExerciseMasterDataNo
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $resolvedAdb = Resolve-AdbPath -RequestedPath $AdbPath
 $resolvedApk = Resolve-ApkPath -ProjectRoot $ProjectRoot -RequestedPath $ApkPath
+$resolvedApkAnalyzer = ''
+$resolvedAnalyzerJavaHome = ''
+$candidateApkMetadata = $null
+if ($RequireUpdateInPlace) {
+    $resolvedApkAnalyzer = Resolve-ApkAnalyzerPath `
+        -ProjectRoot $ProjectRoot `
+        -RequestedPath $ApkAnalyzerPath
+    $resolvedAnalyzerJavaHome = Resolve-JavaHomeForApkAnalyzer `
+        -RequestedPath $JavaSdkDirectory
+    $candidateApkMetadata = Get-ApkManifestMetadata `
+        -ApkAnalyzerPath $resolvedApkAnalyzer `
+        -ApkPath $resolvedApk `
+        -JavaHome $resolvedAnalyzerJavaHome
+    if (-not [string]::Equals(
+            $candidateApkMetadata.ApplicationId,
+            $PackageName,
+            [System.StringComparison]::Ordinal)) {
+        throw "APK applicationId가 검증 대상 패키지와 다릅니다. expected=$PackageName actual=$($candidateApkMetadata.ApplicationId)"
+    }
+}
 $deviceId = Get-ConnectedDeviceId -AdbPath $resolvedAdb
 $screen = Get-ScreenSize -AdbPath $resolvedAdb -DeviceId $deviceId
 
 $steps = New-Object System.Collections.Generic.List[object]
 $freshInstall = $false
+$installedVersionCodeBefore = $null
+$installedVersionCodeAfter = $null
 
 if (-not $SkipInstall) {
     if ($RequireUpdateInPlace) {
         Assert-MobilePackageInstalled -AdbPath $resolvedAdb -DeviceId $deviceId -PackageName $PackageName
+        $installedVersionCodeBefore = Get-InstalledMobileVersionCode `
+            -AdbPath $resolvedAdb `
+            -DeviceId $deviceId `
+            -PackageName $PackageName
+        if ($candidateApkMetadata.VersionCode -le $installedVersionCodeBefore) {
+            throw "Android update-in-place 후보 versionCode는 기존 설치본보다 커야 합니다. candidate=$($candidateApkMetadata.VersionCode) installed=$installedVersionCodeBefore"
+        }
+
         Install-MobileApk -AdbPath $resolvedAdb -DeviceId $deviceId -ApkPath $resolvedApk -PackageName $PackageName -RequireUpdateInPlace
-        $steps.Add([pscustomobject]@{ Step = 'update-in-place'; Result = 'PASS'; Detail = $resolvedApk })
+        $installedVersionCodeAfter = Get-InstalledMobileVersionCode `
+            -AdbPath $resolvedAdb `
+            -DeviceId $deviceId `
+            -PackageName $PackageName
+        if ($installedVersionCodeAfter -ne $candidateApkMetadata.VersionCode) {
+            throw "Android update-in-place 설치 후 versionCode가 후보 APK와 일치하지 않습니다. candidate=$($candidateApkMetadata.VersionCode) installed=$installedVersionCodeAfter"
+        }
+
+        $steps.Add([pscustomobject]@{
+            Step = 'update-in-place'
+            Result = 'PASS'
+            Detail = "applicationId=$($candidateApkMetadata.ApplicationId); versionCode=$installedVersionCodeBefore->$installedVersionCodeAfter"
+        })
     }
     else {
         Install-MobileApk -AdbPath $resolvedAdb -DeviceId $deviceId -ApkPath $resolvedApk -PackageName $PackageName
@@ -1113,6 +1397,28 @@ if (-not $SkipInstall) {
         $steps.Add([pscustomobject]@{ Step = 'app-data-clear'; Result = 'PASS'; Detail = $PackageName })
         $freshInstall = $true
     }
+}
+
+# 이전 실행에서 이미 떠 있던 시스템 ANR 대화상자는 새 측정을 시작하기 전에만
+# 명시적으로 닫는다. 이후 앱 시작·화면 이동 중 새로 나타나는 대상 앱 ANR은
+# Dismiss-AndroidAnrDialog가 예외로 처리하므로 실제 회귀를 숨기지 않는다.
+$preflightDump = Get-UiDump `
+    -AdbPath $resolvedAdb `
+    -DeviceId $deviceId `
+    -EvidenceDirectory $EvidenceDirectory `
+    -Name "mobile-smoke-$timestamp-preflight-system-dialog"
+if ($preflightDump.Content.Contains("isn't responding")) {
+    Dismiss-AndroidAnrDialog `
+        -AdbPath $resolvedAdb `
+        -DeviceId $deviceId `
+        -Content $preflightDump.Content `
+        -AllowTargetAppRecovery | Out-Null
+    Start-Sleep -Seconds 3
+    $steps.Add([pscustomobject]@{
+        Step = 'pre-existing-anr-dialog'
+        Result = 'RECOVERED'
+        Detail = $preflightDump.Path
+    })
 }
 
 # Android 런처를 강제로 종료하면 일부 에뮬레이터에서 포커스 윈도우가 사라져
@@ -1197,6 +1503,7 @@ $currentHomeContent = Open-HomeActionAndAssert `
     -DeviceId $deviceId `
     -EvidenceDirectory $EvidenceDirectory `
     -Timestamp $timestamp `
+    -Screen $screen `
     -HomeContent $homeDump.Content `
     -ButtonText '렌탈 조회' `
     -StepName 'rentals-readonly' `
@@ -1209,6 +1516,7 @@ if ($IncludeDraftScreens) {
         -DeviceId $deviceId `
         -EvidenceDirectory $EvidenceDirectory `
         -Timestamp $timestamp `
+        -Screen $screen `
         -HomeContent $currentHomeContent `
         -ButtonText '판매 작성' `
         -StepName 'sales-draft' `
@@ -1220,6 +1528,7 @@ if ($IncludeDraftScreens) {
         -DeviceId $deviceId `
         -EvidenceDirectory $EvidenceDirectory `
         -Timestamp $timestamp `
+        -Screen $screen `
         -HomeContent $currentHomeContent `
         -ButtonText '구매 작성' `
         -StepName 'purchase-draft' `
@@ -1231,6 +1540,7 @@ if ($IncludeDraftScreens) {
         -DeviceId $deviceId `
         -EvidenceDirectory $EvidenceDirectory `
         -Timestamp $timestamp `
+        -Screen $screen `
         -HomeContent $currentHomeContent `
         -ButtonText '수금/지급' `
         -StepName 'payment-draft' `
@@ -1314,6 +1624,10 @@ $result = [pscustomobject]@{
     DeviceId = $deviceId
     ApkPath = $resolvedApk
     RequireUpdateInPlace = [bool]$RequireUpdateInPlace
+    CandidateApplicationId = if ($null -ne $candidateApkMetadata) { $candidateApkMetadata.ApplicationId } else { '' }
+    CandidateVersionCode = if ($null -ne $candidateApkMetadata) { $candidateApkMetadata.VersionCode } else { $null }
+    InstalledVersionCodeBefore = $installedVersionCodeBefore
+    InstalledVersionCodeAfter = $installedVersionCodeAfter
     ExerciseSyncNow = [bool]$ExerciseSyncNow
     ExerciseMasterDataNonRetryableSaveFaultStatus = $ExerciseMasterDataNonRetryableSaveFaultStatus
     Result = 'PASS'
@@ -1332,6 +1646,10 @@ $mdLines = @(
     "- 패키지: $PackageName",
     "- APK: $resolvedApk",
     "- 기존 설치본 덮어쓰기 검증: $([bool]$RequireUpdateInPlace)",
+    "- 후보 applicationId: $($result.CandidateApplicationId)",
+    "- 후보 versionCode: $($result.CandidateVersionCode)",
+    "- 설치 전 versionCode: $($result.InstalledVersionCodeBefore)",
+    "- 설치 후 versionCode: $($result.InstalledVersionCodeAfter)",
     "- 수동 동기화 실행: $([bool]$ExerciseSyncNow)",
     "- 거래처/품목 비재시도성 저장 실패 검증: $ExerciseMasterDataNonRetryableSaveFaultStatus",
     "- 결과: PASS",

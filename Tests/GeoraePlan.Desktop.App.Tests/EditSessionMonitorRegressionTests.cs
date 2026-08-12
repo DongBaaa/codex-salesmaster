@@ -44,6 +44,32 @@ public sealed class EditSessionMonitorRegressionTests
         Assert.Contains("_hasRegisteredSession = false;", source, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void InventoryEditor_TracksFilteredExistingDraftAndOfflineLocalSubject()
+    {
+        var root = FindRepositoryRoot();
+        var inventoryWindowSource = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "InventoryWindow.xaml.cs"));
+        var monitorSource = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Services",
+            "EntityEditSessionMonitor.cs"));
+
+        Assert.Contains("selected?.Id ?? (!vm.IsNew ? vm.EditId : Guid.Empty)", inventoryWindowSource, StringComparison.Ordinal);
+        Assert.Contains("nameof(InventoryViewModel.IsNew)", inventoryWindowSource, StringComparison.Ordinal);
+        Assert.Contains("nameof(InventoryViewModel.EditId)", inventoryWindowSource, StringComparison.Ordinal);
+
+        var refreshIndex = monitorSource.IndexOf("RefreshSubject();", StringComparison.Ordinal);
+        var offlineGuardIndex = monitorSource.IndexOf("if (!_session.IsLoggedIn || _session.IsOfflineMode)", StringComparison.Ordinal);
+        Assert.True(refreshIndex >= 0 && offlineGuardIndex > refreshIndex);
+    }
+
     private static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

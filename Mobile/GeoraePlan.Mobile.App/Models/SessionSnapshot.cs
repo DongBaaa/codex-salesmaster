@@ -24,6 +24,7 @@ public sealed class SessionSnapshot
     public string Role { get; init; } = string.Empty;
     public string TenantCode { get; init; } = string.Empty;
     public string OfficeCode { get; init; } = string.Empty;
+    public string SessionGeneration { get; init; } = string.Empty;
     public string ScopeType { get; init; } = string.Empty;
     public IReadOnlyList<string> Permissions { get; init; } = Array.Empty<string>();
     public DateTime? ExpiresAtUtc { get; init; }

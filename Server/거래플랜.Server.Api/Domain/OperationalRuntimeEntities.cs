@@ -2,6 +2,12 @@
 
 namespace 거래플랜.Server.Api.Domain;
 
+public sealed class SyncRevisionState
+{
+    public int Id { get; set; } = 1;
+    public long CurrentRevision { get; set; }
+}
+
 public sealed class ProcessedSyncMutation
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -69,4 +75,3 @@ public sealed class ActiveEditSession
     public DateTime LastHeartbeatUtc { get; set; } = DateTime.UtcNow;
     public DateTime ExpiresAtUtc { get; set; } = DateTime.UtcNow.AddMinutes(2);
 }
-

@@ -11,8 +11,9 @@ public sealed class CustomerEditPage : ContentPage
     private readonly GeoraePlanApiClient _api;
     private readonly SessionStore _sessionStore;
     private readonly SyncCoordinator _syncCoordinator;
+    private readonly CustomerContractCacheStore _cacheStore;
     private CustomerDto? _source;
-    private readonly Func<CustomerDto?, Task> _afterSaved;
+    private readonly Func<CustomerDto?, CacheOwnerSession, Task> _afterSaved;
 
     private readonly Entry _nameEntry;
     private readonly Entry _phoneEntry;
@@ -26,11 +27,15 @@ public sealed class CustomerEditPage : ContentPage
     private readonly Label _statusLabel;
     private bool _isBusy;
 
-    public CustomerEditPage(CustomerDto? customer, Func<CustomerDto?, Task> afterSaved)
+    public CustomerEditPage(
+        CustomerDto? customer,
+        Func<CustomerDto?, CacheOwnerSession, Task> afterSaved)
     {
         _api = ServiceHelper.GetRequiredService<GeoraePlanApiClient>();
         _sessionStore = ServiceHelper.GetRequiredService<SessionStore>();
         _syncCoordinator = ServiceHelper.GetRequiredService<SyncCoordinator>();
+        _cacheStore =
+            ServiceHelper.GetRequiredService<CustomerContractCacheStore>();
         _source = customer;
         _afterSaved = afterSaved;
 
@@ -147,6 +152,7 @@ public sealed class CustomerEditPage : ContentPage
         if (_isBusy)
             return;
 
+        var apiOwner = _sessionStore.CaptureOwner();
         if (!_sessionStore.GetSnapshot().CanEditCustomers)
         {
             _statusLabel.Text = "권한이 없어 거래처를 저장할 수 없습니다.";
@@ -168,11 +174,19 @@ public sealed class CustomerEditPage : ContentPage
             return;
         }
 
+        var requestOwnerSession =
+            _cacheStore.CaptureOwnerSession();
         CustomerDto? dto = null;
         try
         {
             _isBusy = true;
             _statusLabel.Text = "거래처를 저장하고 있습니다.";
+            ThrowIfOwnerPairChanged(
+                requestOwnerSession,
+                apiOwner);
+            _cacheStore.ThrowIfOwnerSessionStale(
+                requestOwnerSession);
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
 
             dto = BuildDto(name, tenantCode, officeCode);
             if (!MobileSessionScopeFilter.CanAccessCustomer(_sessionStore.GetSnapshot(), dto))
@@ -183,24 +197,44 @@ public sealed class CustomerEditPage : ContentPage
             }
 
             var saved = _source is null
-                ? await _api.CreateCustomerAsync(dto)
-                : await _api.UpdateCustomerAsync(dto);
+                ? await _api.CreateCustomerAsync(dto, apiOwner)
+                : await _api.UpdateCustomerAsync(dto, apiOwner);
             saved = EnsureSavedResult(saved, "거래처 저장");
 
             _statusLabel.Text = "거래처 저장 완료";
-            await _afterSaved(saved);
-            await CloseAsync();
+            await InvokeAfterSavedAsync(
+                saved,
+                requestOwnerSession,
+                apiOwner);
+            await CloseAsync(apiOwner);
         }
         catch (HttpRequestException ex) when (IsConcurrencyConflict(ex) && _source is not null)
         {
-            await HandleConcurrencyConflictAsync("거래처 저장");
+            await HandleConcurrencyConflictAsync(
+                "거래처 저장",
+                requestOwnerSession,
+                apiOwner);
         }
         catch (Exception ex) when (dto is not null && MobileRetryableNetworkFailure.IsRetryable(ex))
         {
-            await QueuePendingSaveAsync(dto, ex);
+            await QueuePendingSaveAsync(
+                dto,
+                ex,
+                requestOwnerSession,
+                apiOwner);
+        }
+        catch (StaleCacheOwnerSessionException)
+        {
+            throw;
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
+            _cacheStore.ThrowIfOwnerSessionStale(
+                requestOwnerSession);
             _statusLabel.Text = $"거래처 저장 실패: {ex.Message}";
             await DisplayAlert("거래처 저장 실패", ex.Message, "확인");
         }
@@ -219,6 +253,7 @@ public sealed class CustomerEditPage : ContentPage
         if (_isBusy || _source is null)
             return;
 
+        var apiOwner = _sessionStore.CaptureOwner();
         if (!_sessionStore.GetSnapshot().CanEditCustomers)
         {
             _statusLabel.Text = "권한이 없어 거래처를 삭제할 수 없습니다.";
@@ -237,24 +272,55 @@ public sealed class CustomerEditPage : ContentPage
         if (!confirm)
             return;
 
+        var requestOwnerSession =
+            _cacheStore.CaptureOwnerSession();
         try
         {
             _isBusy = true;
             _statusLabel.Text = "거래처를 삭제하고 있습니다.";
-            await _api.DeleteCustomerAsync(_source.Id, _source.Revision);
-            await _afterSaved(null);
-            await CloseAsync();
+            ThrowIfOwnerPairChanged(
+                requestOwnerSession,
+                apiOwner);
+            _cacheStore.ThrowIfOwnerSessionStale(
+                requestOwnerSession);
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
+            await _api.DeleteCustomerAsync(
+                _source.Id,
+                _source.Revision,
+                apiOwner);
+            await InvokeAfterSavedAsync(
+                null,
+                requestOwnerSession,
+                apiOwner);
+            await CloseAsync(apiOwner);
         }
         catch (HttpRequestException ex) when (IsConcurrencyConflict(ex) && _source is not null)
         {
-            await HandleConcurrencyConflictAsync("거래처 삭제");
+            await HandleConcurrencyConflictAsync(
+                "거래처 삭제",
+                requestOwnerSession,
+                apiOwner);
         }
         catch (Exception ex) when (MobileRetryableNetworkFailure.IsRetryable(ex) && _source is not null)
         {
-            await QueuePendingDeleteAsync(_source, ex);
+            await QueuePendingDeleteAsync(
+                _source,
+                ex,
+                requestOwnerSession,
+                apiOwner);
+        }
+        catch (StaleCacheOwnerSessionException)
+        {
+            throw;
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
+            _cacheStore.ThrowIfOwnerSessionStale(
+                requestOwnerSession);
             _statusLabel.Text = $"거래처 삭제 실패: {ex.Message}";
             await DisplayAlert("거래처 삭제 실패", ex.Message, "확인");
         }
@@ -264,19 +330,51 @@ public sealed class CustomerEditPage : ContentPage
         }
     }
 
-    private async Task QueuePendingSaveAsync(CustomerDto dto, Exception ex)
+    private async Task QueuePendingSaveAsync(
+        CustomerDto dto,
+        Exception ex,
+        CacheOwnerSession requestOwnerSession,
+        MobileSessionOwner apiOwner)
     {
         var reason = MobileRetryableNetworkFailure.ToPendingSyncMessage(ex);
         try
         {
-            var state = await _syncCoordinator.QueueCustomerDraftAsync(dto, reason);
+            _cacheStore.ThrowIfOwnerSessionStale(
+                requestOwnerSession);
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
+            var state = await _syncCoordinator.QueueCustomerDraftAsync(
+                dto,
+                apiOwner,
+                reason);
+            _cacheStore.ThrowIfOwnerSessionStale(
+                requestOwnerSession);
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
             _statusLabel.Text = $"거래처 저장 완료(동기화 대기 {state.PendingCustomerCount:N0}건)";
             await DisplayAlert(
                 "거래처 저장 대기",
                 $"네트워크/서버 응답 지연으로 거래처를 기기에 먼저 저장했습니다.\n동기화 화면에서 저장 대기 거래처 {state.PendingCustomerCount:N0}건을 확인할 수 있으며, 연결 복구 후 자동으로 서버에 반영됩니다.",
                 "확인");
-            await CloseAsync();
-            MobileErrorHandler.FireAndForget(() => _afterSaved(dto), "거래처 저장 후 목록 새로고침");
+            _cacheStore.ThrowIfOwnerSessionStale(
+                requestOwnerSession);
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
+            await CloseAsync(apiOwner);
+            _cacheStore.ThrowIfOwnerSessionStale(
+                requestOwnerSession);
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
+            MobileErrorHandler.FireAndForget(
+                () => InvokeAfterSavedAsync(
+                    dto,
+                    requestOwnerSession,
+                    apiOwner),
+                "거래처 저장 후 목록 새로고침");
+        }
+        catch (StaleCacheOwnerSessionException)
+        {
+            throw;
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            throw;
         }
         catch (Exception queueEx)
         {
@@ -285,20 +383,52 @@ public sealed class CustomerEditPage : ContentPage
         }
     }
 
-    private async Task QueuePendingDeleteAsync(CustomerDto source, Exception ex)
+    private async Task QueuePendingDeleteAsync(
+        CustomerDto source,
+        Exception ex,
+        CacheOwnerSession requestOwnerSession,
+        MobileSessionOwner apiOwner)
     {
         var dto = BuildDeletedDto(source);
         var reason = MobileRetryableNetworkFailure.ToPendingSyncMessage(ex);
         try
         {
-            var state = await _syncCoordinator.QueueCustomerDraftAsync(dto, reason);
+            _cacheStore.ThrowIfOwnerSessionStale(
+                requestOwnerSession);
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
+            var state = await _syncCoordinator.QueueCustomerDraftAsync(
+                dto,
+                apiOwner,
+                reason);
+            _cacheStore.ThrowIfOwnerSessionStale(
+                requestOwnerSession);
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
             _statusLabel.Text = $"거래처 삭제 완료(동기화 대기 {state.PendingCustomerCount:N0}건)";
             await DisplayAlert(
                 "거래처 삭제 대기",
                 $"네트워크/서버 응답 지연으로 삭제 요청을 기기에 먼저 저장했습니다.\n동기화 화면에서 저장 대기 거래처 {state.PendingCustomerCount:N0}건을 확인할 수 있으며, 연결 복구 후 자동으로 서버에 반영됩니다.",
                 "확인");
-            await CloseAsync();
-            MobileErrorHandler.FireAndForget(() => _afterSaved(dto), "거래처 삭제 후 목록 새로고침");
+            _cacheStore.ThrowIfOwnerSessionStale(
+                requestOwnerSession);
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
+            await CloseAsync(apiOwner);
+            _cacheStore.ThrowIfOwnerSessionStale(
+                requestOwnerSession);
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
+            MobileErrorHandler.FireAndForget(
+                () => InvokeAfterSavedAsync(
+                    dto,
+                    requestOwnerSession,
+                    apiOwner),
+                "거래처 삭제 후 목록 새로고침");
+        }
+        catch (StaleCacheOwnerSessionException)
+        {
+            throw;
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            throw;
         }
         catch (Exception queueEx)
         {
@@ -323,17 +453,29 @@ public sealed class CustomerEditPage : ContentPage
         return false;
     }
 
-    private async Task HandleConcurrencyConflictAsync(string actionName)
+    private async Task HandleConcurrencyConflictAsync(
+        string actionName,
+        CacheOwnerSession requestOwnerSession,
+        MobileSessionOwner apiOwner)
     {
         var source = _source;
         if (source is null)
             return;
 
+        _cacheStore.ThrowIfOwnerSessionStale(
+            requestOwnerSession);
         _statusLabel.Text = "다른 PC/모바일에서 먼저 수정되어 최신값을 다시 확인하고 있습니다.";
 
         try
         {
-            var latest = await _api.GetCustomerByIdAsync(source.Id);
+            _cacheStore.ThrowIfOwnerSessionStale(
+                requestOwnerSession);
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
+            var latest = await _api.GetCustomerByIdAsync(
+                source.Id,
+                apiOwner);
+            _cacheStore.ThrowIfOwnerSessionStale(
+                requestOwnerSession);
             if (latest is null || latest.IsDeleted)
             {
                 _statusLabel.Text = "다른 PC/모바일에서 해당 거래처가 먼저 삭제되었습니다.";
@@ -341,8 +483,14 @@ public sealed class CustomerEditPage : ContentPage
                     "동시 수정 충돌",
                     "다른 PC/모바일에서 해당 거래처가 먼저 삭제되었습니다. 목록을 새로고침합니다.",
                     "확인");
-                await _afterSaved(null);
-                await CloseAsync();
+                _cacheStore.ThrowIfOwnerSessionStale(
+                    requestOwnerSession);
+                _sessionStore.ThrowIfOwnerChanged(apiOwner);
+                await InvokeAfterSavedAsync(
+                    null,
+                    requestOwnerSession,
+                    apiOwner);
+                await CloseAsync(apiOwner);
                 return;
             }
 
@@ -353,6 +501,17 @@ public sealed class CustomerEditPage : ContentPage
                 "동시 수정 충돌",
                 $"{actionName} 중 다른 PC/모바일에서 먼저 저장된 최신 내용이 확인되었습니다.\n\n최신값을 화면에 다시 불러왔으니 내용을 확인한 뒤 다시 저장해 주세요.",
                 "확인");
+            _cacheStore.ThrowIfOwnerSessionStale(
+                requestOwnerSession);
+            _sessionStore.ThrowIfOwnerChanged(apiOwner);
+        }
+        catch (StaleCacheOwnerSessionException)
+        {
+            throw;
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            throw;
         }
         catch (Exception refreshEx)
         {
@@ -470,6 +629,40 @@ public sealed class CustomerEditPage : ContentPage
 
     private static bool IsConcurrencyConflict(HttpRequestException ex)
         => ex.StatusCode == HttpStatusCode.Conflict;
+
+    private static void ThrowIfOwnerPairChanged(
+        CacheOwnerSession cacheOwner,
+        MobileSessionOwner apiOwner)
+    {
+        if (!cacheOwner.HasSameOwnerAndSession(apiOwner))
+        {
+            throw new StaleCacheOwnerSessionException(
+                "The customer cache and API owner snapshots do not match.");
+        }
+    }
+
+    private async Task InvokeAfterSavedAsync(
+        CustomerDto? saved,
+        CacheOwnerSession requestOwnerSession,
+        MobileSessionOwner apiOwner)
+    {
+        _cacheStore.ThrowIfOwnerSessionStale(
+            requestOwnerSession);
+        _sessionStore.ThrowIfOwnerChanged(apiOwner);
+        await _afterSaved(
+            saved,
+            requestOwnerSession);
+        _cacheStore.ThrowIfOwnerSessionStale(
+            requestOwnerSession);
+        _sessionStore.ThrowIfOwnerChanged(apiOwner);
+    }
+
+    private Task CloseAsync(
+        MobileSessionOwner apiOwner)
+    {
+        _sessionStore.ThrowIfOwnerChanged(apiOwner);
+        return Navigation.PopModalAsync();
+    }
 
     private Task CloseAsync()
         => Navigation.PopModalAsync();

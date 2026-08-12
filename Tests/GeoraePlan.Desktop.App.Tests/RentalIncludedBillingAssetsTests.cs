@@ -57,6 +57,344 @@ public sealed class RentalIncludedBillingAssetsTests
     }
 
     [Fact]
+    public async Task SaveBillingProfileAsync_RejectsExistingMissingIncludedAsset_WhenOnlyProfileEditIsAllowed()
+    {
+        PrepareAppRoot("georaeplan-rental-included-assets-stale-profile-only");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.Parse("f2250000-1111-4444-8888-000000000001");
+            var missingAssetId = Guid.Parse("f2250000-1111-4444-8888-0000000000a1");
+            var templateItems = new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    DisplayItemName = "Stale Included Asset",
+                    BillingLineMode = "\uBB36\uC74C",
+                    Quantity = 1m,
+                    UnitPrice = 100_000m,
+                    Amount = 100_000m,
+                    IncludedAssetIds = [missingAssetId]
+                }
+            };
+            db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Stale Asset Customer",
+                ItemName = "Stale Included Asset",
+                BillingType = "\uBB36\uC74C",
+                BillingAdvanceMode = "\uC120\uBD88",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                MonthlyAmount = 100_000m,
+                BillingTemplateJson = JsonSerializer.Serialize(templateItems),
+                IsActive = true,
+                IsDeleted = false,
+                IsDirty = false
+            });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            var editedProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(profile => profile.Id == profileId);
+            editedProfile.BillingDay = 26;
+
+            var result = await new RentalStateService(db).SaveBillingProfileAsync(
+                editedProfile,
+                CreateUserSession(AppPermissionNames.RentalProfileEdit));
+
+            Assert.False(result.Success);
+            Assert.Contains("\uB354 \uC774\uC0C1 \uC874\uC7AC\uD558\uC9C0 \uC54A\uB294", result.Message, StringComparison.Ordinal);
+            var persistedProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(profile => profile.Id == profileId);
+            Assert.Equal(25, persistedProfile.BillingDay);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SaveBillingProfileAsync_RejectsDeletedIncludedAsset()
+    {
+        PrepareAppRoot("georaeplan-rental-included-assets-deleted");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var asset = CreateRentalAsset("Deleted Asset Customer", "DEL-001", billingProfileId: null);
+            asset.IsDeleted = true;
+            db.RentalAssets.Add(asset);
+            await db.SaveChangesAsync();
+
+            var profile = CreateBillingProfileWithIncludedAsset(
+                Guid.Parse("f2260000-1111-4444-8888-000000000001"),
+                asset.Id,
+                "Deleted Asset Customer");
+            var result = await new RentalStateService(db).SaveBillingProfileAsync(profile, CreateAdminSession());
+
+            Assert.False(result.Success);
+            Assert.Contains("\uC0AD\uC81C\uB418\uC5C8\uAC70\uB098", result.Message, StringComparison.Ordinal);
+            Assert.Empty(await db.RentalBillingProfiles.IgnoreQueryFilters().ToListAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task SaveBillingProfileAsync_AllowsActiveCrossTenantReferenceOnlyWithoutRelinkingAsset()
+    {
+        PrepareAppRoot("georaeplan-rental-included-assets-cross-tenant-reference");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var asset = CreateRentalAsset("External Tenant Customer", "EXT-001", billingProfileId: null);
+            asset.TenantCode = TenantScopeCatalog.Itworld;
+            asset.OfficeCode = OfficeCodeCatalog.Itworld;
+            asset.ResponsibleOfficeCode = OfficeCodeCatalog.Itworld;
+            asset.ManagementCompanyCode = OfficeCodeCatalog.Itworld;
+            db.RentalAssets.Add(asset);
+            await db.SaveChangesAsync();
+
+            var profileId = Guid.Parse("f2270000-1111-4444-8888-000000000001");
+            var profile = CreateBillingProfileWithIncludedAsset(
+                profileId,
+                asset.Id,
+                "Usenet Billing Customer");
+            var result = await new RentalStateService(db).SaveBillingProfileAsync(profile, CreateAdminSession());
+
+            Assert.True(result.Success, result.Message);
+            var persistedProfile = await db.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == profileId);
+            var persistedItem = Assert.Single(new RentalStateService(db).GetBillingTemplateItems(persistedProfile));
+            Assert.Equal([asset.Id], persistedItem.IncludedAssetIds);
+
+            var persistedAsset = await db.RentalAssets
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == asset.Id);
+            Assert.Null(persistedAsset.BillingProfileId);
+            Assert.Equal(TenantScopeCatalog.Itworld, persistedAsset.TenantCode);
+            Assert.Equal(OfficeCodeCatalog.Itworld, persistedAsset.ResponsibleOfficeCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SaveBillingProfileAsync_RejectsDuplicateIncludedAssetReferenceWithoutChanges(
+        bool acrossMultipleLines)
+    {
+        PrepareAppRoot($"georaeplan-rental-included-assets-duplicate-{acrossMultipleLines}");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var asset = CreateRentalAsset("Duplicate Asset Customer", "DUP-001", billingProfileId: null);
+            asset.IsDirty = false;
+            db.RentalAssets.Add(asset);
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            var profileId = Guid.Parse("f2280000-1111-4444-8888-000000000001");
+            var profile = CreateBillingProfileWithIncludedAsset(
+                profileId,
+                asset.Id,
+                "Duplicate Asset Customer");
+            profile.BillingTemplateJson = JsonSerializer.Serialize(
+                acrossMultipleLines
+                    ? new List<RentalBillingTemplateItemModel>
+                    {
+                        new()
+                        {
+                            DisplayItemName = "First Duplicate Line",
+                            BillingLineMode = "\uBB36\uC74C",
+                            Quantity = 1m,
+                            UnitPrice = 50_000m,
+                            Amount = 50_000m,
+                            IncludedAssetIds = [asset.Id]
+                        },
+                        new()
+                        {
+                            DisplayItemName = "Second Duplicate Line",
+                            BillingLineMode = "\uBB36\uC74C",
+                            Quantity = 1m,
+                            UnitPrice = 50_000m,
+                            Amount = 50_000m,
+                            IncludedAssetIds = [asset.Id]
+                        }
+                    }
+                    :
+                    [
+                        new RentalBillingTemplateItemModel
+                        {
+                            DisplayItemName = "Same Line Duplicate",
+                            BillingLineMode = "\uBB36\uC74C",
+                            Quantity = 1m,
+                            UnitPrice = 100_000m,
+                            Amount = 100_000m,
+                            IncludedAssetIds = [asset.Id, asset.Id]
+                        }
+                    ]);
+
+            var result = await new RentalStateService(db).SaveBillingProfileAsync(profile, CreateAdminSession());
+
+            Assert.False(result.Success);
+            Assert.Contains("\uC911\uBCF5", result.Message, StringComparison.Ordinal);
+            Assert.False(await db.RentalBillingProfiles.IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == profileId));
+            var unchangedAsset = await db.RentalAssets.IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == asset.Id);
+            Assert.False(unchangedAsset.IsDirty);
+            Assert.Null(unchangedAsset.BillingProfileId);
+            Assert.Empty(await db.SyncOutboxEntries.AsNoTracking().ToListAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SaveBillingProfileAsync_RejectsMalformedOrDuplicatePropertyTemplateWithoutChanges(
+        bool duplicateProperty)
+    {
+        PrepareAppRoot($"georaeplan-rental-included-assets-invalid-template-{duplicateProperty}");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var asset = CreateRentalAsset("Invalid Template Customer", "INVALID-001", billingProfileId: null);
+            asset.IsDirty = false;
+            db.RentalAssets.Add(asset);
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            var profileId = Guid.Parse("f2290000-1111-4444-8888-000000000001");
+            var profile = CreateBillingProfileWithIncludedAsset(
+                profileId,
+                asset.Id,
+                "Invalid Template Customer");
+            profile.BillingTemplateJson = duplicateProperty
+                ? $"[{{\"IncludedAssetIds\":[\"{asset.Id:D}\"],\"includedassetids\":[\"{asset.Id:D}\"]}}]"
+                : $"[{{\"IncludedAssetIds\":[\"{asset.Id:D}\"]";
+
+            var result = await new RentalStateService(db).SaveBillingProfileAsync(profile, CreateAdminSession());
+
+            Assert.False(result.Success);
+            Assert.Contains("JSON", result.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("\uC911\uBCF5", result.Message, StringComparison.Ordinal);
+            Assert.False(await db.RentalBillingProfiles.IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == profileId));
+            var unchangedAsset = await db.RentalAssets.IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == asset.Id);
+            Assert.False(unchangedAsset.IsDirty);
+            Assert.Null(unchangedAsset.BillingProfileId);
+            Assert.Empty(await db.SyncOutboxEntries.AsNoTracking().ToListAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Theory]
+    [InlineData("quantity-object")]
+    [InlineData("amount-string")]
+    [InlineData("display-name-object")]
+    public async Task SaveBillingProfileAsync_RejectsTemplateThatCannotDeserializeToFullModelWithoutChanges(
+        string invalidPropertyKind)
+    {
+        PrepareAppRoot($"georaeplan-rental-included-assets-invalid-model-{invalidPropertyKind}");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var asset = CreateRentalAsset("Invalid Model Customer", "INVALID-MODEL-001", billingProfileId: null);
+            asset.IsDirty = false;
+            db.RentalAssets.Add(asset);
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            var profileId = Guid.Parse("f2290000-1111-4444-8888-000000000002");
+            var profile = CreateBillingProfileWithIncludedAsset(
+                profileId,
+                asset.Id,
+                "Invalid Model Customer");
+            profile.BillingTemplateJson = invalidPropertyKind switch
+            {
+                "quantity-object" => $"[{{\"Quantity\":{{}},\"IncludedAssetIds\":[\"{asset.Id:D}\"]}}]",
+                "amount-string" => $"[{{\"Amount\":\"not-a-number\",\"IncludedAssetIds\":[\"{asset.Id:D}\"]}}]",
+                _ => $"[{{\"DisplayItemName\":{{}},\"IncludedAssetIds\":[\"{asset.Id:D}\"]}}]"
+            };
+
+            var result = await new RentalStateService(db).SaveBillingProfileAsync(profile, CreateAdminSession());
+
+            Assert.False(result.Success);
+            Assert.Contains("JSON", result.Message, StringComparison.Ordinal);
+            Assert.False(await db.RentalBillingProfiles.IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == profileId));
+            var unchangedAsset = await db.RentalAssets.IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == asset.Id);
+            Assert.False(unchangedAsset.IsDirty);
+            Assert.Null(unchangedAsset.BillingProfileId);
+            Assert.Empty(await db.SyncOutboxEntries.AsNoTracking().ToListAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task SaveBillingProfileAsync_BatchesManyIncludedAssetReferencesForLinkSync()
     {
         PrepareAppRoot("georaeplan-rental-included-assets-save-batch");
@@ -288,7 +626,12 @@ public sealed class RentalIncludedBillingAssetsTests
                 })
             };
 
-            var result = await new RentalStateService(db).SaveBillingProfileAsync(
+            var service = new RentalStateService(db);
+            RentalStateChangedEventArgs? stateChanged = null;
+            var changeOrigin = new object();
+            service.StateChanged += (_, args) => stateChanged = args;
+
+            var result = await service.SaveBillingProfileAsync(
                 profile,
                 CreateAdminSession(),
                 [
@@ -312,7 +655,8 @@ public sealed class RentalIncludedBillingAssetsTests
                         MonthlyFee = 123_456m,
                         Notes = "internal only"
                     }
-                ]);
+                ],
+                changeOrigin: changeOrigin);
 
             Assert.True(result.Success, result.Message);
 
@@ -335,6 +679,11 @@ public sealed class RentalIncludedBillingAssetsTests
             Assert.Equal("토너", internalOnlyAsset.FreeSupplyItems);
             Assert.Equal("용지", internalOnlyAsset.PaidSupplyItems);
             Assert.Equal(123_456m, internalOnlyAsset.MonthlyFee);
+            Assert.NotNull(stateChanged);
+            Assert.Same(changeOrigin, stateChanged!.Origin);
+            Assert.Contains(profileId, stateChanged.BillingProfileIds);
+            Assert.Contains(selectedAssetId, stateChanged.AssetIds);
+            Assert.Contains(internalOnlyAssetId, stateChanged.AssetIds);
 
             var persistedProfile = await db.RentalBillingProfiles
                 .IgnoreQueryFilters()
@@ -1291,6 +1640,69 @@ public sealed class RentalIncludedBillingAssetsTests
         }
     }
 
+    [Fact]
+    public async Task SaveBillingProfileAsync_RejectsDuplicateAssetCreatedByNaturalKeyMergeWithoutChanges()
+    {
+        PrepareAppRoot("georaeplan-rental-duplicate-profile-merge-overlap");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var assetId = Guid.Parse("f2930000-1111-4444-8888-0000000000a1");
+            db.RentalAssets.Add(CreateRentalAsset(
+                "Duplicate Merge Overlap Customer",
+                "DUP-MERGE-OVERLAP-001",
+                null,
+                assetId));
+            await db.SaveChangesAsync();
+
+            var service = new RentalStateService(db);
+            var existingProfile = CreateBillingProfileWithIncludedAsset(
+                Guid.Parse("f2930000-1111-4444-8888-000000000001"),
+                assetId,
+                "Duplicate Merge Overlap Customer");
+            var existingSave = await service.SaveBillingProfileAsync(existingProfile, CreateAdminSession());
+            Assert.True(existingSave.Success, existingSave.Message);
+
+            db.ChangeTracker.Clear();
+            var storedBefore = await db.RentalBillingProfiles.IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == existingProfile.Id);
+            var templateBefore = storedBefore.BillingTemplateJson;
+            var outboxCountBefore = await db.SyncOutboxEntries.AsNoTracking().CountAsync();
+
+            var incomingProfile = CreateBillingProfileWithIncludedAsset(
+                Guid.Parse("f2930000-1111-4444-8888-000000000002"),
+                assetId,
+                "Duplicate Merge Overlap Customer");
+            var incomingItems = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(
+                incomingProfile.BillingTemplateJson) ?? [];
+            Assert.Single(incomingItems).DisplayItemName = "Different Display Line";
+            incomingProfile.BillingTemplateJson = JsonSerializer.Serialize(incomingItems);
+
+            var incomingSave = await service.SaveBillingProfileAsync(incomingProfile, CreateAdminSession());
+
+            Assert.False(incomingSave.Success);
+            Assert.Contains("\uC911\uBCF5", incomingSave.Message, StringComparison.Ordinal);
+            db.ChangeTracker.Clear();
+            var storedAfter = await db.RentalBillingProfiles.IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == existingProfile.Id);
+            Assert.Equal(templateBefore, storedAfter.BillingTemplateJson);
+            Assert.False(await db.RentalBillingProfiles.IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == Guid.Parse("f2930000-1111-4444-8888-000000000002")));
+            Assert.Equal(outboxCountBefore, await db.SyncOutboxEntries.AsNoTracking().CountAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static void PrepareAppRoot(string prefix)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}");
@@ -1334,6 +1746,38 @@ public sealed class RentalIncludedBillingAssetsTests
         };
     }
 
+    private static LocalRentalBillingProfile CreateBillingProfileWithIncludedAsset(
+        Guid profileId,
+        Guid assetId,
+        string customerName)
+        => new()
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            CustomerName = customerName,
+            ItemName = "Rental Copier Bundle",
+            BillingType = "\uBB36\uC74C",
+            BillingAdvanceMode = "\uC120\uBD88",
+            BillingDay = 25,
+            BillingCycleMonths = 1,
+            MonthlyAmount = 100_000m,
+            BillingTemplateJson = JsonSerializer.Serialize(new List<RentalBillingTemplateItemModel>
+            {
+                new()
+                {
+                    DisplayItemName = "Rental Copier Bundle",
+                    BillingLineMode = "\uBB36\uC74C",
+                    Quantity = 1m,
+                    UnitPrice = 100_000m,
+                    Amount = 100_000m,
+                    IncludedAssetIds = [assetId]
+                }
+            })
+        };
+
     private static SessionState CreateAdminSession()
     {
         var session = new SessionState();
@@ -1344,6 +1788,21 @@ public sealed class RentalIncludedBillingAssetsTests
             TenantCode = TenantScopeCatalog.UsenetGroup,
             OfficeCode = OfficeCodeCatalog.Usenet,
             ScopeType = TenantScopeCatalog.ScopeAdmin
+        });
+        return session;
+    }
+
+    private static SessionState CreateUserSession(params string[] permissions)
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            Username = "user",
+            Role = DomainConstants.RoleUser,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = permissions.ToList()
         });
         return session;
     }

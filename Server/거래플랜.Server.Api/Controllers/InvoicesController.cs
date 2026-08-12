@@ -144,6 +144,18 @@ public sealed class InvoicesController : ControllerBase
             return BadRequest("Referenced customer was not found.");
         if (!_officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode))
             return Forbid();
+        if (ValidateRequestedInvoiceScopeConsistency(dto, customer) is { } requestedScopeError)
+            return requestedScopeError;
+
+        var mutationCheck = await ProcessedSyncMutationRecorder.CheckAsync(
+            _dbContext,
+            dto,
+            nameof(Invoice),
+            cancellationToken);
+        if (mutationCheck.Status == DirectMutationStatus.Conflict)
+            return Conflict(ProcessedSyncMutationRecorder.BuildConflictResponse(mutationCheck));
+        if (mutationCheck.Status == DirectMutationStatus.Duplicate)
+            return await ResolveDuplicateInvoiceAsync(mutationCheck, cancellationToken);
 
         dto.ResponsibleOfficeCode = _officeScopeService.ResolveInvoiceResponsibleScopeForCreate(
             dto.ResponsibleOfficeCode,
@@ -157,13 +169,25 @@ public sealed class InvoicesController : ControllerBase
             dto.OfficeCode,
             customer.TenantCode,
             customer.OfficeCode);
+        if (ValidateRequestedInvoiceScopeConsistency(dto, customer) is { } resolvedScopeError)
+            return resolvedScopeError;
+        if (ValidateAndNormalizeSourceWarehouse(dto) is { } warehouseScopeError)
+            return warehouseScopeError;
         if (await ValidateInvoiceLineItemScopeAsync(dto.Lines, cancellationToken) is { } lineScopeError)
             return lineScopeError;
         if (await ValidateLinkedRentalBillingProfileScopeAsync(dto, cancellationToken) is { } rentalProfileScopeError)
             return rentalProfileScopeError;
+        if (await ValidateLinkedRentalBillingRunWritableAsync(
+                dto.LinkedRentalBillingProfileId,
+                dto.LinkedRentalBillingRunId,
+                cancellationToken) is { } rentalRunError)
+        {
+            return rentalRunError;
+        }
 
-        var entity = new Invoice { Id = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id };
-        dto.Id = entity.Id;
+        var entityId = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id;
+        NormalizeNewInvoiceVersionMetadata(dto, entityId);
+        var entity = new Invoice { Id = entityId };
         entity.Apply(dto);
         if (string.IsNullOrWhiteSpace(entity.InvoiceNumber))
         {
@@ -180,7 +204,7 @@ public sealed class InvoicesController : ControllerBase
             cancellationToken);
 
         _dbContext.Invoices.Add(entity);
-        await ProcessedSyncMutationRecorder.RecordAsync(_dbContext, dto, nameof(Invoice), cancellationToken);
+        ProcessedSyncMutationRecorder.Record(_dbContext, mutationCheck, entity.Id);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await RecalculateRentalSettlementsForInvoiceSaveAsync(null, entity, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -195,6 +219,10 @@ public sealed class InvoicesController : ControllerBase
     {
         if (!_officeScopeService.CanEditInvoices())
             return Forbid();
+        if (dto.Id != Guid.Empty && dto.Id != id)
+            return BadRequest("Invoice route id must match the body id.");
+
+        dto.Id = id;
 
         await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
             _dbContext,
@@ -204,16 +232,39 @@ public sealed class InvoicesController : ControllerBase
         var entity = await _dbContext.Invoices.Include(x => x.Customer).Include(x => x.Lines)
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
-        if (!_officeScopeService.CanWriteOfficeForInvoices(entity.ResponsibleOfficeCode, entity.TenantCode, entity.OfficeCode))
+        if (!CanWriteInvoiceUsingResolvedVersionScope(entity))
             return Forbid();
+
+        var mutationCheck = await ProcessedSyncMutationRecorder.CheckAsync(
+            _dbContext,
+            dto,
+            nameof(Invoice),
+            cancellationToken);
+        if (mutationCheck.Status == DirectMutationStatus.Conflict)
+            return Conflict(ProcessedSyncMutationRecorder.BuildConflictResponse(mutationCheck));
+        if (mutationCheck.Status == DirectMutationStatus.Duplicate)
+            return await ResolveDuplicateInvoiceAsync(mutationCheck, cancellationToken);
+
         if (OptimisticConcurrencyGuard.Check(this, entity, dto, nameof(Invoice)) is { } conflict)
             return conflict;
         if (dto.IsDeleted)
             return SoftDeleteMutationGuard.RejectUpdate("전표");
+        if (ValidateAndNormalizeExistingInvoiceVersionMetadata(entity, dto) is { } versionMetadataError)
+            return versionMetadataError;
         if (await ValidateExistingLinkedRentalBillingProfileScopeAsync(entity.LinkedRentalBillingProfileId, cancellationToken) is { } existingRentalProfileScopeError)
             return existingRentalProfileScopeError;
+        if (await ValidateLinkedRentalBillingRunWritableAsync(
+                entity.LinkedRentalBillingProfileId,
+                entity.LinkedRentalBillingRunId,
+                cancellationToken) is { } existingRentalRunError)
+        {
+            return existingRentalRunError;
+        }
+        if (ValidateWritableInvoiceStockWarehouse(entity) is { } existingWarehouseScopeError)
+            return existingWarehouseScopeError;
+        if (await ValidateInvoiceLineItemScopeAsync(entity.Lines, cancellationToken) is { } existingLineScopeError)
+            return existingLineScopeError;
 
-        var previousStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
         var customer = await _dbContext.Customers
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(x => x.Id == dto.CustomerId, cancellationToken);
@@ -221,6 +272,8 @@ public sealed class InvoicesController : ControllerBase
             return BadRequest("Referenced customer was not found.");
         if (!_officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode))
             return Forbid();
+        if (ValidateRequestedInvoiceScopeConsistency(dto, customer) is { } requestedScopeError)
+            return requestedScopeError;
 
         dto.ResponsibleOfficeCode = _officeScopeService.ResolveInvoiceResponsibleScopeForCreate(
             dto.ResponsibleOfficeCode,
@@ -234,10 +287,21 @@ public sealed class InvoicesController : ControllerBase
             dto.OfficeCode,
             customer.TenantCode,
             customer.OfficeCode);
+        if (ValidateRequestedInvoiceScopeConsistency(dto, customer) is { } resolvedScopeError)
+            return resolvedScopeError;
+        if (ValidateAndNormalizeSourceWarehouse(dto) is { } warehouseScopeError)
+            return warehouseScopeError;
         if (await ValidateInvoiceLineItemScopeAsync(dto.Lines, cancellationToken) is { } lineScopeError)
             return lineScopeError;
         if (await ValidateLinkedRentalBillingProfileScopeAsync(dto, cancellationToken) is { } rentalProfileScopeError)
             return rentalProfileScopeError;
+        if (await ValidateLinkedRentalBillingRunWritableAsync(
+                dto.LinkedRentalBillingProfileId,
+                dto.LinkedRentalBillingRunId,
+                cancellationToken) is { } rentalRunError)
+        {
+            return rentalRunError;
+        }
 
         if (await InvoiceStructuralMutationGuard.ShouldProtectExistingInvoiceFromSameIdStructuralMutationAsync(
                 _dbContext,
@@ -258,6 +322,82 @@ public sealed class InvoicesController : ControllerBase
             });
         }
 
+        var activeScopedVersions = await LoadActiveInvoiceVersionsInSameScopeAsync(
+            entity,
+            cancellationToken);
+        var versionParticipants = activeScopedVersions
+            .Append(entity)
+            .GroupBy(candidate => candidate.Id)
+            .Select(group => group.First())
+            .ToList();
+        var deterministicLatestVersion = versionParticipants
+            .OrderByDescending(candidate => Math.Max(1, candidate.VersionNumber))
+            .ThenByDescending(candidate => candidate.Id)
+            .First();
+        var beforeLatestVersions = versionParticipants
+            .Where(candidate => candidate.IsLatestVersion)
+            .ToList();
+        var afterLatestVersions = new List<Invoice> { deterministicLatestVersion };
+        var stockTransitionVersions = beforeLatestVersions
+            .Concat(afterLatestVersions)
+            .GroupBy(candidate => candidate.Id)
+            .Select(group => group.First())
+            .ToList();
+        foreach (var candidate in stockTransitionVersions)
+        {
+            if (ValidateWritableInvoiceStockWarehouse(candidate) is { } candidateWarehouseScopeError)
+                return candidateWarehouseScopeError;
+            if (await ValidateInvoiceLineItemScopeAsync(candidate.Lines, cancellationToken) is { } candidateLineScopeError)
+                return candidateLineScopeError;
+        }
+
+        var latestFlagChangingVersions = versionParticipants
+            .Where(candidate =>
+                candidate.IsLatestVersion !=
+                (candidate.Id == deterministicLatestVersion.Id))
+            .ToList();
+        foreach (var candidate in latestFlagChangingVersions)
+        {
+            if (await ValidateExistingLinkedRentalBillingProfileScopeAsync(
+                    candidate.LinkedRentalBillingProfileId,
+                    cancellationToken) is { } candidateRentalProfileScopeError)
+            {
+                return candidateRentalProfileScopeError;
+            }
+        }
+
+        var latestFlagChangingInvoiceIds = latestFlagChangingVersions
+            .Select(candidate => candidate.Id)
+            .Distinct()
+            .ToList();
+        if (!_currentUserContext.HasPermission(PermissionNames.PaymentEdit) &&
+            await HasActivePaymentSideEffectsForInvoiceDeleteAsync(
+                latestFlagChangingInvoiceIds,
+                cancellationToken))
+        {
+            return Forbid();
+        }
+        if (await ValidatePaymentWriteScopesForInvoiceSideEffectsAsync(
+                latestFlagChangingInvoiceIds,
+                cancellationToken) is { } paymentScopeError)
+        {
+            return paymentScopeError;
+        }
+        if (await ValidateLinkedTransactionScopesForInvoiceDeleteAsync(
+                [],
+                latestFlagChangingInvoiceIds,
+                cancellationToken) is { } linkedTransactionScopeError)
+        {
+            return linkedTransactionScopeError;
+        }
+
+        var rentalSettlementTargets = await _rentalSettlementRecalculationService
+            .LoadRentalSettlementTargetsForInvoiceDeleteAsync(
+                latestFlagChangingInvoiceIds,
+                cancellationToken);
+        var previousCombinedStockDeltas = await BuildCombinedInvoiceStockDeltasAsync(
+            beforeLatestVersions,
+            cancellationToken);
         var previousRentalTarget = new Invoice
         {
             LinkedRentalBillingProfileId = entity.LinkedRentalBillingProfileId,
@@ -269,16 +409,33 @@ public sealed class InvoicesController : ControllerBase
         _dbContext.InvoiceLines.RemoveRange(entity.Lines);
         entity.Lines.Clear();
         ApplyInvoiceLines(entity, dto.Lines);
-        var currentStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
-
-        await _invoiceStockSnapshotService.ApplyInvoiceStockDeltaDifferenceAsync(
-            previousStockDeltas,
-            currentStockDeltas,
+        foreach (var candidate in versionParticipants)
+        {
+            candidate.IsLatestVersion =
+                candidate.Id == deterministicLatestVersion.Id;
+        }
+        var currentCombinedStockDeltas = await BuildCombinedInvoiceStockDeltasAsync(
+            afterLatestVersions,
             cancellationToken);
 
-        await ProcessedSyncMutationRecorder.RecordAsync(_dbContext, dto, nameof(Invoice), cancellationToken);
+        await _invoiceStockSnapshotService.ApplyInvoiceStockDeltaDifferenceAsync(
+            previousCombinedStockDeltas,
+            currentCombinedStockDeltas,
+            cancellationToken);
+
+        ProcessedSyncMutationRecorder.Record(_dbContext, mutationCheck, entity.Id);
         await _dbContext.SaveChangesAsync(cancellationToken);
-        await RecalculateRentalSettlementsForInvoiceSaveAsync(previousRentalTarget, entity, cancellationToken);
+        AddRentalSettlementTarget(
+            rentalSettlementTargets,
+            previousRentalTarget.LinkedRentalBillingProfileId,
+            previousRentalTarget.LinkedRentalBillingRunId);
+        AddRentalSettlementTarget(
+            rentalSettlementTargets,
+            entity.LinkedRentalBillingProfileId,
+            entity.LinkedRentalBillingRunId);
+        await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(
+            rentalSettlementTargets.Distinct().ToList(),
+            cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _inventoryLedgerService.RebuildAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -299,7 +456,7 @@ public sealed class InvoicesController : ControllerBase
 
         var entity = await _dbContext.Invoices.Include(x => x.Customer).Include(x => x.Lines).FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
         if (entity is null) return NotFound();
-        if (!_officeScopeService.CanWriteOfficeForInvoices(entity.ResponsibleOfficeCode, entity.TenantCode, entity.OfficeCode))
+        if (!CanWriteInvoiceUsingResolvedVersionScope(entity))
             return Forbid();
         if (OptimisticConcurrencyGuard.Check(this, entity, expectedRevision, nameof(Invoice)) is { } conflict)
             return conflict;
@@ -307,27 +464,98 @@ public sealed class InvoicesController : ControllerBase
             return lineScopeError;
         if (await ValidateExistingLinkedRentalBillingProfileScopeAsync(entity.LinkedRentalBillingProfileId, cancellationToken) is { } rentalProfileScopeError)
             return rentalProfileScopeError;
+        var activeScopedVersions = await LoadActiveInvoiceVersionsInSameScopeAsync(
+            entity,
+            cancellationToken);
+        var promotedPreviousVersion = activeScopedVersions
+            .OrderByDescending(candidate => Math.Max(1, candidate.VersionNumber))
+            .ThenByDescending(candidate => candidate.Id)
+            .FirstOrDefault();
+
+        var beforeLatestVersions = new List<Invoice>();
+        if (entity.IsLatestVersion)
+            beforeLatestVersions.Add(entity);
+        beforeLatestVersions.AddRange(activeScopedVersions.Where(candidate => candidate.IsLatestVersion));
+        var afterLatestVersions = promotedPreviousVersion is null
+            ? []
+            : new List<Invoice> { promotedPreviousVersion };
+        var stockTransitionVersions = beforeLatestVersions
+            .Concat(afterLatestVersions)
+            .GroupBy(candidate => candidate.Id)
+            .Select(group => group.First())
+            .ToList();
+        foreach (var candidate in stockTransitionVersions)
+        {
+            if (ValidateWritableInvoiceStockWarehouse(candidate) is { } warehouseScopeError)
+                return warehouseScopeError;
+            if (await ValidateInvoiceLineItemScopeAsync(candidate.Lines, cancellationToken) is { } candidateLineScopeError)
+                return candidateLineScopeError;
+        }
+
+        var latestFlagChangingVersions = activeScopedVersions
+            .Where(candidate =>
+                candidate.IsLatestVersion != (candidate.Id == promotedPreviousVersion?.Id))
+            .ToList();
+        foreach (var candidate in latestFlagChangingVersions)
+        {
+            if (await ValidateExistingLinkedRentalBillingProfileScopeAsync(
+                    candidate.LinkedRentalBillingProfileId,
+                    cancellationToken) is { } candidateRentalProfileScopeError)
+            {
+                return candidateRentalProfileScopeError;
+            }
+        }
+
+        var businessEffectInvoiceIds = latestFlagChangingVersions
+            .Select(candidate => candidate.Id)
+            .Append(id)
+            .Distinct()
+            .ToList();
         if (!_currentUserContext.HasPermission(PermissionNames.PaymentEdit) &&
-            await HasActivePaymentSideEffectsForInvoiceDeleteAsync([id], cancellationToken))
+            await HasActivePaymentSideEffectsForInvoiceDeleteAsync(businessEffectInvoiceIds, cancellationToken))
         {
             return Forbid();
         }
-        if (await ValidateLinkedTransactionScopesForInvoiceDeleteAsync([id], cancellationToken) is { } linkedTransactionScopeError)
+        if (await ValidatePaymentWriteScopesForInvoiceSideEffectsAsync(
+                businessEffectInvoiceIds,
+                cancellationToken) is { } paymentScopeError)
+        {
+            return paymentScopeError;
+        }
+        if (await ValidateLinkedTransactionScopesForInvoiceDeleteAsync(
+                [id],
+                latestFlagChangingVersions.Select(candidate => candidate.Id).ToList(),
+                cancellationToken) is { } linkedTransactionScopeError)
+        {
             return linkedTransactionScopeError;
+        }
 
-        var rentalSettlementTargets = await _rentalSettlementRecalculationService.LoadRentalSettlementTargetsForInvoiceDeleteAsync([id], cancellationToken);
-        var previousStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
+        var rentalSettlementTargets = await _rentalSettlementRecalculationService
+            .LoadRentalSettlementTargetsForInvoiceDeleteAsync(
+                businessEffectInvoiceIds,
+                cancellationToken);
+        var previousStockDeltas = await BuildCombinedInvoiceStockDeltasAsync(
+            beforeLatestVersions,
+            cancellationToken);
         entity.IsDeleted = true;
+        entity.IsLatestVersion = false;
         foreach (var line in entity.Lines)
         {
             line.IsDeleted = true;
         }
+        foreach (var candidate in activeScopedVersions)
+        {
+            candidate.IsLatestVersion = candidate.Id == promotedPreviousVersion?.Id;
+        }
+        var currentStockDeltas = await BuildCombinedInvoiceStockDeltasAsync(
+            afterLatestVersions,
+            cancellationToken);
         await _rentalSettlementRecalculationService.DetachTransactionsFromInvoicesAsync([id], cancellationToken);
         await _rentalSettlementRecalculationService.MarkPaymentsDeletedForInvoicesAsync([id], cancellationToken);
 
         await _invoiceStockSnapshotService.ApplyInvoiceStockDeltaDifferenceAsync(
             previousStockDeltas,
-            new Dictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal>(),
+            currentStockDeltas,
             cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(rentalSettlementTargets, cancellationToken);
@@ -335,6 +563,264 @@ public sealed class InvoicesController : ControllerBase
         await _inventoryLedgerService.RebuildAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return NoContent();
+    }
+
+    private ActionResult? ValidateWritableInvoiceStockWarehouse(Invoice invoice)
+    {
+        var scope = ResolveInvoiceVersionScope(invoice);
+        var warehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(
+            invoice.SourceWarehouseCode,
+            scope.ResponsibleOfficeCode,
+            scope.OfficeCode);
+        return _officeScopeService.CanWriteWarehouse(warehouseCode, scope.OfficeCode)
+            ? null
+            : Forbid();
+    }
+
+    private bool CanWriteInvoiceUsingResolvedVersionScope(Invoice invoice)
+    {
+        var scope = ResolveInvoiceVersionScope(invoice);
+        return _officeScopeService.CanWriteOfficeForInvoices(
+            scope.ResponsibleOfficeCode,
+            scope.TenantCode,
+            scope.OfficeCode);
+    }
+
+    private async Task<Dictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal>>
+        BuildCombinedInvoiceStockDeltasAsync(
+            IEnumerable<Invoice> invoices,
+            CancellationToken cancellationToken)
+    {
+        var combined = new Dictionary<InvoiceStockSnapshotService.InvoiceStockKey, decimal>();
+        foreach (var invoice in invoices
+                     .GroupBy(candidate => candidate.Id)
+                     .Select(group => group.First()))
+        {
+            var deltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(
+                invoice,
+                cancellationToken);
+            foreach (var (key, quantity) in deltas)
+            {
+                combined[key] = combined.TryGetValue(key, out var current)
+                    ? current + quantity
+                    : quantity;
+            }
+        }
+
+        return combined;
+    }
+
+    private ActionResult? ValidateAndNormalizeExistingInvoiceVersionMetadata(
+        Invoice entity,
+        InvoiceDto dto)
+    {
+        var existingVersionGroupId = entity.VersionGroupId == Guid.Empty
+            ? entity.Id
+            : entity.VersionGroupId;
+        var requestedVersionGroupId = dto.VersionGroupId == Guid.Empty
+            ? dto.Id
+            : dto.VersionGroupId;
+        var existingVersionNumber = Math.Max(1, entity.VersionNumber);
+        var requestedVersionNumber = Math.Max(1, dto.VersionNumber);
+        var existingPreviousVersionId = NormalizeOptionalGuid(entity.PreviousVersionId);
+        var requestedPreviousVersionId = NormalizeOptionalGuid(dto.PreviousVersionId);
+
+        if (requestedVersionGroupId != existingVersionGroupId ||
+            requestedVersionNumber != existingVersionNumber ||
+            requestedPreviousVersionId != existingPreviousVersionId)
+        {
+            return BadRequest("Invoice version metadata cannot be changed through this endpoint.");
+        }
+
+        dto.VersionGroupId = existingVersionGroupId;
+        dto.VersionNumber = existingVersionNumber;
+        dto.PreviousVersionId = existingPreviousVersionId;
+        dto.IsLatestVersion = entity.IsLatestVersion;
+        return null;
+    }
+
+    private async Task<List<Invoice>> LoadActiveInvoiceVersionsInSameScopeAsync(
+        Invoice invoice,
+        CancellationToken cancellationToken)
+    {
+        var versionGroupId = invoice.VersionGroupId == Guid.Empty
+            ? invoice.Id
+            : invoice.VersionGroupId;
+        var candidates = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Include(candidate => candidate.Customer)
+            .Include(candidate => candidate.Lines)
+            .Where(candidate =>
+                candidate.Id != invoice.Id &&
+                !candidate.IsDeleted &&
+                (candidate.VersionGroupId == versionGroupId ||
+                 (candidate.VersionGroupId == Guid.Empty && candidate.Id == versionGroupId)))
+            .ToListAsync(cancellationToken);
+
+        return candidates
+            .Where(candidate => HasSameInvoiceVersionScope(invoice, candidate))
+            .ToList();
+    }
+
+    private static bool HasSameInvoiceVersionScope(Invoice left, Invoice right)
+    {
+        if (left.CustomerId != right.CustomerId)
+            return false;
+
+        var leftScope = ResolveInvoiceVersionScope(left);
+        var rightScope = ResolveInvoiceVersionScope(right);
+        return string.Equals(
+                   leftScope.TenantCode,
+                   rightScope.TenantCode,
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(
+                   leftScope.OfficeCode,
+                   rightScope.OfficeCode,
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(
+                   leftScope.ResponsibleOfficeCode,
+                   rightScope.ResponsibleOfficeCode,
+                   StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static (string TenantCode, string OfficeCode, string ResponsibleOfficeCode) ResolveInvoiceVersionScope(
+        Invoice invoice)
+    {
+        var customerResponsibleOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeLoose(
+            invoice.Customer?.ResponsibleOfficeCode,
+            invoice.Customer?.OfficeCode,
+            OfficeCodeCatalog.Usenet);
+        var customerOfficeCode = OfficeCodeCatalog.ResolveOwningOfficeCode(
+            invoice.Customer?.OfficeCode,
+            customerResponsibleOfficeCode,
+            customerResponsibleOfficeCode);
+        var customerTenantCode =
+            TenantScopeCatalog.TryNormalizeTenantCode(invoice.Customer?.TenantCode, out var normalizedCustomerTenantCode)
+                ? normalizedCustomerTenantCode
+                : TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                    null,
+                    customerOfficeCode,
+                    fallbackOfficeCode: customerResponsibleOfficeCode);
+
+        // Preserve explicit, recognized scope values even when they disagree. A
+        // mismatched tenant/office tuple must fail authorization instead of being
+        // silently normalized into the caller's writable scope. Only missing or
+        // unrecognized legacy values fall back to the linked customer.
+        var responsibleOfficeCode =
+            OfficeCodeCatalog.TryNormalizeOfficeCode(
+                invoice.ResponsibleOfficeCode,
+                out var normalizedResponsibleOfficeCode)
+                ? normalizedResponsibleOfficeCode
+                : customerResponsibleOfficeCode;
+        var officeCode =
+            OfficeCodeCatalog.TryNormalizeScope(invoice.OfficeCode, out var normalizedOfficeCode)
+                ? OfficeCodeCatalog.ResolveOwningOfficeCode(
+                    normalizedOfficeCode,
+                    responsibleOfficeCode,
+                    normalizedOfficeCode)
+                : customerOfficeCode;
+        var tenantCode =
+            TenantScopeCatalog.TryNormalizeTenantCode(invoice.TenantCode, out var normalizedTenantCode)
+                ? normalizedTenantCode
+                : customerTenantCode;
+        return (tenantCode, officeCode, responsibleOfficeCode);
+    }
+
+    private ActionResult? ValidateRequestedInvoiceScopeConsistency(
+        InvoiceDto dto,
+        Customer customer)
+    {
+        var customerScope = ResolveInvoiceVersionScope(new Invoice
+        {
+            CustomerId = customer.Id,
+            Customer = customer
+        });
+        var tenantCode =
+            TenantScopeCatalog.TryNormalizeTenantCode(dto.TenantCode, out var normalizedTenantCode)
+                ? normalizedTenantCode
+                : customerScope.TenantCode;
+        var officeCode =
+            OfficeCodeCatalog.TryNormalizeScope(dto.OfficeCode, out var normalizedOfficeCode)
+                ? normalizedOfficeCode
+                : customerScope.OfficeCode;
+        var responsibleOfficeCode =
+            OfficeCodeCatalog.TryNormalizeOfficeCode(
+                dto.ResponsibleOfficeCode,
+                out var normalizedResponsibleOfficeCode)
+                ? normalizedResponsibleOfficeCode
+                : customerScope.ResponsibleOfficeCode;
+
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(officeCode, out var concreteOfficeCode) &&
+            !TenantScopeCatalog.TenantContainsOffice(tenantCode, concreteOfficeCode))
+        {
+            return BadRequest("Invoice tenant and office scope values are inconsistent.");
+        }
+
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(
+                responsibleOfficeCode,
+                out var concreteResponsibleOfficeCode) &&
+            !TenantScopeCatalog.TenantContainsOffice(
+                tenantCode,
+                concreteResponsibleOfficeCode))
+        {
+            return BadRequest("Invoice tenant and office scope values are inconsistent.");
+        }
+
+        return null;
+    }
+
+    private static void NormalizeNewInvoiceVersionMetadata(InvoiceDto dto, Guid entityId)
+    {
+        dto.Id = entityId;
+        dto.VersionGroupId = entityId;
+        dto.VersionNumber = 1;
+        dto.PreviousVersionId = null;
+        dto.IsLatestVersion = true;
+    }
+
+    private static Guid? NormalizeOptionalGuid(Guid? value)
+        => !value.HasValue || value.Value == Guid.Empty
+            ? null
+            : value.Value;
+
+    private async Task<ActionResult<InvoiceDto>> ResolveDuplicateInvoiceAsync(
+        DirectMutationCheck mutationCheck,
+        CancellationToken cancellationToken)
+    {
+        if (mutationCheck.ExistingReceipt is null ||
+            !Guid.TryParse(mutationCheck.ExistingReceipt.EntityId, out var entityId))
+        {
+            return Conflict(new DirectMutationConflictResponse
+            {
+                MutationId = mutationCheck.MutationId,
+                EntityName = nameof(Invoice),
+                EntityId = mutationCheck.RequestedEntityId,
+                Reason = "The processed mutation receipt does not reference a valid invoice."
+            });
+        }
+
+        var entity = await _officeScopeService.ApplyInvoiceScope(_dbContext.Invoices
+                .Include(invoice => invoice.Customer)
+                .Include(invoice => invoice.Lines)
+                .Include(invoice => invoice.Payments)
+                .ThenInclude(payment => payment.Attachments)
+                .AsNoTracking())
+            .FirstOrDefaultAsync(invoice => invoice.Id == entityId, cancellationToken);
+        if (entity is null)
+        {
+            return Conflict(new DirectMutationConflictResponse
+            {
+                MutationId = mutationCheck.MutationId,
+                EntityName = nameof(Invoice),
+                EntityId = entityId,
+                Reason = "The processed mutation receipt exists, but its invoice is unavailable in the current scope."
+            });
+        }
+
+        var readableCustomerIdSet = await LoadReadableCustomerIdSetAsync(
+            [entity.CustomerId],
+            cancellationToken);
+        return Ok(ToScopedDto(entity, readableCustomerIdSet));
     }
 
     private async Task RecalculateRentalSettlementsForInvoiceSaveAsync(
@@ -369,6 +855,49 @@ public sealed class InvoicesController : ControllerBase
                 cancellationToken);
     }
 
+    private async Task<ActionResult?> ValidatePaymentWriteScopesForInvoiceSideEffectsAsync(
+        IReadOnlyCollection<Guid> invoiceIds,
+        CancellationToken cancellationToken)
+    {
+        if (invoiceIds.Count == 0)
+            return null;
+
+        var paymentInvoiceIds = await _dbContext.Payments
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(payment =>
+                !payment.IsDeleted &&
+                invoiceIds.Contains(payment.InvoiceId))
+            .Select(payment => payment.InvoiceId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        if (paymentInvoiceIds.Count == 0)
+            return null;
+
+        var paymentInvoices = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Include(invoice => invoice.Customer)
+            .AsNoTracking()
+            .Where(invoice => paymentInvoiceIds.Contains(invoice.Id))
+            .ToListAsync(cancellationToken);
+        if (paymentInvoices.Count != paymentInvoiceIds.Count)
+            return Forbid();
+
+        foreach (var invoice in paymentInvoices)
+        {
+            var scope = ResolveInvoiceVersionScope(invoice);
+            if (!_officeScopeService.CanWriteOfficeForPayments(
+                    scope.ResponsibleOfficeCode,
+                    scope.TenantCode,
+                    scope.OfficeCode))
+            {
+                return Forbid();
+            }
+        }
+
+        return null;
+    }
+
     private static void AddRentalSettlementTarget(List<(Guid ProfileId, Guid? RunId)> targets, Guid? profileId, Guid? runId)
     {
         if (!profileId.HasValue || profileId.Value == Guid.Empty)
@@ -378,18 +907,21 @@ public sealed class InvoicesController : ControllerBase
     }
 
     private async Task<ActionResult?> ValidateLinkedTransactionScopesForInvoiceDeleteAsync(
-        IReadOnlyCollection<Guid> invoiceIds,
+        IReadOnlyCollection<Guid> detachedInvoiceIds,
+        IReadOnlyCollection<Guid> latestFlagChangingInvoiceIds,
         CancellationToken cancellationToken)
     {
-        if (invoiceIds.Count == 0)
+        if (detachedInvoiceIds.Count == 0 && latestFlagChangingInvoiceIds.Count == 0)
             return null;
 
         var linkedTransactions = await _dbContext.Transactions
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(transaction =>
+                !transaction.IsDeleted &&
                 transaction.LinkedInvoiceId.HasValue &&
-                invoiceIds.Contains(transaction.LinkedInvoiceId.Value))
+                (detachedInvoiceIds.Contains(transaction.LinkedInvoiceId.Value) ||
+                 latestFlagChangingInvoiceIds.Contains(transaction.LinkedInvoiceId.Value)))
             .Select(transaction => new
             {
                 transaction.ResponsibleOfficeCode,
@@ -436,8 +968,19 @@ public sealed class InvoicesController : ControllerBase
         IEnumerable<InvoiceLineDto>? lines,
         CancellationToken cancellationToken)
     {
-        var itemIds = (lines ?? [])
-            .Where(line => !line.IsDeleted && line.ItemId.HasValue && line.ItemId.Value != Guid.Empty)
+        var activeLines = (lines ?? [])
+            .Where(line => !line.IsDeleted)
+            .ToList();
+        var invalidQuantityLine = activeLines.FirstOrDefault(line =>
+            !DatabaseNumericContract.IsPositiveQuantity18Scale2(line.Quantity));
+        if (invalidQuantityLine is not null)
+        {
+            return BadRequest(
+                $"Active invoice line quantity must be greater than zero and fit numeric(18,2): {invalidQuantityLine.Id}.");
+        }
+
+        var itemIds = activeLines
+            .Where(line => line.ItemId.HasValue && line.ItemId.Value != Guid.Empty)
             .Select(line => line.ItemId!.Value)
             .Distinct()
             .ToList();
@@ -448,7 +991,7 @@ public sealed class InvoicesController : ControllerBase
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(item => itemIds.Contains(item.Id) && !item.IsDeleted)
-            .Select(item => new { item.Id, item.OfficeCode, item.TenantCode })
+            .Select(item => new { item.Id, item.OfficeCode, item.TenantCode, item.TrackingType })
             .ToDictionaryAsync(item => item.Id, cancellationToken);
 
         foreach (var itemId in itemIds)
@@ -460,6 +1003,25 @@ public sealed class InvoicesController : ControllerBase
                 return Forbid();
         }
 
+        foreach (var line in activeLines.Where(line => line.ItemId.HasValue && line.ItemId.Value != Guid.Empty))
+        {
+            if (items.TryGetValue(line.ItemId!.Value, out var item))
+                line.ItemTrackingType = ItemTrackingTypes.Normalize(item.TrackingType);
+        }
+
+        return null;
+    }
+
+    private ActionResult? ValidateAndNormalizeSourceWarehouse(InvoiceDto dto)
+    {
+        var warehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(
+            dto.SourceWarehouseCode,
+            dto.ResponsibleOfficeCode,
+            dto.OfficeCode);
+        if (!_officeScopeService.CanWriteWarehouse(warehouseCode, dto.OfficeCode))
+            return Forbid();
+
+        dto.SourceWarehouseCode = warehouseCode;
         return null;
     }
 
@@ -543,6 +1105,37 @@ public sealed class InvoicesController : ControllerBase
             return Forbid();
 
         return null;
+    }
+
+    private async Task<ActionResult?> ValidateLinkedRentalBillingRunWritableAsync(
+        Guid? profileId,
+        Guid? runId,
+        CancellationToken cancellationToken)
+    {
+        if (!profileId.HasValue || profileId.Value == Guid.Empty)
+            return null;
+
+        var billingRunsJson = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => current.Id == profileId.Value && !current.IsDeleted)
+            .Select(current => current.BillingRunsJson)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (billingRunsJson is null)
+            return null;
+
+        var lookup = runId.HasValue && runId.Value != Guid.Empty
+            ? RentalBillingRunTombstonePolicy.LookupForServerMutation(billingRunsJson, runId.Value)
+            : RentalBillingRunTombstonePolicy.ValidateForServerMutation(billingRunsJson);
+        if (!lookup.IsValid)
+        {
+            return Conflict(
+                "Referenced rental billing profile has malformed billing run tombstone JSON.");
+        }
+
+        return lookup.IsTombstoned
+            ? Conflict("Referenced rental billing run was deleted and cannot be linked to an active invoice.")
+            : null;
     }
 
     private static void ApplyInvoiceLines(Invoice invoice, IEnumerable<InvoiceLineDto>? lines)

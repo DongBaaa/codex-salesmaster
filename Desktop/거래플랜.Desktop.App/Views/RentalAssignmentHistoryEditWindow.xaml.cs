@@ -1,4 +1,5 @@
 using System.Windows;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
 
 namespace 거래플랜.Desktop.App.Views;
@@ -11,6 +12,7 @@ public partial class RentalAssignmentHistoryEditWindow : Window
     {
         EditRequest = editRequest ?? throw new ArgumentNullException(nameof(editRequest));
         InitializeComponent();
+        ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(this);
         DataContext = EditRequest;
     }
 

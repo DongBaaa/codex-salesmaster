@@ -42,6 +42,7 @@ function Get-DefaultPaths {
     return @(
         (Join-Path $deploymentRoot '거래플랜-PC-설치패키지.exe'),
         (Join-Path $adminOutputRoot '거래플랜-PC-설치패키지.msi'),
+        (Join-Path $packageRoot 'App\거래플랜.Desktop.App.exe'),
         (Join-Path $packageRoot 'App\거래플랜.exe'),
         (Join-Path $packageRoot 'App\Updater\거래플랜.Updater.exe')
     )

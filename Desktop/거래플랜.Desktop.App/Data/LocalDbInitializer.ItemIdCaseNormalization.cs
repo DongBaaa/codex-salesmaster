@@ -22,54 +22,63 @@ public static partial class LocalDbInitializer
 
     private static async Task NormalizeCaseVariantItemIdsAsync(LocalDbContext db)
     {
-        await using var connection = db.Database.GetDbConnection();
-        if (connection.State != ConnectionState.Open)
-            await connection.OpenAsync();
-
-        var duplicateKeys = new List<string>();
-        await using (var command = connection.CreateCommand())
+        var connection = db.Database.GetDbConnection();
+        var shouldClose = connection.State != ConnectionState.Open;
+        try
         {
-            command.CommandText = """
-                                  SELECT lower("Id")
-                                  FROM "Items"
-                                  WHERE COALESCE("IsDeleted", 0) = 0
-                                  GROUP BY lower("Id")
-                                  HAVING COUNT(*) > 1
-                                  """;
-            await using var reader = await command.ExecuteReaderAsync();
-            while (await reader.ReadAsync())
+            if (shouldClose)
+                await connection.OpenAsync();
+
+            var duplicateKeys = new List<string>();
+            await using (var command = connection.CreateCommand())
             {
-                var normalizedId = reader.GetString(0);
-                if (!string.IsNullOrWhiteSpace(normalizedId))
-                    duplicateKeys.Add(normalizedId);
+                command.CommandText = """
+                                      SELECT lower("Id")
+                                      FROM "Items"
+                                      WHERE COALESCE("IsDeleted", 0) = 0
+                                      GROUP BY lower("Id")
+                                      HAVING COUNT(*) > 1
+                                      """;
+                await using var reader = await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    var normalizedId = reader.GetString(0);
+                    if (!string.IsNullOrWhiteSpace(normalizedId))
+                        duplicateKeys.Add(normalizedId);
+                }
             }
+
+            if (duplicateKeys.Count == 0)
+                return;
+
+            await using var transaction = await db.BeginRuntimeMutationTransactionAsync();
+            var dbTransaction = transaction.GetDbTransaction();
+            foreach (var normalizedId in duplicateKeys)
+            {
+                var rows = await LoadCaseVariantItemRowsAsync(connection, dbTransaction, normalizedId);
+                if (rows.Count <= 1)
+                    continue;
+
+                var canonical = rows
+                    .OrderByDescending(current => current.Revision)
+                    .ThenByDescending(current => current.UpdatedAtUtc)
+                    .ThenByDescending(current => current.CreatedAtUtc)
+                    .ThenBy(current => current.Id, StringComparer.OrdinalIgnoreCase)
+                    .First();
+
+                foreach (var (table, column) in ItemReferenceColumns)
+                    await UpdateCaseVariantItemReferenceAsync(connection, dbTransaction, table, column, normalizedId, canonical.Id);
+
+                await DeleteCaseVariantDuplicateItemsAsync(connection, dbTransaction, normalizedId, canonical.Id);
+            }
+
+            await transaction.CommitAsync();
         }
-
-        if (duplicateKeys.Count == 0)
-            return;
-
-        await using var transaction = await db.Database.BeginTransactionAsync();
-        var dbTransaction = transaction.GetDbTransaction();
-        foreach (var normalizedId in duplicateKeys)
+        finally
         {
-            var rows = await LoadCaseVariantItemRowsAsync(connection, dbTransaction, normalizedId);
-            if (rows.Count <= 1)
-                continue;
-
-            var canonical = rows
-                .OrderByDescending(current => current.Revision)
-                .ThenByDescending(current => current.UpdatedAtUtc)
-                .ThenByDescending(current => current.CreatedAtUtc)
-                .ThenBy(current => current.Id, StringComparer.OrdinalIgnoreCase)
-                .First();
-
-            foreach (var (table, column) in ItemReferenceColumns)
-                await UpdateCaseVariantItemReferenceAsync(connection, dbTransaction, table, column, normalizedId, canonical.Id);
-
-            await DeleteCaseVariantDuplicateItemsAsync(connection, dbTransaction, normalizedId, canonical.Id);
+            if (shouldClose && connection.State != ConnectionState.Closed)
+                await connection.CloseAsync();
         }
-
-        await transaction.CommitAsync();
     }
 
     private static async Task<List<CaseVariantItemRow>> LoadCaseVariantItemRowsAsync(

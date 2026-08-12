@@ -280,15 +280,19 @@ public sealed partial class LocalStateService
     private async Task<RecycleBinDependencyInfo> GetInvoiceRecycleBinDependencyInfoAsync(Guid invoiceId, SessionState session, CancellationToken ct)
     {
         var invoice = await _db.Invoices.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(current => current.Id == invoiceId, ct);
-        if (invoice is null || !CanAccessInvoice(invoice, session))
+        if (invoice is null)
+            return new RecycleBinDependencyInfo { CanPurge = false, Summary = "삭제 차단 사유를 확인할 전표를 찾을 수 없습니다." };
+        var invoiceScope = await ResolveInvoiceVersionScopeKeyAsync(invoice, ct);
+        if (!CanAccessInvoiceVersionScope(invoiceScope, session))
             return new RecycleBinDependencyInfo { CanPurge = false, Summary = "삭제 차단 사유를 확인할 전표를 찾을 수 없습니다." };
 
-        var versionGroupId = invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId;
-        var invoiceIds = await _db.Invoices.IgnoreQueryFilters()
-            .Where(current => current.Id == invoice.Id || current.VersionGroupId == versionGroupId)
+        var invoiceIds = (await LoadExactInvoiceVersionChainAsync(
+                invoice,
+                asNoTracking: true,
+                ct))
             .Select(current => current.Id)
             .Distinct()
-            .ToListAsync(ct);
+            .ToList();
 
         var transactionCount = await _db.Transactions.IgnoreQueryFilters()
             .CountAsync(current => current.LinkedInvoiceId.HasValue && invoiceIds.Contains(current.LinkedInvoiceId.Value), ct);
@@ -317,7 +321,10 @@ public sealed partial class LocalStateService
             return new RecycleBinDependencyInfo { CanPurge = false, Summary = "삭제 차단 사유를 확인할 수금/지급 기록을 찾을 수 없습니다." };
 
         var invoice = await _db.Invoices.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, ct);
-        if (invoice is null || !CanAccessInvoice(invoice, session))
+        if (invoice is null)
+            return new RecycleBinDependencyInfo { CanPurge = false, Summary = "권한이 없어 삭제 차단 사유를 확인할 수 없습니다." };
+        var invoiceScope = await ResolveInvoiceVersionScopeKeyAsync(invoice, ct);
+        if (!CanAccessInvoiceVersionScope(invoiceScope, session))
             return new RecycleBinDependencyInfo { CanPurge = false, Summary = "권한이 없어 삭제 차단 사유를 확인할 수 없습니다." };
 
         var dependencies = new List<RecycleBinDependencyItem>();

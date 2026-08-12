@@ -6,6 +6,7 @@ using System.Text;
 using System.Windows;
 using System.Windows.Media;
 using Microsoft.Win32;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Printing;
 using 거래플랜.Desktop.App.Services;
 
@@ -200,7 +201,14 @@ public partial class TradePrintWindow : Window
         }
     }
 
-    private async void OnRefreshPrintersClick(object sender, RoutedEventArgs e)
+    private void OnRefreshPrintersClick(object sender, RoutedEventArgs e)
+        => UiTaskHelper.Run(
+            this,
+            RefreshPrintersAsync,
+            "PRINT",
+            "프린터 목록 새로고침");
+
+    private async Task RefreshPrintersAsync()
     {
         if (_printerRefreshProvider is null)
         {
@@ -362,7 +370,7 @@ public partial class TradePrintWindow : Window
             OverwritePrompt = true
         };
 
-        if (dialog.ShowDialog(this) != true)
+        if (DialogWindowCloseHelper.ShowDialog(dialog, this) != true)
             return;
 
         if (TryBuildPrintOptions(saveToFile: true, dialog.FileName, fileFormat, out var options))

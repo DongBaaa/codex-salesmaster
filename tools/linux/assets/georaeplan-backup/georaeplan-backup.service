@@ -1,0 +1,22 @@
+[Unit]
+Description=GeoraePlan verified PostgreSQL and file backup
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/georaeplan-backup.sh
+User=root
+Group=root
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=2h
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/srv/georaeplan/ops
+ReadOnlyPaths=/srv/georaeplan/storage
+ReadWritePaths=/srv/georaeplan/backups
+ReadWritePaths=/srv/georaeplan/ops/state

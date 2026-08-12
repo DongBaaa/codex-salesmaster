@@ -19,7 +19,8 @@ public sealed class RecycleBinController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
     private readonly OfficeScopeService _officeScopeService;
-    private readonly ICentralFileStorage _fileStorage;
+    private readonly IStoredFileReferenceReconciler _storedFileReferenceReconciler;
+    private readonly IStoredFileDeferredDeletionQueue _storedFileDeferredDeletionQueue;
     private readonly InventoryLedgerService _inventoryLedgerService;
     private readonly InvoiceStockSnapshotService _invoiceStockSnapshotService;
     private readonly RentalSettlementRecalculationService _rentalSettlementRecalculationService;
@@ -27,14 +28,16 @@ public sealed class RecycleBinController : ControllerBase
     public RecycleBinController(
         AppDbContext dbContext,
         OfficeScopeService officeScopeService,
-        ICentralFileStorage fileStorage,
+        IStoredFileReferenceReconciler storedFileReferenceReconciler,
         InventoryLedgerService inventoryLedgerService,
         InvoiceStockSnapshotService invoiceStockSnapshotService,
-        RentalSettlementRecalculationService rentalSettlementRecalculationService)
+        RentalSettlementRecalculationService rentalSettlementRecalculationService,
+        IStoredFileDeferredDeletionQueue storedFileDeferredDeletionQueue)
     {
         _dbContext = dbContext;
         _officeScopeService = officeScopeService;
-        _fileStorage = fileStorage;
+        _storedFileReferenceReconciler = storedFileReferenceReconciler;
+        _storedFileDeferredDeletionQueue = storedFileDeferredDeletionQueue;
         _inventoryLedgerService = inventoryLedgerService;
         _invoiceStockSnapshotService = invoiceStockSnapshotService;
         _rentalSettlementRecalculationService = rentalSettlementRecalculationService;
@@ -589,8 +592,9 @@ public sealed class RecycleBinController : ControllerBase
 
         foreach (var target in targets)
         {
-            var mutation = await TryRecycleBinMutationAsync(
-                () => PurgeCoreAsync(target, cancellationToken),
+            var mutation = await TryPurgeMutationAsync(
+                target,
+                cancellationToken,
                 "영구삭제 처리 중 오류가 발생했습니다.");
             result.Messages.Add(mutation.Message);
             result.Results.Add(new RecycleBinMutationItemResultDto
@@ -607,6 +611,37 @@ public sealed class RecycleBinController : ControllerBase
         }
 
         return Ok(result);
+    }
+
+    private async Task<(bool Success, string Message)> TryPurgeMutationAsync(
+        RecycleBinMutationTargetDto target,
+        CancellationToken cancellationToken,
+        string fallbackMessage)
+    {
+        try
+        {
+            return await PurgeWithPriorCompletionAsync(target, cancellationToken);
+        }
+        catch (DbUpdateException ex)
+        {
+            _dbContext.ChangeTracker.Clear();
+            try
+            {
+                var acceptedRetry = await TryAcceptPriorPurgeAsync(target, cancellationToken);
+                if (acceptedRetry.HasValue)
+                    return acceptedRetry.Value;
+            }
+            catch
+            {
+                // Preserve the original mutation failure when the receipt re-check is inconclusive.
+            }
+
+            return (false, $"{fallbackMessage} {ex.InnerException?.Message ?? ex.Message}");
+        }
+        catch (Exception ex)
+        {
+            return (false, $"{fallbackMessage} {ex.Message}");
+        }
     }
 
     private async Task<(bool Success, string Message)> ExecuteSerializedRestoreAsync(
@@ -637,6 +672,10 @@ public sealed class RecycleBinController : ControllerBase
         {
             return await mutation();
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (DbUpdateException ex)
         {
             return (false, $"{fallbackMessage} {ex.InnerException?.Message ?? ex.Message}");
@@ -646,6 +685,175 @@ public sealed class RecycleBinController : ControllerBase
             return (false, $"{fallbackMessage} {ex.Message}");
         }
     }
+
+    private async Task<(bool Success, string Message)> PurgeWithPriorCompletionAsync(
+        RecycleBinMutationTargetDto target,
+        CancellationToken cancellationToken)
+    {
+        var acceptedRetry = await TryAcceptPriorPurgeAsync(target, cancellationToken);
+        return acceptedRetry ?? await PurgeCoreAsync(target, cancellationToken);
+    }
+
+    private async Task<(bool Success, string Message)?> TryAcceptPriorPurgeAsync(
+        RecycleBinMutationTargetDto target,
+        CancellationToken cancellationToken)
+    {
+        var kind = NormalizeKind(target.Kind);
+        if (!IsSupportedPurgeKind(kind) ||
+            await PurgeTargetExistsAsync(kind, target.EntityId, cancellationToken))
+        {
+            return null;
+        }
+
+        var purgeRecord = await _dbContext.RecycleBinPurgeRecords
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(
+                current =>
+                    current.Kind == kind &&
+                    current.EntityId == target.EntityId &&
+                    !current.IsDeleted,
+                cancellationToken);
+        if (purgeRecord is null ||
+            !await CanAcceptPriorPurgeRecordAsync(purgeRecord, cancellationToken))
+        {
+            return null;
+        }
+
+        // Re-check after the receipt and scope lookup so a same-ID recreation is
+        // never mistaken for a retry of the earlier completed purge.
+        if (await PurgeTargetExistsAsync(kind, target.EntityId, cancellationToken))
+            return null;
+
+        return (true, "이미 영구삭제가 완료된 항목입니다.");
+    }
+
+    private async Task<bool> CanAcceptPriorPurgeRecordAsync(
+        RecycleBinPurgeRecord purgeRecord,
+        CancellationToken cancellationToken)
+    {
+        return purgeRecord.Kind switch
+        {
+            "customer" => _officeScopeService.CanWriteOfficeForCustomers(
+                purgeRecord.OfficeCode,
+                purgeRecord.TenantCode),
+            "contract" => _officeScopeService.CanWriteOfficeForContracts(
+                purgeRecord.OfficeCode,
+                purgeRecord.TenantCode),
+            "item" => _officeScopeService.CanWriteOfficeForItems(
+                purgeRecord.OfficeCode,
+                purgeRecord.TenantCode),
+            "company-profile" =>
+                await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken) &&
+                _officeScopeService.CanWriteOfficeForCompanyProfiles(purgeRecord.OfficeCode),
+            "customer-category" or
+            "price-grade-option" or
+            "trade-type-option" or
+            "item-category-option" =>
+                await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken),
+            "invoice" => _officeScopeService.CanWriteOfficeForInvoices(
+                purgeRecord.OfficeCode,
+                purgeRecord.TenantCode),
+            "payment" or "transaction" => _officeScopeService.CanWriteOfficeForPayments(
+                purgeRecord.OfficeCode,
+                purgeRecord.TenantCode),
+            "inventory-transfer" => _officeScopeService.CanWriteInventoryTransferRoute(
+                purgeRecord.SourceOfficeCode,
+                purgeRecord.TargetOfficeCode,
+                purgeRecord.TenantCode),
+            "rental-management-company" =>
+                await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken) &&
+                (_officeScopeService.HasGlobalDataScope ||
+                 string.Equals(
+                     TenantScopeCatalog.NormalizeTenantCodeOrDefault(purgeRecord.TenantCode),
+                     _officeScopeService.CurrentTenantCode,
+                     StringComparison.OrdinalIgnoreCase)),
+            "rental-billing-profile" or
+            "rental-asset" or
+            "rental-billing-log" => _officeScopeService.CanWriteOfficeForRentals(
+                purgeRecord.OfficeCode,
+                purgeRecord.TenantCode),
+            _ => false
+        };
+    }
+
+    private async Task<bool> PurgeTargetExistsAsync(
+        string kind,
+        Guid entityId,
+        CancellationToken cancellationToken)
+    {
+        return kind switch
+        {
+            "customer" => await _dbContext.Customers
+                .IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == entityId, cancellationToken),
+            "contract" => await _dbContext.CustomerContracts
+                .IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == entityId, cancellationToken),
+            "item" => await _dbContext.Items
+                .IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == entityId, cancellationToken),
+            "company-profile" => await _dbContext.CompanyProfiles
+                .IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == entityId, cancellationToken),
+            "customer-category" => await _dbContext.CustomerCategories
+                .IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == entityId, cancellationToken),
+            "price-grade-option" => await _dbContext.PriceGradeOptions
+                .IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == entityId, cancellationToken),
+            "trade-type-option" => await _dbContext.TradeTypeOptions
+                .IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == entityId, cancellationToken),
+            "item-category-option" => await _dbContext.ItemCategoryOptions
+                .IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == entityId, cancellationToken),
+            "invoice" => await _dbContext.Invoices
+                .IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == entityId, cancellationToken),
+            "payment" => await _dbContext.Payments
+                .IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == entityId, cancellationToken),
+            "transaction" => await _dbContext.Transactions
+                .IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == entityId, cancellationToken),
+            "inventory-transfer" => await _dbContext.InventoryTransfers
+                .IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == entityId, cancellationToken),
+            "rental-management-company" => await _dbContext.RentalManagementCompanies
+                .IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == entityId, cancellationToken),
+            "rental-billing-profile" => await _dbContext.RentalBillingProfiles
+                .IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == entityId, cancellationToken),
+            "rental-asset" => await _dbContext.RentalAssets
+                .IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == entityId, cancellationToken),
+            "rental-billing-log" => await _dbContext.RentalBillingLogs
+                .IgnoreQueryFilters()
+                .AnyAsync(current => current.Id == entityId, cancellationToken),
+            _ => true
+        };
+    }
+
+    private static bool IsSupportedPurgeKind(string kind)
+        => kind is
+            "customer" or
+            "contract" or
+            "item" or
+            "company-profile" or
+            "customer-category" or
+            "price-grade-option" or
+            "trade-type-option" or
+            "item-category-option" or
+            "invoice" or
+            "payment" or
+            "transaction" or
+            "inventory-transfer" or
+            "rental-management-company" or
+            "rental-billing-profile" or
+            "rental-asset" or
+            "rental-billing-log";
 
     private async Task<(bool Success, string Message)> RestoreCoreAsync(
         RecycleBinMutationTargetDto target,
@@ -709,12 +917,12 @@ public sealed class RecycleBinController : ControllerBase
             return (false, "복원할 거래처를 찾을 수 없습니다.");
         if (!_officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode))
             return (false, "현재 계정으로 복원할 수 없는 거래처입니다.");
-        if (!customer.IsDeleted)
-            return (true, "이미 활성 상태인 거래처입니다.");
-
         var revisionCheck = EnsureRecycleBinMutationRevision(customer, target);
         if (!revisionCheck.Success)
             return revisionCheck;
+
+        if (!customer.IsDeleted)
+            return (true, "이미 활성 상태인 거래처입니다.");
 
         var deletedAtUtc = customer.UpdatedAtUtc;
         var restoredContractCount = await RestoreContractsDeletedWithCustomerAsync(customer, deletedAtUtc, cancellationToken);
@@ -787,12 +995,19 @@ public sealed class RecycleBinController : ControllerBase
                 customer.TenantCode,
                 customer.OfficeCode))
             return (false, "현재 계정으로 복원할 수 없는 계약서입니다.");
-        if (!contract.IsDeleted)
-            return (true, "이미 활성 상태인 계약서입니다.");
-
         var revisionCheck = EnsureRecycleBinMutationRevision(contract, target);
         if (!revisionCheck.Success)
             return revisionCheck;
+
+        if (!contract.IsDeleted)
+            return (true, "이미 활성 상태인 계약서입니다.");
+
+        var customerDeletionCheck = EnsureRestoreCascadeDeletionFingerprint(
+            contract,
+            [customer],
+            "연결된 거래처");
+        if (!customerDeletionCheck.Success)
+            return customerDeletionCheck;
 
         if (customer.IsDeleted)
             customer.IsDeleted = false;
@@ -801,7 +1016,11 @@ public sealed class RecycleBinController : ControllerBase
         {
             var otherPrimaryContracts = await _dbContext.CustomerContracts
                 .IgnoreQueryFilters()
-                .Where(current => current.CustomerId == contract.CustomerId && current.Id != contract.Id && current.IsPrimary)
+                .Where(current =>
+                    current.CustomerId == contract.CustomerId &&
+                    current.Id != contract.Id &&
+                    !current.IsDeleted &&
+                    current.IsPrimary)
                 .ToListAsync(cancellationToken);
             foreach (var other in otherPrimaryContracts)
                 other.IsPrimary = false;
@@ -825,12 +1044,12 @@ public sealed class RecycleBinController : ControllerBase
             return (false, "복원할 품목을 찾을 수 없습니다.");
         if (!_officeScopeService.CanWriteOfficeForItems(item.OfficeCode, item.TenantCode))
             return (false, "현재 계정으로 복원할 수 없는 품목입니다.");
-        if (!item.IsDeleted)
-            return (true, "이미 활성 상태인 품목입니다.");
-
         var revisionCheck = EnsureRecycleBinMutationRevision(item, target);
         if (!revisionCheck.Success)
             return revisionCheck;
+
+        if (!item.IsDeleted)
+            return (true, "이미 활성 상태인 품목입니다.");
 
         item.IsDeleted = false;
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -850,12 +1069,12 @@ public sealed class RecycleBinController : ControllerBase
             return (false, "복원할 회사설정을 찾을 수 없습니다.");
         if (!_officeScopeService.CanWriteOfficeForCompanyProfiles(profile.OfficeCode))
             return (false, "현재 계정으로 복원할 수 없는 회사설정입니다.");
-        if (!profile.IsDeleted)
-            return (true, "이미 활성 상태인 회사설정입니다.");
-
         var revisionCheck = EnsureRecycleBinMutationRevision(profile, target);
         if (!revisionCheck.Success)
             return revisionCheck;
+
+        if (!profile.IsDeleted)
+            return (true, "이미 활성 상태인 회사설정입니다.");
 
         profile.IsDeleted = false;
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -873,12 +1092,12 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == categoryId, cancellationToken);
         if (category is null)
             return (false, "복원할 고객분류를 찾을 수 없습니다.");
-        if (!category.IsDeleted)
-            return (true, "이미 활성 상태인 고객분류입니다.");
-
         var revisionCheck = EnsureRecycleBinMutationRevision(category, target);
         if (!revisionCheck.Success)
             return revisionCheck;
+
+        if (!category.IsDeleted)
+            return (true, "이미 활성 상태인 고객분류입니다.");
 
         var normalizedName = DefaultCustomerCategories.NormalizeName(category.Name);
         var customerCategories = await _dbContext.CustomerCategories
@@ -907,12 +1126,12 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == optionId, cancellationToken);
         if (option is null)
             return (false, "복원할 가격등급을 찾을 수 없습니다.");
-        if (!option.IsDeleted)
-            return (true, "이미 활성 상태인 가격등급입니다.");
-
         var revisionCheck = EnsureRecycleBinMutationRevision(option, target);
         if (!revisionCheck.Success)
             return revisionCheck;
+
+        if (!option.IsDeleted)
+            return (true, "이미 활성 상태인 가격등급입니다.");
 
         var normalizedName = (option.Name ?? string.Empty).Trim();
         var priceGradeOptions = await _dbContext.PriceGradeOptions
@@ -942,12 +1161,12 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == optionId, cancellationToken);
         if (option is null)
             return (false, "복원할 거래구분을 찾을 수 없습니다.");
-        if (!option.IsDeleted)
-            return (true, "이미 활성 상태인 거래구분입니다.");
-
         var revisionCheck = EnsureRecycleBinMutationRevision(option, target);
         if (!revisionCheck.Success)
             return revisionCheck;
+
+        if (!option.IsDeleted)
+            return (true, "이미 활성 상태인 거래구분입니다.");
 
         if (CustomerClassificationNormalizer.TradeTypeDefinition.Find(option.Name) is null)
             return (false, "거래구분 기준값이 아니어서 복원할 수 없습니다.");
@@ -979,12 +1198,12 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == optionId, cancellationToken);
         if (option is null)
             return (false, "복원할 품목분류를 찾을 수 없습니다.");
-        if (!option.IsDeleted)
-            return (true, "이미 활성 상태인 품목분류입니다.");
-
         var revisionCheck = EnsureRecycleBinMutationRevision(option, target);
         if (!revisionCheck.Success)
             return revisionCheck;
+
+        if (!option.IsDeleted)
+            return (true, "이미 활성 상태인 품목분류입니다.");
 
         var normalizedNameKey = RentalCatalogValueNormalizer.NormalizeLooseKey(option.Name);
         var itemCategoryOptions = await _dbContext.ItemCategoryOptions
@@ -1017,22 +1236,27 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == invoice.CustomerId, cancellationToken);
         if (customer is null)
             return (false, "전표와 연결된 거래처를 찾을 수 없습니다.");
-        if (!_officeScopeService.CanWriteOfficeForInvoices(invoice.ResponsibleOfficeCode, invoice.TenantCode, invoice.OfficeCode))
-            return (false, "현재 계정으로 복원할 수 없는 전표입니다.");
-        if (!invoice.IsDeleted)
-            return (true, "이미 활성 상태인 전표입니다.");
-
+        var selectedInvoiceScopeCheck = await EnsureCanWriteInvoiceGroupAsync(
+            [invoice],
+            "복원",
+            cancellationToken);
+        if (!selectedInvoiceScopeCheck.Success)
+            return (false, selectedInvoiceScopeCheck.Message);
         var revisionCheck = EnsureRecycleBinMutationRevision(invoice, target);
         if (!revisionCheck.Success)
             return revisionCheck;
 
+        if (!invoice.IsDeleted)
+            return (true, "이미 활성 상태인 전표입니다.");
+
         var invoiceRentalProfileScopeCheck = await EnsureCanWriteRentalSettlementProfileAsync(
             invoice.LinkedRentalBillingProfileId,
+            invoice.LinkedRentalBillingRunId,
             cancellationToken);
         if (!invoiceRentalProfileScopeCheck.Success)
             return (false, invoiceRentalProfileScopeCheck.Message);
 
-        var invoiceGroupRestore = await RestoreInvoiceGroupAsync(invoice, customer, cancellationToken);
+        var invoiceGroupRestore = await RestoreInvoiceGroupAsync(invoice, invoice, cancellationToken);
         if (!invoiceGroupRestore.Success)
             return (false, invoiceGroupRestore.Message);
 
@@ -1050,6 +1274,12 @@ public sealed class RecycleBinController : ControllerBase
             .IgnoreQueryFilters()
             .Where(current => invoiceIds.Contains(current.InvoiceId) && current.IsDeleted)
             .ToListAsync(cancellationToken);
+        var deletedPaymentFingerprintCheck = EnsureRestoreCascadeDeletionFingerprint(
+            invoice,
+            deletedPayments,
+            "연결된 수금/지급 기록");
+        if (!deletedPaymentFingerprintCheck.Success)
+            return deletedPaymentFingerprintCheck;
         var restoredLinkedPaymentCount = 0;
         var restoredLinkedTransactionCount = 0;
         var relinkedTransactionCount = 0;
@@ -1058,14 +1288,20 @@ public sealed class RecycleBinController : ControllerBase
             if (!invoiceMap.TryGetValue(payment.InvoiceId, out var paymentInvoice))
                 continue;
 
-            var linkedTransactionRestore = await RestoreLinkedTransactionForPaymentAsync(payment, paymentInvoice, cancellationToken);
+            var linkedTransactionRestore = await RestoreLinkedTransactionForPaymentAsync(
+                payment,
+                paymentInvoice,
+                invoice,
+                cancellationToken);
             if (!linkedTransactionRestore.Success)
                 return (false, linkedTransactionRestore.Message);
             if (linkedTransactionRestore.RentalProfileId is Guid linkedRentalProfileId && linkedRentalProfileId != Guid.Empty)
                 rentalSettlementTargets.Add((linkedRentalProfileId, linkedTransactionRestore.RentalRunId));
 
             payment.IsDeleted = false;
-            await RestorePaymentAttachmentsAsync(payment.Id, cancellationToken);
+            var attachmentRestore = await RestorePaymentAttachmentsAsync(payment.Id, invoice, cancellationToken);
+            if (!attachmentRestore.Success)
+                return attachmentRestore;
             restoredLinkedPaymentCount++;
             if (linkedTransactionRestore.TransactionRestored)
                 restoredLinkedTransactionCount++;
@@ -1106,15 +1342,16 @@ public sealed class RecycleBinController : ControllerBase
             return (false, "연결된 거래처를 찾을 수 없습니다.");
         if (!_officeScopeService.CanWriteOfficeForPayments(invoice.ResponsibleOfficeCode, invoice.TenantCode, invoice.OfficeCode))
             return (false, "현재 계정으로 복원할 수 없는 수금/지급 기록입니다.");
-        if (!payment.IsDeleted)
-            return (true, "이미 활성 상태인 수금/지급 기록입니다.");
-
         var revisionCheck = EnsureRecycleBinMutationRevision(payment, target);
         if (!revisionCheck.Success)
             return revisionCheck;
 
+        if (!payment.IsDeleted)
+            return (true, "이미 활성 상태인 수금/지급 기록입니다.");
+
         var invoiceRentalProfileScopeCheck = await EnsureCanWriteRentalSettlementProfileAsync(
             invoice.LinkedRentalBillingProfileId,
+            invoice.LinkedRentalBillingRunId,
             cancellationToken);
         if (!invoiceRentalProfileScopeCheck.Success)
             return (false, invoiceRentalProfileScopeCheck.Message);
@@ -1124,7 +1361,7 @@ public sealed class RecycleBinController : ControllerBase
         var shouldRebuildInventoryLedger = false;
         if (invoice.IsDeleted)
         {
-            var invoiceGroupRestore = await RestoreInvoiceGroupAsync(invoice, customer, cancellationToken);
+            var invoiceGroupRestore = await RestoreInvoiceGroupAsync(invoice, payment, cancellationToken);
             if (!invoiceGroupRestore.Success)
                 return (false, invoiceGroupRestore.Message);
 
@@ -1134,6 +1371,13 @@ public sealed class RecycleBinController : ControllerBase
         }
         else if (customer.IsDeleted)
         {
+            var customerDeletionCheck = EnsureRestoreCascadeDeletionFingerprint(
+                payment,
+                [customer],
+                "연결된 거래처");
+            if (!customerDeletionCheck.Success)
+                return customerDeletionCheck;
+
             var customerScopeCheck = EnsureCanRestoreLinkedCustomer(customer);
             if (!customerScopeCheck.Success)
                 return customerScopeCheck;
@@ -1145,7 +1389,11 @@ public sealed class RecycleBinController : ControllerBase
         var rentalSettlementTargets = new List<(Guid ProfileId, Guid? RunId)>();
         AddRentalSettlementTarget(invoice, rentalSettlementTargets);
 
-        var linkedTransactionRestore = await RestoreLinkedTransactionForPaymentAsync(payment, invoice, cancellationToken);
+        var linkedTransactionRestore = await RestoreLinkedTransactionForPaymentAsync(
+            payment,
+            invoice,
+            payment,
+            cancellationToken);
         if (!linkedTransactionRestore.Success)
             return (false, linkedTransactionRestore.Message);
         customerRestored = linkedTransactionRestore.CustomerRestored || customerRestored;
@@ -1153,7 +1401,9 @@ public sealed class RecycleBinController : ControllerBase
             rentalSettlementTargets.Add((linkedRentalProfileId, linkedTransactionRestore.RentalRunId));
 
         payment.IsDeleted = false;
-        await RestorePaymentAttachmentsAsync(payment.Id, cancellationToken);
+        var paymentAttachmentRestore = await RestorePaymentAttachmentsAsync(payment.Id, payment, cancellationToken);
+        if (!paymentAttachmentRestore.Success)
+            return paymentAttachmentRestore;
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(rentalSettlementTargets, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -1174,12 +1424,12 @@ public sealed class RecycleBinController : ControllerBase
             return (false, "복원할 거래내역을 찾을 수 없습니다.");
         if (!_officeScopeService.CanWriteOfficeForPayments(transaction.ResponsibleOfficeCode, transaction.TenantCode, transaction.OfficeCode))
             return (false, "현재 계정으로 복원할 수 없는 거래내역입니다.");
-        if (!transaction.IsDeleted)
-            return (true, "이미 활성 상태인 거래내역입니다.");
-
         var revisionCheck = EnsureRecycleBinMutationRevision(transaction, target);
         if (!revisionCheck.Success)
             return revisionCheck;
+
+        if (!transaction.IsDeleted)
+            return (true, "이미 활성 상태인 거래내역입니다.");
 
         var customer = await _dbContext.Customers
             .IgnoreQueryFilters()
@@ -1189,6 +1439,7 @@ public sealed class RecycleBinController : ControllerBase
 
         var transactionRentalProfileScopeCheck = await EnsureCanWriteRentalSettlementProfileAsync(
             transaction.LinkedRentalBillingProfileId,
+            transaction.LinkedRentalBillingRunId,
             cancellationToken);
         if (!transactionRentalProfileScopeCheck.Success)
             return (false, transactionRentalProfileScopeCheck.Message);
@@ -1209,6 +1460,7 @@ public sealed class RecycleBinController : ControllerBase
 
                 var linkedInvoiceRentalProfileScopeCheck = await EnsureCanWriteRentalSettlementProfileAsync(
                     linkedInvoice.LinkedRentalBillingProfileId,
+                    linkedInvoice.LinkedRentalBillingRunId,
                     cancellationToken);
                 if (!linkedInvoiceRentalProfileScopeCheck.Success)
                     return (false, linkedInvoiceRentalProfileScopeCheck.Message);
@@ -1221,7 +1473,10 @@ public sealed class RecycleBinController : ControllerBase
 
                 if (linkedInvoice.IsDeleted)
                 {
-                    var invoiceGroupRestore = await RestoreInvoiceGroupAsync(linkedInvoice, linkedInvoiceCustomer, cancellationToken);
+                    var invoiceGroupRestore = await RestoreInvoiceGroupAsync(
+                        linkedInvoice,
+                        transaction,
+                        cancellationToken);
                     if (!invoiceGroupRestore.Success)
                         return (false, invoiceGroupRestore.Message);
 
@@ -1231,6 +1486,13 @@ public sealed class RecycleBinController : ControllerBase
                 }
                 else if (linkedInvoiceCustomer.IsDeleted)
                 {
+                    var customerDeletionCheck = EnsureRestoreCascadeDeletionFingerprint(
+                        transaction,
+                        [linkedInvoiceCustomer],
+                        "연결 전표의 거래처");
+                    if (!customerDeletionCheck.Success)
+                        return customerDeletionCheck;
+
                     var customerScopeCheck = EnsureCanRestoreLinkedCustomer(linkedInvoiceCustomer);
                     if (!customerScopeCheck.Success)
                         return customerScopeCheck;
@@ -1255,6 +1517,13 @@ public sealed class RecycleBinController : ControllerBase
 
         if (customer.IsDeleted)
         {
+            var customerDeletionCheck = EnsureRestoreCascadeDeletionFingerprint(
+                transaction,
+                [customer],
+                "연결된 거래처");
+            if (!customerDeletionCheck.Success)
+                return customerDeletionCheck;
+
             var customerScopeCheck = EnsureCanRestoreLinkedCustomer(customer);
             if (!customerScopeCheck.Success)
                 return customerScopeCheck;
@@ -1263,7 +1532,10 @@ public sealed class RecycleBinController : ControllerBase
             customerRestored = true;
         }
 
-        var linkedPaymentRestore = await RestoreLinkedPaymentForTransactionAsync(transaction, cancellationToken);
+        var linkedPaymentRestore = await RestoreLinkedPaymentForTransactionAsync(
+            transaction,
+            transaction,
+            cancellationToken);
         if (!linkedPaymentRestore.Success)
             return (false, linkedPaymentRestore.Message);
 
@@ -1271,7 +1543,12 @@ public sealed class RecycleBinController : ControllerBase
         AddRentalSettlementTarget(transaction, rentalSettlementTargets);
 
         transaction.IsDeleted = false;
-        await RestoreTransactionAttachmentsAsync(transaction.Id, cancellationToken);
+        var transactionAttachmentRestore = await RestoreTransactionAttachmentsAsync(
+            transaction.Id,
+            transaction,
+            cancellationToken);
+        if (!transactionAttachmentRestore.Success)
+            return transactionAttachmentRestore;
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(rentalSettlementTargets, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -1285,6 +1562,7 @@ public sealed class RecycleBinController : ControllerBase
     private async Task<(bool Success, bool TransactionRestored, bool TransactionRelinked, bool CustomerRestored, Guid? RentalProfileId, Guid? RentalRunId, string Message)> RestoreLinkedTransactionForPaymentAsync(
         Payment payment,
         Invoice invoice,
+        TrackedEntity restoreOrigin,
         CancellationToken cancellationToken)
     {
         var linkedTransaction = await _dbContext.Transactions
@@ -1293,14 +1571,24 @@ public sealed class RecycleBinController : ControllerBase
         if (linkedTransaction is null)
             return (true, false, false, false, null, null, string.Empty);
 
+        var transactionDeletionCheck = EnsureRestoreCascadeDeletionFingerprint(
+            restoreOrigin,
+            [linkedTransaction],
+            "연동 거래내역",
+            includeActiveTargets: true);
+        if (!transactionDeletionCheck.Success)
+            return (false, false, false, false, null, null, transactionDeletionCheck.Message);
+
         var invoiceRentalProfileScopeCheck = await EnsureCanWriteRentalSettlementProfileAsync(
             invoice.LinkedRentalBillingProfileId,
+            invoice.LinkedRentalBillingRunId,
             cancellationToken);
         if (!invoiceRentalProfileScopeCheck.Success)
             return (false, false, false, false, null, null, invoiceRentalProfileScopeCheck.Message);
 
         var transactionRentalProfileScopeCheck = await EnsureCanWriteRentalSettlementProfileAsync(
             linkedTransaction.LinkedRentalBillingProfileId,
+            linkedTransaction.LinkedRentalBillingRunId,
             cancellationToken);
         if (!transactionRentalProfileScopeCheck.Success)
             return (false, false, false, false, null, null, transactionRentalProfileScopeCheck.Message);
@@ -1372,6 +1660,13 @@ public sealed class RecycleBinController : ControllerBase
         var customerRestored = false;
         if (customer.IsDeleted)
         {
+            var customerDeletionCheck = EnsureRestoreCascadeDeletionFingerprint(
+                restoreOrigin,
+                [customer],
+                "연동 거래내역의 거래처");
+            if (!customerDeletionCheck.Success)
+                return (false, false, false, false, null, null, customerDeletionCheck.Message);
+
             var customerScopeCheck = EnsureCanRestoreLinkedCustomer(customer);
             if (!customerScopeCheck.Success)
                 return (false, false, false, false, null, null, customerScopeCheck.Message);
@@ -1381,12 +1676,18 @@ public sealed class RecycleBinController : ControllerBase
         }
 
         linkedTransaction.IsDeleted = false;
-        await RestoreTransactionAttachmentsAsync(linkedTransaction.Id, cancellationToken);
+        var attachmentRestore = await RestoreTransactionAttachmentsAsync(
+            linkedTransaction.Id,
+            restoreOrigin,
+            cancellationToken);
+        if (!attachmentRestore.Success)
+            return (false, false, false, false, null, null, attachmentRestore.Message);
         return (true, true, transactionRelinked, customerRestored, linkedTransaction.LinkedRentalBillingProfileId, linkedTransaction.LinkedRentalBillingRunId, string.Empty);
     }
 
     private async Task<(bool Success, bool PaymentRestored, string Message)> RestoreLinkedPaymentForTransactionAsync(
         TransactionRecord transaction,
+        TrackedEntity restoreOrigin,
         CancellationToken cancellationToken)
     {
         var linkedPayment = await _dbContext.Payments
@@ -1408,29 +1709,63 @@ public sealed class RecycleBinController : ControllerBase
         if (!linkedPayment.IsDeleted)
             return (true, false, string.Empty);
 
+        var paymentDeletionCheck = EnsureRestoreCascadeDeletionFingerprint(
+            restoreOrigin,
+            [linkedPayment],
+            "연동 수금/지급 기록");
+        if (!paymentDeletionCheck.Success)
+            return (false, false, paymentDeletionCheck.Message);
+
         linkedPayment.IsDeleted = false;
-        await RestorePaymentAttachmentsAsync(linkedPayment.Id, cancellationToken);
+        var attachmentRestore = await RestorePaymentAttachmentsAsync(
+            linkedPayment.Id,
+            restoreOrigin,
+            cancellationToken);
+        if (!attachmentRestore.Success)
+            return (false, false, attachmentRestore.Message);
         return (true, true, string.Empty);
     }
 
-    private async Task RestorePaymentAttachmentsAsync(Guid paymentId, CancellationToken cancellationToken)
+    private async Task<(bool Success, string Message)> RestorePaymentAttachmentsAsync(
+        Guid paymentId,
+        TrackedEntity restoreOrigin,
+        CancellationToken cancellationToken)
     {
         var attachments = await _dbContext.PaymentAttachments
             .IgnoreQueryFilters()
             .Where(current => current.PaymentId == paymentId && current.IsDeleted)
             .ToListAsync(cancellationToken);
+        var deletionCheck = EnsureRestoreCascadeDeletionFingerprint(
+            restoreOrigin,
+            attachments,
+            "수금/지급 첨부파일");
+        if (!deletionCheck.Success)
+            return deletionCheck;
+
         foreach (var attachment in attachments)
             attachment.IsDeleted = false;
+        return (true, string.Empty);
     }
 
-    private async Task RestoreTransactionAttachmentsAsync(Guid transactionId, CancellationToken cancellationToken)
+    private async Task<(bool Success, string Message)> RestoreTransactionAttachmentsAsync(
+        Guid transactionId,
+        TrackedEntity restoreOrigin,
+        CancellationToken cancellationToken)
     {
         var attachments = await _dbContext.TransactionAttachments
             .IgnoreQueryFilters()
             .Where(current => current.TransactionId == transactionId && current.IsDeleted)
             .ToListAsync(cancellationToken);
+        var deletionCheck = EnsureRestoreCascadeDeletionFingerprint(
+            restoreOrigin,
+            attachments,
+            "거래내역 첨부파일");
+        if (!deletionCheck.Success)
+            return deletionCheck;
+
         foreach (var attachment in attachments)
             attachment.IsDeleted = false;
+        return (true, string.Empty);
     }
 
     private static void AddRentalSettlementTarget(
@@ -1459,12 +1794,12 @@ public sealed class RecycleBinController : ControllerBase
             return (false, "복원할 렌탈 청구프로필을 찾을 수 없습니다.");
         if (!_officeScopeService.CanWriteOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode, profile.OfficeCode))
             return (false, "현재 계정으로 복원할 수 없는 렌탈 청구프로필입니다.");
-        if (!profile.IsDeleted)
-            return (true, "이미 활성 상태인 렌탈 청구프로필입니다.");
-
         var revisionCheck = EnsureRecycleBinMutationRevision(profile, target);
         if (!revisionCheck.Success)
             return revisionCheck;
+
+        if (!profile.IsDeleted)
+            return (true, "이미 활성 상태인 렌탈 청구프로필입니다.");
 
         var customerRestored = false;
         if (profile.CustomerId.HasValue && profile.CustomerId.Value != Guid.Empty)
@@ -1474,6 +1809,13 @@ public sealed class RecycleBinController : ControllerBase
                 .FirstOrDefaultAsync(current => current.Id == profile.CustomerId.Value, cancellationToken);
             if (customer is not null && customer.IsDeleted)
             {
+                var customerDeletionCheck = EnsureRestoreCascadeDeletionFingerprint(
+                    profile,
+                    [customer],
+                    "연결된 거래처");
+                if (!customerDeletionCheck.Success)
+                    return customerDeletionCheck;
+
                 if (!_officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode))
                     return (false, "현재 계정으로 연결된 거래처를 복원할 수 없습니다.");
 
@@ -1501,12 +1843,12 @@ public sealed class RecycleBinController : ControllerBase
             return (false, "복원할 렌탈 자산을 찾을 수 없습니다.");
         if (!_officeScopeService.CanWriteOfficeForRentals(asset.ResponsibleOfficeCode, asset.TenantCode, asset.OfficeCode))
             return (false, "현재 계정으로 복원할 수 없는 렌탈 자산입니다.");
-        if (!asset.IsDeleted)
-            return (true, "이미 활성 상태인 렌탈 자산입니다.");
-
         var revisionCheck = EnsureRecycleBinMutationRevision(asset, target);
         if (!revisionCheck.Success)
             return revisionCheck;
+
+        if (!asset.IsDeleted)
+            return (true, "이미 활성 상태인 렌탈 자산입니다.");
 
         var activeConflict = await FindActiveRentalAssetRestoreConflictAsync(asset, cancellationToken);
         if (activeConflict is not null)
@@ -1531,6 +1873,13 @@ public sealed class RecycleBinController : ControllerBase
                 .FirstOrDefaultAsync(current => current.Id == asset.CustomerId.Value, cancellationToken);
             if (customer is not null && customer.IsDeleted)
             {
+                var customerDeletionCheck = EnsureRestoreCascadeDeletionFingerprint(
+                    asset,
+                    [customer],
+                    "연결된 거래처");
+                if (!customerDeletionCheck.Success)
+                    return customerDeletionCheck;
+
                 if (!_officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode))
                     return (false, "현재 계정으로 연결된 거래처를 복원할 수 없습니다.");
 
@@ -1588,12 +1937,12 @@ public sealed class RecycleBinController : ControllerBase
             return (false, "복원할 렌탈 청구로그를 찾을 수 없습니다.");
         if (!_officeScopeService.CanWriteOfficeForRentals(log.ResponsibleOfficeCode, log.TenantCode, log.OfficeCode))
             return (false, "현재 계정으로 복원할 수 없는 렌탈 청구로그입니다.");
-        if (!log.IsDeleted)
-            return (true, "이미 활성 상태인 렌탈 청구로그입니다.");
-
         var revisionCheck = EnsureRecycleBinMutationRevision(log, target);
         if (!revisionCheck.Success)
             return revisionCheck;
+
+        if (!log.IsDeleted)
+            return (true, "이미 활성 상태인 렌탈 청구로그입니다.");
 
         var profileRestored = false;
         var profile = await _dbContext.RentalBillingProfiles
@@ -1601,6 +1950,13 @@ public sealed class RecycleBinController : ControllerBase
             .FirstOrDefaultAsync(current => current.Id == log.BillingProfileId, cancellationToken);
         if (profile is not null && profile.IsDeleted)
         {
+            var profileDeletionCheck = EnsureRestoreCascadeDeletionFingerprint(
+                log,
+                [profile],
+                "연결된 렌탈 청구프로필");
+            if (!profileDeletionCheck.Success)
+                return profileDeletionCheck;
+
             if (!_officeScopeService.CanWriteOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode, profile.OfficeCode))
                 return (false, "현재 계정으로 연결된 렌탈 청구프로필을 복원할 수 없습니다.");
 
@@ -1632,12 +1988,12 @@ public sealed class RecycleBinController : ControllerBase
         {
             return (false, scopeMessage);
         }
-        if (!transfer.IsDeleted)
-            return (true, "이미 활성 상태인 재고이동입니다.");
-
         var revisionCheck = EnsureRecycleBinMutationRevision(transfer, target);
         if (!revisionCheck.Success)
             return revisionCheck;
+
+        if (!transfer.IsDeleted)
+            return (true, "이미 활성 상태인 재고이동입니다.");
 
         var originalTransferDeleted = transfer.IsDeleted;
         var originalLineDeletedStates = transfer.Lines
@@ -1679,17 +2035,17 @@ public sealed class RecycleBinController : ControllerBase
         if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
             return (false, "현재 계정으로 복원할 수 없는 렌탈 관리업체입니다.");
 
-        var company = await _dbContext.RentalManagementCompanies
-            .IgnoreQueryFilters()
+        var company = await _officeScopeService.ApplyRentalManagementCompanyScope(
+                _dbContext.RentalManagementCompanies.IgnoreQueryFilters())
             .FirstOrDefaultAsync(current => current.Id == companyId, cancellationToken);
         if (company is null)
             return (false, "복원할 렌탈 관리업체를 찾을 수 없습니다.");
-        if (!company.IsDeleted)
-            return (true, "이미 활성 상태인 렌탈 관리업체입니다.");
-
         var revisionCheck = EnsureRecycleBinMutationRevision(company, target);
         if (!revisionCheck.Success)
             return revisionCheck;
+
+        if (!company.IsDeleted)
+            return (true, "이미 활성 상태인 렌탈 관리업체입니다.");
 
         company.IsDeleted = false;
         company.IsActive = true;
@@ -1765,6 +2121,8 @@ public sealed class RecycleBinController : ControllerBase
         foreach (var history in assignmentHistories)
             history.CustomerId = null;
 
+        using var fileDeletionPreparation =
+            PrepareStoragePathsForDatabaseCommit(contractStoragePaths);
         await TouchPurgeRecordsAsync(
         [
             CreatePurgeRecord("customer", customer.Id, customer.TenantCode, customer.ResponsibleOfficeCode, customer.OfficeCode)
@@ -1772,6 +2130,7 @@ public sealed class RecycleBinController : ControllerBase
         _dbContext.CustomerContracts.RemoveRange(contracts);
         _dbContext.Customers.Remove(customer);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        fileDeletionPreparation?.MarkDatabaseCommitCompleted();
 
         await DeleteStoragePathsIfUnreferencedAsync(contractStoragePaths, cancellationToken);
 
@@ -1800,13 +2159,16 @@ public sealed class RecycleBinController : ControllerBase
         if (!revisionCheck.Success)
             return revisionCheck;
 
+        var storagePath = contract.StoragePath;
+        using var fileDeletionPreparation =
+            PrepareStoragePathsForDatabaseCommit([storagePath]);
         await TouchPurgeRecordsAsync(
         [
             CreatePurgeRecord("contract", contract.Id, contractCustomer.TenantCode, contractCustomer.ResponsibleOfficeCode, contractCustomer.OfficeCode)
         ], cancellationToken);
-        var storagePath = contract.StoragePath;
         _dbContext.CustomerContracts.Remove(contract);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        fileDeletionPreparation?.MarkDatabaseCommitCompleted();
 
         await DeleteStoragePathsIfUnreferencedAsync([storagePath], cancellationToken);
 
@@ -2047,6 +2409,10 @@ public sealed class RecycleBinController : ControllerBase
 
     private async Task<(bool Success, string Message)> PurgeInvoiceAsync(RecycleBinMutationTargetDto target, CancellationToken cancellationToken)
     {
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
         var invoiceId = target.EntityId;
         var invoice = await _dbContext.Invoices
             .IgnoreQueryFilters()
@@ -2054,8 +2420,14 @@ public sealed class RecycleBinController : ControllerBase
         if (invoice is null)
             return (false, "영구삭제할 전표를 찾을 수 없습니다.");
         var invoiceCustomer = await _dbContext.Customers.IgnoreQueryFilters().FirstOrDefaultAsync(current => current.Id == invoice.CustomerId, cancellationToken);
-        if (invoiceCustomer is null || !_officeScopeService.CanWriteOfficeForInvoices(invoice.ResponsibleOfficeCode, invoice.TenantCode, invoice.OfficeCode))
+        if (invoiceCustomer is null)
             return (false, "현재 계정으로 영구삭제할 수 없는 전표입니다.");
+        var selectedInvoiceScopeCheck = await EnsureCanWriteInvoiceGroupAsync(
+            [invoice],
+            "영구삭제",
+            cancellationToken);
+        if (!selectedInvoiceScopeCheck.Success)
+            return (false, selectedInvoiceScopeCheck.Message);
         if (!invoice.IsDeleted)
             return (false, "활성 상태 전표는 휴지통에서 영구삭제할 수 없습니다.");
 
@@ -2064,9 +2436,24 @@ public sealed class RecycleBinController : ControllerBase
             return revisionCheck;
 
         var invoiceGroup = await GetInvoiceGroupAsync(invoice, cancellationToken);
-        var invoiceGroupScopeCheck = EnsureCanWriteInvoiceGroup(invoiceGroup, "영구삭제");
+        var invoiceGroupScopeCheck = await EnsureCanWriteInvoiceGroupAsync(
+            invoiceGroup,
+            "영구삭제",
+            cancellationToken);
         if (!invoiceGroupScopeCheck.Success)
             return invoiceGroupScopeCheck;
+        if (invoiceGroup.Any(current => !current.IsDeleted))
+        {
+            return (
+                false,
+                "활성 상태 버전이 포함된 전표 묶음은 휴지통에서 영구삭제할 수 없습니다.");
+        }
+        var paymentScopeCheck = await EnsureCanWriteInvoiceGroupDeletedPaymentsAsync(
+            invoiceGroup,
+            "영구삭제",
+            cancellationToken);
+        if (!paymentScopeCheck.Success)
+            return paymentScopeCheck;
 
         var invoiceIds = invoiceGroup.Select(current => current.Id).Distinct().ToList();
 
@@ -2106,10 +2493,8 @@ public sealed class RecycleBinController : ControllerBase
             return CreatePurgeRecord("payment", payment.Id, paymentInvoice.TenantCode, paymentInvoice.ResponsibleOfficeCode, paymentInvoice.OfficeCode);
         }));
 
-        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
-            _dbContext,
-            serializeInventoryMutations: true,
-            cancellationToken);
+        using var fileDeletionPreparation =
+            PrepareStoragePathsForDatabaseCommit(paymentAttachmentPaths);
         await TouchPurgeRecordsAsync(purgeRecords, cancellationToken);
         _dbContext.PaymentAttachments.RemoveRange(paymentAttachments);
         _dbContext.Payments.RemoveRange(deletedPayments);
@@ -2117,6 +2502,7 @@ public sealed class RecycleBinController : ControllerBase
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _inventoryLedgerService.RebuildAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
+        fileDeletionPreparation?.MarkDatabaseCommitCompleted();
 
         await DeleteStoragePathsIfUnreferencedAsync(paymentAttachmentPaths, cancellationToken);
 
@@ -2152,6 +2538,8 @@ public sealed class RecycleBinController : ControllerBase
             .Select(current => current.StoragePath)
             .ToList();
 
+        using var fileDeletionPreparation =
+            PrepareStoragePathsForDatabaseCommit(attachmentPaths);
         await TouchPurgeRecordsAsync(
         [
             CreatePurgeRecord("payment", payment.Id, purgeInvoice.TenantCode, purgeInvoice.ResponsibleOfficeCode, purgeInvoice.OfficeCode)
@@ -2159,6 +2547,7 @@ public sealed class RecycleBinController : ControllerBase
         _dbContext.PaymentAttachments.RemoveRange(attachments);
         _dbContext.Payments.Remove(payment);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        fileDeletionPreparation?.MarkDatabaseCommitCompleted();
 
         await DeleteStoragePathsIfUnreferencedAsync(attachmentPaths, cancellationToken);
 
@@ -2219,10 +2608,13 @@ public sealed class RecycleBinController : ControllerBase
             _dbContext.Payments.Remove(linkedPayment);
         }
 
+        using var fileDeletionPreparation =
+            PrepareStoragePathsForDatabaseCommit(attachmentPaths);
         await TouchPurgeRecordsAsync(purgeRecords, cancellationToken);
         _dbContext.TransactionAttachments.RemoveRange(attachments);
         _dbContext.Transactions.Remove(transaction);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        fileDeletionPreparation?.MarkDatabaseCommitCompleted();
 
         await DeleteStoragePathsIfUnreferencedAsync(attachmentPaths, cancellationToken);
 
@@ -2377,6 +2769,10 @@ public sealed class RecycleBinController : ControllerBase
 
     private async Task<(bool Success, string Message)> PurgeInventoryTransferAsync(RecycleBinMutationTargetDto target, CancellationToken cancellationToken)
     {
+        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
         var transferId = target.EntityId;
         var transfer = await _dbContext.InventoryTransfers
             .IgnoreQueryFilters()
@@ -2396,10 +2792,8 @@ public sealed class RecycleBinController : ControllerBase
             return revisionCheck;
 
         var receiveEvidencePath = transfer.ReceiveEvidencePath;
-        await using var transaction = await InventoryMutationTransactionScope.BeginAsync(
-            _dbContext,
-            serializeInventoryMutations: true,
-            cancellationToken);
+        using var fileDeletionPreparation =
+            PrepareStoragePathsForDatabaseCommit([receiveEvidencePath]);
         await TouchPurgeRecordsAsync(
         [
             CreatePurgeRecord(
@@ -2416,6 +2810,7 @@ public sealed class RecycleBinController : ControllerBase
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _inventoryLedgerService.RebuildAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
+        fileDeletionPreparation?.MarkDatabaseCommitCompleted();
 
         await DeleteStoragePathsIfUnreferencedAsync([receiveEvidencePath], cancellationToken);
 
@@ -2426,58 +2821,41 @@ public sealed class RecycleBinController : ControllerBase
         IEnumerable<string?> storagePaths,
         CancellationToken cancellationToken)
     {
-        var paths = storagePaths
+        var paths = NormalizeStoragePaths(storagePaths);
+        if (paths.Count == 0)
+            return;
+
+        try
+        {
+            await _storedFileReferenceReconciler.DeleteUnreferencedAsync(paths, cancellationToken);
+        }
+        catch
+        {
+            // File cleanup is best effort after the authoritative database purge.
+            // An inconclusive reference lookup or cancellation must preserve files
+            // without changing the already-committed purge result.
+        }
+    }
+
+    private IStoredFileDeferredDeletionPreparation?
+        PrepareStoragePathsForDatabaseCommit(
+            IEnumerable<string?> storagePaths)
+    {
+        var paths = NormalizeStoragePaths(storagePaths);
+        if (paths.Count == 0)
+            return null;
+
+        return _storedFileDeferredDeletionQueue
+            .PrepareForDatabaseCommit(paths);
+    }
+
+    private static List<string> NormalizeStoragePaths(
+        IEnumerable<string?> storagePaths)
+        => storagePaths
             .Where(path => !string.IsNullOrWhiteSpace(path))
             .Select(path => path!.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-        if (paths.Count == 0)
-            return;
-
-        var referencedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var path in await _dbContext.CustomerContracts
-                     .IgnoreQueryFilters()
-                     .AsNoTracking()
-                     .Where(contract => contract.StoragePath != null && paths.Contains(contract.StoragePath))
-                     .Select(contract => contract.StoragePath!)
-                     .ToListAsync(cancellationToken))
-        {
-            referencedPaths.Add(path);
-        }
-
-        foreach (var path in await _dbContext.TransactionAttachments
-                     .IgnoreQueryFilters()
-                     .AsNoTracking()
-                     .Where(attachment => attachment.StoragePath != null && paths.Contains(attachment.StoragePath))
-                     .Select(attachment => attachment.StoragePath!)
-                     .ToListAsync(cancellationToken))
-        {
-            referencedPaths.Add(path);
-        }
-
-        foreach (var path in await _dbContext.PaymentAttachments
-                     .IgnoreQueryFilters()
-                     .AsNoTracking()
-                     .Where(attachment => attachment.StoragePath != null && paths.Contains(attachment.StoragePath))
-                     .Select(attachment => attachment.StoragePath!)
-                     .ToListAsync(cancellationToken))
-        {
-            referencedPaths.Add(path);
-        }
-
-        foreach (var path in await _dbContext.InventoryTransfers
-                     .IgnoreQueryFilters()
-                     .AsNoTracking()
-                     .Where(transfer => transfer.ReceiveEvidencePath != null && paths.Contains(transfer.ReceiveEvidencePath))
-                     .Select(transfer => transfer.ReceiveEvidencePath!)
-                     .ToListAsync(cancellationToken))
-        {
-            referencedPaths.Add(path);
-        }
-
-        foreach (var storagePath in paths.Where(path => !referencedPaths.Contains(path)))
-            _fileStorage.DeleteIfExists(storagePath);
-    }
 
     private async Task<(bool Success, string Message)> PurgeRentalManagementCompanyAsync(RecycleBinMutationTargetDto target, CancellationToken cancellationToken)
     {
@@ -2485,8 +2863,8 @@ public sealed class RecycleBinController : ControllerBase
         if (!await _officeScopeService.HasAdministrativeWriteAccessAsync(cancellationToken))
             return (false, "현재 계정으로 영구삭제할 수 없는 렌탈 관리업체입니다.");
 
-        var company = await _dbContext.RentalManagementCompanies
-            .IgnoreQueryFilters()
+        var company = await _officeScopeService.ApplyRentalManagementCompanyScope(
+                _dbContext.RentalManagementCompanies.IgnoreQueryFilters())
             .FirstOrDefaultAsync(current => current.Id == companyId, cancellationToken);
         if (company is null)
             return (false, "영구삭제할 렌탈 관리업체를 찾을 수 없습니다.");
@@ -2496,8 +2874,14 @@ public sealed class RecycleBinController : ControllerBase
         var revisionCheck = EnsureRecycleBinMutationRevision(company, target);
         if (!revisionCheck.Success)
             return revisionCheck;
-        if (await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AnyAsync(profile => profile.ManagementCompanyCode == company.Code, cancellationToken) ||
-            await _dbContext.RentalAssets.IgnoreQueryFilters().AnyAsync(asset => asset.ManagementCompanyCode == company.Code, cancellationToken))
+        if (await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AnyAsync(
+                profile => profile.TenantCode == company.TenantCode &&
+                           profile.ManagementCompanyCode == company.Code,
+                cancellationToken) ||
+            await _dbContext.RentalAssets.IgnoreQueryFilters().AnyAsync(
+                asset => asset.TenantCode == company.TenantCode &&
+                         asset.ManagementCompanyCode == company.Code,
+                cancellationToken))
         {
             return (false, "연결된 렌탈 데이터가 남아 있어 렌탈 관리업체를 영구삭제할 수 없습니다.");
         }
@@ -2514,7 +2898,7 @@ public sealed class RecycleBinController : ControllerBase
     private async Task<List<Invoice>> GetInvoiceGroupAsync(Invoice invoice, CancellationToken cancellationToken)
     {
         var versionGroupId = invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId;
-        return await _dbContext.Invoices
+        var rawCandidates = await _dbContext.Invoices
             .IgnoreQueryFilters()
             .Include(current => current.Lines)
             .Where(current =>
@@ -2522,17 +2906,42 @@ public sealed class RecycleBinController : ControllerBase
                 current.Id == versionGroupId ||
                 current.VersionGroupId == versionGroupId)
             .ToListAsync(cancellationToken);
+        var customerScopes = await BuildFinalInvoiceCustomerScopeLookupAsync(
+            rawCandidates,
+            cancellationToken);
+        var selectedScope = ResolveInvoiceVersionScopeKey(invoice, customerScopes);
+
+        return rawCandidates
+            .Where(current => ResolveInvoiceVersionScopeKey(current, customerScopes) == selectedScope)
+            .ToList();
     }
 
     private async Task<(bool Success, bool CustomerRestored, string Message)> RestoreInvoiceGroupAsync(
         Invoice invoice,
-        Customer customer,
+        TrackedEntity restoreOrigin,
         CancellationToken cancellationToken)
     {
         var invoiceGroup = await GetInvoiceGroupAsync(invoice, cancellationToken);
-        var invoiceGroupScopeCheck = EnsureCanWriteInvoiceGroup(invoiceGroup, "복원");
+        var invoiceDeletionCheck = EnsureRestoreCascadeDeletionFingerprint(
+            restoreOrigin,
+            invoiceGroup,
+            "전표 묶음");
+        if (!invoiceDeletionCheck.Success)
+            return (false, false, invoiceDeletionCheck.Message);
+
+        var invoiceGroupScopeCheck = await EnsureCanWriteInvoiceGroupAsync(
+            invoiceGroup,
+            "복원",
+            cancellationToken);
         if (!invoiceGroupScopeCheck.Success)
             return (false, false, invoiceGroupScopeCheck.Message);
+
+        var paymentScopeCheck = await EnsureCanWriteInvoiceGroupDeletedPaymentsAsync(
+            invoiceGroup,
+            "복원",
+            cancellationToken);
+        if (!paymentScopeCheck.Success)
+            return (false, false, paymentScopeCheck.Message);
 
         var rentalProfileScopeCheck = await EnsureCanWriteRentalSettlementProfilesAsync(invoiceGroup, cancellationToken);
         if (!rentalProfileScopeCheck.Success)
@@ -2542,26 +2951,55 @@ public sealed class RecycleBinController : ControllerBase
         if (!lineItemScopeCheck.Success)
             return (false, false, lineItemScopeCheck.Message);
 
-        var previousStockDeltas = await BuildInvoiceGroupStockDeltasAsync(invoiceGroup, cancellationToken);
-        var customerRestored = false;
-        if (customer.IsDeleted)
+        var stockWarehouseScopeCheck = await EnsureCanWriteInvoiceGroupStockWarehousesAsync(
+            invoiceGroup,
+            cancellationToken);
+        if (!stockWarehouseScopeCheck.Success)
+            return (false, false, stockWarehouseScopeCheck.Message);
+
+        var customerIds = invoiceGroup
+            .Select(current => current.CustomerId)
+            .Distinct()
+            .ToList();
+        var customers = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .Where(current => customerIds.Contains(current.Id))
+            .ToListAsync(cancellationToken);
+        if (customers.Count != customerIds.Count)
+            return (false, false, "전표 묶음과 연결된 거래처를 모두 찾을 수 없습니다.");
+
+        var customerDeletionCheck = EnsureRestoreCascadeDeletionFingerprint(
+            restoreOrigin,
+            customers,
+            "전표 묶음의 거래처");
+        if (!customerDeletionCheck.Success)
+            return (false, false, customerDeletionCheck.Message);
+
+        foreach (var linkedCustomer in customers)
         {
-            var customerScopeCheck = EnsureCanRestoreLinkedCustomer(customer);
+            var customerScopeCheck = EnsureCanRestoreLinkedCustomer(linkedCustomer);
             if (!customerScopeCheck.Success)
                 return (false, false, customerScopeCheck.Message);
+        }
 
-            customer.IsDeleted = false;
+        var previousStockDeltas = await BuildInvoiceGroupStockDeltasAsync(invoiceGroup, cancellationToken);
+        var customerRestored = false;
+        foreach (var linkedCustomer in customers.Where(current => current.IsDeleted))
+        {
+            linkedCustomer.IsDeleted = false;
             customerRestored = true;
         }
 
-        var latestVersion = invoiceGroup
-            .Where(current => !current.IsDeleted)
-            .OrderByDescending(current => current.VersionNumber)
-            .ThenByDescending(current => current.UpdatedAtUtc)
-            .FirstOrDefault();
-        var resolvedGroupId = latestVersion?.VersionGroupId == Guid.Empty
-            ? latestVersion?.Id ?? invoice.Id
-            : latestVersion?.VersionGroupId ?? invoice.Id;
+        var resolvedGroupId = invoice.VersionGroupId != Guid.Empty
+            ? invoice.VersionGroupId
+            : invoiceGroup
+                .Where(current => current.VersionGroupId != Guid.Empty)
+                .OrderBy(current => current.VersionNumber)
+                .ThenBy(current => current.Id)
+                .Select(current => current.VersionGroupId)
+                .FirstOrDefault();
+        if (resolvedGroupId == Guid.Empty)
+            resolvedGroupId = invoice.Id;
 
         foreach (var current in invoiceGroup)
         {
@@ -2570,12 +3008,12 @@ public sealed class RecycleBinController : ControllerBase
             current.VersionNumber = current.VersionNumber <= 0 ? 1 : current.VersionNumber;
         }
 
-        var maxVersionNumber = invoiceGroup.Max(candidate => candidate.VersionNumber <= 0 ? 1 : candidate.VersionNumber);
+        var latestInvoiceId = SelectDeterministicLatestInvoice(invoiceGroup).Id;
 
         foreach (var current in invoiceGroup)
         {
             current.VersionGroupId = resolvedGroupId;
-            current.IsLatestVersion = current.VersionNumber == maxVersionNumber;
+            current.IsLatestVersion = current.Id == latestInvoiceId;
         }
 
         await RestoreInvoiceLinesAsync(invoiceGroup, cancellationToken);
@@ -2663,16 +3101,333 @@ public sealed class RecycleBinController : ControllerBase
             line.IsDeleted = false;
     }
 
-    private (bool Success, string Message) EnsureCanWriteInvoiceGroup(IEnumerable<Invoice> invoiceGroup, string actionText)
+    private async Task<(bool Success, string Message)> EnsureCanWriteInvoiceGroupAsync(
+        IEnumerable<Invoice> invoiceGroup,
+        string actionText,
+        CancellationToken cancellationToken)
     {
-        foreach (var current in invoiceGroup)
+        var invoices = invoiceGroup
+            .GroupBy(current => current.Id)
+            .Select(group => group.First())
+            .ToList();
+        var customerScopes = await BuildFinalInvoiceCustomerScopeLookupAsync(
+            invoices,
+            cancellationToken);
+        foreach (var current in invoices)
         {
-            if (!_officeScopeService.CanWriteOfficeForInvoices(current.ResponsibleOfficeCode, current.TenantCode, current.OfficeCode))
+            var scope = ResolveInvoiceVersionScopeKey(current, customerScopes);
+            if (!_officeScopeService.CanWriteOfficeForInvoices(
+                    scope.ResponsibleOfficeCode,
+                    scope.TenantCode,
+                    scope.OfficeCode))
+            {
                 return (false, $"현재 계정으로 전표 묶음의 모든 버전을 {actionText}할 수 없습니다.");
+            }
         }
 
         return (true, string.Empty);
     }
+
+    private async Task<(bool Success, string Message)> EnsureCanWriteInvoiceGroupDeletedPaymentsAsync(
+        IReadOnlyCollection<Invoice> invoiceGroup,
+        string actionText,
+        CancellationToken cancellationToken)
+    {
+        var invoiceIds = invoiceGroup
+            .Select(current => current.Id)
+            .Distinct()
+            .ToList();
+        if (invoiceIds.Count == 0)
+            return (true, string.Empty);
+
+        var deletedPayments = await _dbContext.Payments
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => invoiceIds.Contains(current.InvoiceId) && current.IsDeleted)
+            .Select(current => new { current.Id, current.InvoiceId })
+            .ToListAsync(cancellationToken);
+        if (deletedPayments.Count == 0)
+            return (true, string.Empty);
+
+        var invoiceIdsWithDeletedPayments = deletedPayments
+            .Select(current => current.InvoiceId)
+            .Distinct()
+            .ToHashSet();
+        var customerScopes = await BuildFinalInvoiceCustomerScopeLookupAsync(
+            invoiceGroup,
+            cancellationToken);
+        foreach (var current in invoiceGroup.Where(candidate =>
+                     invoiceIdsWithDeletedPayments.Contains(candidate.Id)))
+        {
+            var scope = ResolveInvoiceVersionScopeKey(current, customerScopes);
+            if (!_officeScopeService.CanWriteOfficeForPayments(
+                    scope.ResponsibleOfficeCode,
+                    scope.TenantCode,
+                    scope.OfficeCode))
+            {
+                return (
+                    false,
+                    $"현재 계정으로 전표 묶음의 연결 수금/지급 기록을 {actionText}할 수 없습니다.");
+            }
+        }
+
+        var deletedPaymentIds = deletedPayments
+            .Select(current => current.Id)
+            .ToList();
+        var linkedTransactions = await _dbContext.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => deletedPaymentIds.Contains(current.Id))
+            .ToListAsync(cancellationToken);
+        foreach (var linkedTransaction in linkedTransactions)
+        {
+            if (!_officeScopeService.CanWriteOfficeForPayments(
+                    linkedTransaction.ResponsibleOfficeCode,
+                    linkedTransaction.TenantCode,
+                    linkedTransaction.OfficeCode))
+            {
+                return (
+                    false,
+                    $"현재 계정으로 전표 묶음의 연결 거래내역을 {actionText}할 수 없습니다.");
+            }
+        }
+
+        return (true, string.Empty);
+    }
+
+    private async Task<(bool Success, string Message)> EnsureCanWriteInvoiceGroupStockWarehousesAsync(
+        IReadOnlyCollection<Invoice> invoiceGroup,
+        CancellationToken cancellationToken)
+    {
+        if (invoiceGroup.Count == 0)
+            return (true, string.Empty);
+
+        var latestAfterRestore = SelectDeterministicLatestInvoice(invoiceGroup);
+        var customerScopes = await BuildFinalInvoiceCustomerScopeLookupAsync(
+            invoiceGroup,
+            cancellationToken);
+        var itemIds = invoiceGroup
+            .SelectMany(current => current.Lines)
+            .Where(line => line.ItemId.HasValue && line.ItemId.Value != Guid.Empty)
+            .Select(line => line.ItemId!.Value)
+            .Distinct()
+            .ToList();
+        var itemTrackingTypes = itemIds.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await _dbContext.Items
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(current => itemIds.Contains(current.Id) && !current.IsDeleted)
+                .ToDictionaryAsync(
+                    current => current.Id,
+                    current => current.TrackingType,
+                    cancellationToken);
+        foreach (var current in invoiceGroup)
+        {
+            var participatesBeforeRestore =
+                !current.IsDeleted &&
+                current.IsLatestVersion &&
+                CanInvoiceParticipateInStock(
+                    current,
+                    includeDeletedLines: false,
+                    itemTrackingTypes);
+            var participatesAfterRestore =
+                current.Id == latestAfterRestore.Id &&
+                CanInvoiceParticipateInStock(
+                    current,
+                    includeDeletedLines: true,
+                    itemTrackingTypes);
+            if (!participatesBeforeRestore && !participatesAfterRestore)
+                continue;
+
+            var scope = ResolveInvoiceVersionScopeKey(current, customerScopes);
+            var warehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(
+                current.SourceWarehouseCode,
+                scope.ResponsibleOfficeCode,
+                scope.OfficeCode);
+            if (!_officeScopeService.CanWriteWarehouse(warehouseCode, scope.OfficeCode))
+            {
+                return (
+                    false,
+                    $"전표 출고창고가 현재 계정의 쓰기 범위를 벗어났습니다: {warehouseCode}.");
+            }
+        }
+
+        return (true, string.Empty);
+    }
+
+    private static bool CanInvoiceParticipateInStock(
+        Invoice invoice,
+        bool includeDeletedLines,
+        IReadOnlyDictionary<Guid, string> itemTrackingTypes)
+    {
+        if (invoice.VoucherType is not (VoucherType.Sales or VoucherType.Purchase or VoucherType.Procurement))
+            return false;
+        if (invoice.VoucherType == VoucherType.Purchase &&
+            !InvoiceReceivingStatuses.IsConfirmed(invoice.PurchaseReceivingStatus))
+        {
+            return false;
+        }
+
+        return invoice.Lines.Any(line =>
+            (includeDeletedLines || !line.IsDeleted) &&
+            line.ItemId.HasValue &&
+            line.ItemId.Value != Guid.Empty &&
+            line.Quantity != 0m &&
+            ItemOperationalPolicy.SupportsInventory(line.ItemTrackingType) &&
+            itemTrackingTypes.TryGetValue(line.ItemId.Value, out var itemTrackingType) &&
+            ItemOperationalPolicy.SupportsInventory(itemTrackingType));
+    }
+
+    private static Invoice SelectDeterministicLatestInvoice(IEnumerable<Invoice> invoiceGroup)
+        => invoiceGroup
+            .OrderByDescending(current => current.VersionNumber <= 0 ? 1 : current.VersionNumber)
+            .ThenByDescending(current => current.Id)
+            .First();
+
+    private async Task<Dictionary<Guid, InvoiceVersionCustomerScope>>
+        BuildFinalInvoiceCustomerScopeLookupAsync(
+            IEnumerable<Invoice> invoices,
+            CancellationToken cancellationToken)
+    {
+        var customerIds = invoices
+            .Select(current => current.CustomerId)
+            .Where(current => current != Guid.Empty)
+            .Distinct()
+            .ToList();
+        if (customerIds.Count == 0)
+            return [];
+
+        var customers = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(current => customerIds.Contains(current.Id))
+            .ToListAsync(cancellationToken);
+        return customers.ToDictionary(
+            current => current.Id,
+            ResolveFinalInvoiceCustomerScope);
+    }
+
+    private static InvoiceVersionCustomerScope ResolveFinalInvoiceCustomerScope(Customer customer)
+    {
+        var backfilledOfficeCode = OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(
+            customer.OfficeCode,
+            OfficeCodeCatalog.Shared);
+        var backfilledTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            customer.TenantCode,
+            backfilledOfficeCode,
+            TenantScopeCatalog.UsenetGroup,
+            backfilledOfficeCode);
+        var responsibleOfficeCode = NormalizeInvoiceResponsibleOfficeCode(
+            customer.ResponsibleOfficeCode,
+            backfilledOfficeCode,
+            OfficeCodeCatalog.Usenet);
+        var officeCode = ResolveInvoiceOwningOfficeCode(
+            backfilledOfficeCode,
+            responsibleOfficeCode,
+            OfficeCodeCatalog.Shared);
+        var tenantCode = NormalizeInvoiceOperationalTenantCode(
+            backfilledTenantCode,
+            officeCode,
+            responsibleOfficeCode);
+        return new InvoiceVersionCustomerScope(
+            tenantCode,
+            officeCode,
+            responsibleOfficeCode);
+    }
+
+    private static InvoiceVersionScopeKey ResolveInvoiceVersionScopeKey(
+        Invoice invoice,
+        IReadOnlyDictionary<Guid, InvoiceVersionCustomerScope> customerScopeLookup)
+    {
+        InvoiceVersionCustomerScope? customerScope =
+            customerScopeLookup.TryGetValue(invoice.CustomerId, out var resolvedCustomerScope)
+                ? resolvedCustomerScope
+                : null;
+        var responsibleOfficeCode = NormalizeInvoiceResponsibleOfficeCode(
+            invoice.ResponsibleOfficeCode,
+            customerScope?.ResponsibleOfficeCode,
+            invoice.OfficeCode,
+            customerScope?.OfficeCode,
+            OfficeCodeCatalog.Usenet);
+        var officeCode = ResolveInvoiceOwningOfficeCode(
+            invoice.OfficeCode,
+            responsibleOfficeCode,
+            customerScope?.OfficeCode,
+            OfficeCodeCatalog.Usenet);
+        var tenantCode =
+            TenantScopeCatalog.TryNormalizeTenantCode(
+                invoice.TenantCode,
+                out var explicitTenantCode)
+                ? explicitTenantCode
+                : customerScope?.TenantCode ??
+                  NormalizeInvoiceOperationalTenantCode(
+                      null,
+                      officeCode,
+                      responsibleOfficeCode);
+
+        return new InvoiceVersionScopeKey(
+            invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId,
+            invoice.CustomerId,
+            tenantCode,
+            officeCode,
+            responsibleOfficeCode);
+    }
+
+    private static string NormalizeInvoiceResponsibleOfficeCode(params string?[] candidates)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (OfficeCodeCatalog.TryNormalize(candidate, out var normalizedOfficeCode))
+                return normalizedOfficeCode;
+        }
+
+        return OfficeCodeCatalog.Usenet;
+    }
+
+    private static string ResolveInvoiceOwningOfficeCode(
+        string? ownerOfficeCode,
+        string? responsibleOfficeCode = null,
+        params string?[] fallbackCandidates)
+    {
+        foreach (var fallbackCandidate in fallbackCandidates)
+        {
+            if (string.IsNullOrWhiteSpace(fallbackCandidate))
+                continue;
+
+            return OfficeCodeCatalog.ResolveOwningOfficeCode(
+                ownerOfficeCode,
+                responsibleOfficeCode,
+                fallbackCandidate);
+        }
+
+        return OfficeCodeCatalog.ResolveOwningOfficeCode(
+            ownerOfficeCode,
+            responsibleOfficeCode,
+            OfficeCodeCatalog.Usenet);
+    }
+
+    private static string NormalizeInvoiceOperationalTenantCode(
+        string? tenantCode,
+        string? ownerOfficeCode,
+        string? responsibleOfficeCode = null)
+        => TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            tenantCode,
+            ResolveInvoiceOwningOfficeCode(ownerOfficeCode, responsibleOfficeCode),
+            tenantCode,
+            responsibleOfficeCode);
+
+    private readonly record struct InvoiceVersionScopeKey(
+        Guid VersionGroupId,
+        Guid CustomerId,
+        string TenantCode,
+        string OfficeCode,
+        string ResponsibleOfficeCode);
+
+    private readonly record struct InvoiceVersionCustomerScope(
+        string TenantCode,
+        string OfficeCode,
+        string ResponsibleOfficeCode);
 
     private bool CanMutateInventoryTransferFromRecycleBin(InventoryTransfer transfer, out string message)
     {
@@ -2713,7 +3468,7 @@ public sealed class RecycleBinController : ControllerBase
            string.Equals(status, InventoryTransferStatusNormalizer.Rejected, StringComparison.OrdinalIgnoreCase);
 
     private (bool Success, string Message) EnsureCanRestoreLinkedCustomer(Customer customer)
-        => !customer.IsDeleted || _officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode)
+        => _officeScopeService.CanWriteOfficeForCustomers(customer.ResponsibleOfficeCode, customer.TenantCode, customer.OfficeCode)
             ? (true, string.Empty)
             : (false, "현재 계정으로 연결된 거래처를 복원할 수 없습니다.");
 
@@ -2721,16 +3476,22 @@ public sealed class RecycleBinController : ControllerBase
         IEnumerable<Invoice> invoices,
         CancellationToken cancellationToken)
     {
-        var profileIds = (invoices ?? Enumerable.Empty<Invoice>())
-            .Select(invoice => invoice.LinkedRentalBillingProfileId)
-            .Where(profileId => profileId.HasValue && profileId.Value != Guid.Empty)
-            .Select(profileId => profileId!.Value)
+        var targets = (invoices ?? Enumerable.Empty<Invoice>())
+            .Where(invoice =>
+                invoice.LinkedRentalBillingProfileId.HasValue &&
+                invoice.LinkedRentalBillingProfileId.Value != Guid.Empty)
+            .Select(invoice => (
+                ProfileId: invoice.LinkedRentalBillingProfileId!.Value,
+                invoice.LinkedRentalBillingRunId))
             .Distinct()
             .ToList();
 
-        foreach (var profileId in profileIds)
+        foreach (var target in targets)
         {
-            var check = await EnsureCanWriteRentalSettlementProfileAsync(profileId, cancellationToken);
+            var check = await EnsureCanWriteRentalSettlementProfileAsync(
+                target.ProfileId,
+                target.LinkedRentalBillingRunId,
+                cancellationToken);
             if (!check.Success)
                 return check;
         }
@@ -2740,6 +3501,7 @@ public sealed class RecycleBinController : ControllerBase
 
     private async Task<(bool Success, string Message)> EnsureCanWriteRentalSettlementProfileAsync(
         Guid? profileId,
+        Guid? runId,
         CancellationToken cancellationToken)
     {
         if (!profileId.HasValue || profileId.Value == Guid.Empty)
@@ -2752,19 +3514,71 @@ public sealed class RecycleBinController : ControllerBase
         if (profile is null || profile.IsDeleted)
             return (false, "연결된 렌탈 청구프로필을 찾을 수 없어 복원할 수 없습니다.");
 
-        return _officeScopeService.CanWriteOfficeForRentals(profile.ResponsibleOfficeCode, profile.TenantCode, profile.OfficeCode)
-            ? (true, string.Empty)
-            : (false, "현재 계정으로 연결된 렌탈 청구프로필을 변경할 수 없어 복원할 수 없습니다.");
+        if (!_officeScopeService.CanWriteOfficeForRentals(
+                profile.ResponsibleOfficeCode,
+                profile.TenantCode,
+                profile.OfficeCode))
+        {
+            return (false, "현재 계정으로 연결된 렌탈 청구프로필을 변경할 수 없어 복원할 수 없습니다.");
+        }
+
+        var lookup = runId.HasValue && runId.Value != Guid.Empty
+            ? RentalBillingRunTombstonePolicy.LookupForServerMutation(profile.BillingRunsJson, runId.Value)
+            : RentalBillingRunTombstonePolicy.ValidateForServerMutation(profile.BillingRunsJson);
+        if (!lookup.IsValid)
+            return (false, "연결된 렌탈 청구프로필의 청구 실행 삭제 표시 JSON이 손상되어 복원할 수 없습니다.");
+
+        return lookup.IsTombstoned
+            ? (false, "삭제된 렌탈 청구 실행에 연결된 항목은 복원할 수 없습니다.")
+            : (true, string.Empty);
     }
+
+    private static (bool Success, string Message) EnsureRestoreCascadeDeletionFingerprint(
+        TrackedEntity restoreOrigin,
+        IEnumerable<TrackedEntity> cascadeTargets,
+        string cascadeTargetText,
+        bool includeActiveTargets = false)
+    {
+        var originDeletedAtUtc = NormalizeRestoreDeletionFingerprintUtc(restoreOrigin.UpdatedAtUtc);
+        foreach (var cascadeTarget in cascadeTargets.Where(current =>
+                     !ReferenceEquals(current, restoreOrigin) &&
+                     (includeActiveTargets || current.IsDeleted)))
+        {
+            var cascadeDeletedAtUtc = NormalizeRestoreDeletionFingerprintUtc(cascadeTarget.UpdatedAtUtc);
+            if (originDeletedAtUtc != default && cascadeDeletedAtUtc == originDeletedAtUtc)
+                continue;
+
+            var relativeRevisionText = cascadeTarget.Revision > restoreOrigin.Revision
+                ? $" 연결 항목 rev {cascadeTarget.Revision:N0}이 선택 항목 rev {restoreOrigin.Revision:N0}보다 최신입니다."
+                : string.Empty;
+            return (
+                false,
+                $"{cascadeTargetText}이(가) 선택 항목과 같은 삭제 작업에서 함께 변경된 항목임을 확인할 수 없어 복원을 중단했습니다.{relativeRevisionText} 새로고침 후 해당 항목을 먼저 직접 복원하세요.");
+        }
+
+        return (true, string.Empty);
+    }
+
+    private static DateTime NormalizeRestoreDeletionFingerprintUtc(DateTime value)
+        => value == default
+            ? default
+            : DateTime.SpecifyKind(value, DateTimeKind.Utc);
 
     private static (bool Success, string Message) EnsureRecycleBinMutationRevision(
         TrackedEntity entity,
         RecycleBinMutationTargetDto target)
     {
-        if (target.ExpectedRevision <= 0 || entity.Revision == target.ExpectedRevision)
+        var kindText = GetRecycleBinKindText(target.Kind);
+        if (target.ExpectedRevision <= 0)
+        {
+            return (
+                false,
+                $"{kindText} 항목의 최신 리비전이 없어 휴지통 작업을 중단했습니다. 새로고침 후 다시 시도하세요. ({OptimisticConcurrencyGuard.BuildExpectedRevisionRequiredReason()})");
+        }
+
+        if (entity.Revision == target.ExpectedRevision)
             return (true, string.Empty);
 
-        var kindText = GetRecycleBinKindText(target.Kind);
         var reason = OptimisticConcurrencyGuard.BuildExpectedRevisionConflictReason(target.ExpectedRevision, entity.Revision);
         return (false, $"{kindText} 항목이 다른 PC에서 변경되어 휴지통 작업을 중단했습니다. 새로고침 후 다시 시도하세요. ({reason})");
     }

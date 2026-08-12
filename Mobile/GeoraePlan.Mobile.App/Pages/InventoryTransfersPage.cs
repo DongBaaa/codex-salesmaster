@@ -10,7 +10,6 @@ namespace GeoraePlan.Mobile.App.Pages;
 public sealed class InventoryTransfersPage : ContentPage
 {
     private readonly InventoryTransfersViewModel _viewModel;
-    private readonly SyncCoordinator _syncCoordinator;
     private readonly MobileRefreshCoordinator _refreshCoordinator;
     private int _seenInventoryTransfersVersion;
 
@@ -19,7 +18,6 @@ public sealed class InventoryTransfersPage : ContentPage
         GeoraePlanTheme.ApplyPage(this, "재고이동 조회");
 
         _viewModel = ServiceHelper.GetRequiredService<InventoryTransfersViewModel>();
-        _syncCoordinator = ServiceHelper.GetRequiredService<SyncCoordinator>();
         _refreshCoordinator = ServiceHelper.GetRequiredService<MobileRefreshCoordinator>();
         _refreshCoordinator.AllChanged += HandleRealtimeRefreshRequested;
         BindingContext = _viewModel;
@@ -203,10 +201,24 @@ public sealed class InventoryTransfersPage : ContentPage
         await MobileErrorHandler.RunGuardedAsync(
             async () =>
             {
-await _syncCoordinator.RefreshIfServerChangedAsync("inventory-transfers-page", TimeSpan.FromSeconds(5));
-        if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
-            await _viewModel.RefreshAsync();
-        _seenInventoryTransfersVersion = _refreshCoordinator.InventoryTransfersVersion;
+                var owner = _viewModel.EnsureCurrentOwner();
+                if (_viewModel.NeedsRefresh(
+                        TimeSpan.FromSeconds(15)))
+                {
+                    await _viewModel.RefreshAsync();
+                }
+
+                if (!_viewModel.IsCurrentOwner(owner))
+                {
+                    owner = _viewModel.EnsureCurrentOwner();
+                    await _viewModel.RefreshAsync();
+                }
+
+                if (_viewModel.IsCurrentOwner(owner))
+                {
+                    _seenInventoryTransfersVersion =
+                        _refreshCoordinator.InventoryTransfersVersion;
+                }
             },
             "재고이동 화면 초기화");
     }
@@ -219,8 +231,14 @@ await _syncCoordinator.RefreshIfServerChangedAsync("inventory-transfers-page", T
                 {
                     if (Shell.Current?.CurrentPage == this && _seenInventoryTransfersVersion != _refreshCoordinator.InventoryTransfersVersion)
                     {
+                        var owner =
+                            _viewModel.EnsureCurrentOwner();
                         await _viewModel.RefreshAsync();
-                        _seenInventoryTransfersVersion = _refreshCoordinator.InventoryTransfersVersion;
+                        if (_viewModel.IsCurrentOwner(owner))
+                        {
+                            _seenInventoryTransfersVersion =
+                                _refreshCoordinator.InventoryTransfersVersion;
+                        }
                     }
                 },
                 "재고이동 실시간 갱신"));

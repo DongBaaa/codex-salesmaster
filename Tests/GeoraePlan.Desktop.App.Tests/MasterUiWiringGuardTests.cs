@@ -1,4 +1,5 @@
 ﻿using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using Xunit;
 
 namespace GeoraePlan.Desktop.App.Tests;
@@ -115,6 +116,16 @@ public sealed class MasterUiWiringGuardTests
             xaml,
             "청구서 표시 품목(거래명세서 출력 라인)과 거래처 임대 자산(실제 청구/전표 대상 자산)을 분리 관리합니다.",
             "청구서 표시 품목",
+            "Command=\"{Binding HoldBillingCommand}\"",
+            "IsEnabled=\"{Binding CanHoldSelected}\"",
+            "Command=\"{Binding CancelBillingCommand}\"",
+            "IsEnabled=\"{Binding CanCancelSelected}\"",
+            "현재 청구 주기를 취소 상태로 변경합니다. 청구 프로필과 기존 전표·입금 내역은 삭제하지 않습니다.",
+            "Command=\"{Binding MarkCompletedCommand}\"",
+            "IsEnabled=\"{Binding CanMarkCompletedSelected}\"",
+            "Text=\"{Binding EditBillingStatus, Mode=OneWay}\"",
+            "IsReadOnly=\"True\"",
+            "청구 상태는 상단의 청구서 만들기·청구 보류·청구 취소·완료 처리 명령으로 변경합니다.",
             "전표/거래명세서 출력 라인을 먼저 확인하고, 선택한 행의 세부값은 아래에서 편집합니다.",
             "선택 표시품목 상세",
             "연결대수",
@@ -146,6 +157,22 @@ public sealed class MasterUiWiringGuardTests
             "펼친 뒤 개별 프로필을 선택해 저장·삭제·장비연결·입금등록을 진행합니다.",
             "BillingAssetCoverageWarning",
             "HasBillingAssetCoverageWarning");
+
+        var saveActionIndex = xaml.IndexOf("Content=\"저장\"", StringComparison.Ordinal);
+        var startActionIndex = xaml.IndexOf("Content=\"청구서 만들기\"", StringComparison.Ordinal);
+        var holdActionIndex = xaml.IndexOf("Content=\"청구 보류\"", StringComparison.Ordinal);
+        var cancelActionIndex = xaml.IndexOf("Content=\"청구 취소\"", StringComparison.Ordinal);
+        var settlementActionIndex = xaml.IndexOf("Content=\"입금 등록\"", StringComparison.Ordinal);
+        var completeActionIndex = xaml.IndexOf("Content=\"완료 처리\"", StringComparison.Ordinal);
+        var deleteActionIndex = xaml.IndexOf("Content=\"선택 청구 삭제\"", StringComparison.Ordinal);
+        Assert.True(
+            saveActionIndex < startActionIndex &&
+            startActionIndex < holdActionIndex &&
+            holdActionIndex < cancelActionIndex &&
+            cancelActionIndex < settlementActionIndex &&
+            settlementActionIndex < completeActionIndex &&
+            completeActionIndex < deleteActionIndex,
+            "렌탈 청구 작업 버튼은 저장 → 청구서 만들기 → 청구 보류 → 청구 취소 → 입금 등록 → 완료 처리 → 삭제 순서를 유지해야 합니다.");
 
         Assert.DoesNotContain("청구항목 요약", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("그룹을 개별 청구건으로 보기", xaml, StringComparison.Ordinal);
@@ -250,35 +277,85 @@ public sealed class MasterUiWiringGuardTests
     }
 
     [Fact]
+    public void RentalCustomerOnboardingWindow_ModelessCloseUsesDialogSafeHelper()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var codeBehind = ReadAppFile(appRoot, "Views", "RentalCustomerOnboardingWindow.xaml.cs");
+        var rentalBillingWindow = ReadAppFile(appRoot, "Views", "RentalBillingWindow.xaml.cs");
+
+        AssertContainsAll(
+            codeBehind,
+            "DialogWindowCloseHelper.Close(this, true);",
+            "DialogWindowCloseHelper.Close(this, false);");
+        Assert.DoesNotContain("DialogResult =", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("WindowShowHelper.ShowModeless(onboardingWindow);", rentalBillingWindow, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void InventoryWindow_ItemActionsUseScopedItemCommandsAndGuardedServices()
     {
         var appRoot = FindDesktopAppRoot();
         var xaml = ReadAppFile(appRoot, "Views", "InventoryWindow.xaml");
+        var codeBehind = ReadAppFile(appRoot, "Views", "InventoryWindow.xaml.cs");
+        var desktopUiSmoke = ReadAppFile(appRoot, "MainWindow.DesktopUiSmoke.cs");
         var viewModel = ReadAppFile(appRoot, "ViewModels", "InventoryViewModel.cs");
 
         AssertContainsAll(
             xaml,
             "Command=\"{Binding NewItemCommand}\"",
             "Command=\"{Binding SaveItemCommand}\"",
-            "Command=\"{Binding DeleteItemCommand}\"",
+            "Click=\"DeleteItemButton_Click\"",
+            "AutomationProperties.AutomationId=\"DeleteItemButton\"",
+            "IsEnabled=\"{Binding CanDeleteSelectedItem}\"",
             "x:Name=\"ItemsDataGrid\"",
             "SelectionMode=\"Extended\"",
             "Content=\"선택 재고 초기화\"",
+            "Visibility=\"{Binding CanResetInventory, Converter={StaticResource BoolToVisibility}}\"",
+            "Content=\"재고이동\"",
+            "AutomationProperties.AutomationId=\"InventoryTransferButton\"",
+            "Visibility=\"{Binding CanManageInventoryTransfers, Converter={StaticResource BoolToVisibility}}\"",
             "Command=\"{Binding ShowUsenetOfficeCommand}\"",
             "Command=\"{Binding ShowItworldOfficeCommand}\"",
             "Command=\"{Binding ShowYeonsuOfficeCommand}\"");
 
+        Assert.DoesNotContain("Command=\"{Binding DeleteItemCommand}\"", xaml, StringComparison.Ordinal);
+        AssertContainsAll(
+            codeBehind,
+            "private void DeleteItemButton_Click(object sender, RoutedEventArgs e)",
+            "품목 삭제 확인",
+            "휴지통으로 이동할까요?",
+            "현재 재고 표시가 0으로 정리됩니다.",
+            "MessageBoxButton.YesNo",
+            "MessageBoxResult.Yes",
+            "MessageBoxResult.No",
+            "await vm.DeleteItemCommand.ExecuteAsync(null)");
+
+        Assert.Contains(
+            "\"선택 재고 초기화\"",
+            desktopUiSmoke,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "\"재고 초기화\",",
+            desktopUiSmoke,
+            StringComparison.Ordinal);
+
         AssertContainsAll(
             viewModel,
             "public bool CanDeleteSelectedItem =>",
+            "public bool CanResetInventory =>",
+            "_session.HasPermission(AppPermissionNames.InventoryReset)",
+            "public bool CanManageInventoryTransfers =>",
+            "_session.HasPermission(AppPermissionNames.DeliveryEdit)",
+            "public string TransferGuideMessage => CanManageInventoryTransfers",
             "_local.CanWriteItemScope(SelectedItem.Source, _session)",
             "[RelayCommand(CanExecute = nameof(CanDeleteSelectedItem))]",
-            "var deleteResult = await _local.DeleteItemAsync(SelectedItem.Id, _session, SelectedItem.Source.Revision)",
+            "var deleteResult = await _local.DeleteItemAsync(SelectedItem.Id, _session, _editRevision)",
             "public async Task<OfficeMutationResult> ResetSelectedInventoryValuesAsync(IReadOnlyCollection<InventoryItemRow> selectedItems)",
             "var result = await _local.ResetItemInventoryValuesAsync(selectedItemIds, _session)",
             "if (!CanSaveItems)",
             "catch (UnauthorizedAccessException ex)",
-            "await _local.UpsertItemAsync(BuildItem(snapshot), _session, snapshot.PreferredOfficeCode, BuildItemPriceGrades(snapshot))",
+            "await _local.UpsertItemAsync(",
+            "BuildItemPriceGrades(snapshot))",
             "var allItems = await _local.GetItemsAsync(_session)");
     }
 
@@ -469,6 +546,7 @@ public sealed class MasterUiWiringGuardTests
         var rentalBillingViewModel = ReadAppFile(appRoot, "ViewModels", "RentalBillingViewModel.cs");
         var rentalAssetViewModel = ReadAppFile(appRoot, "ViewModels", "RentalAssetViewModel.cs");
         var inventoryTransferViewModel = ReadAppFile(appRoot, "ViewModels", "InventoryTransferViewModel.cs");
+        var inventoryTransferWindow = ReadAppFile(appRoot, "Views", "InventoryTransferWindow.xaml");
         var yeonsuDeliveryViewModel = ReadAppFile(appRoot, "ViewModels", "YeonsuDeliveryViewModel.cs");
 
         AssertContainsAll(
@@ -512,43 +590,61 @@ public sealed class MasterUiWiringGuardTests
             rentalBillingViewModel,
             "private bool CanEditPayments => _session.HasAdministrativePrivileges ||",
             "private bool CanEditInvoices => _session.HasAdministrativePrivileges ||",
-            "public bool CanSave => CanEditRentalProfiles &&",
+            "public bool CanSave => !_hasOrphanedEditorDraft &&",
+            "CanEditRentalProfiles &&",
             "public bool CanStartBillingSelected => SelectedRow is not null &&",
+            "public bool CanCancelSelected => SelectedRow is not null && HasPersistedSelectedProfile && CanEditCurrentSelection && !SelectedRow.IsAggregateRow;",
             "public bool CanRegisterSettlementSelected => SelectedRow is not null && HasPersistedSelectedProfile && CanEditCurrentSelection && CanEditPayments",
-            "var result = await _rental.SaveBillingProfileAsync(entity, _session, BuildPendingAssetLinkEdits());",
+            "LocalMutationResult? result = null;",
+            "result = await _rental.SaveBillingProfileAsync(",
+            "BuildPendingAssetLinkEdits(),",
             "var result = await _rental.StartBillingAsync(targetId, ReferenceDate, _session, expectedRevision: expectedRevision);",
             "var result = await _rental.HoldBillingAsync(targetId, ReferenceDate, string.Empty, _session, expectedRevision: expectedRevision);",
+            "var result = await _rental.CancelBillingAsync(targetId, ReferenceDate, string.Empty, _session, expectedRevision: expectedRevision);",
             "var result = await _rental.RegisterBillingSettlementAsync(targetId, ReferenceDate, settledAmount, string.Empty, _session, expectedRevision: expectedRevision);",
             "var result = await _rental.DeleteBillingHistoryAsync(",
             "expectedRevision: SelectedRow.Source.Revision,",
             "expectedInvoiceRevision: history.InvoiceRevision);",
             "? await _rental.DeleteBillingProfileAsync(targetProfileId, _session, SelectedRow.Source.Revision)",
             "await _rental.DeleteBillingProfileAsync(row.Source.Id, _session, row.Source.Revision);",
+            "자산 자체는 삭제되지 않지만 프로필 연결은 해제되고 청구 상태는 '청구제외'로 변경됩니다.",
+            "휴지통에서 프로필을 복원해도 자산 연결은 자동 복구되지 않으므로 필요한 자산을 다시 연결해야 합니다.",
+            "confirmationMessage + persistedProfileDeleteNotice",
             "var result = await _rental.MarkBillingCompletedAsync(");
 
         AssertContainsAll(
             rentalAssetViewModel,
-            "public bool CanSave => SelectedRow is null",
-            "public bool CanDeleteSelected => SelectedRow is not null && CanEditCurrentSelection;",
+            "public bool CanSave =>",
+            "public bool CanDeleteSelected =>",
+            "!IsEditAutoSaveOwnershipActive &&",
             "[RelayCommand(CanExecute = nameof(CanSave))]",
             "[RelayCommand(CanExecute = nameof(CanDeleteSelected))]",
             "[RelayCommand(CanExecute = nameof(CanDeleteChecked))]",
             "[RelayCommand(CanExecute = nameof(CanReplaceSelected))]",
             "if (!CanDeleteSelected)",
             ".Where(row => !CanEditAssetRow(row))",
-            "var result = await _rental.DeleteAssetAsync(targetAssetId, _session, SelectedRow.Source.Revision);",
+            "var result = await _rental.DeleteAssetAsync(targetAssetId, _session, targetRow.Source.Revision);",
             "var result = await _rental.DeleteAssetAsync(row.Source.Id, _session, row.Source.Revision);",
             "OriginalAssetRevision = original.Revision,",
             "ReplacementAssetRevision = replacement.Revision,",
             "result = await _rental.ReplaceRentalEquipmentAsync(request, _session);",
-            "if (!CanSave)",
-            "var result = await _rental.SaveAssetAsync(BuildAsset(snapshot), _session);");
+            "if (!CanSaveSnapshot(snapshot, out var isDetailLoading))",
+            "var result = await _rental.SaveAssetAsync(",
+            "BuildAsset(snapshot),",
+            "changeOrigin: this);");
 
         AssertContainsAll(
             inventoryTransferViewModel,
-            "public bool CanDeleteTransfer => HasSavedTransfer && CanCurrentUserDelete;",
-            "public bool CanConfirmReceipt => HasSavedTransfer && !IsFinalTransferStatus && CanCurrentUserReceive;",
-            "public bool CanRejectTransfer => HasSavedTransfer && !IsFinalTransferStatus && CanCurrentUserReceive;",
+            "public bool CanEditSourceDraft =>",
+            "public bool CanEditReceiptDraft =>",
+            "CanCurrentUserEditSource(FromWarehouseCode);",
+            "public bool CanDeleteTransfer => !IsBusy && !IsExternalTransferUnavailable && HasSavedTransfer && CanCurrentUserDelete;",
+            "public bool CanConfirmReceipt => CanEditReceiptDraft;",
+            "public bool CanRejectTransfer => CanEditReceiptDraft;",
+            "CanCurrentUserResolveRemoteTombstoneConflict",
+            "별도 보관된 로컬 초안과 해당 전송 대기 기록을 영구 폐기합니다.",
+            "현재 서버 문서의 저장하지 않은 편집 내용은 폐기됩니다.",
+            "RecoverInventoryTransferTombstoneConflictAsNewAsync(",
             "var result = await _local.DeleteInventoryTransferAsync(targetTransferId, _session, _transferRevision);",
             "if (!CanConfirmReceipt)",
             "var result = await _local.ConfirmInventoryTransferReceiptAsync(",
@@ -556,13 +652,90 @@ public sealed class MasterUiWiringGuardTests
             "if (!CanRejectTransfer)",
             "var result = await _local.RejectInventoryTransferAsync(TransferId, RejectReason, _session, expectedRevision: _transferRevision);",
             "var result = await _local.SaveInventoryTransferAsync(transfer, _session);",
+            "if (!CanCurrentUserEditSource(snapshot.FromWarehouseCode))",
             "if (result.ConcurrencyConflict && showConflictDialog)");
+
+        AssertContainsAll(
+            inventoryTransferWindow,
+            "IsEnabled=\"{Binding CanEditSourceDraft}\"",
+            "IsEnabled=\"{Binding CanEditReceiptDraft}\"",
+            "Command=\"{Binding UpdateSourceLineCommand}\"",
+            "Command=\"{Binding UpdateReceiptLineCommand}\"",
+            "Visibility=\"{Binding HasRemoteTombstoneConflictDraft, Converter={StaticResource BoolToVisibility}}\"",
+            "IsEnabled=\"{Binding CanRecoverRemoteDeletedTransferAsNew}\"");
+        AssertAppearsBeforeInMember(
+            inventoryTransferViewModel,
+            "var tombstoneConflict =",
+            "if (version != Volatile.Read(",
+            "AddRemoteTombstoneConflictTransferId(",
+            "if (transfer is null)");
 
         AssertContainsAll(
             yeonsuDeliveryViewModel,
             "var invoices = await _local.GetSalesPurchaseLedgerInvoicesAsync(",
             "responsibleOfficeCode: accountOfficeCode,",
             "session: _session);");
+    }
+
+    [Fact]
+    public void InventoryTransferWindow_SplitsSourceEditAndTargetReceiptEnablement()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var xaml = ReadAppFile(appRoot, "Views", "InventoryTransferWindow.xaml");
+        var codeBehind = ReadAppFile(appRoot, "Views", "InventoryTransferWindow.xaml.cs");
+        var document = XDocument.Parse(xaml);
+        XNamespace xamlNamespace = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var workPanel = Assert.Single(
+            document.Descendants(),
+            element => string.Equals(
+                (string?)element.Attribute(xamlNamespace + "Name"),
+                "InventoryTransferWorkPanel",
+                StringComparison.Ordinal));
+
+        Assert.Equal("Grid", workPanel.Name.LocalName);
+        Assert.Equal("2", (string?)workPanel.Attribute("Grid.Column"));
+        Assert.Null(workPanel.Attribute("IsEnabled"));
+        Assert.True(
+            CountOccurrences(xaml, "IsEnabled=\"{Binding CanEditSourceDraft}\"") >= 6,
+            "Source-owned transfer fields must be gated independently.");
+        Assert.True(
+            CountOccurrences(xaml, "IsEnabled=\"{Binding CanEditReceiptDraft}\"") >= 4,
+            "Receipt-owned transfer fields must be gated independently.");
+        AssertContainsAll(
+            xaml,
+            "AutomationProperties.AutomationId=\"InventoryTransferWindow\"",
+            "AutomationProperties.AutomationId=\"FromWarehouseComboBox\"",
+            "AutomationProperties.AutomationId=\"ToWarehouseComboBox\"",
+            "AutomationProperties.AutomationId=\"RequestedQuantityTextBox\"",
+            "AutomationProperties.AutomationId=\"ReceiptQuantityTextBox\"",
+            "AutomationProperties.AutomationId=\"ConfirmReceiptButton\"",
+            "AutomationProperties.AutomationId=\"TransferLinesGrid\"");
+
+        var lineGridStart = xaml.IndexOf(
+            "AutomationProperties.AutomationId=\"TransferLinesGrid\"",
+            StringComparison.Ordinal);
+        Assert.True(lineGridStart >= 0, "Transfer line grid accessibility id is missing.");
+        var lineGridEnd = xaml.IndexOf("</DataGrid>", lineGridStart, StringComparison.Ordinal);
+        Assert.True(lineGridEnd > lineGridStart, "Transfer line grid closing tag is missing.");
+        var lineGridMarkup = xaml[lineGridStart..lineGridEnd];
+        Assert.Contains("IsReadOnly=\"True\"", lineGridMarkup, StringComparison.Ordinal);
+        Assert.Equal(3, CountOccurrences(lineGridMarkup, "StringFormat=N2"));
+        Assert.DoesNotContain("StringFormat=N0", lineGridMarkup, StringComparison.Ordinal);
+        AssertContainsAll(
+            codeBehind,
+            "private void DeleteTransferButton_Click(object sender, RoutedEventArgs e)",
+            "var confirm = MessageBox.Show(",
+            "재고이동 삭제",
+            "MessageBoxButton.YesNo",
+            "MessageBoxImage.Warning",
+            "MessageBoxResult.No",
+            "if (confirm != MessageBoxResult.Yes)");
+        AssertAppearsBeforeInMember(
+            codeBehind,
+            "private void DeleteTransferButton_Click(object sender, RoutedEventArgs e)",
+            "MessageBoxImage.Warning,",
+            "MessageBoxResult.No);",
+            "private void InputItemNameTextBox_KeyDown");
     }
 
     [Fact]
@@ -594,8 +767,79 @@ public sealed class MasterUiWiringGuardTests
             "public string DeleteCheckedButtonLabel => $\"체크 {CheckedAssetCount:N0}건 일괄삭제\";",
             "OnPropertyChanged(nameof(CheckedAssetCount));",
             "OnPropertyChanged(nameof(DeleteCheckedButtonLabel));",
-            "RefreshSavedAssetRowInPlaceAsync(savedAssetId, preserveSelectionRowId)",
-            "await _rental.GetAssetRowAsync(assetId, _session)");
+            "await RefreshSavedAssetRowInPlaceAsync(",
+            "preserveSelectionRowId,",
+            "snapshot);",
+            "await _rental.GetAssetRowAsync(assetId, _session)",
+            "var ownershipTask = AcquireEditAutoSaveOwnershipAsync();",
+            "return DrainSelectionAutoSaveOwnershipAsync(ownershipTask);",
+            "return HandleSelectionAutoSaveAsync(");
+        AssertAppearsBeforeInMember(
+            viewModel,
+            "partial void OnSelectedRowChanging(",
+            "var ownershipTask = AcquireEditAutoSaveOwnershipAsync();",
+            "if (!TryCaptureAutoSaveSnapshot(out var snapshot))",
+            "partial void OnEditCustomerNameChanged(");
+        AssertAppearsBeforeInMember(
+            viewModel,
+            "partial void OnSelectedRowChanging(",
+            "if (!TryCaptureAutoSaveSnapshot(out var snapshot))",
+            "return HandleSelectionAutoSaveAsync(",
+            "partial void OnEditCustomerNameChanged(");
+        AssertAppearsBeforeInMember(
+            viewModel,
+            "private async Task<EditAutoSaveOwnership> AcquireEditAutoSaveOwnershipAsync()",
+            "if (Interlocked.Increment(ref _editAutoSaveOwnerCount) == 1)",
+            "await _editAutoSaveDebouncer.CancelAndDrainAsync();",
+            "private async Task DrainSelectionAutoSaveOwnershipAsync(");
+        AssertAppearsBeforeInMember(
+            viewModel,
+            "private async Task<EditAutoSaveOwnership> AcquireEditAutoSaveOwnershipAsync()",
+            "await _editAutoSaveDebouncer.CancelAndDrainAsync();",
+            "return new EditAutoSaveOwnership(this);",
+            "private async Task DrainSelectionAutoSaveOwnershipAsync(");
+        AssertAppearsBeforeInMember(
+            viewModel,
+            "internal async Task WaitForEditAutoSaveQuiescenceAsync()",
+            "await _editAutoSaveDebouncer.WaitForIdleAsync();",
+            "await _editAutoSaveOwnerGate.WaitAsync();",
+            "private async Task<EditAutoSaveOwnership> AcquireEditAutoSaveOwnershipAsync()");
+        AssertAppearsBeforeInMember(
+            viewModel,
+            "private async Task<bool> HandleSelectionAutoSaveAsync(",
+            "using var ownership = await ownershipTask;",
+            "var completedAutoSave = Volatile.Read(ref _lastCompletedEditAutoSave);",
+            "private async Task<bool> TryAutoSaveCurrentEditAsync(");
+        AssertAppearsBeforeInMember(
+            viewModel,
+            "private async Task<bool> HandleSelectionAutoSaveAsync(",
+            "var completedAutoSave = Volatile.Read(ref _lastCompletedEditAutoSave);",
+            "var saved = await SaveSnapshotAsync(",
+            "private async Task<bool> TryAutoSaveCurrentEditAsync(");
+        AssertAppearsBeforeInMember(
+            viewModel,
+            "private async Task SaveAsync()",
+            "using var ownership = await AcquireEditAutoSaveOwnershipAsync();",
+            "var snapshot = CaptureEditSnapshot();",
+            "[RelayCommand(CanExecute = nameof(CanDeleteSelected))]");
+        AssertAppearsBeforeInMember(
+            viewModel,
+            "private async Task DeleteAsync()",
+            "using var ownership = await AcquireEditAutoSaveOwnershipAsync();",
+            "var result = await _rental.DeleteAssetAsync(",
+            "[RelayCommand(CanExecute = nameof(CanDeleteChecked))]");
+        AssertAppearsBeforeInMember(
+            viewModel,
+            "private async Task DeleteCheckedAsync()",
+            "using var ownership = await AcquireEditAutoSaveOwnershipAsync();",
+            "var targets = Rows",
+            "[RelayCommand(CanExecute = nameof(CanCreateAsset))]");
+        AssertAppearsBeforeInMember(
+            viewModel,
+            "private async Task<bool> TryAutoSaveCurrentEditAsync(",
+            "using var ownership = await AcquireEditAutoSaveOwnershipAsync();",
+            "if (!TryCaptureAutoSaveSnapshot(out var snapshot))",
+            "private bool TryCaptureAutoSaveSnapshot(");
     }
 
     [Fact]
@@ -630,7 +874,7 @@ public sealed class MasterUiWiringGuardTests
             "PurchaseVendor = source.PurchaseVendor",
             "BillingExclusionReason = source.BillingExclusionReason",
             "RentalEndDate = ToDateTime(source.RentalEndDate)",
-            "public string ConfirmButtonLabel => $\"선택 장비 {SelectedCount:N0}대 추가\";",
+            "public string ConfirmButtonLabel => $\"선택 장비 {SelectedCount:N0}대 적용 및 저장\";",
             "OnPropertyChanged(nameof(ConfirmButtonLabel));");
 
         AssertContainsAll(
@@ -642,15 +886,67 @@ public sealed class MasterUiWiringGuardTests
     }
 
     [Fact]
+    public void RentalWindows_PersistAssetLinkChangesAndRefreshOpenRentalScreens()
+    {
+        var appRoot = FindDesktopAppRoot();
+        var billingWindow = ReadAppFile(appRoot, "Views", "RentalBillingWindow.xaml.cs");
+        var billingViewModel = ReadAppFile(appRoot, "ViewModels", "RentalBillingViewModel.cs");
+        var assetViewModel = ReadAppFile(appRoot, "ViewModels", "RentalAssetViewModel.cs");
+        var linkDialog = ReadAppFile(appRoot, "Views", "RentalAssetLinkDialog.xaml");
+        var rentalService = ReadAppFile(appRoot, "Services", "RentalStateService.cs");
+        var syncService = ReadAppFile(appRoot, "Services", "SyncService.cs");
+
+        Assert.Contains("ApplyAssetLinkSelectionsAndSaveAsync", billingWindow, StringComparison.Ordinal);
+        AssertContainsAll(
+            billingViewModel,
+            "public async Task<bool> ApplyAssetLinkSelectionsAndSaveAsync",
+            "rental.StateChanged += HandleRentalStateChanged;",
+            "private readonly UiAsyncRefreshCoalescer _externalStateRefresh;",
+            "_externalStateRefresh.Request();",
+            "_externalStateRefresh.Dispose();",
+            "changeOrigin: this");
+        AssertContainsAll(
+            assetViewModel,
+            "rental.StateChanged += HandleRentalStateChanged;",
+            "private readonly UiAsyncRefreshCoalescer _externalStateRefresh;",
+            "_externalStateRefresh.Request();",
+            "_externalStateRefresh.Dispose();",
+            "changeOrigin: this");
+        Assert.DoesNotContain("_externalStateRefreshScheduled", billingViewModel, StringComparison.Ordinal);
+        Assert.DoesNotContain("_externalStateRefreshScheduled", assetViewModel, StringComparison.Ordinal);
+        AssertContainsAll(
+            rentalService,
+            "public event EventHandler<RentalStateChangedEventArgs>? StateChanged;",
+            "PublishStateChanged(");
+        Assert.Contains("PublishSynchronizedStateChanges", syncService, StringComparison.Ordinal);
+        AssertContainsAll(
+            linkDialog,
+            "Binding=\"{Binding LinkModeDisplay}\"",
+            "IsEnabled=\"{Binding SelectedAsset.CanEditInLinkDialog}\"",
+            "적용하고 청구 프로필과 자산 원장에 저장합니다.");
+    }
+
+    [Fact]
     public void MainWindow_PassiveIntegrityScanDoesNotPopAlertAfterRuntimeSync()
     {
         var appRoot = FindDesktopAppRoot();
         var mainWindow = ReadAppFile(appRoot, "MainWindow.xaml.cs");
-
-        Assert.Contains(
-            "await RunDataIntegrityScanAndPromptAsync($\"{reason} 후 동기화\", showPrompt: false);",
-            mainWindow,
+        var passiveSyncStart = mainWindow.IndexOf(
+            "private async Task RunPassiveSyncRefreshAsync(",
             StringComparison.Ordinal);
+        var passiveSyncEnd = mainWindow.IndexOf(
+            "private readonly record struct PassiveSyncOutcome",
+            passiveSyncStart,
+            StringComparison.Ordinal);
+
+        Assert.True(passiveSyncStart >= 0 && passiveSyncEnd > passiveSyncStart);
+        var passiveSyncBody = mainWindow[passiveSyncStart..passiveSyncEnd];
+        AssertContainsAll(
+            passiveSyncBody,
+            "await RunDataIntegrityScanAndPromptAsync(",
+            "$\"{reason} 후 동기화\",",
+            "showPrompt: false,",
+            "ct: ct);");
     }
 
     [Fact]
@@ -774,6 +1070,35 @@ public sealed class MasterUiWiringGuardTests
     {
         foreach (var marker in expectedMarkers)
             Assert.Contains(marker, source, StringComparison.Ordinal);
+    }
+
+    private static void AssertAppearsBeforeInMember(
+        string source,
+        string memberStartMarker,
+        string earlierMarker,
+        string laterMarker,
+        string memberEndMarker)
+    {
+        var memberStart = source.IndexOf(
+            memberStartMarker,
+            StringComparison.Ordinal);
+        var memberEnd = source.IndexOf(
+            memberEndMarker,
+            memberStart,
+            StringComparison.Ordinal);
+        var earlier = source.IndexOf(
+            earlierMarker,
+            memberStart,
+            StringComparison.Ordinal);
+        var later = source.IndexOf(
+            laterMarker,
+            memberStart,
+            StringComparison.Ordinal);
+
+        Assert.True(memberStart >= 0);
+        Assert.True(memberEnd > memberStart);
+        Assert.True(earlier > memberStart && earlier < memberEnd);
+        Assert.True(later > earlier && later < memberEnd);
     }
 
     private static int CountOccurrences(string source, string marker)

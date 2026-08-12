@@ -3,8 +3,13 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:거래플랜.Desktop.App.Converters"
         Title="내부 재고이동"
+        AutomationProperties.AutomationId="InventoryTransferWindow"
+        AutomationProperties.Name="내부 재고이동"
         Height="860"
         Width="1480"
+        MinWidth="640"
+        MinHeight="400"
+        ResizeMode="CanResize"
         WindowStartupLocation="CenterOwner"
         Background="#151F2E"
         KeyDown="Window_KeyDown">
@@ -119,27 +124,57 @@
 
     <DockPanel>
         <Border DockPanel.Dock="Top" Background="#1A2B4A" Padding="12,8">
-            <Grid>
+            <Grid x:Name="InventoryTransferHeaderGrid">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="2*"/>
                 </Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0" Orientation="Horizontal">
-                    <TextBlock Text="내부 재고이동 - 저장 시 출발창고 재고가 차감되고, 도착창고 재고는 수령확정 후 반영됩니다."
-                               FontSize="14"
-                               FontWeight="Bold"
-                               Foreground="#4FC3F7"/>
-                </StackPanel>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock x:Name="InventoryTransferHeaderText"
+                           Grid.Column="0"
+                           Text="내부 재고이동 - 저장 시 출발창고 재고가 차감되고, 도착창고 재고는 수령확정 후 반영됩니다."
+                           ToolTip="내부 재고이동 - 저장 시 출발창고 재고가 차감되고, 도착창고 재고는 수령확정 후 반영됩니다."
+                           TextWrapping="NoWrap"
+                           TextTrimming="CharacterEllipsis"
+                           Margin="0,0,10,0"
+                           FontSize="14"
+                           FontWeight="Bold"
+                           Foreground="#4FC3F7"/>
+                <ScrollViewer x:Name="InventoryTransferHeaderActionsScrollViewer"
+                              Grid.Column="1"
+                              HorizontalAlignment="Stretch"
+                              HorizontalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Disabled">
+                  <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <Button Content="신규 (F6)"
+                            AutomationProperties.AutomationId="NewTransferButton"
+                            AutomationProperties.Name="새 재고이동"
                             Style="{StaticResource TradePlanEditButtonStyle}"
                             Margin="0,0,6,0"
+                            IsEnabled="{Binding IsInteractionEnabled}"
                             Command="{Binding NewTransferCommand}"/>
                     <Button Content="저장 (F8)"
+                            AutomationProperties.AutomationId="SaveTransferButton"
+                            AutomationProperties.Name="재고이동 저장"
                             Style="{StaticResource TradePlanPrimaryButtonStyle}"
                             Margin="0,0,6,0"
+                            IsEnabled="{Binding CanSaveTransfer}"
                             Command="{Binding SaveTransferCommand}"/>
+                    <Button Content="최신본 불러오기"
+                            AutomationProperties.AutomationId="ReloadLatestTransferButton"
+                            AutomationProperties.Name="재고이동 최신본 불러오기"
+                            Style="{StaticResource TradePlanSecondaryButtonStyle}"
+                            Margin="0,0,6,0"
+                            IsEnabled="{Binding CanReloadLatestTransfer}"
+                            Command="{Binding ReloadLatestTransferCommand}"/>
+                    <Button Content="초안을 새 문서로 복구"
+                            Style="{StaticResource TradePlanEditButtonStyle}"
+                            Margin="0,0,6,0"
+                            Visibility="{Binding HasRemoteTombstoneConflictDraft, Converter={StaticResource BoolToVisibility}}"
+                            IsEnabled="{Binding CanRecoverRemoteDeletedTransferAsNew}"
+                            Command="{Binding RecoverRemoteDeletedTransferAsNewCommand}"/>
                     <Button Content="문서 삭제"
+                            AutomationProperties.AutomationId="DeleteTransferButton"
+                            AutomationProperties.Name="재고이동 문서 삭제"
                             Style="{StaticResource TradePlanDangerButtonStyle}"
                             Margin="0,0,6,0"
                             IsEnabled="{Binding CanDeleteTransfer}"
@@ -148,7 +183,8 @@
                     <Button Content="닫기 (F12)"
                             Style="{StaticResource TradePlanSecondaryButtonStyle}"
                             Click="CloseButton_Click"/>
-                </StackPanel>
+                  </StackPanel>
+                </ScrollViewer>
             </Grid>
         </Border>
 
@@ -156,22 +192,70 @@
                 Background="#0D1B2A"
                 Padding="12,4">
             <DockPanel>
-                <TextBlock Text="{Binding StatusMessage}" FontSize="11" Foreground="#90CAF9"/>
+                <TextBlock Text="{Binding StatusMessage}"
+                           AutomationProperties.AutomationId="TransferStatusMessageText"
+                           ToolTip="{Binding StatusMessage}"
+                           TextWrapping="NoWrap"
+                           TextTrimming="CharacterEllipsis"
+                           FontSize="11"
+                           Foreground="#90CAF9"/>
                 <TextBlock DockPanel.Dock="Right"
                            Text="수령대기 상태에서는 출고만 반영되고, 수령확정 시 도착 재고와 입고내역이 확정됩니다."
+                           ToolTip="수령대기 상태에서는 출고만 반영되고, 수령확정 시 도착 재고와 입고내역이 확정됩니다."
+                           TextWrapping="NoWrap"
+                           TextTrimming="CharacterEllipsis"
                            FontSize="11"
                            Foreground="#9FB3C8"/>
             </DockPanel>
         </Border>
 
         <Grid Margin="10">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="450" MinWidth="360"/>
-                <ColumnDefinition Width="5"/>
-                <ColumnDefinition Width="*"/>
-            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
 
-            <Border Grid.Column="0"
+            <Border x:Name="InventoryTransferCompactPaneSwitcher"
+                    Grid.Row="0"
+                    Visibility="Collapsed"
+                    Background="#132236"
+                    BorderBrush="#2E4060"
+                    BorderThickness="1"
+                    CornerRadius="6"
+                    Padding="6"
+                    Margin="0,0,0,8">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="작업영역"
+                               Foreground="#90CAF9"
+                               FontWeight="Bold"
+                               Margin="0,0,8,0"/>
+                    <Button x:Name="ShowCompactTransferListButton"
+                            Content="최근 문서"
+                            MinWidth="92"
+                            Height="32"
+                            Margin="0,0,6,0"
+                            Padding="10,0"
+                            Click="ShowCompactTransferListButton_Click"/>
+                    <Button x:Name="ShowCompactTransferWorkButton"
+                            Content="작업 내용"
+                            MinWidth="92"
+                            Height="32"
+                            Padding="10,0"
+                            Click="ShowCompactTransferWorkButton_Click"/>
+                </StackPanel>
+            </Border>
+
+            <Grid x:Name="InventoryTransferWorkspaceGrid"
+                  Grid.Row="1"
+                  IsEnabled="{Binding IsInteractionEnabled}">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition x:Name="InventoryTransferListColumn" Width="450" MinWidth="360"/>
+                <ColumnDefinition x:Name="InventoryTransferSplitterColumn" Width="5"/>
+                <ColumnDefinition x:Name="InventoryTransferWorkColumn" Width="*"/>
+              </Grid.ColumnDefinitions>
+
+            <Border x:Name="InventoryTransferListPanel"
+                    Grid.Column="0"
                     Background="#16263D"
                     Padding="12"
                     CornerRadius="6"
@@ -189,9 +273,17 @@
                     </StackPanel>
 
                         <DataGrid ItemsSource="{Binding Transfers}"
+                                  AutomationProperties.AutomationId="TransferListGrid"
+                                  AutomationProperties.Name="재고이동 문서 목록"
                                   SelectedItem="{Binding SelectedTransfer}"
                                   IsReadOnly="True"
                                   BorderThickness="0">
+                        <DataGrid.RowStyle>
+                            <Style TargetType="DataGridRow">
+                                <Setter Property="AutomationProperties.AutomationId"
+                                        Value="{Binding Id}"/>
+                            </Style>
+                        </DataGrid.RowStyle>
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="이동일" Binding="{Binding TransferDate}" Width="82"/>
                             <DataGridTextColumn Header="이동번호" Binding="{Binding TransferNumber}" Width="66"/>
@@ -204,26 +296,76 @@
                 </DockPanel>
             </Border>
 
-            <GridSplitter Grid.Column="1"
+            <GridSplitter x:Name="InventoryTransferWorkspaceSplitter"
+                          Grid.Column="1"
                           Width="5"
                           HorizontalAlignment="Stretch"
                           Background="#0D1B2A"
-                          Cursor="SizeWE"/>
+                          Cursor="SizeWE"
+                          Focusable="True"
+                          ResizeDirection="Columns"
+                          ResizeBehavior="PreviousAndNext"
+                          ShowsPreview="True"
+                          AutomationProperties.Name="최근 문서와 재고이동 작업영역 너비 조절"
+                          ToolTip="좌우로 끌거나 방향키로 최근 문서와 작업영역의 너비를 조절합니다."/>
 
-            <Grid Grid.Column="2">
+            <Grid x:Name="InventoryTransferWorkPanel"
+                  Grid.Column="2">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
+                    <RowDefinition x:Name="InventoryTransferBasicRow" Height="Auto"/>
+                    <RowDefinition x:Name="InventoryTransferEntryRow" Height="Auto"/>
+                    <RowDefinition x:Name="InventoryTransferLinesRow" Height="*"/>
                 </Grid.RowDefinitions>
 
-                <Border Grid.Row="0"
+                <Border x:Name="InventoryTransferDetailSectionSwitcher"
+                        Grid.Row="0"
+                        Visibility="Collapsed"
+                        Background="#132236"
+                        BorderBrush="#2E4060"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="6"
+                        Margin="0,0,0,8">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="작업 단계"
+                                   Foreground="#90CAF9"
+                                   FontWeight="Bold"
+                                   Margin="0,0,8,0"/>
+                        <Button x:Name="ShowCompactTransferBasicButton"
+                                Content="기본 정보"
+                                MinWidth="92"
+                                Height="32"
+                                Margin="0,0,6,0"
+                                Padding="10,0"
+                                Click="ShowCompactTransferBasicButton_Click"/>
+                        <Button x:Name="ShowCompactTransferEntryButton"
+                                Content="품목 입력·수령"
+                                MinWidth="118"
+                                Height="32"
+                                Margin="0,0,6,0"
+                                Padding="10,0"
+                                Click="ShowCompactTransferEntryButton_Click"/>
+                        <Button x:Name="ShowCompactTransferLinesButton"
+                                Content="품목 목록"
+                                MinWidth="92"
+                                Height="32"
+                                Padding="10,0"
+                                Click="ShowCompactTransferLinesButton_Click"/>
+                    </StackPanel>
+                </Border>
+
+                <Border x:Name="InventoryTransferBasicPanel"
+                        Grid.Row="1"
                         Background="#16263D"
                         Padding="12"
                         CornerRadius="6"
                         BorderBrush="#2E4060"
                         BorderThickness="1">
-                    <StackPanel>
+                  <ScrollViewer x:Name="InventoryTransferBasicScrollViewer"
+                                HorizontalScrollBarVisibility="Auto"
+                                VerticalScrollBarVisibility="Auto">
+                    <StackPanel MinWidth="900">
                         <TextBlock Text="재고이동 기본 정보"
                                    FontSize="14"
                                    FontWeight="Bold"
@@ -251,6 +393,9 @@
                                      Background="#C4D7EA"/>
                             <Label Grid.Row="0" Grid.Column="2" Content="이동일자"/>
                             <DatePicker Grid.Row="0" Grid.Column="3"
+                                        AutomationProperties.AutomationId="TransferDatePicker"
+                                        AutomationProperties.Name="이동일자"
+                                        IsEnabled="{Binding CanEditSourceDraft}"
                                         SelectedDate="{Binding TransferDate, Converter={StaticResource DateOnlyConverter}}">
                                 <DatePicker.Resources>
                         <Style TargetType="{x:Type Button}" BasedOn="{StaticResource UnifiedDatePickerButtonStyle}"/>
@@ -259,12 +404,18 @@
 
                             <Label Grid.Row="1" Grid.Column="0" Content="출발창고"/>
                             <ComboBox Grid.Row="1" Grid.Column="1"
+                                      AutomationProperties.AutomationId="FromWarehouseComboBox"
+                                      AutomationProperties.Name="출발창고"
+                                      IsEnabled="{Binding CanEditSourceDraft}"
                                       ItemsSource="{Binding Warehouses}"
                                       SelectedValuePath="Code"
                                       SelectedValue="{Binding FromWarehouseCode}"
                                       DisplayMemberPath="Name"/>
                             <Label Grid.Row="1" Grid.Column="2" Content="도착창고"/>
                             <ComboBox Grid.Row="1" Grid.Column="3"
+                                      AutomationProperties.AutomationId="ToWarehouseComboBox"
+                                      AutomationProperties.Name="도착창고"
+                                      IsEnabled="{Binding CanEditSourceDraft}"
                                       ItemsSource="{Binding Warehouses}"
                                       SelectedValuePath="Code"
                                       SelectedValue="{Binding ToWarehouseCode}"
@@ -286,6 +437,9 @@
 
                             <Label Grid.Row="4" Grid.Column="0" Content="메모"/>
                             <TextBox Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="3"
+                                     AutomationProperties.AutomationId="TransferMemoTextBox"
+                                     AutomationProperties.Name="재고이동 메모"
+                                     IsEnabled="{Binding CanEditSourceDraft}"
                                      Text="{Binding Memo, UpdateSourceTrigger=PropertyChanged}"
                                      AcceptsReturn="True"
                                      TextWrapping="Wrap"
@@ -294,16 +448,21 @@
                                      Padding="8,6"/>
                         </Grid>
                     </StackPanel>
+                  </ScrollViewer>
                 </Border>
 
-                <Border Grid.Row="1"
+                <Border x:Name="InventoryTransferEntryPanel"
+                        Grid.Row="2"
                         Margin="0,8,0,0"
                         Background="#16263D"
                         Padding="12"
                         CornerRadius="6"
                         BorderBrush="#2E4060"
                         BorderThickness="1">
-                    <Grid>
+                  <ScrollViewer x:Name="InventoryTransferEntryScrollViewer"
+                                HorizontalScrollBarVisibility="Auto"
+                                VerticalScrollBarVisibility="Auto">
+                    <Grid MinWidth="1050">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="410"/>
@@ -327,8 +486,6 @@
                                     <RowDefinition Height="8"/>
                                     <RowDefinition Height="34"/>
                                     <RowDefinition Height="8"/>
-                                    <RowDefinition Height="34"/>
-                                    <RowDefinition Height="8"/>
                                     <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
 
@@ -345,11 +502,17 @@
                                     <Label Grid.Column="0" Content="품목검색"/>
                                     <TextBox Grid.Column="1"
                                              x:Name="InputItemNameTextBox"
+                                             AutomationProperties.AutomationId="ItemSearchTextBox"
+                                             AutomationProperties.Name="이동 품목 검색"
+                                             IsEnabled="{Binding CanEditSourceDraft}"
                                              Height="34"
                                              Text="{Binding InputItemName, UpdateSourceTrigger=PropertyChanged}"
                                              KeyDown="InputItemNameTextBox_KeyDown"/>
                                     <Button Grid.Column="3"
                                             Content="찾기"
+                                            AutomationProperties.AutomationId="ItemLookupButton"
+                                            AutomationProperties.Name="이동 품목 찾기"
+                                            IsEnabled="{Binding CanEditSourceDraft}"
                                             Style="{StaticResource TradePlanSecondaryButtonStyle}"
                                             MinWidth="92"
                                             Width="92"
@@ -377,10 +540,16 @@
 
                                     <Label Grid.Column="0" Content="규격"/>
                                     <TextBox Grid.Column="1"
+                                             AutomationProperties.AutomationId="ItemSpecificationTextBox"
+                                             AutomationProperties.Name="이동 품목 규격"
+                                             IsEnabled="{Binding CanEditSourceDraft}"
                                              Height="34"
                                              Text="{Binding InputSpec, UpdateSourceTrigger=PropertyChanged}"/>
                                     <Label Grid.Column="3" Content="전달비고"/>
                                     <TextBox Grid.Column="5"
+                                             AutomationProperties.AutomationId="SourceRemarkTextBox"
+                                             AutomationProperties.Name="전달 비고"
+                                             IsEnabled="{Binding CanEditSourceDraft}"
                                              Height="34"
                                              Text="{Binding InputRemark, UpdateSourceTrigger=PropertyChanged}"/>
                                 </Grid>
@@ -392,39 +561,26 @@
                                         <ColumnDefinition Width="8"/>
                                         <ColumnDefinition Width="Auto" SharedSizeGroup="TransferFormLabel"/>
                                         <ColumnDefinition Width="92"/>
-                                        <ColumnDefinition Width="8"/>
-                                        <ColumnDefinition Width="Auto" SharedSizeGroup="TransferFormLabel"/>
-                                        <ColumnDefinition Width="92"/>
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
 
                                     <Label Grid.Column="0" Content="단위"/>
                                     <TextBox Grid.Column="1"
+                                             AutomationProperties.AutomationId="ItemUnitTextBox"
+                                             AutomationProperties.Name="이동 품목 단위"
+                                             IsEnabled="{Binding CanEditSourceDraft}"
                                              Height="34"
                                              Text="{Binding InputUnit, UpdateSourceTrigger=PropertyChanged}"/>
                                     <Label Grid.Column="3" Content="요청수량"/>
                                     <TextBox Grid.Column="4"
+                                             AutomationProperties.AutomationId="RequestedQuantityTextBox"
+                                             AutomationProperties.Name="요청수량"
+                                             IsEnabled="{Binding CanEditSourceDraft}"
                                              Height="34"
                                              Text="{Binding InputQty, UpdateSourceTrigger=PropertyChanged}"/>
-                                    <Label Grid.Column="6" Content="수령수량"/>
-                                    <TextBox Grid.Column="7"
-                                             Height="34"
-                                             Text="{Binding InputReceivedQty, UpdateSourceTrigger=PropertyChanged}"/>
                                 </Grid>
 
                                 <Grid Grid.Row="6">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" SharedSizeGroup="TransferFormLabel"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-
-                                    <Label Grid.Column="0" Content="품목 수령메모"/>
-                                    <TextBox Grid.Column="1"
-                                             Height="34"
-                                             Text="{Binding InputReceiptRemark, UpdateSourceTrigger=PropertyChanged}"/>
-                                </Grid>
-
-                                <Grid Grid.Row="8">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="Auto"/>
@@ -434,24 +590,30 @@
 
                                     <TextBlock Grid.Column="0"
                                                Margin="0,0,8,0"
-                                               Text="수령수량/수령메모는 품목별 실제 입고 확인값입니다."
+                                               Text="출발지에서 요청 품목과 요청수량을 구성합니다."
                                                Foreground="#9FB3C8"
                                                VerticalAlignment="Center"
                                                TextWrapping="Wrap"/>
                                     <Button Grid.Column="1"
                                             Content="행 추가"
+                                            AutomationProperties.AutomationId="AddLineButton"
+                                            AutomationProperties.Name="이동 요청 품목 추가"
                                             Style="{StaticResource TradePlanEditButtonStyle}"
                                             Margin="0,0,6,0"
                                             IsEnabled="{Binding CanAddLine}"
                                             Command="{Binding AddLineCommand}"/>
                                     <Button Grid.Column="2"
                                             Content="행 수정"
+                                            AutomationProperties.AutomationId="UpdateSourceLineButton"
+                                            AutomationProperties.Name="이동 요청 품목 수정"
                                             Style="{StaticResource TradePlanEditButtonStyle}"
                                             Margin="0,0,6,0"
-                                            IsEnabled="{Binding CanUpdateLine}"
-                                            Command="{Binding UpdateLineCommand}"/>
+                                            IsEnabled="{Binding CanUpdateSourceLine}"
+                                            Command="{Binding UpdateSourceLineCommand}"/>
                                     <Button Grid.Column="3"
                                             Content="행 삭제"
+                                            AutomationProperties.AutomationId="DeleteLineButton"
+                                            AutomationProperties.Name="이동 요청 품목 삭제"
                                             Style="{StaticResource TradePlanDangerButtonStyle}"
                                             IsEnabled="{Binding CanDeleteLine}"
                                             Command="{Binding DeleteLineCommand}"/>
@@ -460,6 +622,8 @@
                         </StackPanel>
 
                         <Border Grid.Column="1"
+                                AutomationProperties.AutomationId="ReceiptPanel"
+                                AutomationProperties.Name="도착지 수령 입력"
                                 Background="#132236"
                                 Padding="10"
                                 CornerRadius="4"
@@ -473,7 +637,7 @@
                                     <RowDefinition Height="*"/>
                                     <RowDefinition Height="40"/>
                                 </Grid.RowDefinitions>
-                                <TextBlock Text="수령확정 / 반려"
+                                <TextBlock Text="도착지 수령확정 / 반려"
                                            FontWeight="Bold"
                                            Foreground="#90CAF9"/>
                                 <Grid Grid.Row="1" Margin="0,8,0,0">
@@ -484,35 +648,67 @@
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="36"/>
                                         <RowDefinition Height="36"/>
+                                        <RowDefinition Height="36"/>
+                                        <RowDefinition Height="36"/>
                                     </Grid.RowDefinitions>
-                                    <Label Grid.Row="0" Grid.Column="0" Content="수령메모"/>
+                                    <Label Grid.Row="0" Grid.Column="0" Content="수령수량"/>
                                     <TextBox Grid.Row="0" Grid.Column="1"
+                                             AutomationProperties.AutomationId="ReceiptQuantityTextBox"
+                                             AutomationProperties.Name="선택 품목 수령수량"
+                                             IsEnabled="{Binding CanEditReceiptDraft}"
+                                             Height="34"
+                                             Text="{Binding InputReceivedQty, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <Label Grid.Row="1" Grid.Column="0" Content="품목메모"/>
+                                    <TextBox Grid.Row="1" Grid.Column="1"
+                                             AutomationProperties.AutomationId="ReceiptLineMemoTextBox"
+                                             AutomationProperties.Name="선택 품목 수령메모"
+                                             IsEnabled="{Binding CanEditReceiptDraft}"
+                                             Margin="0,4,0,0"
+                                             Height="34"
+                                             Text="{Binding InputReceiptRemark, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <Label Grid.Row="2" Grid.Column="0" Content="전체메모"/>
+                                    <TextBox Grid.Row="2" Grid.Column="1"
+                                             AutomationProperties.AutomationId="ReceiveMemoTextBox"
+                                             AutomationProperties.Name="수령 전체 메모"
+                                             IsEnabled="{Binding CanEditReceiptDraft}"
+                                             Margin="0,4,0,0"
                                              Height="34"
                                              Text="{Binding ReceiveMemo, UpdateSourceTrigger=PropertyChanged}"/>
-                                    <Label Grid.Row="1" Grid.Column="0" Content="반려사유"/>
-                                    <TextBox Grid.Row="1" Grid.Column="1"
+                                    <Label Grid.Row="3" Grid.Column="0" Content="반려사유"/>
+                                    <TextBox Grid.Row="3" Grid.Column="1"
+                                             AutomationProperties.AutomationId="RejectReasonTextBox"
+                                             AutomationProperties.Name="재고이동 반려 사유"
+                                             IsEnabled="{Binding CanEditReceiptDraft}"
                                              Margin="0,4,0,0"
                                              Height="34"
                                              Text="{Binding RejectReason, UpdateSourceTrigger=PropertyChanged}"/>
                                 </Grid>
                                 <StackPanel Grid.Row="2" Margin="0,6,0,0">
-                                    <TextBlock Text="도착지 담당자 또는 관리자만 처리할 수 있습니다."
+                                    <TextBlock Text="대기 문서의 수령예정값은 요청수량으로 표시됩니다. 도착지에서 품목을 고르고 실제 수령량을 조정한 뒤 적용·확정하세요. 0개 수령도 입력할 수 있습니다."
                                                Foreground="#9FB3C8"
                                                TextWrapping="Wrap"/>
-                                    <TextBlock Text="도착지 담당자 또는 관리자만 처리할 수 있습니다."
-                                               Foreground="#9FB3C8"
-                                               Margin="0,4,0,0"
-                                               TextWrapping="Wrap"/>
+                                    <Button Content="선택 품목 수령값 적용"
+                                            AutomationProperties.AutomationId="UpdateReceiptLineButton"
+                                            AutomationProperties.Name="선택 품목 수령값 적용"
+                                            Style="{StaticResource TradePlanEditButtonStyle}"
+                                            Margin="0,6,0,0"
+                                            HorizontalAlignment="Left"
+                                            IsEnabled="{Binding CanUpdateReceiptLine}"
+                                            Command="{Binding UpdateReceiptLineCommand}"/>
                                 </StackPanel>
                                 <StackPanel Grid.Row="4"
                                             Orientation="Horizontal"
                                             VerticalAlignment="Bottom">
                                     <Button Content="수령확정"
+                                            AutomationProperties.AutomationId="ConfirmReceiptButton"
+                                            AutomationProperties.Name="재고이동 수령확정"
                                             Style="{StaticResource TradePlanPrimaryButtonStyle}"
                                             Margin="0,0,6,0"
                                             IsEnabled="{Binding CanConfirmReceipt}"
                                             Command="{Binding ConfirmReceiptCommand}"/>
                                     <Button Content="반려"
+                                            AutomationProperties.AutomationId="RejectTransferButton"
+                                            AutomationProperties.Name="재고이동 반려"
                                             Style="{StaticResource TradePlanDangerButtonStyle}"
                                             IsEnabled="{Binding CanRejectTransfer}"
                                             Command="{Binding RejectTransferCommand}"/>
@@ -520,9 +716,11 @@
                             </Grid>
                         </Border>
                     </Grid>
+                  </ScrollViewer>
                 </Border>
 
-                <Border Grid.Row="2"
+                <Border x:Name="InventoryTransferLinesPanel"
+                        Grid.Row="3"
                         Margin="0,8,0,0"
                         Background="#16263D"
                         Padding="12"
@@ -537,15 +735,18 @@
                                    Foreground="#4FC3F7"
                                    Margin="0,0,0,10"/>
                         <DataGrid ItemsSource="{Binding Lines}"
+                                  AutomationProperties.AutomationId="TransferLinesGrid"
+                                  AutomationProperties.Name="재고이동 품목 목록"
                                   SelectedItem="{Binding SelectedLine}"
+                                  IsReadOnly="True"
                                   BorderThickness="0">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="품목명" Binding="{Binding ItemName}" Width="*"/>
                                 <DataGridTextColumn Header="규격" Binding="{Binding Specification}" Width="128"/>
                                 <DataGridTextColumn Header="단위" Binding="{Binding Unit}" Width="56"/>
-                                <DataGridTextColumn Header="요청수량" Binding="{Binding Quantity, StringFormat=N0}" Width="72"/>
-                                <DataGridTextColumn Header="수령수량" Binding="{Binding ReceivedQuantity, StringFormat=N0}" Width="72"/>
-                                <DataGridTextColumn Header="차이" Binding="{Binding QuantityDifference, StringFormat=N0}" Width="62"/>
+                                <DataGridTextColumn Header="요청수량" Binding="{Binding Quantity, StringFormat=N2}" Width="72"/>
+                                <DataGridTextColumn Header="수령예정/확정" Binding="{Binding ReceivedQuantity, StringFormat=N2}" Width="96"/>
+                                <DataGridTextColumn Header="차이" Binding="{Binding QuantityDifference, StringFormat=N2}" Width="62"/>
                                 <DataGridTextColumn Header="비고" Binding="{Binding Remark}" Width="138"/>
                                 <DataGridTextColumn Header="수령메모" Binding="{Binding ReceiptRemark}" Width="138"/>
                             </DataGrid.Columns>
@@ -553,6 +754,7 @@
                     </DockPanel>
                 </Border>
             </Grid>
+          </Grid>
         </Grid>
     </DockPanel>
 </Window>

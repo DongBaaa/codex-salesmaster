@@ -10,8 +10,8 @@
     <Nullable>enable</Nullable>
     <ApplicationTitle>거래플랜</ApplicationTitle>
     <ApplicationId>kr.georaeplan.mobile</ApplicationId>
-    <ApplicationDisplayVersion>0.2.81</ApplicationDisplayVersion>
-    <ApplicationVersion>192</ApplicationVersion>
+    <ApplicationDisplayVersion>0.2.82</ApplicationDisplayVersion>
+    <ApplicationVersion>193</ApplicationVersion>
     <SupportedOSPlatformVersion>21.0</SupportedOSPlatformVersion>
     <AndroidManifestPlaceholders>usesCleartextTraffic=false</AndroidManifestPlaceholders>
   </PropertyGroup>
@@ -62,7 +62,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Maui.Controls" Version="8.0.100" />
     <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="8.0.15" />
-    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.6" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\Shared\거래플랜.Shared.Contracts\거래플랜.Shared.Contracts.csproj" />

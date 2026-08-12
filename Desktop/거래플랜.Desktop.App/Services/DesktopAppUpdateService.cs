@@ -1,12 +1,17 @@
 ﻿using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Pipes;
 using System.Linq;
 using System.Net.Http;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Windows;
+using System.Windows.Threading;
+using Microsoft.Win32.SafeHandles;
 using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Shared.Contracts;
 
@@ -58,12 +63,15 @@ public sealed class DesktopPreparedUpdatePackage
 
 public sealed class DesktopAppUpdateService
 {
+    internal const string UpdaterHandoffPipeNamePrefix = "GeoraePlan.Updater.Handoff.";
+    internal const byte UpdaterIdentityVerifiedMarker = 0xA5;
     private const long MinimumUpdaterWorkBytes = 512L * 1024 * 1024;
     private const long InstallBufferBytes = 256L * 1024 * 1024;
     private const string CanonicalInstallFolderName = "tradeplan";
     private const string CanonicalExecutableName = "거래플랜.exe";
     private static readonly TimeSpan UpdateArtifactRetention = TimeSpan.FromDays(3);
     private static readonly TimeSpan InstallResidueRetention = TimeSpan.FromDays(14);
+    private static readonly TimeSpan UpdaterHandoffTimeout = TimeSpan.FromSeconds(30);
     private static readonly byte[] UpdaterRequestMetadataEntropy =
         Encoding.UTF8.GetBytes("GeoraePlan.UpdaterRequestMetadata.v1");
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> PreparedPackageLocks = new(StringComparer.OrdinalIgnoreCase);
@@ -84,14 +92,34 @@ public sealed class DesktopAppUpdateService
     ];
 
     private readonly ErpApiClient _api;
+    private readonly Func<string>? _currentVersionProvider;
+    private readonly Func<AppUpdatePackageDto, string?, Task>? _startUpdateCoreOverride;
+    private readonly Action _verifiedHandoffShutdownScheduler;
+    private static int _updateLaunchStarted;
 
     public DesktopAppUpdateService(ErpApiClient api)
+        : this(api, currentVersionProvider: null, startUpdateCoreOverride: null)
+    {
+    }
+
+    internal DesktopAppUpdateService(
+        ErpApiClient api,
+        Func<string>? currentVersionProvider,
+        Func<AppUpdatePackageDto, string?, Task>? startUpdateCoreOverride,
+        Action? verifiedHandoffShutdownScheduler = null)
     {
         _api = api;
+        _currentVersionProvider = currentVersionProvider;
+        _startUpdateCoreOverride = startUpdateCoreOverride;
+        _verifiedHandoffShutdownScheduler =
+            verifiedHandoffShutdownScheduler ?? ScheduleShutdownAfterVerifiedHandoff;
     }
 
     public string GetCurrentVersion()
     {
+        if (_currentVersionProvider is not null)
+            return NormalizeVersionText(_currentVersionProvider());
+
         var processPath = Environment.ProcessPath;
         if (!string.IsNullOrWhiteSpace(processPath) && File.Exists(processPath))
         {
@@ -110,7 +138,9 @@ public sealed class DesktopAppUpdateService
         return NormalizeVersionText(Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "1.0.0");
     }
 
-    public static bool TryRelaunchCanonicalInstallIfNeeded(out string? message)
+    public static bool TryRelaunchCanonicalInstallIfNeeded(
+        out string? message,
+        Action? beforeRelaunch = null)
     {
         message = null;
 
@@ -130,6 +160,8 @@ public sealed class DesktopAppUpdateService
 
         if (PathsEqual(currentProcessPath, canonicalExePath))
             return false;
+
+        beforeRelaunch?.Invoke();
 
         Process.Start(new ProcessStartInfo
         {
@@ -190,6 +222,22 @@ public sealed class DesktopAppUpdateService
         try
         {
             var manifest = await _api.GetUpdateManifestAsync(resolvedChannel, ct);
+            if (manifest is not null &&
+                !string.Equals(
+                    manifest.Channel,
+                    resolvedChannel,
+                    StringComparison.Ordinal))
+            {
+                return new DesktopAppUpdateCheckResult
+                {
+                    CurrentVersion = currentVersion,
+                    LatestVersion = currentVersion,
+                    HasBlockingPolicyIssue = true,
+                    Message =
+                        "업데이트 매니페스트 채널이 요청 채널과 일치하지 않아 적용을 차단했습니다."
+                };
+            }
+
             var package = manifest?.Desktop;
             if (package is null || string.IsNullOrWhiteSpace(package.Version))
             {
@@ -201,30 +249,22 @@ public sealed class DesktopAppUpdateService
                 };
             }
 
-            var latestVersion = NormalizeVersionText(package.Version);
-            var minimumSupportedVersion = ResolveMinimumSupportedVersion(package, latestVersion);
-            var isUpdateAvailable = CompareVersions(latestVersion, currentVersion) > 0;
-            var isBelowMinimumSupportedVersion =
-                !string.IsNullOrWhiteSpace(minimumSupportedVersion) &&
-                CompareVersions(currentVersion, minimumSupportedVersion) < 0;
-            var requiresImmediateUpdate = isBelowMinimumSupportedVersion || (isUpdateAvailable && package.Mandatory);
-
-            return new DesktopAppUpdateCheckResult
+            if (!string.Equals(
+                    package.Platform,
+                    "desktop",
+                    StringComparison.Ordinal))
             {
-                CurrentVersion = currentVersion,
-                LatestVersion = latestVersion,
-                MinimumSupportedVersion = minimumSupportedVersion,
-                IsUpdateAvailable = isUpdateAvailable,
-                IsBelowMinimumSupportedVersion = isBelowMinimumSupportedVersion,
-                Package = package,
-                Message = isBelowMinimumSupportedVersion
-                    ? $"현재 버전({currentVersion})은 서버 최소 허용 버전({minimumSupportedVersion})보다 낮아 업데이트가 필요합니다."
-                    : requiresImmediateUpdate
-                        ? $"필수 PC 버전 {latestVersion}이 준비되어 있습니다."
-                        : isUpdateAvailable
-                            ? $"새 PC 버전 {latestVersion}이 준비되어 있습니다."
-                            : $"현재 버전({currentVersion})이 최신입니다."
-            };
+                return new DesktopAppUpdateCheckResult
+                {
+                    CurrentVersion = currentVersion,
+                    LatestVersion = currentVersion,
+                    HasBlockingPolicyIssue = true,
+                    Message =
+                        "업데이트 매니페스트의 PC 패키지 플랫폼이 desktop과 일치하지 않아 적용을 차단했습니다."
+                };
+            }
+
+            return EvaluateUpdatePackage(currentVersion, package);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
@@ -248,6 +288,19 @@ public sealed class DesktopAppUpdateService
             throw new InvalidOperationException("업데이트 패키지 주소가 비어 있습니다.");
         if (string.IsNullOrWhiteSpace(package.Sha256))
             throw new InvalidOperationException("업데이트 SHA256 정보가 비어 있습니다.");
+
+        var currentVersion = GetCurrentVersion();
+        var packageVersion = NormalizeVersionText(package.Version);
+        var minimumSupportedVersion = ResolveMinimumSupportedVersion(package, packageVersion);
+        if (!IsPackageVersionPolicySatisfied(
+                currentVersion,
+                packageVersion,
+                minimumSupportedVersion,
+                out var policyFailure))
+        {
+            throw new InvalidOperationException(
+                $"현재 PC 버전에 이 업데이트를 적용할 수 없습니다. {policyFailure}");
+        }
 
         var packageUrl = _api.ResolveAbsoluteUrl(package.PackageUrl);
         if (string.IsNullOrWhiteSpace(packageUrl))
@@ -358,7 +411,36 @@ public sealed class DesktopAppUpdateService
     }
 
     public Task StartUpdateAsync(AppUpdatePackageDto package, string? preparedPackagePath = null)
-        => Task.Run(() => StartUpdateCoreAsync(package, preparedPackagePath));
+        => StartUpdateOnceAsync(package, preparedPackagePath);
+
+    private async Task StartUpdateOnceAsync(
+        AppUpdatePackageDto package,
+        string? preparedPackagePath)
+    {
+        EnsurePackageVersionCanStart(package);
+        if (Interlocked.CompareExchange(ref _updateLaunchStarted, 1, 0) != 0)
+        {
+            throw new InvalidOperationException(
+                "이 거래플랜 프로세스에서 이미 업데이트 도우미를 시작했습니다.");
+        }
+
+        var verifiedHandoffCompleted = false;
+        try
+        {
+            var launchTask = _startUpdateCoreOverride is null
+                ? Task.Run(() => StartUpdateCoreAsync(package, preparedPackagePath))
+                : Task.Run(() => _startUpdateCoreOverride(package, preparedPackagePath));
+            await launchTask
+                .ConfigureAwait(false);
+            verifiedHandoffCompleted = true;
+            _verifiedHandoffShutdownScheduler();
+        }
+        finally
+        {
+            if (!verifiedHandoffCompleted)
+                Interlocked.Exchange(ref _updateLaunchStarted, 0);
+        }
+    }
 
     private async Task StartUpdateCoreAsync(AppUpdatePackageDto package, string? preparedPackagePath)
     {
@@ -368,6 +450,19 @@ public sealed class DesktopAppUpdateService
             throw new InvalidOperationException("업데이트 패키지 주소가 비어 있습니다.");
         if (string.IsNullOrWhiteSpace(package.Sha256))
             throw new InvalidOperationException("업데이트 SHA256 정보가 비어 있습니다.");
+
+        var currentVersion = GetCurrentVersion();
+        var packageVersion = NormalizeVersionText(package.Version);
+        var minimumSupportedVersion = ResolveMinimumSupportedVersion(package, packageVersion);
+        if (!IsPackageVersionPolicySatisfied(
+                currentVersion,
+                packageVersion,
+                minimumSupportedVersion,
+                out var policyFailure))
+        {
+            throw new InvalidOperationException(
+                $"현재 PC 버전에 이 업데이트를 적용할 수 없습니다. {policyFailure}");
+        }
 
         var packageUrl = _api.ResolveAbsoluteUrl(package.PackageUrl);
         if (string.IsNullOrWhiteSpace(packageUrl))
@@ -383,63 +478,92 @@ public sealed class DesktopAppUpdateService
 
         var stagedUpdaterPath = StageUpdaterForExecution(updaterPath);
 
-        var currentProcess = Process.GetCurrentProcess();
-        if (string.IsNullOrWhiteSpace(Environment.ProcessPath ?? currentProcess.MainModule?.FileName))
+        using var currentProcess = Process.GetCurrentProcess();
+        var currentProcessPath = Environment.ProcessPath ?? currentProcess.MainModule?.FileName;
+        if (string.IsNullOrWhiteSpace(currentProcessPath))
             throw new InvalidOperationException("현재 실행 파일 경로를 확인하지 못했습니다.");
+        currentProcessPath = Path.GetFullPath(currentProcessPath);
+        var currentProcessStartTimeUtcTicks = currentProcess.StartTime.ToUniversalTime().Ticks;
 
         var installRoot = GetCanonicalInstallRoot();
         var launchExePath = GetCanonicalLaunchExePath();
+        if (!PathsEqual(currentProcessPath, launchExePath))
+        {
+            throw new InvalidOperationException(
+                "현재 거래플랜 실행 파일이 업데이트 대상 설치 경로와 일치하지 않습니다. 정식 설치본에서 다시 시도해 주세요.");
+        }
+
         EnsureSufficientDiskSpace(package.FileSize, installRoot);
         TryCleanupStaleUpdateArtifacts();
         var requestMetadataPath = string.IsNullOrWhiteSpace(preparedPackageFullPath)
             ? CreateUpdaterRequestMetadataFile(stagedUpdaterPath, packageUri)
             : null;
+        var handoffPipeName = UpdaterHandoffPipeNamePrefix + Guid.NewGuid().ToString("N");
+        using var handoffPipe = new NamedPipeServerStream(
+            handoffPipeName,
+            PipeDirection.In,
+            maxNumberOfServerInstances: 1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
 
         var argumentParts = new List<string>
         {
             "--package-url",
-            QuoteArgument(packageUri.ToString()),
+            packageUri.ToString(),
             "--sha256",
-            QuoteArgument(package.Sha256),
+            package.Sha256,
             "--install-root",
-            QuoteArgument(installRoot),
+            installRoot,
             "--launch-exe",
-            QuoteArgument(launchExePath),
+            launchExePath,
             "--process-id",
             currentProcess.Id.ToString(),
+            "--process-exe",
+            currentProcessPath,
+            "--process-start-time-utc-ticks",
+            currentProcessStartTimeUtcTicks.ToString(),
+            "--handoff-pipe",
+            handoffPipeName,
             "--version",
-            QuoteArgument(package.Version),
+            package.Version,
             "--file-size",
             package.FileSize.ToString(),
             "--file-name",
-            QuoteArgument(ResolvePackageFileName(package)),
+            ResolvePackageFileName(package),
             "--notes",
-            QuoteArgument(package.Notes ?? string.Empty)
+            package.Notes ?? string.Empty
         };
 
         if (!string.IsNullOrWhiteSpace(preparedPackageFullPath))
         {
             argumentParts.Add("--package-path");
-            argumentParts.Add(QuoteArgument(preparedPackageFullPath));
+            argumentParts.Add(preparedPackageFullPath);
         }
 
         if (!string.IsNullOrWhiteSpace(requestMetadataPath))
         {
             argumentParts.Add("--request-metadata-path");
-            argumentParts.Add(QuoteArgument(requestMetadataPath));
+            argumentParts.Add(requestMetadataPath);
         }
-
-        var arguments = string.Join(" ", argumentParts);
 
         try
         {
-            Process.Start(new ProcessStartInfo
+            var startInfo = new ProcessStartInfo
             {
                 FileName = stagedUpdaterPath,
-                Arguments = arguments,
                 UseShellExecute = true,
                 WorkingDirectory = Path.GetDirectoryName(stagedUpdaterPath) ?? AppContext.BaseDirectory
-            });
+            };
+            foreach (var argument in argumentParts)
+                startInfo.ArgumentList.Add(argument);
+
+            using var updaterProcess = Process.Start(startInfo)
+                ?? throw new InvalidOperationException("업데이트 도우미 프로세스를 시작하지 못했습니다.");
+            await WaitForUpdaterIdentityVerificationAsync(
+                    handoffPipe,
+                    updaterProcess,
+                    UpdaterHandoffTimeout)
+                .ConfigureAwait(false);
         }
         catch
         {
@@ -447,6 +571,87 @@ public sealed class DesktopAppUpdateService
             throw;
         }
     }
+
+    private void EnsurePackageVersionCanStart(AppUpdatePackageDto package)
+    {
+        ArgumentNullException.ThrowIfNull(package);
+
+        var currentVersion = GetCurrentVersion();
+        var packageVersion = NormalizeVersionText(package.Version);
+        var minimumSupportedVersion = ResolveMinimumSupportedVersion(package, packageVersion);
+        if (!IsPackageVersionPolicySatisfied(
+                currentVersion,
+                packageVersion,
+                minimumSupportedVersion,
+                out var policyFailure))
+        {
+            throw new InvalidOperationException(
+                $"현재 PC 버전에 이 업데이트를 적용할 수 없습니다. {policyFailure}");
+        }
+    }
+
+    internal static void ResetUpdateLaunchLatchForTests()
+        => Interlocked.Exchange(ref _updateLaunchStarted, 0);
+
+    private static void ScheduleShutdownAfterVerifiedHandoff()
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null)
+        {
+            App.RequestShutdownForUpdate();
+            return;
+        }
+
+        dispatcher.BeginInvoke(
+            new Action(App.RequestShutdownForUpdate),
+            DispatcherPriority.Send);
+    }
+
+    internal static async Task WaitForUpdaterIdentityVerificationAsync(
+        NamedPipeServerStream handoffPipe,
+        Process updaterProcess,
+        TimeSpan timeout)
+    {
+        ArgumentNullException.ThrowIfNull(handoffPipe);
+        ArgumentNullException.ThrowIfNull(updaterProcess);
+        if (timeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(timeout));
+
+        using var timeoutCts = new CancellationTokenSource(timeout);
+        try
+        {
+            await handoffPipe.WaitForConnectionAsync(timeoutCts.Token).ConfigureAwait(false);
+            if (!GetNamedPipeClientProcessId(
+                    handoffPipe.SafePipeHandle,
+                    out var connectedProcessId) ||
+                connectedProcessId != (uint)updaterProcess.Id)
+            {
+                throw new InvalidOperationException(
+                    "업데이트 도우미 handoff 프로세스 신원이 일치하지 않습니다.");
+            }
+
+            var marker = new byte[1];
+            var read = await handoffPipe.ReadAsync(marker, timeoutCts.Token).ConfigureAwait(false);
+            if (read != 1 || marker[0] != UpdaterIdentityVerifiedMarker)
+            {
+                throw new InvalidOperationException(
+                    "업데이트 도우미가 데스크톱 프로세스 신원 확인을 완료하지 못했습니다.");
+            }
+        }
+        catch (OperationCanceledException ex)
+        {
+            var detail = updaterProcess.HasExited
+                ? $"업데이트 도우미가 먼저 종료되었습니다. exitCode={updaterProcess.ExitCode}"
+                : "업데이트 도우미의 프로세스 신원 확인 응답 시간이 초과되었습니다.";
+            throw new InvalidOperationException(detail, ex);
+        }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetNamedPipeClientProcessId(
+        SafePipeHandle pipe,
+        out uint clientProcessId);
 
     private static async Task<string?> ValidatePreparedPackagePathAsync(
         string? preparedPackagePath,
@@ -798,6 +1003,138 @@ public sealed class DesktopAppUpdateService
             return NormalizeVersionText(package.MinimumSupportedVersion);
 
         return package.Mandatory ? latestVersion : string.Empty;
+    }
+
+    internal static DesktopAppUpdateCheckResult EvaluateUpdatePackage(
+        string currentVersion,
+        AppUpdatePackageDto package)
+    {
+        ArgumentNullException.ThrowIfNull(package);
+
+        var normalizedCurrentVersion = NormalizeVersionText(currentVersion);
+        var latestVersion = NormalizeVersionText(package.Version);
+        var minimumSupportedVersion = ResolveMinimumSupportedVersion(package, latestVersion);
+        var hasCurrentVersion =
+            TryParseVersionStrict(currentVersion, out var parsedCurrentVersion);
+        var hasPackageVersion =
+            TryParseVersionStrict(package.Version, out var parsedPackageVersion);
+        Version? parsedMinimumSupportedVersion = null;
+        var hasMinimumSupportedVersion =
+            string.IsNullOrWhiteSpace(minimumSupportedVersion) ||
+            TryParseVersionStrict(
+                minimumSupportedVersion,
+                out parsedMinimumSupportedVersion);
+        var isBelowMinimumSupportedVersion =
+            hasCurrentVersion &&
+            !string.IsNullOrWhiteSpace(minimumSupportedVersion) &&
+            hasMinimumSupportedVersion &&
+            parsedCurrentVersion < parsedMinimumSupportedVersion!;
+        var hasBlockingPolicyIssue =
+            !hasCurrentVersion ||
+            !hasMinimumSupportedVersion ||
+            (package.Mandatory && !hasPackageVersion);
+        var isStaleManifest =
+            hasCurrentVersion &&
+            hasPackageVersion &&
+            parsedCurrentVersion >= parsedPackageVersion;
+
+        if (!IsPackageVersionPolicySatisfied(
+                currentVersion,
+                package.Version,
+                package.MinimumSupportedVersion,
+                out var policyFailure))
+        {
+            return new DesktopAppUpdateCheckResult
+            {
+                CurrentVersion = normalizedCurrentVersion,
+                LatestVersion = normalizedCurrentVersion,
+                MinimumSupportedVersion = minimumSupportedVersion,
+                IsBelowMinimumSupportedVersion = isBelowMinimumSupportedVersion,
+                HasBlockingPolicyIssue = hasBlockingPolicyIssue,
+                Package = null,
+                Message = isStaleManifest &&
+                          !hasBlockingPolicyIssue &&
+                          !isBelowMinimumSupportedVersion
+                    ? $"현재 버전({normalizedCurrentVersion})이 배포 대상 버전({latestVersion}) 이상입니다. 오래된 업데이트 매니페스트는 적용하지 않습니다."
+                    : $"업데이트 매니페스트 버전 정책이 일치하지 않아 적용을 차단했습니다. {policyFailure}"
+            };
+        }
+
+        return new DesktopAppUpdateCheckResult
+        {
+            CurrentVersion = normalizedCurrentVersion,
+            LatestVersion = latestVersion,
+            MinimumSupportedVersion = minimumSupportedVersion,
+            IsUpdateAvailable = true,
+            IsBelowMinimumSupportedVersion = isBelowMinimumSupportedVersion,
+            Package = package,
+            Message = isBelowMinimumSupportedVersion
+                ? $"현재 버전({normalizedCurrentVersion})은 서버 최소 허용 버전({minimumSupportedVersion})보다 낮아 업데이트가 필요합니다."
+                : package.Mandatory
+                    ? $"필수 PC 버전 {latestVersion}이 준비되어 있습니다."
+                    : $"새 PC 버전 {latestVersion}이 준비되어 있습니다."
+        };
+    }
+
+    internal static bool IsPackageVersionPolicySatisfied(
+        string currentVersion,
+        string packageVersion,
+        string minimumSupportedVersion,
+        out string failure)
+    {
+        failure = string.Empty;
+        if (!TryParseVersionStrict(currentVersion, out var parsedCurrentVersion))
+        {
+            failure = "현재 실행 버전을 확인하지 못했습니다.";
+            return false;
+        }
+
+        if (!TryParseVersionStrict(packageVersion, out var parsedPackageVersion))
+        {
+            failure = "패키지 버전 형식이 올바르지 않습니다.";
+            return false;
+        }
+
+        if (parsedPackageVersion <= parsedCurrentVersion)
+        {
+            failure =
+                $"패키지 버전({NormalizeVersionText(packageVersion)})이 현재 버전({NormalizeVersionText(currentVersion)})보다 높지 않습니다.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(minimumSupportedVersion))
+            return true;
+
+        if (!TryParseVersionStrict(
+                minimumSupportedVersion,
+                out var parsedMinimumSupportedVersion))
+        {
+            failure = "최소 허용 버전 형식이 올바르지 않습니다.";
+            return false;
+        }
+
+        if (parsedMinimumSupportedVersion > parsedPackageVersion)
+        {
+            failure =
+                $"최소 허용 버전({NormalizeVersionText(minimumSupportedVersion)})이 패키지 버전({NormalizeVersionText(packageVersion)})보다 높습니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryParseVersionStrict(string raw, out Version version)
+    {
+        if (!string.IsNullOrWhiteSpace(raw) &&
+            Version.TryParse(NormalizeVersionText(raw), out var parsedVersion) &&
+            parsedVersion is not null)
+        {
+            version = parsedVersion;
+            return true;
+        }
+
+        version = new Version(0, 0, 0);
+        return false;
     }
 
     private static string NormalizeVersionText(string raw)

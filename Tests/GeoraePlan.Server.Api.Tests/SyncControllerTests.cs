@@ -4,11 +4,14 @@ using 거래플랜.Server.Api.Domain;
 using 거래플랜.Server.Api.Mappings;
 using 거래플랜.Server.Api.Security;
 using 거래플랜.Server.Api.Services;
+using 거래플랜.Server.Api.Utilities;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using System.Data.Common;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Xunit;
@@ -71,7 +74,8 @@ public sealed class SyncControllerTests : IDisposable
 
         var pullResponse = await _controller.Pull(0, CancellationToken.None);
         var pullOk = Assert.IsType<OkObjectResult>(pullResponse.Result);
-        Assert.IsType<SyncPullResponse>(pullOk.Value);
+        var pull = Assert.IsType<SyncPullResponse>(pullOk.Value);
+        Assert.Equal(1, pull.ItemCatalogExtensionVersion);
 
         var pushResponse = await _controller.Push(new SyncPushRequest
         {
@@ -79,6 +83,198 @@ public sealed class SyncControllerTests : IDisposable
         }, CancellationToken.None);
         var pushOk = Assert.IsType<OkObjectResult>(pushResponse.Result);
         Assert.IsType<SyncPushResult>(pushOk.Value);
+    }
+
+    [Fact]
+    public async Task PushThenPull_PreservesOptionalItemCatalogFields()
+    {
+        var itemId = Guid.NewGuid();
+        var lastPurchaseDate = new DateOnly(2026, 7, 20);
+        var lastSaleDate = new DateOnly(2026, 7, 24);
+        var pushResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-item-catalog-field-roundtrip",
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = itemId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = "Item catalog field roundtrip",
+                    NameMatchKey = "ITEMCATALOGFIELDROUNDTRIP",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "BOX",
+                    BoxQuantity = 12.5m,
+                    StorageLocation = "A-03-02",
+                    LastPurchaseDate = lastPurchaseDate,
+                    LastSaleDate = lastSaleDate,
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var pushOk = Assert.IsType<OkObjectResult>(pushResponse.Result);
+        var pushResult = Assert.IsType<SyncPushResult>(pushOk.Value);
+        Assert.Equal(1, pushResult.AcceptedCount);
+        Assert.Equal(0, pushResult.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.Items.IgnoreQueryFilters()
+            .SingleAsync(item => item.Id == itemId);
+        Assert.Equal(12.5m, stored.BoxQuantity);
+        Assert.Equal("A-03-02", stored.StorageLocation);
+        Assert.Equal(lastPurchaseDate, stored.LastPurchaseDate);
+        Assert.Equal(lastSaleDate, stored.LastSaleDate);
+
+        var pullResponse = await _controller.Pull(0, CancellationToken.None);
+        var pullOk = Assert.IsType<OkObjectResult>(pullResponse.Result);
+        var pullResult = Assert.IsType<SyncPullResponse>(pullOk.Value);
+        var pulled = Assert.Single(pullResult.Items, item => item.Id == itemId);
+        Assert.Equal(12.5m, pulled.BoxQuantity);
+        Assert.Equal("A-03-02", pulled.StorageLocation);
+        Assert.Equal(lastPurchaseDate, pulled.LastPurchaseDate);
+        Assert.True(pulled.LastPurchaseDateSpecified);
+        Assert.Equal(lastSaleDate, pulled.LastSaleDate);
+        Assert.True(pulled.LastSaleDateSpecified);
+    }
+
+    [Fact]
+    public async Task Push_OmittedOptionalItemCatalogFields_PreservesServerValues()
+    {
+        var existing = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Legacy client item",
+            NameMatchKey = "LEGACYCLIENTITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            Unit = "BOX",
+            BoxQuantity = 24m,
+            StorageLocation = "B-01",
+            LastPurchaseDate = new DateOnly(2026, 6, 30),
+            LastSaleDate = new DateOnly(2026, 7, 1),
+            Notes = "before"
+        };
+        _dbContext.Items.Add(existing);
+        await _dbContext.SaveChangesAsync();
+        var existingRevision = existing.Revision;
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-legacy-item-update",
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = existing.Id,
+                    TenantCode = existing.TenantCode,
+                    OfficeCode = existing.OfficeCode,
+                    NameOriginal = existing.NameOriginal,
+                    NameMatchKey = existing.NameMatchKey,
+                    ItemKind = existing.ItemKind,
+                    TrackingType = existing.TrackingType,
+                    Unit = existing.Unit,
+                    Notes = "after",
+                    ExpectedRevision = existingRevision,
+                    Revision = existingRevision,
+                    CreatedAtUtc = existing.CreatedAtUtc,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(0, result.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var updated = await _dbContext.Items.IgnoreQueryFilters()
+            .SingleAsync(item => item.Id == existing.Id);
+        Assert.Equal("after", updated.Notes);
+        Assert.Equal(24m, updated.BoxQuantity);
+        Assert.Equal("B-01", updated.StorageLocation);
+        Assert.Equal(new DateOnly(2026, 6, 30), updated.LastPurchaseDate);
+        Assert.Equal(new DateOnly(2026, 7, 1), updated.LastSaleDate);
+    }
+
+    [Fact]
+    public async Task Push_SpecifiedNullOptionalItemDates_ClearsServerValues()
+    {
+        var existing = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Explicit date clear item",
+            NameMatchKey = "EXPLICITDATECLEARITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            Unit = "BOX",
+            BoxQuantity = 8m,
+            StorageLocation = "C-02",
+            LastPurchaseDate = new DateOnly(2026, 6, 20),
+            LastSaleDate = new DateOnly(2026, 6, 25)
+        };
+        _dbContext.Items.Add(existing);
+        await _dbContext.SaveChangesAsync();
+        var existingRevision = existing.Revision;
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-item-explicit-date-clear",
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = existing.Id,
+                    TenantCode = existing.TenantCode,
+                    OfficeCode = existing.OfficeCode,
+                    NameOriginal = existing.NameOriginal,
+                    NameMatchKey = existing.NameMatchKey,
+                    ItemKind = existing.ItemKind,
+                    TrackingType = existing.TrackingType,
+                    Unit = existing.Unit,
+                    LastPurchaseDate = null,
+                    LastPurchaseDateSpecified = true,
+                    LastSaleDate = null,
+                    LastSaleDateSpecified = true,
+                    ExpectedRevision = existingRevision,
+                    Revision = existingRevision,
+                    CreatedAtUtc = existing.CreatedAtUtc,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(0, result.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var updated = await _dbContext.Items.IgnoreQueryFilters()
+            .SingleAsync(item => item.Id == existing.Id);
+        Assert.Null(updated.LastPurchaseDate);
+        Assert.Null(updated.LastSaleDate);
+        Assert.Equal(8m, updated.BoxQuantity);
+        Assert.Equal("C-02", updated.StorageLocation);
+    }
+
+    [Fact]
+    public void PushSerializationPolicy_RequiresLockForEmptyPayloadBecauseRepairMayWrite()
+    {
+        var method = typeof(SyncController).GetMethod(
+            "RequiresSerializedPushMutation",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+
+        Assert.NotNull(method);
+        Assert.True(Assert.IsType<bool>(method.Invoke(null, new object?[] { new SyncPushRequest() })));
     }
 
     [Fact]
@@ -117,6 +313,11 @@ public sealed class SyncControllerTests : IDisposable
             VatAmount = 9_000m
         });
         await _dbContext.SaveChangesAsync();
+        var firstInvoiceRevision = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Where(invoice => invoice.Id == firstInvoiceId)
+            .Select(invoice => invoice.Revision)
+            .SingleAsync();
 
         var response = await _controller.Push(new SyncPushRequest
         {
@@ -136,6 +337,8 @@ public sealed class SyncControllerTests : IDisposable
                     VersionNumber = 2,
                     PreviousVersionId = firstInvoiceId,
                     IsLatestVersion = true,
+                    Revision = firstInvoiceRevision,
+                    ExpectedRevision = firstInvoiceRevision,
                     VoucherType = VoucherType.Sales,
                     InvoiceDate = new DateOnly(2026, 6, 30),
                     TotalAmount = 99_000m,
@@ -174,7 +377,724 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task PushWithoutInvoicePayload_RepairsExistingDuplicateLatestInvoiceVersions()
+    public async Task PushInvoiceHistoricalVersionChainInOneBatch_AcceptsAddedPredecessorWithHistoricalRevisions()
+    {
+        var customerId = Guid.NewGuid();
+        var firstInvoiceId = Guid.NewGuid();
+        var secondInvoiceId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Historical Invoice Chain Customer",
+            NameMatchKey = "HISTORICALINVOICECHAINCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "historical-invoice-chain-one-batch",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = firstInvoiceId,
+                    CustomerId = customerId,
+                    CustomerName = "Historical Invoice Chain Customer",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    InvoiceNumber = "HISTORICAL-CHAIN-001",
+                    VersionGroupId = firstInvoiceId,
+                    VersionNumber = 1,
+                    IsLatestVersion = false,
+                    Revision = 1_000,
+                    ExpectedRevision = 1_000,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = new DateOnly(2026, 1, 1),
+                    CreatedAtUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+                },
+                new InvoiceDto
+                {
+                    Id = secondInvoiceId,
+                    CustomerId = customerId,
+                    CustomerName = "Historical Invoice Chain Customer",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    InvoiceNumber = "HISTORICAL-CHAIN-002",
+                    VersionGroupId = firstInvoiceId,
+                    VersionNumber = 2,
+                    PreviousVersionId = firstInvoiceId,
+                    IsLatestVersion = true,
+                    Revision = 2_000,
+                    ExpectedRevision = 2_000,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = new DateOnly(2026, 2, 1),
+                    CreatedAtUtc = new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(2, result.AcceptedCount);
+        Assert.Equal(0, result.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var versions = await _dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.VersionGroupId == firstInvoiceId)
+            .OrderBy(invoice => invoice.VersionNumber)
+            .ToListAsync();
+        Assert.Equal([firstInvoiceId, secondInvoiceId], versions.Select(invoice => invoice.Id));
+        Assert.False(versions[0].IsLatestVersion);
+        Assert.True(versions[1].IsLatestVersion);
+    }
+
+    [Fact]
+    public async Task PushInvoiceHistoricalVersionChain_SeparatePushStillRejectsStalePersistedPredecessorRevision()
+    {
+        var customerId = Guid.NewGuid();
+        var firstInvoiceId = Guid.NewGuid();
+        var secondInvoiceId = Guid.NewGuid();
+        var thirdInvoiceId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Persisted Invoice Chain Customer",
+            NameMatchKey = "PERSISTEDINVOICECHAINCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var initialResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "historical-invoice-chain-initial-push",
+            Invoices =
+            [
+                CreateHistoricalInvoiceVersionDto(
+                    customerId,
+                    firstInvoiceId,
+                    firstInvoiceId,
+                    versionNumber: 1,
+                    previousVersionId: null,
+                    historicalRevision: 1_000),
+                CreateHistoricalInvoiceVersionDto(
+                    customerId,
+                    secondInvoiceId,
+                    firstInvoiceId,
+                    versionNumber: 2,
+                    previousVersionId: firstInvoiceId,
+                    historicalRevision: 2_000)
+            ]
+        }, CancellationToken.None);
+        var initialOk = Assert.IsType<OkObjectResult>(initialResponse.Result);
+        var initialResult = Assert.IsType<SyncPushResult>(initialOk.Value);
+        Assert.Equal(2, initialResult.AcceptedCount);
+        Assert.Equal(0, initialResult.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var persistedSecondRevision = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Where(invoice => invoice.Id == secondInvoiceId)
+            .Select(invoice => invoice.Revision)
+            .SingleAsync();
+        Assert.NotEqual(2_000, persistedSecondRevision);
+
+        var staleResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "historical-invoice-chain-stale-follow-up",
+            Invoices =
+            [
+                CreateHistoricalInvoiceVersionDto(
+                    customerId,
+                    thirdInvoiceId,
+                    firstInvoiceId,
+                    versionNumber: 3,
+                    previousVersionId: secondInvoiceId,
+                    historicalRevision: 2_000)
+            ]
+        }, CancellationToken.None);
+        var staleOk = Assert.IsType<OkObjectResult>(staleResponse.Result);
+        var staleResult = Assert.IsType<SyncPushResult>(staleOk.Value);
+
+        Assert.Equal(0, staleResult.AcceptedCount);
+        var conflict = Assert.Single(staleResult.Conflicts);
+        Assert.Contains(
+            "base revision does not match",
+            conflict.Reason,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .AnyAsync(invoice => invoice.Id == thirdInvoiceId));
+    }
+
+    [Fact]
+    public async Task PushInvoiceMalformedVersionChainInOneBatch_StillRejectsNonConsecutiveVersion()
+    {
+        var customerId = Guid.NewGuid();
+        var firstInvoiceId = Guid.NewGuid();
+        var thirdInvoiceId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Malformed Invoice Chain Customer",
+            NameMatchKey = "MALFORMEDINVOICECHAINCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "malformed-invoice-chain-one-batch",
+            Invoices =
+            [
+                CreateHistoricalInvoiceVersionDto(
+                    customerId,
+                    firstInvoiceId,
+                    firstInvoiceId,
+                    versionNumber: 1,
+                    previousVersionId: null,
+                    historicalRevision: 1_000),
+                CreateHistoricalInvoiceVersionDto(
+                    customerId,
+                    thirdInvoiceId,
+                    firstInvoiceId,
+                    versionNumber: 3,
+                    previousVersionId: firstInvoiceId,
+                    historicalRevision: 3_000)
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Contains(
+            "new version number must be consecutive",
+            conflict.Reason,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .AnyAsync(invoice => invoice.Id == thirdInvoiceId));
+    }
+
+    [Fact]
+    public async Task PushInvoiceVersionChainInOneBatch_RejectsChildOutsideAddedPredecessorScope()
+    {
+        var customerId = Guid.NewGuid();
+        var firstInvoiceId = Guid.NewGuid();
+        var secondInvoiceId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Cross Scope Invoice Chain Customer",
+            NameMatchKey = "CROSSSCOPEINVOICECHAINCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var firstVersion = CreateHistoricalInvoiceVersionDto(
+            customerId,
+            firstInvoiceId,
+            firstInvoiceId,
+            versionNumber: 1,
+            previousVersionId: null,
+            historicalRevision: 1_000);
+        firstVersion.OfficeCode = OfficeCodeCatalog.Yeonsu;
+        firstVersion.ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu;
+        var secondVersion = CreateHistoricalInvoiceVersionDto(
+            customerId,
+            secondInvoiceId,
+            firstInvoiceId,
+            versionNumber: 2,
+            previousVersionId: firstInvoiceId,
+            historicalRevision: 2_000);
+        secondVersion.OfficeCode = OfficeCodeCatalog.Usenet;
+        secondVersion.ResponsibleOfficeCode = OfficeCodeCatalog.Usenet;
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "cross-scope-invoice-chain-one-batch",
+            Invoices = [firstVersion, secondVersion]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Contains(
+            "outside the matching customer, tenant, or office scope",
+            conflict.Reason,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .AnyAsync(invoice => invoice.Id == secondInvoiceId));
+    }
+
+    [Fact]
+    public async Task PushInvoiceVersionChainInOneBatch_RejectsChildReferencingAddedDeletedPredecessor()
+    {
+        var customerId = Guid.NewGuid();
+        var firstInvoiceId = Guid.NewGuid();
+        var secondInvoiceId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Deleted Predecessor Invoice Chain Customer",
+            NameMatchKey = "DELETEDPREDECESSORINVOICECHAINCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var deletedFirstVersion = CreateHistoricalInvoiceVersionDto(
+            customerId,
+            firstInvoiceId,
+            firstInvoiceId,
+            versionNumber: 1,
+            previousVersionId: null,
+            historicalRevision: 1_000);
+        deletedFirstVersion.IsDeleted = true;
+        var secondVersion = CreateHistoricalInvoiceVersionDto(
+            customerId,
+            secondInvoiceId,
+            firstInvoiceId,
+            versionNumber: 2,
+            previousVersionId: firstInvoiceId,
+            historicalRevision: 2_000);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "deleted-predecessor-invoice-chain-one-batch",
+            Invoices = [deletedFirstVersion, secondVersion]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Contains(
+            "must reference the current latest version in the same group and scope",
+            conflict.Reason,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .AnyAsync(invoice => invoice.Id == secondInvoiceId));
+    }
+
+    [Fact]
+    public async Task PushInvoiceNewVersion_ReplacesPreviousLatestStockSnapshot()
+    {
+        var customerId = Guid.NewGuid();
+        var itemId = Guid.NewGuid();
+        var firstInvoiceId = Guid.NewGuid();
+        var secondInvoiceId = Guid.NewGuid();
+        var versionGroupId = firstInvoiceId;
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Sync Version Stock Customer",
+            NameMatchKey = "SYNCVERSIONSTOCKCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "Sync Version Stock Item",
+            NameMatchKey = "SYNCVERSIONSTOCKITEM",
+            Unit = "EA",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 8m
+        });
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 8m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+            Revision = 10
+        });
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = firstInvoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            InvoiceNumber = "SYNC-VERSION-STOCK-0001",
+            LocalTempNumber = "L-SYNC-VERSION-STOCK-0001",
+            VersionGroupId = versionGroupId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 7, 27),
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-2),
+            Lines =
+            [
+                new InvoiceLine
+                {
+                    Id = Guid.NewGuid(),
+                    InvoiceId = firstInvoiceId,
+                    ItemId = itemId,
+                    ItemNameOriginal = "Sync Version Stock Item",
+                    Unit = "EA",
+                    Quantity = 2m,
+                    UnitPrice = 1_000m,
+                    LineAmount = 2_000m,
+                    ItemTrackingType = ItemTrackingTypes.Stock
+                }
+            ]
+        });
+        await _dbContext.SaveChangesAsync();
+        var firstInvoiceRevision = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Where(invoice => invoice.Id == firstInvoiceId)
+            .Select(invoice => invoice.Revision)
+            .SingleAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "invoice-version-stock-replacement-test",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = secondInvoiceId,
+                    CustomerId = customerId,
+                    CustomerName = "Sync Version Stock Customer",
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    InvoiceNumber = "SYNC-VERSION-STOCK-0002",
+                    LocalTempNumber = "L-SYNC-VERSION-STOCK-0001",
+                    VersionGroupId = versionGroupId,
+                    VersionNumber = 2,
+                    PreviousVersionId = firstInvoiceId,
+                    IsLatestVersion = true,
+                    Revision = firstInvoiceRevision,
+                    ExpectedRevision = firstInvoiceRevision,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = new DateOnly(2026, 7, 27),
+                    UpdatedAtUtc = DateTime.UtcNow,
+                    Lines =
+                    [
+                        new InvoiceLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            InvoiceId = secondInvoiceId,
+                            ItemId = itemId,
+                            ItemNameOriginal = "Sync Version Stock Item",
+                            Unit = "EA",
+                            Quantity = 3m,
+                            UnitPrice = 1_000m,
+                            LineAmount = 3_000m,
+                            ItemTrackingType = ItemTrackingTypes.Stock
+                        }
+                    ]
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(7m, await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(7m, await _dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.Id == itemId)
+            .Select(item => item.CurrentStock)
+            .SingleAsync());
+
+        var versions = await _dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.VersionGroupId == versionGroupId)
+            .ToListAsync();
+        Assert.False(versions.Single(invoice => invoice.Id == firstInvoiceId).IsLatestVersion);
+        Assert.True(versions.Single(invoice => invoice.Id == secondInvoiceId).IsLatestVersion);
+
+        var ledgerEntry = Assert.Single(await _dbContext.InventoryLedgerEntries
+            .Where(entry => entry.ItemId == itemId)
+            .ToListAsync());
+        Assert.Equal(secondInvoiceId, ledgerEntry.SourceDocumentId);
+        Assert.Equal(-3m, ledgerEntry.QuantityDelta);
+    }
+
+    [Fact]
+    public async Task PushInvoiceMultipleNewVersionsInOneBatch_AppliesOnlyHighestVersionStockSnapshot()
+    {
+        var fixture = await SeedVersionedInvoiceStockAsync();
+        var secondInvoiceId = Guid.NewGuid();
+        var thirdInvoiceId = Guid.NewGuid();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "invoice-multiple-version-stock-replacement-test",
+            Invoices =
+            [
+                CreateVersionedInvoiceStockDto(
+                    fixture,
+                    secondInvoiceId,
+                    versionNumber: 2,
+                    previousVersionId: fixture.FirstInvoiceId,
+                    quantity: 3m),
+                CreateVersionedInvoiceStockDto(
+                    fixture,
+                    thirdInvoiceId,
+                    versionNumber: 3,
+                    previousVersionId: secondInvoiceId,
+                    quantity: 4m)
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(6m, await _dbContext.ItemWarehouseStocks
+            .Where(stock =>
+                stock.ItemId == fixture.ItemId &&
+                stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(6m, await _dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.Id == fixture.ItemId)
+            .Select(item => item.CurrentStock)
+            .SingleAsync());
+
+        var versions = await _dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.VersionGroupId == fixture.FirstInvoiceId)
+            .ToListAsync();
+        var latest = Assert.Single(versions, invoice => invoice.IsLatestVersion);
+        Assert.Equal(thirdInvoiceId, latest.Id);
+
+        var ledgerEntry = Assert.Single(await _dbContext.InventoryLedgerEntries
+            .Where(entry => entry.ItemId == fixture.ItemId)
+            .ToListAsync());
+        Assert.Equal(thirdInvoiceId, ledgerEntry.SourceDocumentId);
+        Assert.Equal(-4m, ledgerEntry.QuantityDelta);
+    }
+
+    [Fact]
+    public async Task PushInvoiceNewVersion_WithAcceptedWarehouseSnapshot_PreservesClientSnapshot()
+    {
+        var fixture = await SeedVersionedInvoiceStockAsync();
+        var warehouseStockRevision = await _dbContext.ItemWarehouseStocks
+            .Where(stock =>
+                stock.ItemId == fixture.ItemId &&
+                stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Revision)
+            .SingleAsync();
+        var secondInvoiceId = Guid.NewGuid();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "invoice-version-client-stock-snapshot-test",
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = fixture.ItemId,
+                    WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 6m,
+                    ExpectedRevision = warehouseStockRevision,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ],
+            Invoices =
+            [
+                CreateVersionedInvoiceStockDto(
+                    fixture,
+                    secondInvoiceId,
+                    versionNumber: 2,
+                    previousVersionId: fixture.FirstInvoiceId,
+                    quantity: 3m)
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(6m, await _dbContext.ItemWarehouseStocks
+            .Where(stock =>
+                stock.ItemId == fixture.ItemId &&
+                stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(6m, await _dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.Id == fixture.ItemId)
+            .Select(item => item.CurrentStock)
+            .SingleAsync());
+
+        var versions = await _dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.VersionGroupId == fixture.FirstInvoiceId)
+            .ToListAsync();
+        Assert.False(versions.Single(invoice => invoice.Id == fixture.FirstInvoiceId).IsLatestVersion);
+        Assert.True(versions.Single(invoice => invoice.Id == secondInvoiceId).IsLatestVersion);
+        var ledgerEntry = Assert.Single(await _dbContext.InventoryLedgerEntries
+            .Where(entry => entry.ItemId == fixture.ItemId)
+            .ToListAsync());
+        Assert.Equal(secondInvoiceId, ledgerEntry.SourceDocumentId);
+        Assert.Equal(-3m, ledgerEntry.QuantityDelta);
+    }
+
+    [Fact]
+    public async Task PushInvoiceNewVersion_WithPartialWarehouseSnapshotConflict_PreservesAllRowsAndAppliesLedgerOnce()
+    {
+        var fixture = await SeedVersionedInvoiceStockAsync();
+        var acceptedWarehouseStock = await _dbContext.ItemWarehouseStocks
+            .SingleAsync(stock =>
+                stock.ItemId == fixture.ItemId &&
+                stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse);
+        var acceptedWarehouseStockRevision = acceptedWarehouseStock.Revision;
+
+        var omittedWarehouseStock = new ItemWarehouseStock
+        {
+            ItemId = fixture.ItemId,
+            WarehouseCode = OfficeCodeCatalog.ItworldMainWarehouse,
+            Quantity = 4m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-4)
+        };
+        _dbContext.ItemWarehouseStocks.Add(omittedWarehouseStock);
+        await _dbContext.SaveChangesAsync();
+        var omittedWarehouseStockRevision = omittedWarehouseStock.Revision;
+
+        var conflictingWarehouseStock = new ItemWarehouseStock
+        {
+            ItemId = fixture.ItemId,
+            WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            Quantity = 5m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-3)
+        };
+        _dbContext.ItemWarehouseStocks.Add(conflictingWarehouseStock);
+        await _dbContext.SaveChangesAsync();
+        var conflictingWarehouseStockRevision = conflictingWarehouseStock.Revision;
+        Assert.True(omittedWarehouseStockRevision < conflictingWarehouseStockRevision);
+
+        var secondInvoiceId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "invoice-version-partial-stock-conflict-test",
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = fixture.ItemId,
+                    WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 6m,
+                    Revision = acceptedWarehouseStockRevision,
+                    ExpectedRevision = acceptedWarehouseStockRevision,
+                    UpdatedAtUtc = DateTime.UtcNow
+                },
+                new ItemWarehouseStockDto
+                {
+                    ItemId = fixture.ItemId,
+                    WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                    Quantity = 99m,
+                    Revision = omittedWarehouseStockRevision,
+                    ExpectedRevision = omittedWarehouseStockRevision,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ],
+            Invoices =
+            [
+                CreateVersionedInvoiceStockDto(
+                    fixture,
+                    secondInvoiceId,
+                    versionNumber: 2,
+                    previousVersionId: fixture.FirstInvoiceId,
+                    quantity: 3m)
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.ConflictCount);
+        var stockConflict = Assert.Single(result.Conflicts);
+        Assert.Equal(nameof(ItemWarehouseStock), stockConflict.EntityName);
+        Assert.Contains(OfficeCodeCatalog.YeonsuMainWarehouse, stockConflict.EntityId, StringComparison.Ordinal);
+        Assert.Equal(1, result.AcceptedCount);
+
+        var acceptedStockKey = Assert.Single(result.AcceptedItemWarehouseStockKeys);
+        Assert.Equal(fixture.ItemId, acceptedStockKey.ItemId);
+        Assert.Equal(OfficeCodeCatalog.UsenetMainWarehouse, acceptedStockKey.WarehouseCode);
+        var acceptedRevision = Assert.Single(result.AcceptedRevisions);
+        Assert.Equal(nameof(Invoice), acceptedRevision.EntityName);
+        Assert.Equal(secondInvoiceId, acceptedRevision.EntityId);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedStocks = await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == fixture.ItemId)
+            .ToListAsync();
+        Assert.Equal(3, storedStocks.Count);
+        var storedAcceptedStock = Assert.Single(
+            storedStocks,
+            stock => stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse);
+        Assert.Equal(6m, storedAcceptedStock.Quantity);
+        Assert.True(storedAcceptedStock.Revision > acceptedWarehouseStockRevision);
+        var storedConflictingStock = Assert.Single(
+            storedStocks,
+            stock => stock.WarehouseCode == OfficeCodeCatalog.YeonsuMainWarehouse);
+        Assert.Equal(5m, storedConflictingStock.Quantity);
+        Assert.Equal(conflictingWarehouseStockRevision, storedConflictingStock.Revision);
+        var storedOmittedStock = Assert.Single(
+            storedStocks,
+            stock => stock.WarehouseCode == OfficeCodeCatalog.ItworldMainWarehouse);
+        Assert.Equal(4m, storedOmittedStock.Quantity);
+        Assert.Equal(omittedWarehouseStockRevision, storedOmittedStock.Revision);
+        Assert.Equal(
+            15m,
+            await _dbContext.Items
+                .IgnoreQueryFilters()
+                .Where(item => item.Id == fixture.ItemId)
+                .Select(item => item.CurrentStock)
+                .SingleAsync());
+
+        var versions = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Where(invoice => invoice.VersionGroupId == fixture.FirstInvoiceId)
+            .ToListAsync();
+        Assert.False(versions.Single(invoice => invoice.Id == fixture.FirstInvoiceId).IsLatestVersion);
+        Assert.True(versions.Single(invoice => invoice.Id == secondInvoiceId).IsLatestVersion);
+        var ledgerEntry = Assert.Single(await _dbContext.InventoryLedgerEntries
+            .Where(entry => entry.ItemId == fixture.ItemId)
+            .ToListAsync());
+        Assert.Equal(secondInvoiceId, ledgerEntry.SourceDocumentId);
+        Assert.Equal(-3m, ledgerEntry.QuantityDelta);
+    }
+
+    [Fact]
+    public async Task PushWithoutInvoicePayload_DoesNotRepairExistingDuplicateLatestInvoiceVersions()
     {
         var customerId = Guid.NewGuid();
         var firstInvoiceId = Guid.NewGuid();
@@ -232,6 +1152,14 @@ public sealed class SyncControllerTests : IDisposable
                 UpdatedAtUtc = new DateTime(2026, 7, 6, 0, 2, 0, DateTimeKind.Utc)
             });
         await _dbContext.SaveChangesAsync();
+        var originalRevisions = await _dbContext.Invoices
+            .IgnoreQueryFilters()
+            .Where(invoice =>
+                invoice.Id == firstInvoiceId ||
+                invoice.Id == secondInvoiceId)
+            .ToDictionaryAsync(
+                invoice => invoice.Id,
+                invoice => invoice.Revision);
 
         var response = await _controller.Push(new SyncPushRequest
         {
@@ -245,9 +1173,153 @@ public sealed class SyncControllerTests : IDisposable
         var versions = await _dbContext.Invoices.IgnoreQueryFilters()
             .Where(invoice => invoice.VersionGroupId == versionGroupId || invoice.Id == versionGroupId)
             .ToListAsync();
-        var latest = Assert.Single(versions, invoice => invoice.IsLatestVersion && !invoice.IsDeleted);
-        Assert.Equal(secondInvoiceId, latest.Id);
-        Assert.False(versions.Single(invoice => invoice.Id == firstInvoiceId).IsLatestVersion);
+        Assert.True(
+            versions.Single(
+                invoice => invoice.Id == firstInvoiceId)
+                .IsLatestVersion);
+        Assert.True(
+            versions.Single(
+                invoice => invoice.Id == secondInvoiceId)
+                .IsLatestVersion);
+        Assert.All(
+            versions,
+            invoice =>
+                Assert.Equal(
+                    originalRevisions[invoice.Id],
+                    invoice.Revision));
+    }
+
+    [Fact]
+    public async Task PushWithoutInvoicePayload_DoesNotRepairDuplicateLatestStockSnapshots()
+    {
+        var customerId = Guid.NewGuid();
+        var itemId = Guid.NewGuid();
+        var firstInvoiceId = Guid.NewGuid();
+        var secondInvoiceId = Guid.NewGuid();
+        var versionGroupId = firstInvoiceId;
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Duplicate Latest Stock Customer",
+            NameMatchKey = "DUPLICATELATESTSTOCKCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "Duplicate Latest Stock Item",
+            NameMatchKey = "DUPLICATELATESTSTOCKITEM",
+            Unit = "EA",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 5m
+        });
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 5m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+            Revision = 10
+        });
+        _dbContext.Invoices.AddRange(
+            new Invoice
+            {
+                Id = firstInvoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                InvoiceNumber = "SYNC-DUP-STOCK-0001",
+                VersionGroupId = versionGroupId,
+                VersionNumber = 1,
+                IsLatestVersion = true,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 7, 27),
+                UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-2),
+                Lines =
+                [
+                    new InvoiceLine
+                    {
+                        Id = Guid.NewGuid(),
+                        InvoiceId = firstInvoiceId,
+                        ItemId = itemId,
+                        ItemNameOriginal = "Duplicate Latest Stock Item",
+                        Unit = "EA",
+                        Quantity = 2m,
+                        UnitPrice = 1_000m,
+                        LineAmount = 2_000m,
+                        ItemTrackingType = ItemTrackingTypes.Stock
+                    }
+                ]
+            },
+            new Invoice
+            {
+                Id = secondInvoiceId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                InvoiceNumber = "SYNC-DUP-STOCK-0002",
+                VersionGroupId = versionGroupId,
+                VersionNumber = 2,
+                PreviousVersionId = firstInvoiceId,
+                IsLatestVersion = true,
+                VoucherType = VoucherType.Sales,
+                InvoiceDate = new DateOnly(2026, 7, 27),
+                UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                Lines =
+                [
+                    new InvoiceLine
+                    {
+                        Id = Guid.NewGuid(),
+                        InvoiceId = secondInvoiceId,
+                        ItemId = itemId,
+                        ItemNameOriginal = "Duplicate Latest Stock Item",
+                        Unit = "EA",
+                        Quantity = 3m,
+                        UnitPrice = 1_000m,
+                        LineAmount = 3_000m,
+                        ItemTrackingType = ItemTrackingTypes.Stock
+                    }
+                ]
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "invoice-existing-duplicate-stock-repair-test"
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(5m, await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(stock => stock.Quantity)
+            .SingleAsync());
+        Assert.Equal(5m, await _dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.Id == itemId)
+            .Select(item => item.CurrentStock)
+            .SingleAsync());
+
+        var versions = await _dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.VersionGroupId == versionGroupId)
+            .ToListAsync();
+        Assert.True(versions.Single(invoice => invoice.Id == firstInvoiceId).IsLatestVersion);
+        Assert.True(versions.Single(invoice => invoice.Id == secondInvoiceId).IsLatestVersion);
+
+        Assert.False(await _dbContext.InventoryLedgerEntries
+            .AnyAsync(entry => entry.ItemId == itemId));
     }
 
     [Fact]
@@ -336,7 +1408,7 @@ public sealed class SyncControllerTests : IDisposable
                 {
                     Id = customerId,
                     TenantCode = TenantScopeCatalog.UsenetGroup,
-                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    OfficeCode = OfficeCodeCatalog.Yeonsu,
                     ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
                     NameOriginal = "New Sync Customer",
                     NameMatchKey = "NEWSYNCCUSTOMER",
@@ -500,7 +1572,7 @@ public sealed class SyncControllerTests : IDisposable
         {
             Username = "yeonsu-payment-user",
             TenantCode = TenantScopeCatalog.UsenetGroup,
-            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            OfficeCode = OfficeCodeCatalog.Usenet,
             ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
             Permissions = [PermissionNames.PaymentEdit]
         };
@@ -570,6 +1642,475 @@ public sealed class SyncControllerTests : IDisposable
         var stored = await dbContext.Transactions.AsNoTracking().SingleAsync(transaction => transaction.Id == transactionId);
         Assert.Equal(OfficeCodeCatalog.Usenet, stored.ResponsibleOfficeCode);
         Assert.Equal(50_000m, stored.ReceiptTotal);
+    }
+
+    [Fact]
+    public async Task Push_NormalizesGeneralTransactionScopeToReferencedCustomer_WhenAdminRequestsDifferentWritableOffice()
+    {
+        var customerId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "authoritative transaction scope customer",
+            NameMatchKey = "AUTHORITATIVETRANSACTIONSCOPECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = false
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var transactionId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "authoritative-general-transaction-scope-device",
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = transactionId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    TransactionDate = new DateOnly(2026, 8, 3),
+                    TransactionKind = "일반수금",
+                    BankReceipt = 440_000m,
+                    ReceiptTotal = 440_000m,
+                    SettlementAmount = 440_000m
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Empty(payload.Conflicts);
+        Assert.Equal(1, payload.AcceptedCount);
+
+        var stored = await _dbContext.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == transactionId);
+        Assert.Equal(TenantScopeCatalog.UsenetGroup, stored.TenantCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, stored.OfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, stored.ResponsibleOfficeCode);
+        Assert.Equal(customerId, stored.CustomerId);
+        Assert.Equal(440_000m, stored.ReceiptTotal);
+    }
+
+    [Fact]
+    public async Task Push_NormalizesTransactionScopeByInvoiceThenRentalProfilePriority()
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var invoiceTransactionId = Guid.NewGuid();
+        var profileTransactionId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "transaction source priority customer",
+            NameMatchKey = "TRANSACTIONSOURCEPRIORITYCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ProfileKey = $"transaction-source-priority-{profileId:N}",
+            CustomerName = "transaction source priority customer",
+            MonthlyAmount = 100_000m,
+            OutstandingAmount = 100_000m
+        });
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "TRANSACTION-SCOPE-PRIORITY-001",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 8, 3),
+            TotalAmount = 100_000m,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m,
+            LinkedRentalBillingProfileId = profileId
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "transaction-authoritative-source-priority-device",
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = invoiceTransactionId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Yeonsu,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                    TransactionDate = new DateOnly(2026, 8, 3),
+                    TransactionKind = "전표수금",
+                    LinkedInvoiceId = invoiceId,
+                    LinkedRentalBillingProfileId = profileId,
+                    BankReceipt = 10_000m,
+                    ReceiptTotal = 10_000m,
+                    SettlementAmount = 10_000m
+                },
+                new TransactionDto
+                {
+                    Id = profileTransactionId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 8, 3),
+                    TransactionKind = "렌탈수금",
+                    LinkedRentalBillingProfileId = profileId,
+                    BankReceipt = 20_000m,
+                    ReceiptTotal = 20_000m,
+                    SettlementAmount = 20_000m
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Empty(payload.Conflicts);
+        Assert.Equal(2, payload.AcceptedCount);
+
+        var stored = await _dbContext.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(transaction =>
+                transaction.Id == invoiceTransactionId ||
+                transaction.Id == profileTransactionId)
+            .ToDictionaryAsync(transaction => transaction.Id);
+        Assert.Equal(OfficeCodeCatalog.Usenet, stored[invoiceTransactionId].OfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, stored[invoiceTransactionId].ResponsibleOfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, stored[profileTransactionId].OfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, stored[profileTransactionId].ResponsibleOfficeCode);
+    }
+
+    [Fact]
+    public async Task Push_RelinksProfileTransactionToProfileCustomer_InsteadOfDifferentTenantCustomer()
+    {
+        var profileCustomerId = Guid.NewGuid();
+        var differentTenantCustomerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+        _dbContext.Customers.AddRange(
+            new Customer
+            {
+                Id = profileCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "profile transaction authoritative customer",
+                NameMatchKey = "PROFILETRANSACTIONAUTHORITATIVECUSTOMER",
+                TradeType = CustomerClassificationNormalizer.Sales
+            },
+            new Customer
+            {
+                Id = differentTenantCustomerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = "profile transaction foreign customer",
+                NameMatchKey = "PROFILETRANSACTIONFOREIGNCUSTOMER",
+                TradeType = CustomerClassificationNormalizer.Sales
+            });
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            CustomerId = profileCustomerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"profile-transaction-customer-{profileId:N}",
+            CustomerName = "profile transaction authoritative customer",
+            MonthlyAmount = 100_000m,
+            OutstandingAmount = 100_000m
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "profile-transaction-authoritative-customer-device",
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = transactionId,
+                    CustomerId = differentTenantCustomerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 8, 3),
+                    TransactionKind = "RentalReceipt",
+                    LinkedRentalBillingProfileId = profileId,
+                    BankReceipt = 30_000m,
+                    ReceiptTotal = 30_000m,
+                    SettlementAmount = 30_000m
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Empty(payload.Conflicts);
+        Assert.Equal(1, payload.AcceptedCount);
+
+        var stored = await _dbContext.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == transactionId);
+        Assert.Equal(profileCustomerId, stored.CustomerId);
+        Assert.Equal(TenantScopeCatalog.UsenetGroup, stored.TenantCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, stored.OfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, stored.ResponsibleOfficeCode);
+        Assert.Equal(profileId, stored.LinkedRentalBillingProfileId);
+    }
+
+    [Fact]
+    public async Task Push_ClearsTransactionRentalLink_WhenAuthoritativeInvoiceHasNoRentalProfile()
+    {
+        var invoiceCustomerId = Guid.NewGuid();
+        var unrelatedProfileCustomerId = Guid.NewGuid();
+        var unrelatedProfileId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+        _dbContext.Customers.AddRange(
+            new Customer
+            {
+                Id = invoiceCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "invoice authoritative rental link customer",
+                NameMatchKey = "INVOICEAUTHORITATIVERENTALLINKCUSTOMER",
+                TradeType = CustomerClassificationNormalizer.Sales
+            },
+            new Customer
+            {
+                Id = unrelatedProfileCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "unrelated rental profile customer",
+                NameMatchKey = "UNRELATEDRENTALPROFILECUSTOMER",
+                TradeType = CustomerClassificationNormalizer.Sales
+            });
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = unrelatedProfileId,
+            CustomerId = unrelatedProfileCustomerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"unrelated-invoice-rental-link-{unrelatedProfileId:N}",
+            CustomerName = "unrelated rental profile customer",
+            MonthlyAmount = 100_000m,
+            SettledAmount = 0m,
+            OutstandingAmount = 100_000m
+        });
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = invoiceCustomerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "AUTHORITATIVE-NO-RENTAL-LINK-001",
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 8, 3),
+            TotalAmount = 100_000m,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "authoritative-invoice-clears-rental-link-device",
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = transactionId,
+                    CustomerId = unrelatedProfileCustomerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 8, 3),
+                    TransactionKind = "RentalReceipt",
+                    LinkedInvoiceId = invoiceId,
+                    LinkedInvoiceNumber = "AUTHORITATIVE-NO-RENTAL-LINK-001",
+                    LinkedRentalBillingProfileId = unrelatedProfileId,
+                    LinkedRentalBillingRunId = Guid.NewGuid(),
+                    BankReceipt = 25_000m,
+                    ReceiptTotal = 25_000m,
+                    SettlementAmount = 25_000m
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Empty(payload.Conflicts);
+        Assert.Equal(1, payload.AcceptedCount);
+
+        var stored = await _dbContext.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == transactionId);
+        Assert.Equal(invoiceCustomerId, stored.CustomerId);
+        Assert.Equal(invoiceId, stored.LinkedInvoiceId);
+        Assert.Null(stored.LinkedRentalBillingProfileId);
+        Assert.Null(stored.LinkedRentalBillingRunId);
+        Assert.Equal("전표수금", stored.TransactionKind);
+
+        var unrelatedProfile = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == unrelatedProfileId);
+        Assert.Equal(0m, unrelatedProfile.SettledAmount);
+        Assert.Equal(100_000m, unrelatedProfile.OutstandingAmount);
+    }
+
+    [Fact]
+    public async Task Push_DeleteExistingTransaction_PreservesStoredStateAndReplaysIdempotently()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-transaction-delete-user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.PaymentEdit]
+        };
+        await using var dbContext = CreateDbContext(currentUser);
+        var controller = CreateController(dbContext, currentUser);
+        var storedCustomerId = Guid.NewGuid();
+        var foreignCustomerId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+        dbContext.Customers.AddRange(
+            new Customer
+            {
+                Id = storedCustomerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "stored transaction delete customer",
+                NameMatchKey = "STOREDTRANSACTIONDELETECUSTOMER",
+                TradeType = CustomerClassificationNormalizer.Sales
+            },
+            new Customer
+            {
+                Id = foreignCustomerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = "foreign transaction delete customer",
+                NameMatchKey = "FOREIGNTRANSACTIONDELETECUSTOMER",
+                TradeType = CustomerClassificationNormalizer.Sales
+            });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = transactionId,
+            CustomerId = storedCustomerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 8, 2),
+            TransactionKind = "GeneralReceipt",
+            BankReceipt = 70_000m,
+            ReceiptTotal = 70_000m,
+            SettlementAmount = 70_000m,
+            Note = "stored transaction state"
+        });
+        await dbContext.SaveChangesAsync();
+        var original = await dbContext.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == transactionId);
+        const string mutationId = "transaction-delete-preserve-existing-state";
+
+        TransactionDto CreateDeleteMutation() => new()
+        {
+            Id = transactionId,
+            CustomerId = foreignCustomerId,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            TransactionDate = new DateOnly(2099, 12, 31),
+            TransactionKind = "PoisonedDelete",
+            BankReceipt = 999_999m,
+            ReceiptTotal = 999_999m,
+            SettlementAmount = 999_999m,
+            Note = "must not replace stored state",
+            IsDeleted = true,
+            Revision = original.Revision,
+            ExpectedRevision = original.Revision,
+            MutationId = mutationId,
+            CreatedAtUtc = original.CreatedAtUtc,
+            UpdatedAtUtc = original.UpdatedAtUtc.AddMinutes(1)
+        };
+
+        var firstResponse = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "transaction-delete-preserve-device",
+            Transactions = [CreateDeleteMutation()]
+        }, CancellationToken.None);
+        var firstOk = Assert.IsType<OkObjectResult>(firstResponse.Result);
+        var firstPayload = Assert.IsType<SyncPushResult>(firstOk.Value);
+        Assert.Empty(firstPayload.Conflicts);
+        Assert.Equal(1, firstPayload.AcceptedCount);
+        Assert.Equal(0, firstPayload.DuplicateMutationCount);
+
+        var afterFirst = await dbContext.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == transactionId);
+        Assert.True(afterFirst.IsDeleted);
+        Assert.Equal(storedCustomerId, afterFirst.CustomerId);
+        Assert.Equal(original.TenantCode, afterFirst.TenantCode);
+        Assert.Equal(original.OfficeCode, afterFirst.OfficeCode);
+        Assert.Equal(original.ResponsibleOfficeCode, afterFirst.ResponsibleOfficeCode);
+        Assert.Equal(original.TransactionDate, afterFirst.TransactionDate);
+        Assert.Equal(original.TransactionKind, afterFirst.TransactionKind);
+        Assert.Equal(original.SettlementAmount, afterFirst.SettlementAmount);
+        Assert.Equal(original.ReceiptTotal, afterFirst.ReceiptTotal);
+        Assert.Equal(original.BankReceipt, afterFirst.BankReceipt);
+        Assert.Equal(original.Note, afterFirst.Note);
+
+        var replayResponse = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "transaction-delete-preserve-device",
+            Transactions = [CreateDeleteMutation()]
+        }, CancellationToken.None);
+        var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
+        var replayPayload = Assert.IsType<SyncPushResult>(replayOk.Value);
+        Assert.Empty(replayPayload.Conflicts);
+        Assert.Equal(1, replayPayload.AcceptedCount);
+        Assert.Equal(1, replayPayload.DuplicateMutationCount);
+
+        var afterReplay = await dbContext.Transactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == transactionId);
+        Assert.Equal(afterFirst.Revision, afterReplay.Revision);
+        Assert.Equal(storedCustomerId, afterReplay.CustomerId);
+        Assert.Equal(original.Note, afterReplay.Note);
     }
 
     [Fact]
@@ -1259,7 +2800,7 @@ public sealed class SyncControllerTests : IDisposable
         };
 
         await using var scopedDb = CreateDbContext(currentUser);
-        scopedDb.DataSharingPolicies.Add(new DataSharingPolicy
+        SeedSharingPolicy(scopedDb, new DataSharingPolicy
         {
             Id = Guid.NewGuid(),
             SourceTenantCode = TenantScopeCatalog.UsenetGroup,
@@ -1333,13 +2874,14 @@ public sealed class SyncControllerTests : IDisposable
             TrackingType = ItemTrackingTypes.Stock,
             CurrentStock = 3m
         });
-        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        var warehouseStock = new ItemWarehouseStock
         {
             ItemId = itemId,
             WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
             Quantity = 3m,
             Revision = 1
-        });
+        };
+        _dbContext.ItemWarehouseStocks.Add(warehouseStock);
         await _dbContext.SaveChangesAsync();
 
         var response = await _controller.Push(new SyncPushRequest
@@ -1352,7 +2894,7 @@ public sealed class SyncControllerTests : IDisposable
                     ItemId = itemId,
                     WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
                     Quantity = -1m,
-                    Revision = 1
+                    Revision = warehouseStock.Revision
                 }
             ]
         }, CancellationToken.None);
@@ -1433,6 +2975,120 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_Batches501ExactReplayConflictUpdates_AndKeepsNewSameBatchConflictOpen()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        };
+        var updateCounter = new ConflictLogUpdateCountingInterceptor();
+        await using var scopedDb = CreateDbContext(currentUser, updateCounter);
+        var controller = CreateController(scopedDb, currentUser);
+        var replayDtos = Enumerable.Range(0, 501)
+            .Select(index =>
+            {
+                var entityId = Guid.NewGuid();
+                return new CustomerDto
+                {
+                    Id = entityId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = $"Exact replay customer {index:D3}",
+                    NameMatchKey = $"EXACTREPLAYCUSTOMER{index:D3}",
+                    TradeType = CustomerClassificationNormalizer.Sales,
+                    ExpectedRevision = 7,
+                    Revision = 7,
+                    MutationId = $"bulk-replay:customer:{entityId:N}:7",
+                    CreatedAtUtc = DateTime.UtcNow.AddDays(-1),
+                    UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-1)
+                };
+            })
+            .ToList();
+
+        scopedDb.ProcessedSyncMutations.AddRange(replayDtos.Select(dto => new ProcessedSyncMutation
+        {
+            MutationId = ProcessedSyncMutationRecorder.NormalizeMutationId(dto.MutationId),
+            DeviceId = "bulk-replay-device",
+            EntityName = nameof(Customer),
+            EntityId = dto.Id.ToString("D"),
+            ExpectedRevision = dto.ExpectedRevision,
+            PayloadHash = SyncMutationPayloadHasher.Compute(dto),
+            ProcessedAtUtc = DateTime.UtcNow.AddMinutes(-2)
+        }));
+        scopedDb.ConflictLogs.AddRange(replayDtos.Select(dto => new ConflictLog
+        {
+            EntityName = nameof(Customer),
+            EntityId = dto.Id.ToString("D"),
+            Reason = "Historical replay conflict",
+            Status = "Open",
+            CreatedAtUtc = DateTime.UtcNow.AddDays(-1)
+        }));
+
+        var staleCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Same batch stale customer",
+            NameMatchKey = "SAMEBATCHSTALECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        scopedDb.Customers.Add(staleCustomer);
+        await scopedDb.SaveChangesAsync();
+        scopedDb.ChangeTracker.Clear();
+
+        var storedStaleCustomer = await scopedDb.Customers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(customer => customer.Id == staleCustomer.Id);
+        var staleDto = storedStaleCustomer.ToDto();
+        staleDto.ExpectedRevision = storedStaleCustomer.Revision + 1;
+        staleDto.MutationId = $"same-batch-stale:customer:{staleCustomer.Id:N}:{staleDto.ExpectedRevision}";
+        staleDto.NameOriginal = "Must not overwrite stale customer";
+        staleDto.NameMatchKey = "MUSTNOTOVERWRITESTALECUSTOMER";
+
+        updateCounter.Reset();
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "bulk-replay-device",
+            Customers = [.. replayDtos, staleDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(501, result.AcceptedCount);
+        Assert.Equal(501, result.DuplicateMutationCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Equal(2, updateCounter.UpdateCount);
+
+        scopedDb.ChangeTracker.Clear();
+        var replayEntityIds = replayDtos
+            .Select(dto => dto.Id.ToString("D"))
+            .ToList();
+        var resolvedReplayConflictCount = await scopedDb.ConflictLogs
+            .AsNoTracking()
+            .CountAsync(conflict =>
+                conflict.EntityName == nameof(Customer) &&
+                replayEntityIds.Contains(conflict.EntityId) &&
+                conflict.Status == "Resolved");
+        Assert.Equal(501, resolvedReplayConflictCount);
+        var newSameBatchConflict = await scopedDb.ConflictLogs
+            .AsNoTracking()
+            .SingleAsync(conflict =>
+                conflict.EntityName == nameof(Customer) &&
+                conflict.EntityId == staleCustomer.Id.ToString("D"));
+        Assert.Equal("Open", newSameBatchConflict.Status);
+        Assert.Null(newSameBatchConflict.ResolvedAtUtc);
+        Assert.Empty(newSameBatchConflict.ResolutionNote);
+    }
+
+    [Fact]
     public async Task Push_AcceptsLegacyMutationReceiptWithoutPayloadHash_WhenMetadataMatches()
     {
         var customer = new Customer
@@ -1480,6 +3136,310 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal(0, result.ConflictCount);
         var unchanged = await _dbContext.Customers.IgnoreQueryFilters().AsNoTracking().SingleAsync(row => row.Id == customer.Id);
         Assert.Equal("LEGACY-RECEIPT-CUSTOMER", unchanged.NameOriginal);
+    }
+
+    [Fact]
+    public async Task Push_AcceptsDirectApiReceipt_WhenCanonicalPayloadMatchesAcrossMutationIdCasing()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "DIRECT-API-RECEIPT-CUSTOMER",
+            NameMatchKey = "DIRECTAPIRECEIPTCUSTOMER",
+            TradeType = "Sales"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var stored = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == customer.Id);
+        var mutationId = $"direct-api-receipt:Customer:{customer.Id:N}:{stored.Revision}";
+        var dto = stored.ToDto();
+        dto.MutationId = mutationId;
+        dto.ExpectedRevision = stored.Revision;
+        _dbContext.ProcessedSyncMutations.Add(new ProcessedSyncMutation
+        {
+            MutationId = ProcessedSyncMutationRecorder.NormalizeMutationId(mutationId),
+            DeviceId = ProcessedSyncMutationRecorder.DirectApiDeviceId,
+            EntityName = nameof(Customer),
+            EntityId = customer.Id.ToString("D"),
+            ExpectedRevision = stored.Revision,
+            PayloadHash = SyncMutationPayloadHasher.Compute(dto),
+            ProcessedAtUtc = DateTime.UtcNow.AddMinutes(-1)
+        });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        dto.MutationId = mutationId.ToUpperInvariant();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "mobile-device",
+            Customers = [dto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(1, result.DuplicateMutationCount);
+        Assert.Equal(0, result.ConflictCount);
+        var unchanged = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == customer.Id);
+        Assert.Equal("DIRECT-API-RECEIPT-CUSTOMER", unchanged.NameOriginal);
+    }
+
+    [Fact]
+    public async Task Push_AcceptsPreCanonicalPayloadHash_WhenLegacyMutationCasingAndPayloadMatch()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "PRE-CANONICAL-HASH-CUSTOMER",
+            NameMatchKey = "PRECANONICALHASHCUSTOMER",
+            TradeType = "Sales"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var stored = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == customer.Id);
+        var mutationId = $"Legacy-Device:Customer:{customer.Id:N}:{stored.Revision}";
+        var dto = stored.ToDto();
+        dto.MutationId = mutationId;
+        dto.ExpectedRevision = stored.Revision;
+        var legacyPayloadHash = ComputePreCanonicalMutationPayloadHash(dto);
+
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+             INSERT INTO "ProcessedSyncMutations"
+                 ("Id", "MutationId", "DeviceId", "EntityName", "EntityId",
+                  "ExpectedRevision", "PayloadHash", "ProcessedAtUtc")
+             VALUES
+                 ({Guid.NewGuid()}, {mutationId}, {"legacy-device"}, {nameof(Customer)}, {customer.Id.ToString("D")},
+                  {stored.Revision}, {legacyPayloadHash}, {DateTime.UtcNow.AddDays(-1)});
+             """);
+        _dbContext.ChangeTracker.Clear();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "legacy-device",
+            Customers = [dto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(1, result.DuplicateMutationCount);
+        Assert.Equal(0, result.ConflictCount);
+    }
+
+    [Fact]
+    public async Task Push_AcceptsPreCanonicalPayloadHash_WithLegacyMutationWhitespace_AndRejectsChangedPayload()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "PRE-CANONICAL-WHITESPACE-CUSTOMER",
+            NameMatchKey = "PRECANONICALWHITESPACECUSTOMER",
+            TradeType = "Sales"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var stored = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == customer.Id);
+        var rawMutationId = $"  Legacy-Device:Customer:{customer.Id:N}:{stored.Revision}  ";
+        var dto = stored.ToDto();
+        dto.MutationId = rawMutationId;
+        dto.ExpectedRevision = stored.Revision;
+        var legacyPayloadHash = ComputePreCanonicalMutationPayloadHash(dto);
+
+        _dbContext.ProcessedSyncMutations.Add(new ProcessedSyncMutation
+        {
+            MutationId = rawMutationId.Trim(),
+            DeviceId = "legacy-device",
+            EntityName = nameof(Customer),
+            EntityId = customer.Id.ToString("D"),
+            ExpectedRevision = stored.Revision,
+            PayloadHash = legacyPayloadHash,
+            ProcessedAtUtc = DateTime.UtcNow.AddDays(-1)
+        });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var duplicateResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "legacy-device",
+            Customers = [dto]
+        }, CancellationToken.None);
+
+        var duplicateOk = Assert.IsType<OkObjectResult>(duplicateResponse.Result);
+        var duplicateResult = Assert.IsType<SyncPushResult>(duplicateOk.Value);
+        Assert.Equal(1, duplicateResult.AcceptedCount);
+        Assert.Equal(1, duplicateResult.DuplicateMutationCount);
+        Assert.Equal(0, duplicateResult.ConflictCount);
+
+        dto.NameOriginal = "MUTATION-ID-REUSE-MUST-NOT-WRITE";
+        var conflictResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "legacy-device",
+            Customers = [dto]
+        }, CancellationToken.None);
+
+        var conflictOk = Assert.IsType<OkObjectResult>(conflictResponse.Result);
+        var conflictResult = Assert.IsType<SyncPushResult>(conflictOk.Value);
+        Assert.Equal(0, conflictResult.AcceptedCount);
+        Assert.Equal(0, conflictResult.DuplicateMutationCount);
+        Assert.Equal(1, conflictResult.ConflictCount);
+        var unchanged = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == customer.Id);
+        Assert.Equal("PRE-CANONICAL-WHITESPACE-CUSTOMER", unchanged.NameOriginal);
+    }
+
+    [Fact]
+    public async Task Push_AcceptsPreCanonicalPayloadHash_AfterStartupCanonicalIndexMigration()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "STARTUP-MIGRATED-HASH-CUSTOMER",
+            NameMatchKey = "STARTUPMIGRATEDHASHCUSTOMER",
+            TradeType = "Sales"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var stored = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == customer.Id);
+        var legacyMutationId = $"  Legacy-Device:Customer:{customer.Id:N}:{stored.Revision}  ";
+        var dto = stored.ToDto();
+        dto.MutationId = legacyMutationId;
+        dto.ExpectedRevision = stored.Revision;
+        var legacyPayloadHash = ComputePreCanonicalMutationPayloadHash(dto);
+
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+             INSERT INTO "ProcessedSyncMutations"
+                 ("Id", "MutationId", "DeviceId", "EntityName", "EntityId",
+                  "ExpectedRevision", "PayloadHash", "ProcessedAtUtc")
+             VALUES
+                 ({Guid.NewGuid()}, {legacyMutationId}, {"legacy-device"}, {nameof(Customer)}, {customer.Id.ToString("D")},
+                  {stored.Revision}, {legacyPayloadHash}, {DateTime.UtcNow.AddDays(-1)});
+             """);
+        _dbContext.ChangeTracker.Clear();
+
+        var initializerMethod = typeof(DbInitializer).GetMethod(
+            "EnsureOperationalRuntimeSchemaAsync",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Assert.NotNull(initializerMethod);
+        await Assert.IsAssignableFrom<Task>(
+            initializerMethod!.Invoke(null, [_dbContext, CancellationToken.None]));
+        _dbContext.ChangeTracker.Clear();
+
+        var migratedReceipt = await _dbContext.ProcessedSyncMutations
+            .AsNoTracking()
+            .SingleAsync(receipt => receipt.EntityId == customer.Id.ToString("D"));
+        Assert.Equal(legacyMutationId, migratedReceipt.MutationId);
+        Assert.Equal(legacyPayloadHash, migratedReceipt.PayloadHash);
+
+        dto.MutationId = ProcessedSyncMutationRecorder.NormalizeMutationId(legacyMutationId);
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "legacy-device",
+            Customers = [dto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(1, result.DuplicateMutationCount);
+        Assert.Equal(0, result.ConflictCount);
+    }
+
+    [Fact]
+    public async Task Push_RejectsDirectApiReceipt_WhenCanonicalPayloadDiffers()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "DIRECT-API-PAYLOAD-CONFLICT-CUSTOMER",
+            NameMatchKey = "DIRECTAPIPAYLOADCONFLICTCUSTOMER",
+            TradeType = "Sales"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+
+        var stored = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == customer.Id);
+        var mutationId = $"direct-api-conflict:Customer:{customer.Id:N}:{stored.Revision}";
+        var originalDto = stored.ToDto();
+        originalDto.MutationId = mutationId;
+        originalDto.ExpectedRevision = stored.Revision;
+        _dbContext.ProcessedSyncMutations.Add(new ProcessedSyncMutation
+        {
+            MutationId = ProcessedSyncMutationRecorder.NormalizeMutationId(mutationId),
+            DeviceId = ProcessedSyncMutationRecorder.DirectApiDeviceId,
+            EntityName = nameof(Customer),
+            EntityId = customer.Id.ToString("D"),
+            ExpectedRevision = stored.Revision,
+            PayloadHash = SyncMutationPayloadHasher.Compute(originalDto),
+            ProcessedAtUtc = DateTime.UtcNow.AddMinutes(-1)
+        });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var changedDto = stored.ToDto();
+        changedDto.MutationId = mutationId.ToUpperInvariant();
+        changedDto.ExpectedRevision = stored.Revision;
+        changedDto.NameOriginal = "MUTATION-ID-REUSE-MUST-NOT-WRITE";
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "mobile-device",
+            Customers = [changedDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(0, result.DuplicateMutationCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(
+            result.Conflicts,
+            conflict => conflict.EntityName == nameof(Customer) &&
+                        conflict.EntityId == customer.Id.ToString("D"));
+        var unchanged = await _dbContext.Customers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == customer.Id);
+        Assert.Equal("DIRECT-API-PAYLOAD-CONFLICT-CUSTOMER", unchanged.NameOriginal);
     }
 
     [Fact]
@@ -2021,6 +3981,108 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_RejectsLaterInventoryTransfer_WhenEarlierPendingDeltaConsumesBatchStock()
+    {
+        var itemId = Guid.NewGuid();
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "배치 이동 부족 품목",
+            NameMatchKey = "배치이동부족품목",
+            Unit = "개",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 10m
+        });
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+            Revision = 10
+        });
+        await _dbContext.SaveChangesAsync();
+
+        InventoryTransferDto BuildTransfer(string number)
+        {
+            var transferId = Guid.NewGuid();
+            return new InventoryTransferDto
+            {
+                Id = transferId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                TransferNumber = number,
+                TransferDate = new DateOnly(2026, 7, 29),
+                FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                TransferStatus = InventoryTransferStatusNormalizer.Pending,
+                MutationId = $"device-transfer-batch-shortage:InventoryTransfer:{transferId:N}:1",
+                MutationCreatedAtUtc = DateTime.UtcNow,
+                Lines =
+                [
+                    new InventoryTransferLineDto
+                    {
+                        Id = Guid.NewGuid(),
+                        TransferId = transferId,
+                        ItemId = itemId,
+                        ItemNameOriginal = "배치 이동 부족 품목",
+                        SpecificationOriginal = string.Empty,
+                        Unit = "개",
+                        Quantity = 6m
+                    }
+                ]
+            };
+        }
+
+        var first = BuildTransfer("TR-BATCH-SHORT-001");
+        var second = BuildTransfer("TR-BATCH-SHORT-002");
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-transfer-batch-shortage",
+            InventoryTransfers = [first, second]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        var shortageConflict = Assert.Single(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(InventoryTransfer) &&
+            conflict.EntityId == second.Id.ToString("D"));
+        Assert.Equal(
+            InvoiceStockSnapshotService.FormatStockShortageMessage(
+            [
+                new InvoiceStockSnapshotService.InvoiceStockShortage(
+                    itemId,
+                    OfficeCodeCatalog.UsenetMainWarehouse,
+                    "배치 이동 부족 품목",
+                    string.Empty,
+                    4m,
+                    6m,
+                    2m)
+            ]),
+            shortageConflict.Reason);
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.True(await _dbContext.InventoryTransfers.IgnoreQueryFilters().AnyAsync(row => row.Id == first.Id));
+        Assert.False(await _dbContext.InventoryTransfers.IgnoreQueryFilters().AnyAsync(row => row.Id == second.Id));
+        Assert.Equal(4m, await _dbContext.ItemWarehouseStocks
+            .Where(row =>
+                row.ItemId == itemId &&
+                row.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse)
+            .Select(row => row.Quantity)
+            .SingleAsync());
+        Assert.Equal(4m, await _dbContext.Items.IgnoreQueryFilters()
+            .Where(row => row.Id == itemId)
+            .Select(row => row.CurrentStock)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task Push_AppliesInventoryTransferStockSnapshots_WhenWarehouseStocksAreNotInPayload()
     {
         var itemId = Guid.NewGuid();
@@ -2203,14 +4265,15 @@ public sealed class SyncControllerTests : IDisposable
             TrackingType = ItemTrackingTypes.Stock,
             CurrentStock = 10m
         });
-        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        var warehouseStock = new ItemWarehouseStock
         {
             ItemId = itemId,
             WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
             Quantity = 10m,
             UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
             Revision = 10
-        });
+        };
+        _dbContext.ItemWarehouseStocks.Add(warehouseStock);
         await _dbContext.SaveChangesAsync();
 
         var transferId = Guid.NewGuid();
@@ -2224,8 +4287,8 @@ public sealed class SyncControllerTests : IDisposable
                     ItemId = itemId,
                     WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
                     Quantity = 8m,
-                    Revision = 10,
-                    ExpectedRevision = 10,
+                    Revision = warehouseStock.Revision,
+                    ExpectedRevision = warehouseStock.Revision,
                     UpdatedAtUtc = DateTime.UtcNow
                 }
             ],
@@ -3054,15 +5117,30 @@ public sealed class SyncControllerTests : IDisposable
             UpdatedAtUtc = new DateTime(2026, 4, 10, 0, 0, 0, DateTimeKind.Utc)
         };
         _dbContext.Items.Add(existing);
+        var customerId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "ITWORLD NATURAL MERGE CUSTOMER",
+            NameMatchKey = "ITWORLDNATURALMERGECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
         await _dbContext.SaveChangesAsync();
 
+        var temporaryItemId = Guid.NewGuid();
+        var rentalAssetId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var inventoryTransferId = Guid.NewGuid();
         var request = new SyncPushRequest
         {
             Items =
             [
                 new ItemDto
                 {
-                    Id = Guid.NewGuid(),
+                    Id = temporaryItemId,
                     TenantCode = TenantScopeCatalog.Itworld,
                     OfficeCode = OfficeCodeCatalog.Itworld,
                     NameOriginal = existing.NameOriginal,
@@ -3076,6 +5154,95 @@ public sealed class SyncControllerTests : IDisposable
                     CreatedAtUtc = existing.CreatedAtUtc,
                     UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(3)
                 }
+            ],
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = rentalAssetId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    AssetKey = $"ITWORLD-NATURAL-MERGE-{rentalAssetId:N}",
+                    ItemId = temporaryItemId,
+                    ItemName = existing.NameOriginal,
+                    ManagementId = "501",
+                    ManagementNumber = existing.MaterialNumber,
+                    MachineNumber = "SN-501-UPDATED",
+                    CreatedAtUtc = existing.CreatedAtUtc,
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(1)
+                }
+            ],
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customerId,
+                    CustomerName = "ITWORLD NATURAL MERGE CUSTOMER",
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    LocalTempNumber = $"TMP-{invoiceId:N}",
+                    VersionGroupId = invoiceId,
+                    VersionNumber = 1,
+                    IsLatestVersion = true,
+                    VoucherType = VoucherType.Sales,
+                    SourceWarehouseCode = OfficeCodeCatalog.ItworldMainWarehouse,
+                    InvoiceDate = new DateOnly(2026, 7, 23),
+                    TotalAmount = 100m,
+                    SupplyAmount = 100m,
+                    VatAmount = 0m,
+                    CreatedAtUtc = existing.CreatedAtUtc,
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(1),
+                    Lines =
+                    [
+                        new InvoiceLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            InvoiceId = invoiceId,
+                            ItemId = temporaryItemId,
+                            ItemNameOriginal = existing.NameOriginal,
+                            Unit = "EA",
+                            Quantity = 1m,
+                            UnitPrice = 100m,
+                            LineAmount = 100m,
+                            ItemTrackingType = ItemTrackingTypes.Asset
+                        }
+                    ]
+                }
+            ],
+            InventoryTransfers =
+            [
+                new InventoryTransferDto
+                {
+                    Id = inventoryTransferId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    SourceOfficeCode = OfficeCodeCatalog.Itworld,
+                    TargetOfficeCode = OfficeCodeCatalog.Itworld,
+                    TransferNumber = $"IT-NATURAL-{inventoryTransferId:N}",
+                    TransferDate = new DateOnly(2026, 7, 23),
+                    FromWarehouseCode = OfficeCodeCatalog.ItworldMainWarehouse,
+                    ToWarehouseCode = OfficeCodeCatalog.ItworldMainWarehouse,
+                    TransferStatus = InventoryTransferStatusNormalizer.Pending,
+                    RequestedByUsername = "admin",
+                    RequestedAtUtc = existing.UpdatedAtUtc.AddMinutes(1),
+                    CreatedAtUtc = existing.CreatedAtUtc,
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(1),
+                    Lines =
+                    [
+                        new InventoryTransferLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            TransferId = inventoryTransferId,
+                            ItemId = temporaryItemId,
+                            ItemNameOriginal = existing.NameOriginal,
+                            Unit = "EA",
+                            Quantity = 1m
+                        }
+                    ]
+                }
             ]
         };
 
@@ -3083,11 +5250,1892 @@ public sealed class SyncControllerTests : IDisposable
         var ok = Assert.IsType<OkObjectResult>(response.Result);
         var result = Assert.IsType<SyncPushResult>(ok.Value);
         Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(4, result.AcceptedCount);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(Item) && revision.EntityId == existing.Id);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(Item) && revision.EntityId == temporaryItemId);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(Invoice) && revision.EntityId == invoiceId);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(InventoryTransfer) && revision.EntityId == inventoryTransferId);
 
         var items = await _dbContext.Items.IgnoreQueryFilters().ToListAsync();
         Assert.Single(items);
         Assert.Equal(existing.Id, items[0].Id);
         Assert.Equal("after", items[0].Notes);
+        Assert.Equal(
+            existing.Id,
+            (await _dbContext.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == rentalAssetId)).ItemId);
+        Assert.Equal(
+            existing.Id,
+            (await _dbContext.Invoices
+                .IgnoreQueryFilters()
+                .Include(invoice => invoice.Lines)
+                .SingleAsync(invoice => invoice.Id == invoiceId)).Lines.Single().ItemId);
+        Assert.Equal(
+            existing.Id,
+            (await _dbContext.InventoryTransfers
+                .IgnoreQueryFilters()
+                .Include(transfer => transfer.Lines)
+                .SingleAsync(transfer => transfer.Id == inventoryTransferId)).Lines.Single().ItemId);
+    }
+
+    [Fact]
+    public async Task Push_ReusesExistingItem_WhenNormalizedMaterialNumberMatches()
+    {
+        var existing = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "Normalized material item",
+            NameMatchKey = "NORMALIZEDMATERIALITEM",
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset,
+            MaterialNumber = "MAT-001",
+            Notes = "before",
+            UpdatedAtUtc = new DateTime(2026, 7, 27, 0, 0, 0, DateTimeKind.Utc)
+        };
+        _dbContext.Items.Add(existing);
+        await _dbContext.SaveChangesAsync();
+
+        var incomingId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = incomingId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = existing.NameOriginal,
+                    NameMatchKey = existing.NameMatchKey,
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = "mat 001",
+                    Notes = "after",
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var items = await _dbContext.Items.IgnoreQueryFilters().ToListAsync();
+        var item = Assert.Single(items);
+        Assert.Equal(existing.Id, item.Id);
+        Assert.Equal("after", item.Notes);
+        Assert.DoesNotContain(items, candidate => candidate.Id == incomingId);
+    }
+
+    [Fact]
+    public async Task Push_SingleItemDoesNotTrackEntireNaturalKeyScope()
+    {
+        var updatedAtUtc = new DateTime(2026, 7, 27, 0, 0, 0, DateTimeKind.Utc);
+        var scopedItems = Enumerable.Range(1, 1_001)
+            .Select(index => new Item
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = $"Bulk natural key item {index:D4}",
+                NameMatchKey = $"BULKNATURALKEYITEM{index:D4}",
+                ItemKind = ItemKinds.Asset,
+                TrackingType = ItemTrackingTypes.Asset,
+                MaterialNumber = $"BULK-{index:D4}",
+                UpdatedAtUtc = updatedAtUtc
+            })
+            .ToList();
+        _dbContext.Items.AddRange(scopedItems);
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var incomingId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = incomingId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = "Single item outside bulk scope candidates",
+                    NameMatchKey = "SINGLEITEMOUTSIDEBULKSCOPECANDIDATES",
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = "SINGLE-ITEM-001",
+                    UpdatedAtUtc = updatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+
+        var trackedItems = _dbContext.ChangeTracker.Entries<Item>().ToList();
+        Assert.True(
+            trackedItems.Count <= 1,
+            $"A single item Push tracked {trackedItems.Count} Item entities from the natural-key candidate scope.");
+        Assert.DoesNotContain(trackedItems, entry => scopedItems.Any(item => item.Id == entry.Entity.Id));
+    }
+
+    [Theory]
+    [InlineData(TenantScopeCatalog.Itworld, OfficeCodeCatalog.Usenet)]
+    [InlineData(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Itworld)]
+    public async Task Push_RejectsExistingItemScopeChangeAndKeepsInventoryState(
+        string requestedTenantCode,
+        string requestedOfficeCode)
+    {
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Immutable scope sync item",
+            NameMatchKey = "IMMUTABLESCOPESYNCITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 6m,
+            Notes = "sync-before"
+        };
+        _dbContext.Items.Add(item);
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 6m
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var storedBefore = await _dbContext.Items.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == item.Id);
+        var stockBefore = await _dbContext.ItemWarehouseStocks
+            .AsNoTracking()
+            .SingleAsync(row => row.ItemId == item.Id);
+        var itemDto = storedBefore.ToDto();
+        itemDto.TenantCode = requestedTenantCode;
+        itemDto.OfficeCode = requestedOfficeCode;
+        itemDto.Notes = "sync-must-not-write";
+        itemDto.ExpectedRevision = storedBefore.Revision;
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "existing-item-scope-change",
+            Items = [itemDto],
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = item.Id,
+                    WarehouseCode = stockBefore.WarehouseCode,
+                    Quantity = 99m,
+                    Revision = stockBefore.Revision,
+                    ExpectedRevision = stockBefore.Revision,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Empty(result.AcceptedItemWarehouseStockKeys);
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal(nameof(Item), conflict.EntityName);
+        Assert.Equal(item.Id.ToString("D"), conflict.EntityId);
+        Assert.Equal(
+            "Item tenant/office scope cannot be changed for an existing item.",
+            conflict.Reason);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedAfter = await _dbContext.Items.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == item.Id);
+        Assert.Equal(storedBefore.TenantCode, storedAfter.TenantCode);
+        Assert.Equal(storedBefore.OfficeCode, storedAfter.OfficeCode);
+        Assert.Equal(storedBefore.Notes, storedAfter.Notes);
+        Assert.Equal(storedBefore.Revision, storedAfter.Revision);
+
+        var stockAfter = await _dbContext.ItemWarehouseStocks
+            .AsNoTracking()
+            .SingleAsync(row => row.ItemId == item.Id);
+        Assert.Equal(stockBefore.WarehouseCode, stockAfter.WarehouseCode);
+        Assert.Equal(stockBefore.Quantity, stockAfter.Quantity);
+        Assert.Equal(stockBefore.Revision, stockAfter.Revision);
+    }
+
+    [Theory]
+    [InlineData("INVALID-TENANT", OfficeCodeCatalog.Usenet, "Item tenant scope is invalid.")]
+    [InlineData(TenantScopeCatalog.UsenetGroup, "INVALID-OFFICE", "Item office scope is invalid.")]
+    public async Task Push_RejectsInvalidExplicitItemScopeAndKeepsInventoryState(
+        string requestedTenantCode,
+        string requestedOfficeCode,
+        string expectedReason)
+    {
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Invalid scope sync item",
+            NameMatchKey = "INVALIDSCOPESYNCITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 3m,
+            Notes = "invalid-before"
+        };
+        _dbContext.Items.Add(item);
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 3m
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var storedBefore = await _dbContext.Items.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == item.Id);
+        var stockBefore = await _dbContext.ItemWarehouseStocks
+            .AsNoTracking()
+            .SingleAsync(row => row.ItemId == item.Id);
+        var dto = storedBefore.ToDto();
+        dto.TenantCode = requestedTenantCode;
+        dto.OfficeCode = requestedOfficeCode;
+        dto.Notes = "invalid-must-not-write";
+        dto.ExpectedRevision = storedBefore.Revision;
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "invalid-explicit-item-scope",
+            Items = [dto],
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = item.Id,
+                    WarehouseCode = stockBefore.WarehouseCode,
+                    Quantity = 99m,
+                    Revision = stockBefore.Revision,
+                    ExpectedRevision = stockBefore.Revision,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Empty(result.AcceptedItemWarehouseStockKeys);
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal(nameof(Item), conflict.EntityName);
+        Assert.Equal(item.Id.ToString("D"), conflict.EntityId);
+        Assert.Equal(expectedReason, conflict.Reason);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedAfter = await _dbContext.Items.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == item.Id);
+        Assert.Equal(storedBefore.TenantCode, storedAfter.TenantCode);
+        Assert.Equal(storedBefore.OfficeCode, storedAfter.OfficeCode);
+        Assert.Equal(storedBefore.Notes, storedAfter.Notes);
+        Assert.Equal(storedBefore.Revision, storedAfter.Revision);
+
+        var stockAfter = await _dbContext.ItemWarehouseStocks
+            .AsNoTracking()
+            .SingleAsync(row => row.ItemId == item.Id);
+        Assert.Equal(stockBefore.Quantity, stockAfter.Quantity);
+        Assert.Equal(stockBefore.Revision, stockAfter.Revision);
+    }
+
+    [Fact]
+    public async Task Push_HidesExistingItemScopeDetailsFromUnauthorizedEditor()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-office-item-sync-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.ItemEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "Read-only shared scope sync item",
+            NameMatchKey = "READONLYSHAREDSCOPESYNCITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 8m,
+            Notes = "unauthorized-before"
+        };
+        scopedDb.Items.Add(item);
+        scopedDb.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 8m
+        });
+        await scopedDb.SaveChangesAsync();
+
+        var storedBefore = await scopedDb.Items.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == item.Id);
+        var stockBefore = await scopedDb.ItemWarehouseStocks
+            .AsNoTracking()
+            .SingleAsync(row => row.ItemId == item.Id);
+        var sameScopeDto = storedBefore.ToDto();
+        sameScopeDto.Notes = "same-scope-must-not-write";
+        sameScopeDto.ExpectedRevision = storedBefore.Revision;
+        var changedScopeDto = storedBefore.ToDto();
+        changedScopeDto.TenantCode = TenantScopeCatalog.Itworld;
+        changedScopeDto.OfficeCode = OfficeCodeCatalog.Itworld;
+        changedScopeDto.Notes = "changed-scope-must-not-write";
+        changedScopeDto.ExpectedRevision = storedBefore.Revision;
+
+        async Task<SyncPushResult> PushAsync(ItemDto itemDto, string deviceId)
+        {
+            var response = await controller.Push(new SyncPushRequest
+            {
+                DeviceId = deviceId,
+                Items = [itemDto],
+                ItemWarehouseStocks =
+                [
+                    new ItemWarehouseStockDto
+                    {
+                        ItemId = item.Id,
+                        WarehouseCode = stockBefore.WarehouseCode,
+                        Quantity = 99m,
+                        Revision = stockBefore.Revision,
+                        ExpectedRevision = stockBefore.Revision,
+                        UpdatedAtUtc = DateTime.UtcNow
+                    }
+                ]
+            }, CancellationToken.None);
+            var ok = Assert.IsType<OkObjectResult>(response.Result);
+            return Assert.IsType<SyncPushResult>(ok.Value);
+        }
+
+        var sameScopeResult = await PushAsync(sameScopeDto, "unauthorized-same-item-scope");
+        var changedScopeResult = await PushAsync(changedScopeDto, "unauthorized-changed-item-scope");
+
+        Assert.Equal(1, sameScopeResult.ConflictCount);
+        Assert.Equal(1, changedScopeResult.ConflictCount);
+        Assert.Equal(0, sameScopeResult.AcceptedCount);
+        Assert.Equal(0, changedScopeResult.AcceptedCount);
+        Assert.Empty(sameScopeResult.AcceptedItemWarehouseStockKeys);
+        Assert.Empty(changedScopeResult.AcceptedItemWarehouseStockKeys);
+        var sameScopeConflict = Assert.Single(sameScopeResult.Conflicts);
+        var changedScopeConflict = Assert.Single(changedScopeResult.Conflicts);
+        Assert.Equal(nameof(Item), sameScopeConflict.EntityName);
+        Assert.Equal(sameScopeConflict.EntityName, changedScopeConflict.EntityName);
+        Assert.Equal(item.Id.ToString("D"), sameScopeConflict.EntityId);
+        Assert.Equal(sameScopeConflict.EntityId, changedScopeConflict.EntityId);
+        Assert.Equal(
+            "Current account cannot modify this office scope.",
+            sameScopeConflict.Reason);
+        Assert.Equal(sameScopeConflict.Reason, changedScopeConflict.Reason);
+
+        scopedDb.ChangeTracker.Clear();
+        var storedAfter = await scopedDb.Items.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == item.Id);
+        Assert.Equal(storedBefore.TenantCode, storedAfter.TenantCode);
+        Assert.Equal(storedBefore.OfficeCode, storedAfter.OfficeCode);
+        Assert.Equal(storedBefore.Notes, storedAfter.Notes);
+        Assert.Equal(storedBefore.Revision, storedAfter.Revision);
+
+        var stockAfter = await scopedDb.ItemWarehouseStocks
+            .AsNoTracking()
+            .SingleAsync(row => row.ItemId == item.Id);
+        Assert.Equal(stockBefore.Quantity, stockAfter.Quantity);
+        Assert.Equal(stockBefore.Revision, stockAfter.Revision);
+    }
+
+    [Fact]
+    public async Task Push_AllowsTenantWideEditorToKeepSharedItemScope()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-tenant-item-sync-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeTenantAll,
+            Permissions = [PermissionNames.ItemEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "Shared scope sync item",
+            NameMatchKey = "SHAREDSCOPESYNCITEM",
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset,
+            Notes = "shared-before"
+        };
+        scopedDb.Items.Add(item);
+        await scopedDb.SaveChangesAsync();
+
+        var storedBefore = await scopedDb.Items.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == item.Id);
+        var dto = storedBefore.ToDto();
+        dto.Notes = "shared-after";
+        dto.ExpectedRevision = storedBefore.Revision;
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "shared-item-same-scope-update",
+            Items = [dto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(0, result.ConflictCount);
+
+        scopedDb.ChangeTracker.Clear();
+        var storedAfter = await scopedDb.Items.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == item.Id);
+        Assert.Equal(TenantScopeCatalog.UsenetGroup, storedAfter.TenantCode);
+        Assert.Equal(OfficeCodeCatalog.Shared, storedAfter.OfficeCode);
+        Assert.Equal("shared-after", storedAfter.Notes);
+        Assert.True(storedAfter.Revision > storedBefore.Revision);
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task Push_AllowsStableExistingIds_WhenLegacyDescriptorDuplicatesAreReuploaded(
+        int duplicateCount)
+    {
+        var updatedAtUtc = new DateTime(2026, 7, 29, 0, 0, 0, DateTimeKind.Utc);
+        var existingItems = Enumerable.Range(1, duplicateCount)
+            .Select(index => new Item
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = "Legacy duplicate item",
+                NameMatchKey = "LEGACYDUPLICATEITEM",
+                SpecificationOriginal = "LEGACY-SPEC",
+                SpecificationMatchKey = "LEGACYSPEC",
+                ItemKind = ItemKinds.Product,
+                TrackingType = ItemTrackingTypes.Stock,
+                MaterialNumber = string.Empty,
+                SerialNumber = string.Empty,
+                BoxQuantity = 0m,
+                StorageLocation = string.Empty,
+                Notes = $"before-{index}",
+                UpdatedAtUtc = updatedAtUtc
+            })
+            .ToList();
+        _dbContext.Items.AddRange(existingItems);
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            Items = existingItems
+                .Select((item, index) => new ItemDto
+                {
+                    Id = item.Id,
+                    TenantCode = item.TenantCode,
+                    OfficeCode = item.OfficeCode,
+                    NameOriginal = item.NameOriginal,
+                    NameMatchKey = item.NameMatchKey,
+                    SpecificationOriginal = item.SpecificationOriginal,
+                    SpecificationMatchKey = item.SpecificationMatchKey,
+                    ItemKind = item.ItemKind,
+                    TrackingType = item.TrackingType,
+                    MaterialNumber = item.MaterialNumber,
+                    SerialNumber = item.SerialNumber,
+                    BoxQuantity = index + 1,
+                    StorageLocation = $"RACK-{index + 1}",
+                    Notes = $"after-{index + 1}",
+                    Revision = item.Revision,
+                    CreatedAtUtc = item.CreatedAtUtc,
+                    UpdatedAtUtc = updatedAtUtc.AddMinutes(index + 1)
+                })
+                .ToList()
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(duplicateCount, result.AcceptedCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.Items.IgnoreQueryFilters()
+            .OrderBy(item => item.StorageLocation)
+            .ToListAsync();
+        Assert.Equal(duplicateCount, stored.Count);
+        Assert.Equal(existingItems.Select(item => item.Id).OrderBy(id => id),
+            stored.Select(item => item.Id).OrderBy(id => id));
+        Assert.Equal(
+            Enumerable.Range(1, duplicateCount).Select(index => (decimal)index),
+            stored.Select(item => item.BoxQuantity));
+        Assert.Equal(
+            Enumerable.Range(1, duplicateCount).Select(index => $"RACK-{index}"),
+            stored.Select(item => item.StorageLocation));
+        Assert.Equal(
+            Enumerable.Range(1, duplicateCount).Select(index => $"after-{index}"),
+            stored.Select(item => item.Notes));
+    }
+
+    [Fact]
+    public async Task Push_RestoresStableDeletedExistingItem_WhenLegacyDescriptorSiblingExists()
+    {
+        var updatedAtUtc = new DateTime(2026, 7, 29, 1, 0, 0, DateTimeKind.Utc);
+        var deletedTarget = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "Legacy duplicate restore item",
+            NameMatchKey = "LEGACYDUPLICATERESTOREITEM",
+            SpecificationOriginal = "LEGACY-RESTORE-SPEC",
+            SpecificationMatchKey = "LEGACYRESTORESPEC",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            MaterialNumber = string.Empty,
+            SerialNumber = string.Empty,
+            BoxQuantity = 0m,
+            StorageLocation = string.Empty,
+            Notes = "deleted-before",
+            IsDeleted = true,
+            UpdatedAtUtc = updatedAtUtc
+        };
+        var activeSibling = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = deletedTarget.TenantCode,
+            OfficeCode = deletedTarget.OfficeCode,
+            NameOriginal = deletedTarget.NameOriginal,
+            NameMatchKey = deletedTarget.NameMatchKey,
+            SpecificationOriginal = deletedTarget.SpecificationOriginal,
+            SpecificationMatchKey = deletedTarget.SpecificationMatchKey,
+            ItemKind = deletedTarget.ItemKind,
+            TrackingType = deletedTarget.TrackingType,
+            MaterialNumber = string.Empty,
+            SerialNumber = string.Empty,
+            BoxQuantity = 7m,
+            StorageLocation = "SIBLING-RACK",
+            Notes = "sibling-before",
+            UpdatedAtUtc = updatedAtUtc
+        };
+        _dbContext.Items.AddRange(deletedTarget, activeSibling);
+        await _dbContext.SaveChangesAsync();
+        var deletedTargetRevision = deletedTarget.Revision;
+        var activeSiblingRevision = activeSibling.Revision;
+        _dbContext.ChangeTracker.Clear();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = deletedTarget.Id,
+                    TenantCode = deletedTarget.TenantCode,
+                    OfficeCode = deletedTarget.OfficeCode,
+                    NameOriginal = deletedTarget.NameOriginal,
+                    NameMatchKey = deletedTarget.NameMatchKey,
+                    SpecificationOriginal = deletedTarget.SpecificationOriginal,
+                    SpecificationMatchKey = deletedTarget.SpecificationMatchKey,
+                    ItemKind = deletedTarget.ItemKind,
+                    TrackingType = deletedTarget.TrackingType,
+                    MaterialNumber = deletedTarget.MaterialNumber,
+                    SerialNumber = deletedTarget.SerialNumber,
+                    BoxQuantity = 3m,
+                    StorageLocation = "RESTORED-RACK",
+                    Notes = "restored-after",
+                    IsDeleted = false,
+                    Revision = deletedTargetRevision,
+                    ExpectedRevision = deletedTargetRevision,
+                    CreatedAtUtc = deletedTarget.CreatedAtUtc,
+                    UpdatedAtUtc = updatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(1, result.AcceptedCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedTarget = await _dbContext.Items.IgnoreQueryFilters()
+            .SingleAsync(item => item.Id == deletedTarget.Id);
+        Assert.False(storedTarget.IsDeleted);
+        Assert.Equal(3m, storedTarget.BoxQuantity);
+        Assert.Equal("RESTORED-RACK", storedTarget.StorageLocation);
+        Assert.Equal("restored-after", storedTarget.Notes);
+        Assert.True(storedTarget.Revision > deletedTargetRevision);
+
+        var storedSibling = await _dbContext.Items.IgnoreQueryFilters()
+            .SingleAsync(item => item.Id == activeSibling.Id);
+        Assert.False(storedSibling.IsDeleted);
+        Assert.Equal(7m, storedSibling.BoxQuantity);
+        Assert.Equal("SIBLING-RACK", storedSibling.StorageLocation);
+        Assert.Equal("sibling-before", storedSibling.Notes);
+        Assert.Equal(activeSiblingRevision, storedSibling.Revision);
+    }
+
+    [Fact]
+    public async Task Push_RejectsStaleStableExistingItemUpdate_WhenLegacyDescriptorSiblingExists()
+    {
+        var updatedAtUtc = new DateTime(2026, 7, 29, 2, 0, 0, DateTimeKind.Utc);
+        var target = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "Legacy duplicate stale item",
+            NameMatchKey = "LEGACYDUPLICATESTALEITEM",
+            SpecificationOriginal = "LEGACY-STALE-SPEC",
+            SpecificationMatchKey = "LEGACYSTALESPEC",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            MaterialNumber = string.Empty,
+            SerialNumber = string.Empty,
+            BoxQuantity = 1m,
+            StorageLocation = "TARGET-BEFORE",
+            Notes = "target-before",
+            UpdatedAtUtc = updatedAtUtc
+        };
+        var sibling = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = target.TenantCode,
+            OfficeCode = target.OfficeCode,
+            NameOriginal = target.NameOriginal,
+            NameMatchKey = target.NameMatchKey,
+            SpecificationOriginal = target.SpecificationOriginal,
+            SpecificationMatchKey = target.SpecificationMatchKey,
+            ItemKind = target.ItemKind,
+            TrackingType = target.TrackingType,
+            MaterialNumber = string.Empty,
+            SerialNumber = string.Empty,
+            BoxQuantity = 2m,
+            StorageLocation = "SIBLING-BEFORE",
+            Notes = "sibling-before",
+            UpdatedAtUtc = updatedAtUtc
+        };
+        _dbContext.Items.AddRange(target, sibling);
+        await _dbContext.SaveChangesAsync();
+        var targetRevision = target.Revision;
+        var siblingRevision = sibling.Revision;
+        Assert.True(targetRevision > 0);
+        var staleRevision = targetRevision - 1;
+        _dbContext.ChangeTracker.Clear();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = target.Id,
+                    TenantCode = target.TenantCode,
+                    OfficeCode = target.OfficeCode,
+                    NameOriginal = target.NameOriginal,
+                    NameMatchKey = target.NameMatchKey,
+                    SpecificationOriginal = target.SpecificationOriginal,
+                    SpecificationMatchKey = target.SpecificationMatchKey,
+                    ItemKind = target.ItemKind,
+                    TrackingType = target.TrackingType,
+                    MaterialNumber = target.MaterialNumber,
+                    SerialNumber = target.SerialNumber,
+                    BoxQuantity = 99m,
+                    StorageLocation = "MUST-NOT-WRITE",
+                    Notes = "must-not-write",
+                    Revision = staleRevision,
+                    ExpectedRevision = staleRevision,
+                    CreatedAtUtc = target.CreatedAtUtc,
+                    UpdatedAtUtc = updatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(Item) &&
+            conflict.EntityId == target.Id.ToString("D") &&
+            conflict.Reason.Contains("Expected revision mismatch", StringComparison.Ordinal));
+
+        _dbContext.ChangeTracker.Clear();
+        var storedTarget = await _dbContext.Items.IgnoreQueryFilters()
+            .SingleAsync(item => item.Id == target.Id);
+        Assert.Equal(1m, storedTarget.BoxQuantity);
+        Assert.Equal("TARGET-BEFORE", storedTarget.StorageLocation);
+        Assert.Equal("target-before", storedTarget.Notes);
+        Assert.Equal(targetRevision, storedTarget.Revision);
+
+        var storedSibling = await _dbContext.Items.IgnoreQueryFilters()
+            .SingleAsync(item => item.Id == sibling.Id);
+        Assert.Equal(2m, storedSibling.BoxQuantity);
+        Assert.Equal("SIBLING-BEFORE", storedSibling.StorageLocation);
+        Assert.Equal("sibling-before", storedSibling.Notes);
+        Assert.Equal(siblingRevision, storedSibling.Revision);
+    }
+
+    [Fact]
+    public async Task Push_UpdatesStableExistingItemsWithinTheirOwnScopes_WhenDescriptorsMatchAcrossScopes()
+    {
+        var updatedAtUtc = new DateTime(2026, 7, 29, 3, 0, 0, DateTimeKind.Utc);
+        var itworldItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "Cross scope duplicate item",
+            NameMatchKey = "CROSSSCOPEDUPLICATEITEM",
+            SpecificationOriginal = "CROSS-SCOPE-SPEC",
+            SpecificationMatchKey = "CROSSSCOPESPEC",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            MaterialNumber = string.Empty,
+            SerialNumber = string.Empty,
+            BoxQuantity = 1m,
+            StorageLocation = "ITWORLD-BEFORE",
+            Notes = "itworld-before",
+            UpdatedAtUtc = updatedAtUtc
+        };
+        var usenetItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = itworldItem.NameOriginal,
+            NameMatchKey = itworldItem.NameMatchKey,
+            SpecificationOriginal = itworldItem.SpecificationOriginal,
+            SpecificationMatchKey = itworldItem.SpecificationMatchKey,
+            ItemKind = itworldItem.ItemKind,
+            TrackingType = itworldItem.TrackingType,
+            MaterialNumber = string.Empty,
+            SerialNumber = string.Empty,
+            BoxQuantity = 2m,
+            StorageLocation = "USENET-BEFORE",
+            Notes = "usenet-before",
+            UpdatedAtUtc = updatedAtUtc
+        };
+        _dbContext.Items.AddRange(itworldItem, usenetItem);
+        await _dbContext.SaveChangesAsync();
+        var itworldRevision = itworldItem.Revision;
+        var usenetRevision = usenetItem.Revision;
+        _dbContext.ChangeTracker.Clear();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = itworldItem.Id,
+                    TenantCode = itworldItem.TenantCode,
+                    OfficeCode = itworldItem.OfficeCode,
+                    NameOriginal = itworldItem.NameOriginal,
+                    NameMatchKey = itworldItem.NameMatchKey,
+                    SpecificationOriginal = itworldItem.SpecificationOriginal,
+                    SpecificationMatchKey = itworldItem.SpecificationMatchKey,
+                    ItemKind = itworldItem.ItemKind,
+                    TrackingType = itworldItem.TrackingType,
+                    MaterialNumber = itworldItem.MaterialNumber,
+                    SerialNumber = itworldItem.SerialNumber,
+                    BoxQuantity = 11m,
+                    StorageLocation = "ITWORLD-AFTER",
+                    Notes = "itworld-after",
+                    Revision = itworldRevision,
+                    ExpectedRevision = itworldRevision,
+                    CreatedAtUtc = itworldItem.CreatedAtUtc,
+                    UpdatedAtUtc = updatedAtUtc.AddMinutes(1)
+                },
+                new ItemDto
+                {
+                    Id = usenetItem.Id,
+                    TenantCode = usenetItem.TenantCode,
+                    OfficeCode = usenetItem.OfficeCode,
+                    NameOriginal = usenetItem.NameOriginal,
+                    NameMatchKey = usenetItem.NameMatchKey,
+                    SpecificationOriginal = usenetItem.SpecificationOriginal,
+                    SpecificationMatchKey = usenetItem.SpecificationMatchKey,
+                    ItemKind = usenetItem.ItemKind,
+                    TrackingType = usenetItem.TrackingType,
+                    MaterialNumber = usenetItem.MaterialNumber,
+                    SerialNumber = usenetItem.SerialNumber,
+                    BoxQuantity = 22m,
+                    StorageLocation = "USENET-AFTER",
+                    Notes = "usenet-after",
+                    Revision = usenetRevision,
+                    ExpectedRevision = usenetRevision,
+                    CreatedAtUtc = usenetItem.CreatedAtUtc,
+                    UpdatedAtUtc = updatedAtUtc.AddMinutes(2)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(2, result.AcceptedCount);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(Item) && revision.EntityId == itworldItem.Id);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(Item) && revision.EntityId == usenetItem.Id);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedItems = await _dbContext.Items.IgnoreQueryFilters()
+            .OrderBy(item => item.OfficeCode)
+            .ToListAsync();
+        Assert.Equal(2, storedItems.Count);
+
+        var storedItworld = Assert.Single(storedItems, item => item.Id == itworldItem.Id);
+        Assert.Equal(TenantScopeCatalog.Itworld, storedItworld.TenantCode);
+        Assert.Equal(OfficeCodeCatalog.Itworld, storedItworld.OfficeCode);
+        Assert.Equal(11m, storedItworld.BoxQuantity);
+        Assert.Equal("ITWORLD-AFTER", storedItworld.StorageLocation);
+        Assert.Equal("itworld-after", storedItworld.Notes);
+
+        var storedUsenet = Assert.Single(storedItems, item => item.Id == usenetItem.Id);
+        Assert.Equal(TenantScopeCatalog.UsenetGroup, storedUsenet.TenantCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, storedUsenet.OfficeCode);
+        Assert.Equal(22m, storedUsenet.BoxQuantity);
+        Assert.Equal("USENET-AFTER", storedUsenet.StorageLocation);
+        Assert.Equal("usenet-after", storedUsenet.Notes);
+    }
+
+    [Fact]
+    public async Task Push_PrefersStableExistingItemRevision_WhenNewAliasMergesInSameRequest()
+    {
+        var updatedAtUtc = new DateTime(2026, 7, 29, 4, 0, 0, DateTimeKind.Utc);
+        var canonical = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "Stable canonical merge item",
+            NameMatchKey = "STABLECANONICALMERGEITEM",
+            SpecificationOriginal = "STABLE-CANONICAL-SPEC",
+            SpecificationMatchKey = "STABLECANONICALSPEC",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            MaterialNumber = string.Empty,
+            SerialNumber = string.Empty,
+            BoxQuantity = 1m,
+            StorageLocation = "CANONICAL-BEFORE",
+            Notes = "canonical-before",
+            UpdatedAtUtc = updatedAtUtc
+        };
+        _dbContext.Items.Add(canonical);
+        await _dbContext.SaveChangesAsync();
+        var canonicalRevision = canonical.Revision;
+        var aliasId = Guid.NewGuid();
+        _dbContext.ChangeTracker.Clear();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = canonical.Id,
+                    TenantCode = canonical.TenantCode,
+                    OfficeCode = canonical.OfficeCode,
+                    NameOriginal = canonical.NameOriginal,
+                    NameMatchKey = canonical.NameMatchKey,
+                    SpecificationOriginal = canonical.SpecificationOriginal,
+                    SpecificationMatchKey = canonical.SpecificationMatchKey,
+                    ItemKind = canonical.ItemKind,
+                    TrackingType = canonical.TrackingType,
+                    MaterialNumber = canonical.MaterialNumber,
+                    SerialNumber = canonical.SerialNumber,
+                    BoxQuantity = 4m,
+                    StorageLocation = "CANONICAL-AFTER",
+                    Notes = "stable-revision-wins",
+                    Revision = canonicalRevision,
+                    ExpectedRevision = canonicalRevision,
+                    CreatedAtUtc = canonical.CreatedAtUtc,
+                    UpdatedAtUtc = updatedAtUtc.AddMinutes(1)
+                },
+                new ItemDto
+                {
+                    Id = aliasId,
+                    TenantCode = canonical.TenantCode,
+                    OfficeCode = canonical.OfficeCode,
+                    NameOriginal = canonical.NameOriginal,
+                    NameMatchKey = canonical.NameMatchKey,
+                    SpecificationOriginal = canonical.SpecificationOriginal,
+                    SpecificationMatchKey = canonical.SpecificationMatchKey,
+                    ItemKind = canonical.ItemKind,
+                    TrackingType = canonical.TrackingType,
+                    MaterialNumber = canonical.MaterialNumber,
+                    SerialNumber = canonical.SerialNumber,
+                    BoxQuantity = 99m,
+                    StorageLocation = "ALIAS-MUST-NOT-WIN",
+                    Notes = "alias-must-not-win",
+                    Revision = 0,
+                    ExpectedRevision = 0,
+                    CreatedAtUtc = canonical.CreatedAtUtc,
+                    UpdatedAtUtc = updatedAtUtc.AddMinutes(10)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Contains(result.Notices, notice =>
+            notice.Code == "item-natural-key-merged" &&
+            notice.EntityId == canonical.Id.ToString("D"));
+
+        var canonicalAcceptedRevision = Assert.Single(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(Item) && revision.EntityId == canonical.Id);
+        var aliasAcceptedRevision = Assert.Single(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(Item) && revision.EntityId == aliasId);
+        Assert.Equal(canonicalAcceptedRevision.Revision, aliasAcceptedRevision.Revision);
+        Assert.Equal(canonicalAcceptedRevision.UpdatedAtUtc, aliasAcceptedRevision.UpdatedAtUtc);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedItems = await _dbContext.Items.IgnoreQueryFilters().ToListAsync();
+        var storedCanonical = Assert.Single(storedItems);
+        Assert.Equal(canonical.Id, storedCanonical.Id);
+        Assert.Equal(4m, storedCanonical.BoxQuantity);
+        Assert.Equal("CANONICAL-AFTER", storedCanonical.StorageLocation);
+        Assert.Equal("stable-revision-wins", storedCanonical.Notes);
+        Assert.True(storedCanonical.Revision > canonicalRevision);
+        Assert.False(await _dbContext.Items.IgnoreQueryFilters()
+            .AnyAsync(item => item.Id == aliasId));
+    }
+
+    [Fact]
+    public async Task Push_NaturalKeyMergedItem_AcknowledgesOriginalWarehouseStockKey()
+    {
+        var canonical = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "Canonical stock acknowledgement item",
+            NameMatchKey = "CANONICALSTOCKACKNOWLEDGEMENTITEM",
+            SpecificationOriginal = "MODEL-ACK-ALIAS",
+            SpecificationMatchKey = "MODELACKALIAS",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            Unit = "EA",
+            UpdatedAtUtc = new DateTime(
+                2026,
+                7,
+                30,
+                1,
+                0,
+                0,
+                DateTimeKind.Utc)
+        };
+        _dbContext.Items.Add(canonical);
+        await _dbContext.SaveChangesAsync();
+        var aliasId = Guid.NewGuid();
+        _dbContext.ChangeTracker.Clear();
+
+        SyncPushRequest CreateRequest() => new()
+        {
+            DeviceId = "device-stock-natural-key-alias-ack",
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = aliasId,
+                    TenantCode = canonical.TenantCode,
+                    OfficeCode = canonical.OfficeCode,
+                    NameOriginal = canonical.NameOriginal,
+                    NameMatchKey = canonical.NameMatchKey,
+                    SpecificationOriginal =
+                        canonical.SpecificationOriginal,
+                    SpecificationMatchKey =
+                        canonical.SpecificationMatchKey,
+                    ItemKind = canonical.ItemKind,
+                    TrackingType = canonical.TrackingType,
+                    Unit = canonical.Unit,
+                    CreatedAtUtc = canonical.CreatedAtUtc,
+                    UpdatedAtUtc = canonical.UpdatedAtUtc.AddMinutes(1)
+                }
+            ],
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = aliasId,
+                    WarehouseCode =
+                        OfficeCodeCatalog.ItworldMainWarehouse,
+                    Quantity = 8m,
+                    UpdatedAtUtc = canonical.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        };
+
+        foreach (var request in new[] { CreateRequest(), CreateRequest() })
+        {
+            var response = await _controller.Push(
+                request,
+                CancellationToken.None);
+            var ok = Assert.IsType<OkObjectResult>(response.Result);
+            var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+            Assert.Equal(0, result.ConflictCount);
+            var acceptedStockKey = Assert.Single(
+                result.AcceptedItemWarehouseStockKeys);
+            Assert.Equal(aliasId, acceptedStockKey.ItemId);
+            Assert.Equal(
+                OfficeCodeCatalog.ItworldMainWarehouse,
+                acceptedStockKey.WarehouseCode);
+            Assert.Contains(
+                result.AcceptedRevisions,
+                revision =>
+                    revision.EntityName == nameof(Item) &&
+                    revision.EntityId == aliasId);
+        }
+
+        _dbContext.ChangeTracker.Clear();
+        var storedStock = Assert.Single(
+            await _dbContext.ItemWarehouseStocks
+                .AsNoTracking()
+                .ToListAsync());
+        Assert.Equal(canonical.Id, storedStock.ItemId);
+        Assert.Equal(
+            OfficeCodeCatalog.ItworldMainWarehouse,
+            storedStock.WarehouseCode);
+        Assert.Equal(8m, storedStock.Quantity);
+        var storedReceipt = Assert.Single(
+            await _dbContext.ProcessedSyncMutations
+                .AsNoTracking()
+                .Where(receipt =>
+                    receipt.EntityName ==
+                    nameof(ItemWarehouseStock))
+                .ToListAsync());
+        Assert.Equal(
+            $"{canonical.Id:D}|{OfficeCodeCatalog.ItworldMainWarehouse}",
+            storedReceipt.EntityId);
+        Assert.False(
+            await _dbContext.Items
+                .IgnoreQueryFilters()
+                .AnyAsync(item => item.Id == aliasId));
+    }
+
+    [Fact]
+    public async Task Push_NaturalKeyMergedItem_ReportsOriginalWarehouseStockConflictIdentity()
+    {
+        var canonical = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "Canonical stock conflict item",
+            NameMatchKey = "CANONICALSTOCKCONFLICTITEM",
+            SpecificationOriginal = "MODEL-CONFLICT-ALIAS",
+            SpecificationMatchKey = "MODELCONFLICTALIAS",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            Unit = "EA",
+            UpdatedAtUtc = new DateTime(
+                2026,
+                7,
+                30,
+                2,
+                0,
+                0,
+                DateTimeKind.Utc)
+        };
+        var canonicalStock = new ItemWarehouseStock
+        {
+            ItemId = canonical.Id,
+            WarehouseCode =
+                OfficeCodeCatalog.ItworldMainWarehouse,
+            Quantity = 5m,
+            UpdatedAtUtc = canonical.UpdatedAtUtc
+        };
+        _dbContext.Items.Add(canonical);
+        _dbContext.ItemWarehouseStocks.Add(canonicalStock);
+        await _dbContext.SaveChangesAsync();
+        var aliasId = Guid.NewGuid();
+        var staleExpectedRevision = canonicalStock.Revision + 1;
+        _dbContext.ChangeTracker.Clear();
+
+        var response = await _controller.Push(
+            new SyncPushRequest
+            {
+                DeviceId = "device-stock-natural-key-alias-conflict",
+                Items =
+                [
+                    new ItemDto
+                    {
+                        Id = aliasId,
+                        TenantCode = canonical.TenantCode,
+                        OfficeCode = canonical.OfficeCode,
+                        NameOriginal = canonical.NameOriginal,
+                        NameMatchKey = canonical.NameMatchKey,
+                        SpecificationOriginal =
+                            canonical.SpecificationOriginal,
+                        SpecificationMatchKey =
+                            canonical.SpecificationMatchKey,
+                        ItemKind = canonical.ItemKind,
+                        TrackingType = canonical.TrackingType,
+                        Unit = canonical.Unit,
+                        CreatedAtUtc = canonical.CreatedAtUtc,
+                        UpdatedAtUtc =
+                            canonical.UpdatedAtUtc.AddMinutes(1)
+                    }
+                ],
+                ItemWarehouseStocks =
+                [
+                    new ItemWarehouseStockDto
+                    {
+                        ItemId = aliasId,
+                        WarehouseCode =
+                            OfficeCodeCatalog.ItworldMainWarehouse,
+                        Quantity = 9m,
+                        Revision = staleExpectedRevision,
+                        ExpectedRevision = staleExpectedRevision,
+                        UpdatedAtUtc =
+                            canonical.UpdatedAtUtc.AddMinutes(1)
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Empty(result.AcceptedItemWarehouseStockKeys);
+        var conflict = Assert.Single(
+            result.Conflicts,
+            candidate =>
+                candidate.EntityName ==
+                nameof(ItemWarehouseStock));
+        Assert.Equal(
+            $"{aliasId:D}|{OfficeCodeCatalog.ItworldMainWarehouse}",
+            conflict.EntityId);
+        var clientSnapshot =
+            JsonSerializer.Deserialize<ItemWarehouseStockDto>(
+                conflict.ClientJson);
+        var serverSnapshot =
+            JsonSerializer.Deserialize<ItemWarehouseStockDto>(
+                conflict.ServerJson);
+        Assert.NotNull(clientSnapshot);
+        Assert.NotNull(serverSnapshot);
+        Assert.Equal(aliasId, clientSnapshot.ItemId);
+        Assert.Equal(aliasId, serverSnapshot.ItemId);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedConflict = Assert.Single(
+            await _dbContext.ConflictLogs
+                .AsNoTracking()
+                .Where(candidate =>
+                    candidate.EntityName ==
+                    nameof(ItemWarehouseStock))
+                .ToListAsync());
+        Assert.Equal(
+            $"{canonical.Id:D}|{OfficeCodeCatalog.ItworldMainWarehouse}",
+            storedConflict.EntityId);
+        var storedClientSnapshot =
+            JsonSerializer.Deserialize<ItemWarehouseStockDto>(
+                storedConflict.ClientJson);
+        var storedServerSnapshot =
+            JsonSerializer.Deserialize<ItemWarehouseStockDto>(
+                storedConflict.ServerJson);
+        Assert.NotNull(storedClientSnapshot);
+        Assert.NotNull(storedServerSnapshot);
+        Assert.Equal(canonical.Id, storedClientSnapshot.ItemId);
+        Assert.Equal(canonical.Id, storedServerSnapshot.ItemId);
+    }
+
+    [Fact]
+    public async Task Push_NaturalKeyMergedItem_DoesNotGuessWarehouseStockAliasWhenMultipleOriginalKeysCollapse()
+    {
+        var canonical = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "Canonical ambiguous stock alias item",
+            NameMatchKey = "CANONICALAMBIGUOUSSTOCKALIASITEM",
+            SpecificationOriginal = "MODEL-AMBIGUOUS-ALIAS",
+            SpecificationMatchKey = "MODELAMBIGUOUSALIAS",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            Unit = "EA",
+            UpdatedAtUtc = new DateTime(
+                2026,
+                7,
+                30,
+                3,
+                0,
+                0,
+                DateTimeKind.Utc)
+        };
+        _dbContext.Items.Add(canonical);
+        await _dbContext.SaveChangesAsync();
+        var aliasId = Guid.NewGuid();
+        _dbContext.ChangeTracker.Clear();
+
+        var response = await _controller.Push(
+            new SyncPushRequest
+            {
+                DeviceId =
+                    "device-stock-natural-key-ambiguous-alias",
+                Items =
+                [
+                    new ItemDto
+                    {
+                        Id = aliasId,
+                        TenantCode = canonical.TenantCode,
+                        OfficeCode = canonical.OfficeCode,
+                        NameOriginal = canonical.NameOriginal,
+                        NameMatchKey = canonical.NameMatchKey,
+                        SpecificationOriginal =
+                            canonical.SpecificationOriginal,
+                        SpecificationMatchKey =
+                            canonical.SpecificationMatchKey,
+                        ItemKind = canonical.ItemKind,
+                        TrackingType = canonical.TrackingType,
+                        Unit = canonical.Unit,
+                        CreatedAtUtc = canonical.CreatedAtUtc,
+                        UpdatedAtUtc =
+                            canonical.UpdatedAtUtc.AddMinutes(1)
+                    }
+                ],
+                ItemWarehouseStocks =
+                [
+                    new ItemWarehouseStockDto
+                    {
+                        ItemId = aliasId,
+                        WarehouseCode =
+                            OfficeCodeCatalog.ItworldMainWarehouse,
+                        Quantity = 9m,
+                        UpdatedAtUtc =
+                            canonical.UpdatedAtUtc.AddMinutes(1)
+                    },
+                    new ItemWarehouseStockDto
+                    {
+                        ItemId = canonical.Id,
+                        WarehouseCode =
+                            OfficeCodeCatalog.ItworldMainWarehouse,
+                        Quantity = 11m,
+                        UpdatedAtUtc =
+                            canonical.UpdatedAtUtc.AddMinutes(2)
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        var acceptedKey = Assert.Single(
+            result.AcceptedItemWarehouseStockKeys);
+        Assert.Equal(canonical.Id, acceptedKey.ItemId);
+        var stockConflict = Assert.Single(
+            result.Conflicts,
+            conflict =>
+                conflict.EntityName ==
+                nameof(ItemWarehouseStock));
+        Assert.Equal(
+            $"{canonical.Id:D}|{OfficeCodeCatalog.ItworldMainWarehouse}",
+            stockConflict.EntityId);
+        Assert.DoesNotContain(
+            result.AcceptedItemWarehouseStockKeys,
+            key => key.ItemId == aliasId);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedStock = Assert.Single(
+            await _dbContext.ItemWarehouseStocks
+                .AsNoTracking()
+                .ToListAsync());
+        Assert.Equal(canonical.Id, storedStock.ItemId);
+        Assert.Equal(11m, storedStock.Quantity);
+        var storedReceipt = Assert.Single(
+            await _dbContext.ProcessedSyncMutations
+                .AsNoTracking()
+                .Where(receipt =>
+                    receipt.EntityName ==
+                    nameof(ItemWarehouseStock))
+                .ToListAsync());
+        Assert.Equal(
+            $"{canonical.Id:D}|{OfficeCodeCatalog.ItworldMainWarehouse}",
+            storedReceipt.EntityId);
+    }
+
+    [Fact]
+    public async Task Push_RejectsNewItem_WhenLegacyDescriptorGroupIsAmbiguous()
+    {
+        var updatedAtUtc = new DateTime(2026, 7, 29, 0, 0, 0, DateTimeKind.Utc);
+        var legacyDuplicates = Enumerable.Range(1, 3)
+            .Select(index => new Item
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = "Legacy duplicate item",
+                NameMatchKey = "LEGACYDUPLICATEITEM",
+                SpecificationOriginal = "LEGACY-SPEC",
+                SpecificationMatchKey = "LEGACYSPEC",
+                ItemKind = ItemKinds.Product,
+                TrackingType = ItemTrackingTypes.Stock,
+                Notes = $"legacy-{index}",
+                UpdatedAtUtc = updatedAtUtc
+            })
+            .ToList();
+        _dbContext.Items.AddRange(legacyDuplicates);
+        await _dbContext.SaveChangesAsync();
+
+        var incomingId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = incomingId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = legacyDuplicates[0].NameOriginal,
+                    NameMatchKey = legacyDuplicates[0].NameMatchKey,
+                    SpecificationOriginal = legacyDuplicates[0].SpecificationOriginal,
+                    SpecificationMatchKey = legacyDuplicates[0].SpecificationMatchKey,
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Notes = "must not create",
+                    UpdatedAtUtc = updatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(Item) &&
+            conflict.EntityId == incomingId.ToString("D") &&
+            conflict.Reason.Contains("descriptor", StringComparison.OrdinalIgnoreCase));
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(3, await _dbContext.Items.IgnoreQueryFilters().CountAsync());
+        Assert.False(await _dbContext.Items.IgnoreQueryFilters()
+            .AnyAsync(item => item.Id == incomingId));
+    }
+
+    [Fact]
+    public async Task Push_RejectsExistingItem_WhenDescriptorChangesIntoLegacyDuplicateGroup()
+    {
+        var updatedAtUtc = new DateTime(2026, 7, 29, 0, 0, 0, DateTimeKind.Utc);
+        var legacyDuplicates = Enumerable.Range(1, 2)
+            .Select(index => new Item
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = "Legacy duplicate target",
+                NameMatchKey = "LEGACYDUPLICATETARGET",
+                SpecificationOriginal = "LEGACY-SPEC",
+                SpecificationMatchKey = "LEGACYSPEC",
+                ItemKind = ItemKinds.Product,
+                TrackingType = ItemTrackingTypes.Stock,
+                Notes = $"legacy-{index}",
+                UpdatedAtUtc = updatedAtUtc
+            })
+            .ToList();
+        var itemToUpdate = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "Distinct existing item",
+            NameMatchKey = "DISTINCTEXISTINGITEM",
+            SpecificationOriginal = "DISTINCT-SPEC",
+            SpecificationMatchKey = "DISTINCTSPEC",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            MaterialNumber = "DISTINCT-001",
+            Notes = "must remain",
+            UpdatedAtUtc = updatedAtUtc
+        };
+        _dbContext.Items.AddRange(legacyDuplicates);
+        _dbContext.Items.Add(itemToUpdate);
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = itemToUpdate.Id,
+                    TenantCode = itemToUpdate.TenantCode,
+                    OfficeCode = itemToUpdate.OfficeCode,
+                    NameOriginal = legacyDuplicates[0].NameOriginal,
+                    NameMatchKey = legacyDuplicates[0].NameMatchKey,
+                    SpecificationOriginal = legacyDuplicates[0].SpecificationOriginal,
+                    SpecificationMatchKey = legacyDuplicates[0].SpecificationMatchKey,
+                    ItemKind = itemToUpdate.ItemKind,
+                    TrackingType = itemToUpdate.TrackingType,
+                    MaterialNumber = itemToUpdate.MaterialNumber,
+                    Notes = "must not write",
+                    Revision = itemToUpdate.Revision,
+                    UpdatedAtUtc = updatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(Item) &&
+            conflict.EntityId == itemToUpdate.Id.ToString("D") &&
+            conflict.Reason.Contains("descriptor", StringComparison.OrdinalIgnoreCase));
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.Items.IgnoreQueryFilters()
+            .SingleAsync(item => item.Id == itemToUpdate.Id);
+        Assert.Equal("Distinct existing item", stored.NameOriginal);
+        Assert.Equal("must remain", stored.Notes);
+    }
+
+    [Fact]
+    public async Task Push_RejectsExistingItemUpdate_WhenNaturalKeyBelongsToAnotherItem()
+    {
+        var updatedAtUtc = new DateTime(2026, 7, 27, 0, 0, 0, DateTimeKind.Utc);
+        var itemToUpdate = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "Existing natural key item",
+            NameMatchKey = "EXISTINGNATURALKEYITEM",
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset,
+            MaterialNumber = "MAT-OLD",
+            Notes = "must remain",
+            UpdatedAtUtc = updatedAtUtc
+        };
+        var naturalKeyOwner = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = itemToUpdate.NameOriginal,
+            NameMatchKey = itemToUpdate.NameMatchKey,
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset,
+            MaterialNumber = "MAT-001",
+            UpdatedAtUtc = updatedAtUtc
+        };
+        _dbContext.Items.AddRange(itemToUpdate, naturalKeyOwner);
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = itemToUpdate.Id,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = itemToUpdate.NameOriginal,
+                    NameMatchKey = itemToUpdate.NameMatchKey,
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = "mat 001",
+                    Notes = "must not write",
+                    UpdatedAtUtc = updatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(Item) &&
+            conflict.EntityId == itemToUpdate.Id.ToString("D"));
+
+        _dbContext.ChangeTracker.Clear();
+        var unchanged = await _dbContext.Items.IgnoreQueryFilters()
+            .SingleAsync(item => item.Id == itemToUpdate.Id);
+        Assert.Equal("MAT-OLD", unchanged.MaterialNumber);
+        Assert.Equal("must remain", unchanged.Notes);
+    }
+
+    [Fact]
+    public async Task Push_RejectsSecondExistingItem_WhenBatchClaimsSameNaturalKey()
+    {
+        var updatedAtUtc = new DateTime(2026, 7, 27, 0, 0, 0, DateTimeKind.Utc);
+        var first = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "Batch claim item",
+            NameMatchKey = "BATCHCLAIMITEM",
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset,
+            MaterialNumber = "FIRST-OLD",
+            Notes = "first before",
+            UpdatedAtUtc = updatedAtUtc
+        };
+        var second = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = first.NameOriginal,
+            NameMatchKey = first.NameMatchKey,
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset,
+            MaterialNumber = "SECOND-OLD",
+            Notes = "second before",
+            UpdatedAtUtc = updatedAtUtc
+        };
+        _dbContext.Items.AddRange(first, second);
+        await _dbContext.SaveChangesAsync();
+        var incomingUpdatedAtUtc =
+            (first.UpdatedAtUtc >= second.UpdatedAtUtc ? first.UpdatedAtUtc : second.UpdatedAtUtc)
+            .AddMinutes(1);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = first.Id,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = first.NameOriginal,
+                    NameMatchKey = first.NameMatchKey,
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = "BATCH-001",
+                    Notes = "first after",
+                    UpdatedAtUtc = incomingUpdatedAtUtc
+                },
+                new ItemDto
+                {
+                    Id = second.Id,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = second.NameOriginal,
+                    NameMatchKey = second.NameMatchKey,
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = "batch 001",
+                    Notes = "second must not write",
+                    UpdatedAtUtc = incomingUpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(Item) &&
+            conflict.EntityId == second.Id.ToString("D"));
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.Items.IgnoreQueryFilters()
+            .OrderBy(item => item.Id)
+            .ToListAsync();
+        Assert.Equal(2, stored.Count);
+        Assert.Equal("BATCH-001", stored.Single(item => item.Id == first.Id).MaterialNumber);
+        Assert.Equal("SECOND-OLD", stored.Single(item => item.Id == second.Id).MaterialNumber);
+        Assert.Equal("second before", stored.Single(item => item.Id == second.Id).Notes);
+    }
+
+    [Fact]
+    public async Task Push_GlobalAdmin_AcceptsItworldItemPriceGradeWhenReferencedOptionArrivesInSameRequest()
+    {
+        var optionId = Guid.NewGuid();
+        var itemId = Guid.NewGuid();
+        var priceGradeId = Guid.NewGuid();
+        var updatedAtUtc = new DateTime(2026, 7, 23, 1, 0, 0, DateTimeKind.Utc);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "global-admin-cross-database-price-grade",
+            PriceGradeOptions =
+            [
+                new PriceGradeOptionDto
+                {
+                    Id = optionId,
+                    Name = "ITWORLD-WHOLESALE",
+                    PriceSource = "Sales",
+                    SortOrder = 1,
+                    IsActive = true,
+                    CreatedAtUtc = updatedAtUtc.AddMinutes(-1),
+                    UpdatedAtUtc = updatedAtUtc
+                }
+            ],
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = itemId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = "ITWORLD FK ITEM",
+                    NameMatchKey = "ITWORLDFKITEM",
+                    ItemKind = ItemKinds.Product,
+                    TrackingType = ItemTrackingTypes.Stock,
+                    Unit = "EA",
+                    CreatedAtUtc = updatedAtUtc.AddMinutes(-1),
+                    UpdatedAtUtc = updatedAtUtc
+                }
+            ],
+            ItemPriceGrades =
+            [
+                new ItemPriceGradeDto
+                {
+                    Id = priceGradeId,
+                    ItemId = itemId,
+                    PriceGradeOptionId = optionId,
+                    PriceGradeName = "ITWORLD-WHOLESALE",
+                    UnitPrice = 123_000m,
+                    IsActive = true,
+                    CreatedAtUtc = updatedAtUtc.AddMinutes(-1),
+                    UpdatedAtUtc = updatedAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(3, result.AcceptedCount);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(PriceGradeOption) && revision.EntityId == optionId);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(ItemPriceGrade) && revision.EntityId == priceGradeId);
+
+        var storedGrade = await _dbContext.ItemPriceGrades
+            .Include(grade => grade.PriceGradeOption)
+            .SingleAsync(grade => grade.Id == priceGradeId);
+        Assert.Equal(itemId, storedGrade.ItemId);
+        Assert.Equal(optionId, storedGrade.PriceGradeOptionId);
+        Assert.NotNull(storedGrade.PriceGradeOption);
+        Assert.Equal("ITWORLD-WHOLESALE", storedGrade.PriceGradeOption!.Name);
+    }
+
+    [Fact]
+    public async Task Push_ItemAndPriceGradeDeletedTogether_AcceptsBothDeletes()
+    {
+        var option = new PriceGradeOption
+        {
+            Id = Guid.NewGuid(),
+            Name = "DELETE-WITH-ITEM",
+            PriceSource = "Sales",
+            SortOrder = 1,
+            IsActive = true
+        };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Delete item with price grade",
+            NameMatchKey = "DELETEITEMWITHPRICEGRADE",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            Unit = "EA"
+        };
+        var priceGrade = new ItemPriceGrade
+        {
+            Id = Guid.NewGuid(),
+            Item = item,
+            ItemId = item.Id,
+            PriceGradeOption = option,
+            PriceGradeOptionId = option.Id,
+            PriceGradeName = option.Name,
+            UnitPrice = 123_000m,
+            IsActive = true
+        };
+        _dbContext.AddRange(option, item, priceGrade);
+        await _dbContext.SaveChangesAsync();
+
+        var itemDelete = item.ToDto();
+        itemDelete.ExpectedRevision = item.Revision;
+        itemDelete.IsDeleted = true;
+        itemDelete.UpdatedAtUtc = item.UpdatedAtUtc.AddMinutes(1);
+        var priceGradeDelete = priceGrade.ToDto();
+        priceGradeDelete.ExpectedRevision = priceGrade.Revision;
+        priceGradeDelete.IsDeleted = true;
+        priceGradeDelete.IsActive = false;
+        priceGradeDelete.UpdatedAtUtc = priceGrade.UpdatedAtUtc.AddMinutes(1);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-delete-item-with-price-grade",
+            Items = [itemDelete],
+            ItemPriceGrades = [priceGradeDelete]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(2, result.AcceptedCount);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(Item) &&
+            revision.EntityId == item.Id);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(ItemPriceGrade) &&
+            revision.EntityId == priceGrade.Id);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedItem = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .SingleAsync(row => row.Id == item.Id);
+        var storedPriceGrade = await _dbContext.ItemPriceGrades
+            .IgnoreQueryFilters()
+            .SingleAsync(row => row.Id == priceGrade.Id);
+        Assert.True(storedItem.IsDeleted);
+        Assert.True(storedPriceGrade.IsDeleted);
+        Assert.False(storedPriceGrade.IsActive);
+    }
+
+    [Fact]
+    public async Task Push_ActivePriceGradeForDeletedItem_RejectsMutation()
+    {
+        var option = new PriceGradeOption
+        {
+            Id = Guid.NewGuid(),
+            Name = "ACTIVE-FOR-DELETED-ITEM",
+            PriceSource = "Sales",
+            SortOrder = 1,
+            IsActive = true
+        };
+        var deletedItem = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Already deleted item",
+            NameMatchKey = "ALREADYDELETEDITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            Unit = "EA",
+            IsDeleted = true
+        };
+        _dbContext.AddRange(option, deletedItem);
+        await _dbContext.SaveChangesAsync();
+
+        var priceGradeId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-active-grade-for-deleted-item",
+            ItemPriceGrades =
+            [
+                new ItemPriceGradeDto
+                {
+                    Id = priceGradeId,
+                    ItemId = deletedItem.Id,
+                    PriceGradeOptionId = option.Id,
+                    PriceGradeName = option.Name,
+                    UnitPrice = 123_000m,
+                    IsActive = true,
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal(nameof(ItemPriceGrade), conflict.EntityName);
+        Assert.Equal(priceGradeId.ToString("D"), conflict.EntityId);
+        Assert.Contains(
+            "missing or deleted item",
+            conflict.Reason,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(await _dbContext.ItemPriceGrades
+            .IgnoreQueryFilters()
+            .AnyAsync(row => row.Id == priceGradeId));
+    }
+
+    [Fact]
+    public async Task Push_PriceGradeDeleteWithMissingItem_RejectsMutation()
+    {
+        var option = new PriceGradeOption
+        {
+            Id = Guid.NewGuid(),
+            Name = "DELETE-FOR-MISSING-ITEM",
+            PriceSource = "Sales",
+            SortOrder = 1,
+            IsActive = true
+        };
+        _dbContext.Add(option);
+        await _dbContext.SaveChangesAsync();
+
+        var missingItemId = Guid.NewGuid();
+        var priceGradeId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-delete-grade-for-missing-item",
+            ItemPriceGrades =
+            [
+                new ItemPriceGradeDto
+                {
+                    Id = priceGradeId,
+                    ItemId = missingItemId,
+                    PriceGradeOptionId = option.Id,
+                    PriceGradeName = option.Name,
+                    UnitPrice = 0m,
+                    IsActive = false,
+                    IsDeleted = true,
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal(nameof(ItemPriceGrade), conflict.EntityName);
+        Assert.Equal(priceGradeId.ToString("D"), conflict.EntityId);
+        Assert.Contains(
+            "missing or deleted item",
+            conflict.Reason,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(await _dbContext.ItemPriceGrades
+            .IgnoreQueryFilters()
+            .AnyAsync(row => row.Id == priceGradeId));
     }
 
     [Fact]
@@ -3238,6 +7286,69 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Single(items);
         Assert.Equal(firstId, items[0].Id);
         Assert.Equal("second", items[0].Notes);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Push_RejectsConflictingNewItemIdentityWithinSingleBatch(bool useMaterialNumber)
+    {
+        var firstId = Guid.NewGuid();
+        var secondId = Guid.NewGuid();
+        var sharedIdentity = useMaterialNumber ? "BATCH-MATERIAL-001" : "BATCH-SERIAL-001";
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = $"device-item-batch-identity-conflict-{useMaterialNumber}",
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = firstId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = "Batch Identity Owner A",
+                    NameMatchKey = "BATCHIDENTITYOWNERA",
+                    SpecificationOriginal = "MODEL-A",
+                    SpecificationMatchKey = "MODELA",
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = useMaterialNumber ? sharedIdentity : string.Empty,
+                    SerialNumber = useMaterialNumber ? string.Empty : sharedIdentity,
+                    Notes = "first",
+                    UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-1)
+                },
+                new ItemDto
+                {
+                    Id = secondId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = "Batch Identity Owner B",
+                    NameMatchKey = "BATCHIDENTITYOWNERB",
+                    SpecificationOriginal = "MODEL-B",
+                    SpecificationMatchKey = "MODELB",
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = useMaterialNumber ? sharedIdentity : string.Empty,
+                    SerialNumber = useMaterialNumber ? string.Empty : sharedIdentity,
+                    Notes = "must-not-be-created",
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(Item) &&
+            conflict.Reason.Contains("same sync request", StringComparison.OrdinalIgnoreCase));
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = Assert.Single(await _dbContext.Items.IgnoreQueryFilters().ToListAsync());
+        Assert.Equal(firstId, stored.Id);
+        Assert.Equal("first", stored.Notes);
+        Assert.False(await _dbContext.Items.IgnoreQueryFilters().AnyAsync(item => item.Id == secondId));
     }
 
     [Fact]
@@ -4435,7 +8546,7 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task Push_AllowsProtectedInvoiceMetadataOnlyLatestFlagUpdate_WhenPaymentExists()
+    public async Task Push_IgnoresProtectedInvoiceClientLatestFlag_WhenPaymentExists()
     {
         var customer = new Customer
         {
@@ -4541,14 +8652,14 @@ public sealed class SyncControllerTests : IDisposable
         var result = Assert.IsType<SyncPushResult>(ok.Value);
         Assert.True(
             result.ConflictCount == 0,
-            $"Expected metadata-only update to be accepted. accepted={result.AcceptedCount}, conflicts={string.Join(" | ", result.Conflicts.Select(conflict => conflict.Reason))}");
+            $"Expected the update to be accepted while preserving the server-derived latest flag. accepted={result.AcceptedCount}, conflicts={string.Join(" | ", result.Conflicts.Select(conflict => conflict.Reason))}");
         Assert.Equal(1, result.AcceptedCount);
 
         _dbContext.ChangeTracker.Clear();
         var updatedInvoice = await _dbContext.Invoices.IgnoreQueryFilters()
             .SingleAsync(invoice => invoice.Id == invoiceId);
         Assert.Equal(100m, updatedInvoice.TotalAmount);
-        Assert.False(updatedInvoice.IsLatestVersion);
+        Assert.True(updatedInvoice.IsLatestVersion);
         Assert.Equal(100m, await _dbContext.Payments.IgnoreQueryFilters()
             .Where(payment => payment.InvoiceId == invoiceId && !payment.IsDeleted)
             .Select(payment => payment.Amount)
@@ -4558,6 +8669,7 @@ public sealed class SyncControllerTests : IDisposable
     [Fact]
     public async Task Push_DoesNotRebuildInventoryLedger_WhenInventoryTransferUpdateIsRejected()
     {
+        var transferItemId = Guid.NewGuid();
         var transfer = new InventoryTransfer
         {
             Id = Guid.NewGuid(),
@@ -4572,7 +8684,20 @@ public sealed class SyncControllerTests : IDisposable
             CreatedByUsername = "server",
             LastSavedByUsername = "server",
             LastSavedAtUtc = new DateTime(2026, 6, 20, 0, 0, 0, DateTimeKind.Utc),
-            TransferStatus = InventoryTransferStatusNormalizer.Pending
+            TransferStatus = InventoryTransferStatusNormalizer.Pending,
+            Lines =
+            [
+                new InventoryTransferLine
+                {
+                    Id = Guid.NewGuid(),
+                    ItemId = transferItemId,
+                    ItemNameOriginal = "Rejected update guard item",
+                    Unit = "EA",
+                    Quantity = 1m,
+                    ReceivedQuantity = 1m,
+                    QuantityDifference = 0m
+                }
+            ]
         };
         var ledgerEntry = new InventoryLedgerEntry
         {
@@ -4587,6 +8712,17 @@ public sealed class SyncControllerTests : IDisposable
             OccurredDate = new DateOnly(2026, 6, 20),
             Note = "rejected transfer should not rebuild ledger"
         };
+        _dbContext.Items.Add(new Item
+        {
+            Id = transferItemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "Rejected update guard item",
+            NameMatchKey = "REJECTEDUPDATEGUARDITEM",
+            Unit = "EA",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.NonStock
+        });
         _dbContext.InventoryTransfers.Add(transfer);
         _dbContext.InventoryLedgerEntries.Add(ledgerEntry);
         await _dbContext.SaveChangesAsync();
@@ -4609,13 +8745,14 @@ public sealed class SyncControllerTests : IDisposable
                     ToWarehouseCode = transfer.ToWarehouseCode,
                     Memo = "client stale memo",
                     CreatedByUsername = transfer.CreatedByUsername,
-                    LastSavedByUsername = "client",
-                    LastSavedAtUtc = transfer.LastSavedAtUtc.AddMinutes(5),
+                    LastSavedByUsername = "admin",
+                    LastSavedAtUtc = transfer.UpdatedAtUtc.AddMinutes(5),
                     TransferStatus = transfer.TransferStatus,
                     CreatedAtUtc = transfer.CreatedAtUtc,
                     UpdatedAtUtc = transfer.UpdatedAtUtc.AddMinutes(5),
                     Revision = serverRevision,
-                    ExpectedRevision = serverRevision + 1
+                    ExpectedRevision = serverRevision + 1,
+                    Lines = transfer.Lines.Select(line => line.ToDto()).ToList()
                 }
             ]
         }, CancellationToken.None);
@@ -4635,6 +8772,96 @@ public sealed class SyncControllerTests : IDisposable
             .SingleAsync(row => row.Id == transfer.Id);
         Assert.Equal("server memo", storedTransfer.Memo);
         Assert.Equal(serverRevision, storedTransfer.Revision);
+    }
+
+    [Fact]
+    public async Task Push_InventoryTransferReplayAfterServerNormalization_AcknowledgesExactMutation()
+    {
+        var transferItemId = Guid.NewGuid();
+        var transfer = new InventoryTransfer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TransferNumber = $"NORMALIZED-REPLAY-{Guid.NewGuid():N}"[..24],
+            TransferDate = new DateOnly(2026, 8, 1),
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            Memo = "before normalized replay",
+            CreatedByUsername = "admin",
+            LastSavedByUsername = "admin",
+            LastSavedAtUtc = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc),
+            TransferStatus = InventoryTransferStatusNormalizer.Pending,
+            Lines =
+            [
+                new InventoryTransferLine
+                {
+                    Id = Guid.NewGuid(),
+                    ItemId = transferItemId,
+                    ItemNameOriginal = "Normalized replay item",
+                    Unit = "EA",
+                    Quantity = 1m,
+                    ReceivedQuantity = 1m,
+                    QuantityDifference = 0m
+                }
+            ]
+        };
+        _dbContext.Items.Add(new Item
+        {
+            Id = transferItemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "Normalized replay item",
+            NameMatchKey = "NORMALIZEDREPLAYITEM",
+            Unit = "EA",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.NonStock
+        });
+        _dbContext.InventoryTransfers.Add(transfer);
+        await _dbContext.SaveChangesAsync();
+
+        var dto = transfer.ToDto();
+        dto.TenantCode = TenantScopeCatalog.UsenetGroup.ToLowerInvariant();
+        dto.SourceOfficeCode = OfficeCodeCatalog.Usenet.ToLowerInvariant();
+        dto.TargetOfficeCode = OfficeCodeCatalog.Yeonsu.ToLowerInvariant();
+        dto.FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse.ToLowerInvariant();
+        dto.ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse.ToLowerInvariant();
+        dto.Memo = "after normalized replay";
+        dto.LastSavedByUsername = "admin";
+        dto.LastSavedAtUtc = transfer.UpdatedAtUtc.AddMinutes(1);
+        dto.UpdatedAtUtc = transfer.UpdatedAtUtc.AddMinutes(1);
+        dto.Revision = transfer.Revision;
+        dto.ExpectedRevision = transfer.Revision;
+        dto.MutationId = $"normalized-transfer-replay:{transfer.Id:N}";
+        dto.MutationCreatedAtUtc = dto.UpdatedAtUtc;
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-normalized-transfer-replay",
+            InventoryTransfers = [dto]
+        };
+        var rawPayloadHash = SyncMutationPayloadHasher.Compute(dto);
+
+        var firstResponse = await _controller.Push(request, CancellationToken.None);
+        var firstOk = Assert.IsType<OkObjectResult>(firstResponse.Result);
+        var firstResult = Assert.IsType<SyncPushResult>(firstOk.Value);
+        Assert.Equal(1, firstResult.AcceptedCount);
+        Assert.Equal(0, firstResult.ConflictCount);
+        var normalizedPayloadHash = SyncMutationPayloadHasher.Compute(dto);
+        Assert.NotEqual(rawPayloadHash, normalizedPayloadHash);
+
+        _dbContext.ChangeTracker.Clear();
+        var replayResponse = await _controller.Push(request, CancellationToken.None);
+        var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
+        var replayResult = Assert.IsType<SyncPushResult>(replayOk.Value);
+
+        Assert.Equal(1, replayResult.AcceptedCount);
+        Assert.Equal(0, replayResult.ConflictCount);
+        Assert.Equal(1, replayResult.DuplicateMutationCount);
+        var receipt = await _dbContext.ProcessedSyncMutations
+            .AsNoTracking()
+            .SingleAsync(mutation => mutation.MutationId == dto.MutationId);
+        Assert.Equal(normalizedPayloadHash, receipt.PayloadHash);
     }
 
     [Fact]
@@ -4756,6 +8983,2977 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_SameIdRentalBillingProfile_PreservesServerFinancialStateAndExactReplayRevision()
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var mutationId = $"same-id-financial:{Guid.NewGuid():N}";
+        var existingRunsJson = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                RunId = runId,
+                RunKey = "2026-06",
+                ScheduledDate = new DateOnly(2026, 6, 25),
+                PeriodStartDate = new DateOnly(2026, 6, 1),
+                PeriodEndDate = new DateOnly(2026, 6, 30),
+                PeriodLabel = "2026-06",
+                Status = "\uCCAD\uAD6C\uC911",
+                BilledAmount = 100_000m,
+                SettledAmount = 40_000m,
+                SettlementStatus = "\uBD80\uBD84\uC785\uAE08",
+                SettledDate = new DateOnly(2026, 6, 26),
+                Note = "server evidence"
+            }
+        });
+        var existing = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"SAME-ID-FINANCIAL-{profileId:N}",
+            CustomerName = "Same id financial customer",
+            ItemName = "Same id financial item",
+            Notes = "before generic edit",
+            MonthlyAmount = 100_000m,
+            BillingStatus = "\uCCAD\uAD6C\uC911",
+            LastBilledDate = new DateOnly(2026, 6, 25),
+            LastSettledDate = new DateOnly(2026, 6, 26),
+            SettledAmount = 40_000m,
+            OutstandingAmount = 60_000m,
+            SettlementStatus = "\uBD80\uBD84\uC785\uAE08",
+            CompletionStatus = "\uBBF8\uC644\uB8CC",
+            RequiresFollowUp = true,
+            BillingRunsJson = existingRunsJson,
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+        var originalRevision = existing.Revision;
+        var mutationAtUtc = existing.UpdatedAtUtc.AddMinutes(5);
+
+        RentalBillingProfileDto CreateMutation() => new()
+        {
+            Id = profileId,
+            TenantCode = existing.TenantCode,
+            OfficeCode = existing.OfficeCode,
+            ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+            ProfileKey = existing.ProfileKey,
+            CustomerName = existing.CustomerName,
+            ItemName = existing.ItemName,
+            Notes = "accepted generic edit",
+            MonthlyAmount = 120_000m,
+            BillingStatus = "\uC644\uB8CC",
+            LastBilledDate = new DateOnly(2030, 1, 1),
+            LastSettledDate = new DateOnly(2030, 1, 2),
+            SettledAmount = 999_000m,
+            OutstandingAmount = 1m,
+            SettlementStatus = "\uC785\uAE08\uD655\uC778",
+            CompletionStatus = "\uC644\uB8CC",
+            RequiresFollowUp = false,
+            BillingRunsJson = "[]",
+            IsActive = true,
+            Revision = originalRevision,
+            ExpectedRevision = originalRevision,
+            MutationId = mutationId,
+            MutationCreatedAtUtc = mutationAtUtc,
+            CreatedAtUtc = existing.CreatedAtUtc,
+            UpdatedAtUtc = mutationAtUtc
+        };
+
+        async Task<SyncPushResult> PushAsync()
+        {
+            var response = await _controller.Push(new SyncPushRequest
+            {
+                DeviceId = "same-id-financial-device",
+                RentalBillingProfiles = [CreateMutation()]
+            }, CancellationToken.None);
+            var ok = Assert.IsType<OkObjectResult>(response.Result);
+            return Assert.IsType<SyncPushResult>(ok.Value);
+        }
+
+        var firstResult = await PushAsync();
+        Assert.Equal(1, firstResult.AcceptedCount);
+        Assert.Empty(firstResult.Conflicts);
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal("accepted generic edit", stored.Notes);
+        Assert.Equal(120_000m, stored.MonthlyAmount);
+        Assert.Equal("\uCCAD\uAD6C\uC911", stored.BillingStatus);
+        Assert.Equal(new DateOnly(2026, 6, 25), stored.LastBilledDate);
+        Assert.Equal(new DateOnly(2026, 6, 26), stored.LastSettledDate);
+        Assert.Equal(40_000m, stored.SettledAmount);
+        Assert.Equal(60_000m, stored.OutstandingAmount);
+        Assert.Equal("\uBD80\uBD84\uC785\uAE08", stored.SettlementStatus);
+        Assert.Equal("\uBBF8\uC644\uB8CC", stored.CompletionStatus);
+        Assert.True(stored.RequiresFollowUp);
+        Assert.Equal(existingRunsJson, stored.BillingRunsJson);
+        var acceptedRevision = stored.Revision;
+
+        var replayResult = await PushAsync();
+        Assert.Equal(1, replayResult.AcceptedCount);
+        Assert.Equal(1, replayResult.DuplicateMutationCount);
+        Assert.Empty(replayResult.Conflicts);
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(acceptedRevision, await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .Where(profile => profile.Id == profileId)
+            .Select(profile => profile.Revision)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_NewRentalBillingProfile_NeutralizesForgedCompletedFinancialState()
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "new-forged-financial-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"NEW-FORGED-FINANCIAL-{profileId:N}",
+                    CustomerName = "New forged financial customer",
+                    ItemName = "New forged financial item",
+                    MonthlyAmount = 75_000m,
+                    DepositAmount = 30_000m,
+                    BillingStatus = "\uC644\uB8CC",
+                    LastBilledDate = new DateOnly(2030, 1, 1),
+                    LastSettledDate = new DateOnly(2030, 1, 2),
+                    SettledAmount = 75_000m,
+                    OutstandingAmount = 50_000m,
+                    SettlementStatus = "\uC785\uAE08\uD655\uC778",
+                    CompletionStatus = "\uC644\uB8CC",
+                    RequiresFollowUp = true,
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            RunId = runId,
+                            RunKey = "2030-01",
+                            ScheduledDate = new DateOnly(2030, 1, 25),
+                            Status = "\uC644\uB8CC",
+                            BilledAmount = 75_000m,
+                            SettledAmount = 75_000m,
+                            SettlementStatus = "\uC785\uAE08\uD655\uC778",
+                            SettledDate = new DateOnly(2030, 1, 26)
+                        }
+                    }),
+                    MutationId = $"new-forged-financial:{profileId:N}",
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Empty(result.Conflicts);
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal(75_000m, stored.MonthlyAmount);
+        Assert.Equal(30_000m, stored.DepositAmount);
+        Assert.Equal("\uC608\uC815", stored.BillingStatus);
+        Assert.Null(stored.LastBilledDate);
+        Assert.Null(stored.LastSettledDate);
+        Assert.Equal(0m, stored.SettledAmount);
+        Assert.Equal(0m, stored.OutstandingAmount);
+        Assert.Equal("\uBBF8\uC785\uAE08", stored.SettlementStatus);
+        Assert.Equal("\uBBF8\uC644\uB8CC", stored.CompletionStatus);
+        Assert.False(stored.RequiresFollowUp);
+        var run = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(stored.BillingRunsJson) ?? []);
+        Assert.Equal(runId, run.RunId);
+        Assert.Equal("\uC608\uC815", run.Status);
+        Assert.Equal(0m, run.BilledAmount);
+        Assert.Equal(0m, run.SettledAmount);
+        Assert.Equal("\uBBF8\uC785\uAE08", run.SettlementStatus);
+        Assert.Null(run.SettledDate);
+    }
+
+    [Fact]
+    public async Task Push_NewRentalBillingProfile_PreservesOfflineHoldIntentAndSanitizesRunEvidence()
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "new-offline-hold-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"NEW-OFFLINE-HOLD-{profileId:N}",
+                    CustomerName = "New offline hold customer",
+                    ItemName = "New offline hold item",
+                    BillingStatus = "\uBCF4\uB958",
+                    RequiresFollowUp = true,
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            RunId = runId,
+                            RunKey = "2030-02",
+                            ScheduledDate = new DateOnly(2030, 2, 25),
+                            PeriodStartDate = new DateOnly(2030, 2, 1),
+                            PeriodEndDate = new DateOnly(2030, 2, 28),
+                            PeriodLabel = "2030-02",
+                            Status = "\uBCF4\uB958",
+                            BilledAmount = 99_000m,
+                            SettledAmount = 20_000m,
+                            SettlementStatus = "\uBD80\uBD84\uC785\uAE08",
+                            SettledDate = new DateOnly(2030, 2, 26),
+                            Note = "offline hold note",
+                            Items = new[] { new { DisplayItemName = "held item", Amount = 99_000m } }
+                        }
+                    }),
+                    MutationId = $"new-offline-hold:{profileId:N}",
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Empty(result.Conflicts);
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal("\uBCF4\uB958", stored.BillingStatus);
+        Assert.True(stored.RequiresFollowUp);
+        using var document = JsonDocument.Parse(stored.BillingRunsJson);
+        var run = Assert.Single(document.RootElement.EnumerateArray());
+        Assert.Equal(runId, run.GetProperty("RunId").GetGuid());
+        Assert.Equal("\uBCF4\uB958", run.GetProperty("Status").GetString());
+        Assert.Equal(DateOnly.MinValue, DateOnly.Parse(run.GetProperty("ScheduledDate").GetString()!));
+        Assert.Equal(DateOnly.MinValue, DateOnly.Parse(run.GetProperty("PeriodStartDate").GetString()!));
+        Assert.Equal(DateOnly.MinValue, DateOnly.Parse(run.GetProperty("PeriodEndDate").GetString()!));
+        Assert.Equal(string.Empty, run.GetProperty("PeriodLabel").GetString());
+        Assert.Equal(0m, run.GetProperty("BilledAmount").GetDecimal());
+        Assert.Equal(0m, run.GetProperty("SettledAmount").GetDecimal());
+        Assert.Equal("\uBBF8\uC785\uAE08", run.GetProperty("SettlementStatus").GetString());
+        Assert.Equal(JsonValueKind.Null, run.GetProperty("SettledDate").ValueKind);
+        Assert.Equal("offline hold note", run.GetProperty("Note").GetString());
+        Assert.Equal("held item", Assert.Single(run.GetProperty("Items").EnumerateArray()).GetProperty("DisplayItemName").GetString());
+    }
+
+    [Fact]
+    public async Task PushThenPull_RentalBillingRunWithServerNeutralizedPeriodLabel_AcceptsNewMutationRoundTrip()
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var itemId = Guid.NewGuid();
+        var createdAtUtc = new DateTime(2026, 8, 3, 1, 0, 0, DateTimeKind.Utc);
+        var firstResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "neutralized-period-label-roundtrip-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"NEUTRALIZED-PERIOD-LABEL-{profileId:N}",
+                    CustomerName = "Neutralized period label customer",
+                    ItemName = "Neutralized period label item",
+                    BillingStatus = "\uC608\uC815",
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            RunId = runId,
+                            RunKey = "2026-08",
+                            ScheduledDate = new DateOnly(2026, 8, 25),
+                            PeriodStartDate = new DateOnly(2026, 8, 1),
+                            PeriodEndDate = new DateOnly(2026, 8, 31),
+                            CycleMonths = 1,
+                            PeriodLabel = "2026-08",
+                            Status = "\uC608\uC815",
+                            BilledAmount = 0m,
+                            SettledAmount = 0m,
+                            SettlementStatus = "\uBBF8\uC785\uAE08",
+                            Items = new[]
+                            {
+                                new
+                                {
+                                    ItemId = itemId,
+                                    CatalogItemId = (Guid?)null,
+                                    DisplayItemName = string.Empty,
+                                    BillingLineMode = string.Empty,
+                                    IndividualGroupingMode = string.Empty,
+                                    Specification = (string?)null,
+                                    Unit = string.Empty,
+                                    MaterialNumber = string.Empty,
+                                    RepresentativeAssetId = (Guid?)null,
+                                    Quantity = 0m,
+                                    UnitPrice = 0m,
+                                    Amount = 0m,
+                                    Note = string.Empty,
+                                    IncludedAssetIds = Array.Empty<Guid>(),
+                                    ExtensionField = "preserved"
+                                }
+                            }
+                        }
+                    }),
+                    MutationId = $"neutralized-period-label-create:{profileId:N}",
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+
+        var firstOk = Assert.IsType<OkObjectResult>(firstResponse.Result);
+        var firstResult = Assert.IsType<SyncPushResult>(firstOk.Value);
+        Assert.Equal(1, firstResult.AcceptedCount);
+        Assert.Empty(firstResult.Conflicts);
+
+        _dbContext.ChangeTracker.Clear();
+        var pullResponse = await _controller.Pull(0, CancellationToken.None);
+        var pullOk = Assert.IsType<OkObjectResult>(pullResponse.Result);
+        var pull = Assert.IsType<SyncPullResponse>(pullOk.Value);
+        var pulledProfile = Assert.Single(pull.RentalBillingProfiles, profile => profile.Id == profileId);
+        using (var document = JsonDocument.Parse(pulledProfile.BillingRunsJson))
+        {
+            var pulledRun = Assert.Single(document.RootElement.EnumerateArray());
+            Assert.Equal(string.Empty, pulledRun.GetProperty("PeriodLabel").GetString());
+            var pulledItem = Assert.Single(pulledRun.GetProperty("Items").EnumerateArray());
+            Assert.Equal(itemId, pulledItem.GetProperty("ItemId").GetGuid());
+            Assert.Equal(JsonValueKind.Null, pulledItem.GetProperty("Specification").ValueKind);
+            Assert.Equal("preserved", pulledItem.GetProperty("ExtensionField").GetString());
+        }
+
+        pulledProfile.Notes = "round-trip accepted";
+        pulledProfile.MutationId = $"neutralized-period-label-update:{profileId:N}";
+        pulledProfile.MutationCreatedAtUtc = pulledProfile.UpdatedAtUtc.AddMinutes(1);
+        pulledProfile.ExpectedRevision = pulledProfile.Revision;
+        pulledProfile.UpdatedAtUtc = pulledProfile.UpdatedAtUtc.AddMinutes(1);
+        var secondResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "neutralized-period-label-roundtrip-device",
+            RentalBillingProfiles = [pulledProfile]
+        }, CancellationToken.None);
+
+        var secondOk = Assert.IsType<OkObjectResult>(secondResponse.Result);
+        var secondResult = Assert.IsType<SyncPushResult>(secondOk.Value);
+        Assert.Equal(1, secondResult.AcceptedCount);
+        Assert.Empty(secondResult.Conflicts);
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal("round-trip accepted", stored.Notes);
+    }
+
+    [Fact]
+    public async Task Push_NewRentalBillingProfile_PreservesCancelIntentWithoutForcingFollowUp()
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "new-offline-cancel-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"NEW-OFFLINE-CANCEL-{profileId:N}",
+                    CustomerName = "New offline cancel customer",
+                    ItemName = "New offline cancel item",
+                    BillingStatus = "\uCDE8\uC18C",
+                    RequiresFollowUp = true,
+                    SettledAmount = 50_000m,
+                    OutstandingAmount = 10_000m,
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            RunId = runId,
+                            RunKey = "2030-03",
+                            Status = "\uCDE8\uC18C",
+                            BilledAmount = 60_000m,
+                            SettledAmount = 50_000m,
+                            SettlementStatus = "\uBD80\uBD84\uC785\uAE08"
+                        }
+                    }),
+                    MutationId = $"new-offline-cancel:{profileId:N}",
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Empty(result.Conflicts);
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal("\uCDE8\uC18C", stored.BillingStatus);
+        Assert.False(stored.RequiresFollowUp);
+        Assert.Equal(0m, stored.SettledAmount);
+        Assert.Equal(0m, stored.OutstandingAmount);
+        var run = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(stored.BillingRunsJson) ?? []);
+        Assert.Equal("\uCDE8\uC18C", run.Status);
+        Assert.Equal(0m, run.BilledAmount);
+        Assert.Equal(0m, run.SettledAmount);
+        Assert.Equal("\uBBF8\uC785\uAE08", run.SettlementStatus);
+    }
+
+    [Fact]
+    public async Task Push_ExistingRentalBillingRun_AcceptsManualHoldNoteButPreservesServerStructureAndEvidence()
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var existing = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"EXISTING-MANUAL-HOLD-{profileId:N}",
+            CustomerName = "Existing manual hold customer",
+            ItemName = "Existing manual hold item",
+            BillingStatus = "\uCCAD\uAD6C\uC911",
+            SettledAmount = 25_000m,
+            OutstandingAmount = 75_000m,
+            SettlementStatus = "\uBD80\uBD84\uC785\uAE08",
+            CompletionStatus = "\uBBF8\uC644\uB8CC",
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new
+                {
+                    RunId = runId,
+                    RunKey = "2026-07",
+                    ScheduledDate = new DateOnly(2026, 7, 25),
+                    PeriodStartDate = new DateOnly(2026, 7, 1),
+                    PeriodEndDate = new DateOnly(2026, 7, 31),
+                    Status = "\uCCAD\uAD6C\uC911",
+                    BilledAmount = 100_000m,
+                    SettledAmount = 25_000m,
+                    SettlementStatus = "\uBD80\uBD84\uC785\uAE08",
+                    SettledDate = new DateOnly(2026, 7, 26),
+                    Note = "server note",
+                    Items = new[] { new { DisplayItemName = "server item", Amount = 100_000m } }
+                }
+            }),
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "existing-manual-hold-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = existing.TenantCode,
+                    OfficeCode = existing.OfficeCode,
+                    ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+                    ProfileKey = existing.ProfileKey,
+                    CustomerName = existing.CustomerName,
+                    ItemName = existing.ItemName,
+                    Notes = "profile edit with hold",
+                    BillingStatus = "\uBCF4\uB958",
+                    RequiresFollowUp = false,
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            RunId = runId,
+                            RunKey = " 2026-07 ",
+                            ScheduledDate = new DateOnly(2026, 8, 25),
+                            PeriodStartDate = new DateOnly(2026, 8, 1),
+                            PeriodEndDate = new DateOnly(2026, 8, 31),
+                            Status = "\uBCF4\uB958",
+                            BilledAmount = 999_000m,
+                            SettledAmount = 999_000m,
+                            SettlementStatus = "\uC785\uAE08\uD655\uC778",
+                            SettledDate = new DateOnly(2030, 1, 1),
+                            Note = "client hold note",
+                            Items = new[] { new { DisplayItemName = "client item", Amount = 55_000m } }
+                        }
+                    }),
+                    Revision = existing.Revision,
+                    ExpectedRevision = existing.Revision,
+                    MutationId = $"existing-manual-hold:{profileId:N}",
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(5)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Empty(result.Conflicts);
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal("\uBCF4\uB958", stored.BillingStatus);
+        Assert.True(stored.RequiresFollowUp);
+        using var document = JsonDocument.Parse(stored.BillingRunsJson);
+        var run = Assert.Single(document.RootElement.EnumerateArray());
+        Assert.Equal("2026-07", run.GetProperty("RunKey").GetString());
+        Assert.Equal(new DateOnly(2026, 7, 25), DateOnly.Parse(run.GetProperty("ScheduledDate").GetString()!));
+        Assert.Equal("\uBCF4\uB958", run.GetProperty("Status").GetString());
+        Assert.Equal(100_000m, run.GetProperty("BilledAmount").GetDecimal());
+        Assert.Equal(25_000m, run.GetProperty("SettledAmount").GetDecimal());
+        Assert.Equal("\uBD80\uBD84\uC785\uAE08", run.GetProperty("SettlementStatus").GetString());
+        Assert.Equal(new DateOnly(2026, 7, 26), DateOnly.Parse(run.GetProperty("SettledDate").GetString()!));
+        Assert.Equal("client hold note", run.GetProperty("Note").GetString());
+        Assert.Equal("server item", Assert.Single(run.GetProperty("Items").EnumerateArray()).GetProperty("DisplayItemName").GetString());
+    }
+
+    [Fact]
+    public async Task Push_ExistingManualStopRentalBillingRun_AllowsExplicitResumeWithoutReplacingEvidence()
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var existing = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"EXISTING-MANUAL-RESUME-{profileId:N}",
+            CustomerName = "Existing manual resume customer",
+            ItemName = "Existing manual resume item",
+            BillingStatus = "\uBCF4\uB958",
+            RequiresFollowUp = true,
+            SettledAmount = 10_000m,
+            OutstandingAmount = 40_000m,
+            SettlementStatus = "\uBD80\uBD84\uC785\uAE08",
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new
+                {
+                    RunId = runId,
+                    RunKey = "2026-08",
+                    Status = "\uBCF4\uB958",
+                    BilledAmount = 50_000m,
+                    SettledAmount = 10_000m,
+                    SettlementStatus = "\uBD80\uBD84\uC785\uAE08",
+                    SettledDate = new DateOnly(2026, 8, 26),
+                    Note = "held"
+                }
+            }),
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "existing-manual-resume-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = existing.TenantCode,
+                    OfficeCode = existing.OfficeCode,
+                    ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+                    ProfileKey = existing.ProfileKey,
+                    CustomerName = existing.CustomerName,
+                    ItemName = existing.ItemName,
+                    BillingStatus = "\uCCAD\uAD6C\uC911",
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            RunId = runId,
+                            RunKey = "2026-08",
+                            Status = "\uCCAD\uAD6C\uC911",
+                            BilledAmount = 500_000m,
+                            SettledAmount = 500_000m,
+                            SettlementStatus = "\uC785\uAE08\uD655\uC778",
+                            SettledDate = new DateOnly(2030, 1, 1),
+                            Note = "resumed"
+                        }
+                    }),
+                    Revision = existing.Revision,
+                    ExpectedRevision = existing.Revision,
+                    MutationId = $"existing-manual-resume:{profileId:N}",
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(5)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Empty(result.Conflicts);
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal("\uCCAD\uAD6C\uC911", stored.BillingStatus);
+        Assert.True(stored.RequiresFollowUp);
+        Assert.Equal(10_000m, stored.SettledAmount);
+        Assert.Equal(40_000m, stored.OutstandingAmount);
+        var run = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(stored.BillingRunsJson) ?? []);
+        Assert.Equal("\uCCAD\uAD6C\uC911", run.Status);
+        Assert.Equal(50_000m, run.BilledAmount);
+        Assert.Equal(10_000m, run.SettledAmount);
+        Assert.Equal("\uBD80\uBD84\uC785\uAE08", run.SettlementStatus);
+        Assert.Equal(new DateOnly(2026, 8, 26), run.SettledDate);
+    }
+
+    [Fact]
+    public async Task Push_ExistingManualStopRentalBillingProfile_ExactResumeClearsFollowUpWhenNoOutstandingEvidence()
+    {
+        var profileId = Guid.NewGuid();
+        var existing = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"EXACT-RESUME-NO-OUTSTANDING-{profileId:N}",
+            CustomerName = "Exact resume customer",
+            ItemName = "Exact resume item",
+            BillingStatus = "\uBCF4\uB958",
+            RequiresFollowUp = true,
+            SettledAmount = 0m,
+            OutstandingAmount = 0m,
+            SettlementStatus = "\uBBF8\uC785\uAE08",
+            BillingRunsJson = "[]",
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "exact-resume-no-outstanding-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = existing.TenantCode,
+                    OfficeCode = existing.OfficeCode,
+                    ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+                    ProfileKey = existing.ProfileKey,
+                    CustomerName = existing.CustomerName,
+                    ItemName = existing.ItemName,
+                    BillingStatus = "\uCCAD\uAD6C\uC911",
+                    RequiresFollowUp = true,
+                    BillingRunsJson = "[]",
+                    Revision = existing.Revision,
+                    ExpectedRevision = existing.Revision,
+                    MutationId = $"exact-resume-no-outstanding:{profileId:N}",
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(5)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Empty(result.Conflicts);
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal("\uCCAD\uAD6C\uC911", stored.BillingStatus);
+        Assert.False(stored.RequiresFollowUp);
+        Assert.Equal(0m, stored.OutstandingAmount);
+    }
+
+    [Fact]
+    public async Task Push_SameIdRentalBillingProfileWithoutExpectedRevision_DoesNotApplyManualStopState()
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var existing = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"UNGUARDED-MANUAL-STOP-{profileId:N}",
+            CustomerName = "Unguarded manual stop customer",
+            ItemName = "Unguarded manual stop item",
+            Notes = "before unguarded stop",
+            BillingStatus = "\uCCAD\uAD6C\uC911",
+            RequiresFollowUp = false,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new
+                {
+                    RunId = runId,
+                    RunKey = "2026-09",
+                    Status = "\uCCAD\uAD6C\uC911",
+                    BilledAmount = 80_000m,
+                    SettledAmount = 30_000m,
+                    SettlementStatus = "\uBD80\uBD84\uC785\uAE08",
+                    Note = "server run note"
+                }
+            }),
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+        var nextUpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(5);
+
+        foreach (var incomingStatus in new[] { "\uBCF4\uB958", "\uCDE8\uC18C" })
+        {
+            var response = await _controller.Push(new SyncPushRequest
+            {
+                DeviceId = "unguarded-manual-stop-device",
+                RentalBillingProfiles =
+                [
+                    new RentalBillingProfileDto
+                    {
+                        Id = profileId,
+                        TenantCode = existing.TenantCode,
+                        OfficeCode = existing.OfficeCode,
+                        ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+                        ProfileKey = existing.ProfileKey,
+                        CustomerName = existing.CustomerName,
+                        ItemName = existing.ItemName,
+                        Notes = $"general edit with {incomingStatus}",
+                        BillingStatus = incomingStatus,
+                        RequiresFollowUp = true,
+                        BillingRunsJson = JsonSerializer.Serialize(new[]
+                        {
+                            new
+                            {
+                                RunId = runId,
+                                RunKey = "2026-09",
+                                Status = incomingStatus,
+                                BilledAmount = 999_000m,
+                                SettledAmount = 999_000m,
+                                SettlementStatus = "\uC785\uAE08\uD655\uC778",
+                                Note = $"client {incomingStatus} note"
+                            }
+                        }),
+                        Revision = 0,
+                        ExpectedRevision = 0,
+                        MutationId = $"unguarded-manual-stop:{profileId:N}:{incomingStatus}",
+                        UpdatedAtUtc = nextUpdatedAtUtc
+                    }
+                ]
+            }, CancellationToken.None);
+
+            var ok = Assert.IsType<OkObjectResult>(response.Result);
+            var result = Assert.IsType<SyncPushResult>(ok.Value);
+            Assert.Equal(1, result.AcceptedCount);
+            Assert.Empty(result.Conflicts);
+            _dbContext.ChangeTracker.Clear();
+            var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(profile => profile.Id == profileId);
+            Assert.Equal($"general edit with {incomingStatus}", stored.Notes);
+            Assert.Equal("\uCCAD\uAD6C\uC911", stored.BillingStatus);
+            Assert.False(stored.RequiresFollowUp);
+            var run = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(stored.BillingRunsJson) ?? []);
+            Assert.Equal("\uCCAD\uAD6C\uC911", run.Status);
+            Assert.Equal(80_000m, run.BilledAmount);
+            Assert.Equal(30_000m, run.SettledAmount);
+            Assert.Equal("\uBD80\uBD84\uC785\uAE08", run.SettlementStatus);
+            nextUpdatedAtUtc = stored.UpdatedAtUtc.AddMinutes(5);
+        }
+    }
+
+    [Fact]
+    public async Task Push_RentalBillingRuns_RejectsDifferentRunIdClaimingExistingSharedNormalizedRunKeyWithoutMutation()
+    {
+        var profileId = Guid.NewGuid();
+        var existingRunId = Guid.NewGuid();
+        var incomingRunId = Guid.NewGuid();
+        var mutationId = $"duplicate-existing-run-key:{profileId:N}";
+        var originalRunsJson = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                RunId = existingRunId,
+                RunKey = "Billing-Cycle-2026-10",
+                Status = "\uC608\uC815",
+                BilledAmount = 0m,
+                SettledAmount = 0m,
+                SettlementStatus = "\uBBF8\uC785\uAE08"
+            }
+        });
+        var existing = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"DUPLICATE-EXISTING-RUN-KEY-{profileId:N}",
+            CustomerName = "Duplicate existing run key customer",
+            ItemName = "Duplicate existing run key item",
+            Notes = "server note",
+            BillingStatus = "\uC608\uC815",
+            BillingRunsJson = originalRunsJson,
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+        var originalRevision = existing.Revision;
+        var originalUpdatedAtUtc = existing.UpdatedAtUtc;
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "duplicate-existing-run-key-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = existing.TenantCode,
+                    OfficeCode = existing.OfficeCode,
+                    ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+                    ProfileKey = existing.ProfileKey,
+                    CustomerName = existing.CustomerName,
+                    ItemName = existing.ItemName,
+                    Notes = "must not apply",
+                    BillingStatus = existing.BillingStatus,
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            RunId = incomingRunId,
+                            RunKey = " billing-[ Cycle ]-2026-10 ",
+                            Status = "\uC608\uC815",
+                            BilledAmount = 0m,
+                            SettledAmount = 0m,
+                            SettlementStatus = "\uBBF8\uC785\uAE08"
+                        }
+                    }),
+                    Revision = originalRevision,
+                    ExpectedRevision = originalRevision,
+                    MutationId = mutationId,
+                    UpdatedAtUtc = originalUpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.Reason.Contains("duplicate RunId or RunKey", StringComparison.OrdinalIgnoreCase));
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal(originalRevision, stored.Revision);
+        Assert.Equal(originalUpdatedAtUtc, stored.UpdatedAtUtc);
+        Assert.Equal("server note", stored.Notes);
+        Assert.Equal(originalRunsJson, stored.BillingRunsJson);
+        Assert.DoesNotContain(
+            await _dbContext.ProcessedSyncMutations.AsNoTracking().ToListAsync(),
+            mutation => mutation.MutationId == mutationId);
+    }
+
+    [Fact]
+    public async Task Push_NewRentalBillingProfile_RejectsDifferentRunIdsWithSameNormalizedRunKey()
+    {
+        var profileId = Guid.NewGuid();
+        var mutationId = $"duplicate-new-run-key:{profileId:N}";
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "duplicate-new-run-key-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"DUPLICATE-NEW-RUN-KEY-{profileId:N}",
+                    CustomerName = "Duplicate new run key customer",
+                    ItemName = "Duplicate new run key item",
+                    BillingStatus = "\uC608\uC815",
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new { RunId = Guid.NewGuid(), RunKey = " New-Run-Key " },
+                        new { RunId = Guid.NewGuid(), RunKey = "new-run-key" }
+                    }),
+                    MutationId = mutationId,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.Reason.Contains("duplicate RunId or RunKey", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == profileId));
+        Assert.DoesNotContain(
+            await _dbContext.ProcessedSyncMutations.AsNoTracking().ToListAsync(),
+            mutation => mutation.MutationId == mutationId);
+    }
+
+    [Fact]
+    public async Task Push_RentalBillingRuns_RejectsSameRunIdClaimingDifferentNormalizedRunKeyWithoutMutation()
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var mutationId = $"different-key-same-run-id:{profileId:N}";
+        var originalRunsJson = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                RunId = runId,
+                RunKey = "billing-key-x",
+                Status = "\uC608\uC815",
+                BilledAmount = 0m,
+                SettledAmount = 0m,
+                SettlementStatus = "\uBBF8\uC785\uAE08"
+            }
+        });
+        var existing = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"DIFFERENT-KEY-SAME-RUN-ID-{profileId:N}",
+            CustomerName = "Different key same run id customer",
+            ItemName = "Different key same run id item",
+            Notes = "server note",
+            BillingStatus = "\uC608\uC815",
+            BillingRunsJson = originalRunsJson,
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+        var originalRevision = existing.Revision;
+        var originalUpdatedAtUtc = existing.UpdatedAtUtc;
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "different-key-same-run-id-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = existing.TenantCode,
+                    OfficeCode = existing.OfficeCode,
+                    ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+                    ProfileKey = existing.ProfileKey,
+                    CustomerName = existing.CustomerName,
+                    ItemName = existing.ItemName,
+                    Notes = "must not apply",
+                    BillingStatus = existing.BillingStatus,
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            RunId = runId,
+                            RunKey = "billing-key-y",
+                            Status = "\uC608\uC815",
+                            BilledAmount = 0m,
+                            SettledAmount = 0m,
+                            SettlementStatus = "\uBBF8\uC785\uAE08"
+                        }
+                    }),
+                    Revision = originalRevision,
+                    ExpectedRevision = originalRevision,
+                    MutationId = mutationId,
+                    UpdatedAtUtc = originalUpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.Reason.Contains("duplicate RunId or RunKey", StringComparison.OrdinalIgnoreCase));
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal(originalRevision, stored.Revision);
+        Assert.Equal(originalUpdatedAtUtc, stored.UpdatedAtUtc);
+        Assert.Equal("server note", stored.Notes);
+        Assert.Equal(originalRunsJson, stored.BillingRunsJson);
+        Assert.DoesNotContain(
+            await _dbContext.ProcessedSyncMutations.AsNoTracking().ToListAsync(),
+            mutation => mutation.MutationId == mutationId);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Push_RentalBillingProfile_RejectsInvalidExistingRunIdentityGraph_WhenIncomingRunsAreEmpty(
+        bool exactPhysicalDuplicate)
+    {
+        var profileId = Guid.NewGuid();
+        var firstRunId = Guid.NewGuid();
+        var secondRunId = exactPhysicalDuplicate ? firstRunId : Guid.NewGuid();
+        var mutationId = $"invalid-existing-run-graph:{profileId:N}";
+        var originalRunsJson = JsonSerializer.Serialize(new[]
+        {
+            new { RunId = firstRunId, RunKey = " Existing-Run-Key " },
+            new { RunId = secondRunId, RunKey = "existing-run-key" }
+        });
+        var existing = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"INVALID-EXISTING-RUN-GRAPH-{profileId:N}",
+            CustomerName = "Invalid existing run graph customer",
+            ItemName = "Invalid existing run graph item",
+            Notes = "server note",
+            BillingStatus = "\uC608\uC815",
+            BillingRunsJson = originalRunsJson,
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+        var originalRevision = existing.Revision;
+        var originalUpdatedAtUtc = existing.UpdatedAtUtc;
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "invalid-existing-run-graph-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = existing.TenantCode,
+                    OfficeCode = existing.OfficeCode,
+                    ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+                    ProfileKey = existing.ProfileKey,
+                    CustomerName = existing.CustomerName,
+                    ItemName = existing.ItemName,
+                    Notes = "must not apply",
+                    BillingStatus = existing.BillingStatus,
+                    BillingRunsJson = exactPhysicalDuplicate ? null! : "[]",
+                    Revision = originalRevision,
+                    ExpectedRevision = originalRevision,
+                    MutationId = mutationId,
+                    UpdatedAtUtc = originalUpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.Reason.Contains("duplicate RunId or RunKey", StringComparison.OrdinalIgnoreCase));
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal(originalRevision, stored.Revision);
+        Assert.Equal(originalUpdatedAtUtc, stored.UpdatedAtUtc);
+        Assert.Equal("server note", stored.Notes);
+        Assert.Equal(originalRunsJson, stored.BillingRunsJson);
+        Assert.DoesNotContain(
+            await _dbContext.ProcessedSyncMutations.AsNoTracking().ToListAsync(),
+            mutation => mutation.MutationId == mutationId);
+    }
+
+    [Fact]
+    public async Task Push_RentalBillingRuns_RunKeyOnlyLegacyReplayWithSameNormalizedKey_RemainsAccepted()
+    {
+        var profileId = Guid.NewGuid();
+        var mutationId = $"run-key-only-legacy:{profileId:N}";
+        var existing = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"RUN-KEY-ONLY-LEGACY-{profileId:N}",
+            CustomerName = "Run key only legacy customer",
+            ItemName = "Run key only legacy item",
+            Notes = "before legacy replay",
+            BillingStatus = "\uC608\uC815",
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new
+                {
+                    RunKey = " Legacy-Run-Key ",
+                    Status = "\uC608\uC815",
+                    BilledAmount = 0m,
+                    SettledAmount = 0m,
+                    SettlementStatus = "\uBBF8\uC785\uAE08",
+                    Note = "server legacy note"
+                }
+            }),
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "run-key-only-legacy-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = existing.TenantCode,
+                    OfficeCode = existing.OfficeCode,
+                    ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+                    ProfileKey = existing.ProfileKey,
+                    CustomerName = existing.CustomerName,
+                    ItemName = existing.ItemName,
+                    Notes = "accepted legacy replay",
+                    BillingStatus = existing.BillingStatus,
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            RunKey = "legacy-run-key",
+                            Status = "\uC608\uC815",
+                            BilledAmount = 0m,
+                            SettledAmount = 0m,
+                            SettlementStatus = "\uBBF8\uC785\uAE08",
+                            Note = "client legacy note"
+                        }
+                    }),
+                    Revision = existing.Revision,
+                    ExpectedRevision = existing.Revision,
+                    MutationId = mutationId,
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Empty(result.Conflicts);
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal("accepted legacy replay", stored.Notes);
+        using var document = JsonDocument.Parse(stored.BillingRunsJson);
+        var run = Assert.Single(document.RootElement.EnumerateArray());
+        Assert.False(run.TryGetProperty("RunId", out _));
+        Assert.Equal(" Legacy-Run-Key ", run.GetProperty("RunKey").GetString());
+        Assert.Equal("client legacy note", run.GetProperty("Note").GetString());
+        Assert.Contains(
+            await _dbContext.ProcessedSyncMutations.AsNoTracking().ToListAsync(),
+            mutation => mutation.MutationId == mutationId);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Push_RentalBillingRuns_RunIdOnlyLegacyMutation_RemainsAccepted(
+        string? incomingRunKey)
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var mutationId = $"run-id-only-legacy:{profileId:N}:{incomingRunKey?.Length ?? -1}";
+        var existing = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"RUN-ID-ONLY-LEGACY-{profileId:N}",
+            CustomerName = "Run id only legacy customer",
+            ItemName = "Run id only legacy item",
+            Notes = "before run id only replay",
+            BillingStatus = "\uC608\uC815",
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new
+                {
+                    RunId = runId,
+                    RunKey = "server-run-key",
+                    Status = "\uC608\uC815",
+                    BilledAmount = 80_000m,
+                    SettledAmount = 30_000m,
+                    SettlementStatus = "\uBD80\uBD84\uC785\uAE08"
+                }
+            }),
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "run-id-only-legacy-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = existing.TenantCode,
+                    OfficeCode = existing.OfficeCode,
+                    ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+                    ProfileKey = existing.ProfileKey,
+                    CustomerName = existing.CustomerName,
+                    ItemName = existing.ItemName,
+                    Notes = "accepted run id only replay",
+                    BillingStatus = existing.BillingStatus,
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            RunId = runId,
+                            RunKey = incomingRunKey,
+                            Status = "\uC608\uC815",
+                            BilledAmount = 999_000m,
+                            SettledAmount = 999_000m,
+                            SettlementStatus = "\uC785\uAE08\uD655\uC778"
+                        }
+                    }),
+                    Revision = existing.Revision,
+                    ExpectedRevision = existing.Revision,
+                    MutationId = mutationId,
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Empty(result.Conflicts);
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal("accepted run id only replay", stored.Notes);
+        var run = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(stored.BillingRunsJson) ?? []);
+        Assert.Equal(runId, run.RunId);
+        Assert.Equal("server-run-key", run.RunKey);
+        Assert.Equal(80_000m, run.BilledAmount);
+        Assert.Equal(30_000m, run.SettledAmount);
+        Assert.Equal("\uBD80\uBD84\uC785\uAE08", run.SettlementStatus);
+        Assert.Contains(
+            await _dbContext.ProcessedSyncMutations.AsNoTracking().ToListAsync(),
+            mutation => mutation.MutationId == mutationId);
+    }
+
+    [Fact]
+    public async Task Push_RentalBillingRuns_MissingRunIdAndRunKey_RemainsRejectedWithoutReceipt()
+    {
+        var profileId = Guid.NewGuid();
+        var mutationId = $"missing-run-identity:{profileId:N}";
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "missing-run-identity-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"MISSING-RUN-IDENTITY-{profileId:N}",
+                    CustomerName = "Missing run identity customer",
+                    ItemName = "Missing run identity item",
+                    BillingRunsJson = JsonSerializer.Serialize(new[] { new { Status = "\uC608\uC815" } }),
+                    MutationId = mutationId,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == profileId));
+        Assert.DoesNotContain(
+            await _dbContext.ProcessedSyncMutations.AsNoTracking().ToListAsync(),
+            mutation => mutation.MutationId == mutationId);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Push_RentalBillingRuns_IdentityEnrichmentMergesOnePhysicalRowAndPreservesFinancialEvidence(
+        bool existingHasRunId)
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var mutationId = $"run-identity-enrichment:{profileId:N}";
+        var existingRunsJson = existingHasRunId
+            ? JsonSerializer.Serialize(new object[]
+            {
+                new
+                {
+                    RunId = runId,
+                    RunKey = "enrichment-key",
+                    Status = "\uCCAD\uAD6C\uC911",
+                    BilledAmount = 100_000m,
+                    SettledAmount = 40_000m,
+                    SettlementStatus = "\uBD80\uBD84\uC785\uAE08",
+                    Note = "server note"
+                }
+            })
+            : JsonSerializer.Serialize(new object[]
+            {
+                new
+                {
+                    RunKey = "enrichment-key",
+                    Status = "\uCCAD\uAD6C\uC911",
+                    BilledAmount = 100_000m,
+                    SettledAmount = 40_000m,
+                    SettlementStatus = "\uBD80\uBD84\uC785\uAE08",
+                    Note = "server note"
+                }
+            });
+        var incomingRunsJson = existingHasRunId
+            ? JsonSerializer.Serialize(new object[]
+            {
+                new
+                {
+                    RunKey = " ENRICHMENT-[ KEY ] ",
+                    Status = "\uCCAD\uAD6C\uC911",
+                    BilledAmount = 999_000m,
+                    SettledAmount = 999_000m,
+                    SettlementStatus = "\uC785\uAE08\uD655\uC778",
+                    Note = "client note"
+                }
+            })
+            : JsonSerializer.Serialize(new object[]
+            {
+                new
+                {
+                    RunId = runId,
+                    RunKey = " ENRICHMENT-[ KEY ] ",
+                    Status = "\uCCAD\uAD6C\uC911",
+                    BilledAmount = 999_000m,
+                    SettledAmount = 999_000m,
+                    SettlementStatus = "\uC785\uAE08\uD655\uC778",
+                    Note = "client note"
+                }
+            });
+        var existing = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"RUN-IDENTITY-ENRICHMENT-{profileId:N}",
+            CustomerName = "Run identity enrichment customer",
+            ItemName = "Run identity enrichment item",
+            Notes = "before enrichment",
+            BillingStatus = "\uCCAD\uAD6C\uC911",
+            BillingRunsJson = existingRunsJson,
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "run-identity-enrichment-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = existing.TenantCode,
+                    OfficeCode = existing.OfficeCode,
+                    ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+                    ProfileKey = existing.ProfileKey,
+                    CustomerName = existing.CustomerName,
+                    ItemName = existing.ItemName,
+                    Notes = "accepted enrichment",
+                    BillingStatus = existing.BillingStatus,
+                    BillingRunsJson = incomingRunsJson,
+                    Revision = existing.Revision,
+                    ExpectedRevision = existing.Revision,
+                    MutationId = mutationId,
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Empty(result.Conflicts);
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal("accepted enrichment", stored.Notes);
+        var run = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(stored.BillingRunsJson) ?? []);
+        Assert.Equal(runId, run.RunId);
+        Assert.Equal("enrichment-key", run.RunKey);
+        Assert.Equal(100_000m, run.BilledAmount);
+        Assert.Equal(40_000m, run.SettledAmount);
+        Assert.Equal("\uBD80\uBD84\uC785\uAE08", run.SettlementStatus);
+        Assert.Contains(
+            await _dbContext.ProcessedSyncMutations.AsNoTracking().ToListAsync(),
+            mutation => mutation.MutationId == mutationId);
+    }
+
+    [Fact]
+    public async Task Push_RentalBillingRuns_ExistingRunIdOnlyRowEnrichesMissingRunKey()
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var existing = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"RUN-ID-ONLY-KEY-ENRICHMENT-{profileId:N}",
+            CustomerName = "Run id only key enrichment customer",
+            ItemName = "Run id only key enrichment item",
+            BillingStatus = "\uCCAD\uAD6C\uC911",
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new
+                {
+                    RunId = runId,
+                    RunKey = (string?)null,
+                    Status = "\uCCAD\uAD6C\uC911",
+                    BilledAmount = 100_000m,
+                    SettledAmount = 40_000m,
+                    SettlementStatus = "\uBD80\uBD84\uC785\uAE08"
+                }
+            }),
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "run-id-only-key-enrichment-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = existing.TenantCode,
+                    OfficeCode = existing.OfficeCode,
+                    ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+                    ProfileKey = existing.ProfileKey,
+                    CustomerName = existing.CustomerName,
+                    ItemName = existing.ItemName,
+                    BillingStatus = existing.BillingStatus,
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            RunId = runId,
+                            RunKey = "enriched-run-key",
+                            Status = "\uCCAD\uAD6C\uC911",
+                            BilledAmount = 999_000m,
+                            SettledAmount = 999_000m,
+                            SettlementStatus = "\uC785\uAE08\uD655\uC778"
+                        }
+                    }),
+                    Revision = existing.Revision,
+                    ExpectedRevision = existing.Revision,
+                    MutationId = $"run-id-only-key-enrichment:{profileId:N}",
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Empty(result.Conflicts);
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        var run = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(stored.BillingRunsJson) ?? []);
+        Assert.Equal(runId, run.RunId);
+        Assert.Equal("enriched-run-key", run.RunKey);
+        Assert.Equal(100_000m, run.BilledAmount);
+        Assert.Equal(40_000m, run.SettledAmount);
+        Assert.Equal("\uBD80\uBD84\uC785\uAE08", run.SettlementStatus);
+    }
+
+    [Fact]
+    public async Task Push_RentalBillingRunTombstone_ExactCasCollapsesCompatibleDuplicateMarkersAndCannotBeClearedByReplay()
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var existing = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"RUN-TOMBSTONE-{profileId:N}",
+            CustomerName = "Run tombstone customer",
+            ItemName = "Run tombstone item",
+            BillingStatus = "\uC608\uC815",
+            SettlementStatus = "\uBBF8\uC785\uAE08",
+            CompletionStatus = "\uBBF8\uC644\uB8CC",
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new
+                {
+                    RunId = runId,
+                    RunKey = "20260801-20260831",
+                    ScheduledDate = new DateOnly(2026, 8, 1),
+                    PeriodStartDate = new DateOnly(2026, 8, 1),
+                    PeriodEndDate = new DateOnly(2026, 8, 31),
+                    CycleMonths = 1,
+                    PeriodLabel = "2026-08",
+                    Status = "\uC608\uC815",
+                    BilledAmount = 0m,
+                    SettledAmount = 0m,
+                    SettlementStatus = "\uBBF8\uC785\uAE08",
+                    SettledDate = (DateOnly?)null
+                }
+            }),
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+        var originalRevision = existing.Revision;
+        var originalUpdatedAtUtc = existing.UpdatedAtUtc;
+        var mutationId = $"run-tombstone:{profileId:N}";
+        var clientTimestamp = new DateTime(2020, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+        var incomingRunsJson = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                RunId = runId,
+                RunKey = "20260801-20260831",
+                ScheduledDate = new DateOnly(2026, 8, 1),
+                PeriodStartDate = new DateOnly(2026, 8, 1),
+                PeriodEndDate = new DateOnly(2026, 8, 31),
+                CycleMonths = 1,
+                PeriodLabel = "2026-08",
+                Status = "\uC608\uC815",
+                BilledAmount = 0m,
+                SettledAmount = 0m,
+                SettlementStatus = "\uBBF8\uC785\uAE08",
+                SettledDate = (DateOnly?)null,
+                IsTombstoned = true,
+                TombstonedAtUtc = clientTimestamp,
+                TombstonedByUsername = "forged-client"
+            },
+            new
+            {
+                RunId = runId,
+                RunKey = "20260801-20260831",
+                ScheduledDate = new DateOnly(2026, 8, 1),
+                PeriodStartDate = new DateOnly(2026, 8, 1),
+                PeriodEndDate = new DateOnly(2026, 8, 31),
+                CycleMonths = 1,
+                PeriodLabel = "2026-08",
+                Status = "\uC608\uC815",
+                BilledAmount = 0m,
+                SettledAmount = 0m,
+                SettlementStatus = "\uBBF8\uC785\uAE08",
+                SettledDate = (DateOnly?)null,
+                IsTombstoned = true,
+                TombstonedAtUtc = clientTimestamp,
+                TombstonedByUsername = "forged-client"
+            }
+        });
+
+        RentalBillingProfileDto CreateTombstoneMutation() => new()
+        {
+            Id = profileId,
+            TenantCode = existing.TenantCode,
+            OfficeCode = existing.OfficeCode,
+            ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+            ProfileKey = existing.ProfileKey,
+            CustomerName = existing.CustomerName,
+            ItemName = existing.ItemName,
+            BillingStatus = existing.BillingStatus,
+            BillingRunsJson = incomingRunsJson,
+            Revision = originalRevision,
+            ExpectedRevision = originalRevision,
+            MutationId = mutationId,
+            UpdatedAtUtc = originalUpdatedAtUtc.AddMinutes(1)
+        };
+
+        var startedAtUtc = DateTime.UtcNow;
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "run-tombstone-device",
+            RentalBillingProfiles = [CreateTombstoneMutation()]
+        }, CancellationToken.None);
+        var result = Assert.IsType<SyncPushResult>(Assert.IsType<OkObjectResult>(response.Result).Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Empty(result.Conflicts);
+        Assert.True(await _dbContext.ProcessedSyncMutations.AnyAsync(receipt => receipt.MutationId == mutationId));
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == profileId);
+        var run = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(stored.BillingRunsJson) ?? []);
+        Assert.True(run.IsTombstoned);
+        Assert.Equal("admin", run.TombstonedByUsername);
+        Assert.NotNull(run.TombstonedAtUtc);
+        Assert.InRange(run.TombstonedAtUtc!.Value, startedAtUtc, DateTime.UtcNow.AddSeconds(1));
+        Assert.NotEqual(clientTimestamp, run.TombstonedAtUtc.Value);
+        Assert.Equal("\uCDE8\uC18C", run.Status);
+        Assert.Equal(0m, run.BilledAmount);
+        Assert.Equal(0m, run.SettledAmount);
+        Assert.Equal("\uBBF8\uC785\uAE08", run.SettlementStatus);
+        Assert.Null(run.SettledDate);
+        var serverTombstoneJson = stored.BillingRunsJson;
+
+        var replayResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "run-tombstone-device",
+            RentalBillingProfiles = [CreateTombstoneMutation()]
+        }, CancellationToken.None);
+        var replayResult = Assert.IsType<SyncPushResult>(Assert.IsType<OkObjectResult>(replayResponse.Result).Value);
+        Assert.Empty(replayResult.Conflicts);
+        _dbContext.ChangeTracker.Clear();
+        stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal(serverTombstoneJson, stored.BillingRunsJson);
+
+        var clearDto = stored.ToDto();
+        clearDto.BillingRunsJson = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                RunId = runId,
+                RunKey = "20260801-20260831",
+                ScheduledDate = new DateOnly(2026, 8, 1),
+                PeriodStartDate = new DateOnly(2026, 8, 1),
+                PeriodEndDate = new DateOnly(2026, 8, 31),
+                CycleMonths = 1,
+                PeriodLabel = "2026-08",
+                Status = "\uC608\uC815",
+                BilledAmount = 0m,
+                SettledAmount = 0m,
+                SettlementStatus = "\uBBF8\uC785\uAE08",
+                SettledDate = (DateOnly?)null,
+                IsTombstoned = false,
+                TombstonedAtUtc = (DateTime?)null,
+                TombstonedByUsername = string.Empty
+            }
+        });
+        clearDto.ExpectedRevision = stored.Revision;
+        clearDto.Revision = stored.Revision;
+        clearDto.MutationId = $"run-tombstone-clear:{profileId:N}";
+        clearDto.UpdatedAtUtc = stored.UpdatedAtUtc.AddMinutes(1);
+        var clearResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "run-tombstone-clear-device",
+            RentalBillingProfiles = [clearDto]
+        }, CancellationToken.None);
+        Assert.Empty(Assert.IsType<SyncPushResult>(Assert.IsType<OkObjectResult>(clearResponse.Result).Value).Conflicts);
+        _dbContext.ChangeTracker.Clear();
+        stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(profile => profile.Id == profileId);
+        run = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(stored.BillingRunsJson) ?? []);
+        Assert.True(run.IsTombstoned);
+        Assert.Equal("admin", run.TombstonedByUsername);
+        Assert.Equal("\uCDE8\uC18C", run.Status);
+    }
+
+    [Theory]
+    [InlineData("invoice")]
+    [InlineData("transaction")]
+    [InlineData("payment")]
+    public async Task Push_RentalBillingRunTombstone_ZeroAmountFinancialEvidenceRejectsWithoutMutationOrReceipt(
+        string evidenceKind)
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = $"Tombstone evidence {evidenceKind}",
+            NameMatchKey = $"TOMBSTONEEVIDENCE{evidenceKind.ToUpperInvariant()}"
+        };
+        var originalRunsJson = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                RunId = runId,
+                RunKey = $"evidence-{evidenceKind}",
+                ScheduledDate = new DateOnly(2026, 8, 1),
+                PeriodStartDate = new DateOnly(2026, 8, 1),
+                PeriodEndDate = new DateOnly(2026, 8, 31),
+                CycleMonths = 1,
+                PeriodLabel = "2026-08",
+                Status = "\uC608\uC815",
+                BilledAmount = 0m,
+                SettledAmount = 0m,
+                SettlementStatus = "\uBBF8\uC785\uAE08",
+                SettledDate = (DateOnly?)null
+            }
+        });
+        var profile = new RentalBillingProfile
+        {
+            Id = profileId,
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"TOMBSTONE-EVIDENCE-{profileId:N}",
+            ItemName = "Evidence item",
+            BillingStatus = "\uC608\uC815",
+            SettlementStatus = "\uBBF8\uC785\uAE08",
+            CompletionStatus = "\uBBF8\uC644\uB8CC",
+            BillingRunsJson = originalRunsJson,
+            IsActive = true
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.RentalBillingProfiles.Add(profile);
+
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            VersionGroupId = Guid.NewGuid(),
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = $"EVIDENCE-{Guid.NewGuid():N}",
+            InvoiceDate = new DateOnly(2026, 8, 1),
+            TotalAmount = 0m,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId
+        };
+        if (evidenceKind is "invoice" or "payment")
+            _dbContext.Invoices.Add(invoice);
+        if (evidenceKind == "transaction")
+        {
+            _dbContext.Transactions.Add(new TransactionRecord
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customer.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 8, 2),
+                SettlementAmount = 0m,
+                LinkedRentalBillingProfileId = profileId,
+                LinkedRentalBillingRunId = runId
+            });
+        }
+        if (evidenceKind == "payment")
+        {
+            _dbContext.Payments.Add(new Payment
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = invoice.Id,
+                PaymentDate = new DateOnly(2026, 8, 2),
+                Amount = 0m
+            });
+        }
+
+        await _dbContext.SaveChangesAsync();
+        var originalRevision = profile.Revision;
+        var originalUpdatedAtUtc = profile.UpdatedAtUtc;
+        var mutationId = $"tombstone-evidence:{evidenceKind}:{profileId:N}";
+        var dto = profile.ToDto();
+        dto.BillingRunsJson = JsonSerializer.Serialize(new[]
+        {
+            new
+            {
+                RunId = runId,
+                RunKey = $"evidence-{evidenceKind}",
+                ScheduledDate = new DateOnly(2026, 8, 1),
+                PeriodStartDate = new DateOnly(2026, 8, 1),
+                PeriodEndDate = new DateOnly(2026, 8, 31),
+                CycleMonths = 1,
+                PeriodLabel = "2026-08",
+                Status = "\uC608\uC815",
+                BilledAmount = 0m,
+                SettledAmount = 0m,
+                SettlementStatus = "\uBBF8\uC785\uAE08",
+                SettledDate = (DateOnly?)null,
+                IsTombstoned = true,
+                TombstonedAtUtc = DateTime.UtcNow,
+                TombstonedByUsername = "client"
+            }
+        });
+        dto.ExpectedRevision = originalRevision;
+        dto.Revision = originalRevision;
+        dto.MutationId = mutationId;
+        dto.UpdatedAtUtc = originalUpdatedAtUtc.AddMinutes(1);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = $"tombstone-evidence-{evidenceKind}",
+            RentalBillingProfiles = [dto]
+        }, CancellationToken.None);
+        var result = Assert.IsType<SyncPushResult>(Assert.IsType<OkObjectResult>(response.Result).Value);
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal(nameof(RentalBillingProfile), conflict.EntityName);
+        _dbContext.ChangeTracker.Clear();
+        var unchanged = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(current => current.Id == profileId);
+        Assert.Equal(originalRevision, unchanged.Revision);
+        Assert.Equal(originalUpdatedAtUtc, unchanged.UpdatedAtUtc);
+        Assert.Equal(originalRunsJson, unchanged.BillingRunsJson);
+        Assert.False(await _dbContext.ProcessedSyncMutations.AnyAsync(receipt => receipt.MutationId == mutationId));
+        Assert.Equal(
+            evidenceKind is "invoice" or "payment" ? 1 : 0,
+            await _dbContext.Invoices.IgnoreQueryFilters().CountAsync(current =>
+                current.LinkedRentalBillingProfileId == profileId &&
+                current.LinkedRentalBillingRunId == runId &&
+                !current.IsDeleted &&
+                current.TotalAmount == 0m));
+        Assert.Equal(
+            evidenceKind == "transaction" ? 1 : 0,
+            await _dbContext.Transactions.IgnoreQueryFilters().CountAsync(current =>
+                current.LinkedRentalBillingProfileId == profileId &&
+                current.LinkedRentalBillingRunId == runId &&
+                !current.IsDeleted &&
+                current.SettlementAmount == 0m));
+        Assert.Equal(
+            evidenceKind == "payment" ? 1 : 0,
+            await _dbContext.Payments.IgnoreQueryFilters().CountAsync(current =>
+                !current.IsDeleted &&
+                current.Amount == 0m));
+    }
+
+    [Fact]
+    public async Task Push_RentalBillingRunTombstone_RejectsActiveFinanceAndMalformedProfileButAllowsDeleteCleanup()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Tombstone finance guard customer",
+            NameMatchKey = "TOMBSTONEFINANCEGUARDCUSTOMER"
+        };
+        var tombstonedProfileId = Guid.NewGuid();
+        var tombstonedRunId = Guid.NewGuid();
+        var malformedProfileId = Guid.NewGuid();
+        _dbContext.Customers.Add(customer);
+        _dbContext.RentalBillingProfiles.AddRange(
+            new RentalBillingProfile
+            {
+                Id = tombstonedProfileId,
+                CustomerId = customer.Id,
+                CustomerName = customer.NameOriginal,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = $"TOMBSTONED-FINANCE-{tombstonedProfileId:N}",
+                BillingStatus = "\uC608\uC815",
+                BillingRunsJson = JsonSerializer.Serialize(new[]
+                {
+                    new
+                    {
+                        RunId = tombstonedRunId,
+                        RunKey = "tombstoned-finance-run",
+                        ScheduledDate = new DateOnly(2026, 8, 1),
+                        PeriodStartDate = new DateOnly(2026, 8, 1),
+                        PeriodEndDate = new DateOnly(2026, 8, 31),
+                        CycleMonths = 1,
+                        PeriodLabel = "2026-08",
+                        Status = "\uCDE8\uC18C",
+                        BilledAmount = 0m,
+                        SettledAmount = 0m,
+                        SettlementStatus = "\uBBF8\uC785\uAE08",
+                        SettledDate = (DateOnly?)null,
+                        IsTombstoned = true,
+                        TombstonedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                        TombstonedByUsername = "admin"
+                    }
+                }),
+                IsActive = true
+            },
+            new RentalBillingProfile
+            {
+                Id = malformedProfileId,
+                CustomerId = customer.Id,
+                CustomerName = customer.NameOriginal,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = $"MALFORMED-FINANCE-{malformedProfileId:N}",
+                BillingRunsJson = "{",
+                IsActive = true
+            });
+        var paymentInvoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            VersionGroupId = Guid.NewGuid(),
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = $"TOMBSTONE-PAYMENT-{Guid.NewGuid():N}",
+            InvoiceDate = new DateOnly(2026, 8, 1),
+            TotalAmount = 100m,
+            LinkedRentalBillingProfileId = tombstonedProfileId,
+            LinkedRentalBillingRunId = tombstonedRunId
+        };
+        _dbContext.Invoices.Add(paymentInvoice);
+        await _dbContext.SaveChangesAsync();
+
+        TransactionDto CreateActive(Guid id, Guid profileId, Guid runId, string mutationId) => new()
+        {
+            Id = id,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 8, 3),
+            TransactionKind = "\uC77C\uBC18\uC218\uAE08",
+            SettlementAmount = 100m,
+            BankReceipt = 100m,
+            ReceiptTotal = 100m,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = runId,
+            MutationId = mutationId,
+            UpdatedAtUtc = DateTime.UtcNow
+        };
+
+        var tombstonedMutationId = $"finance-tombstoned:{Guid.NewGuid():N}";
+        var malformedMutationId = $"finance-malformed:{Guid.NewGuid():N}";
+        var invoiceMutationId = $"finance-invoice-tombstoned:{Guid.NewGuid():N}";
+        var paymentMutationId = $"finance-payment-tombstoned:{Guid.NewGuid():N}";
+        var deleteMutationId = $"finance-delete:{Guid.NewGuid():N}";
+        var deletedId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "finance-tombstone-guard-device",
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = Guid.NewGuid(),
+                    CustomerId = customer.Id,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    InvoiceDate = new DateOnly(2026, 8, 3),
+                    InvoiceNumber = $"STALE-TOMBSTONE-{Guid.NewGuid():N}",
+                    TotalAmount = 100m,
+                    IsLatestVersion = true,
+                    LinkedRentalBillingProfileId = tombstonedProfileId,
+                    LinkedRentalBillingRunId = tombstonedRunId,
+                    MutationId = invoiceMutationId,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ],
+            Transactions =
+            [
+                CreateActive(Guid.NewGuid(), tombstonedProfileId, tombstonedRunId, tombstonedMutationId),
+                CreateActive(Guid.NewGuid(), malformedProfileId, Guid.NewGuid(), malformedMutationId),
+                new TransactionDto
+                {
+                    Id = deletedId,
+                    IsDeleted = true,
+                    MutationId = deleteMutationId,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ],
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = Guid.NewGuid(),
+                    InvoiceId = paymentInvoice.Id,
+                    PaymentDate = new DateOnly(2026, 8, 3),
+                    Amount = 50m,
+                    MutationId = paymentMutationId,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+        var result = Assert.IsType<SyncPushResult>(Assert.IsType<OkObjectResult>(response.Result).Value);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.Reason.Contains("tombstoned", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.Reason.Contains("malformed", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(Invoice), StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityName, nameof(Payment), StringComparison.OrdinalIgnoreCase));
+        Assert.False(await _dbContext.ProcessedSyncMutations.AnyAsync(receipt => receipt.MutationId == tombstonedMutationId));
+        Assert.False(await _dbContext.ProcessedSyncMutations.AnyAsync(receipt => receipt.MutationId == malformedMutationId));
+        Assert.False(await _dbContext.ProcessedSyncMutations.AnyAsync(receipt => receipt.MutationId == invoiceMutationId));
+        Assert.False(await _dbContext.ProcessedSyncMutations.AnyAsync(receipt => receipt.MutationId == paymentMutationId));
+        Assert.True(await _dbContext.ProcessedSyncMutations.AnyAsync(receipt => receipt.MutationId == deleteMutationId));
+        Assert.DoesNotContain(result.Conflicts, conflict =>
+            string.Equals(conflict.EntityId, deletedId.ToString("D"), StringComparison.OrdinalIgnoreCase));
+        Assert.False(await _dbContext.Transactions.IgnoreQueryFilters().AnyAsync(transaction =>
+            transaction.Id == deletedId && !transaction.IsDeleted));
+    }
+
+    [Fact]
+    public async Task RentalBillingRunTombstone_ProfileLevelRecalculationKeepsZeroPlannedSummary()
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var tombstonedAtUtc = DateTime.UtcNow.AddMinutes(-5);
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"TOMBSTONE-PROFILE-LEVEL-{profileId:N}",
+            BillingStatus = "\uCCAD\uAD6C\uC911",
+            MonthlyAmount = 90_000m,
+            SettledAmount = 20_000m,
+            OutstandingAmount = 70_000m,
+            SettlementStatus = "\uBD80\uBD84\uC785\uAE08",
+            CompletionStatus = "\uBBF8\uC644\uB8CC",
+            LastBilledDate = new DateOnly(2026, 8, 1),
+            LastSettledDate = new DateOnly(2026, 8, 2),
+            RequiresFollowUp = true,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new
+                {
+                    RunId = runId,
+                    RunKey = "tombstone-profile-level",
+                    ScheduledDate = new DateOnly(2026, 8, 1),
+                    PeriodStartDate = new DateOnly(2026, 8, 1),
+                    PeriodEndDate = new DateOnly(2026, 8, 31),
+                    CycleMonths = 1,
+                    PeriodLabel = "2026-08",
+                    Status = "\uCDE8\uC18C",
+                    BilledAmount = 0m,
+                    SettledAmount = 0m,
+                    SettlementStatus = "\uBBF8\uC785\uAE08",
+                    SettledDate = (DateOnly?)null,
+                    IsTombstoned = true,
+                    TombstonedAtUtc = tombstonedAtUtc,
+                    TombstonedByUsername = "admin"
+                }
+            }),
+            IsActive = true
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var service = new RentalSettlementRecalculationService(_dbContext);
+        await service.RecalculateRentalSettlementsAsync(
+            [(profileId, (Guid?)null)],
+            CancellationToken.None);
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal("\uC608\uC815", stored.BillingStatus);
+        Assert.Equal(0m, stored.SettledAmount);
+        Assert.Equal(0m, stored.OutstandingAmount);
+        Assert.Equal("\uBBF8\uC785\uAE08", stored.SettlementStatus);
+        Assert.Equal("\uBBF8\uC644\uB8CC", stored.CompletionStatus);
+        Assert.Null(stored.LastBilledDate);
+        Assert.Null(stored.LastSettledDate);
+        Assert.False(stored.RequiresFollowUp);
+        var run = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(stored.BillingRunsJson) ?? []);
+        Assert.True(run.IsTombstoned);
+        Assert.Equal(runId, run.RunId);
+        Assert.Equal("\uCDE8\uC18C", run.Status);
+        Assert.Equal(tombstonedAtUtc, run.TombstonedAtUtc);
+        Assert.Equal("admin", run.TombstonedByUsername);
+    }
+
+    [Fact]
+    public async Task RentalBillingRunTombstone_MalformedProfileAllowsFinanceDeleteWithoutRewritingJsonOrSummary()
+    {
+        const string malformedRunsJson = "[ { \"RunId\": ";
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Malformed run cleanup customer",
+            NameMatchKey = "MALFORMEDRUNCLEANUPCUSTOMER"
+        };
+        var profile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"MALFORMED-RUN-CLEANUP-{Guid.NewGuid():N}",
+            BillingRunsJson = malformedRunsJson,
+            BillingStatus = "\uCCAD\uAD6C\uC911",
+            SettlementStatus = "\uBD80\uBD84\uC785\uAE08",
+            CompletionStatus = "\uBBF8\uC644\uB8CC",
+            SettledAmount = 25_000m,
+            OutstandingAmount = 75_000m,
+            LastBilledDate = new DateOnly(2026, 8, 1),
+            LastSettledDate = new DateOnly(2026, 8, 2),
+            RequiresFollowUp = true,
+            IsActive = true
+        };
+        var transaction = new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 8, 2),
+            TransactionKind = "\uC77C\uBC18\uC218\uAE08",
+            SettlementAmount = 25_000m,
+            LinkedRentalBillingProfileId = profile.Id,
+            LinkedRentalBillingRunId = Guid.NewGuid()
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.RentalBillingProfiles.Add(profile);
+        _dbContext.Transactions.Add(transaction);
+        await _dbContext.SaveChangesAsync();
+        var profileRevision = profile.Revision;
+        var profileUpdatedAtUtc = profile.UpdatedAtUtc;
+        var mutationId = $"malformed-run-delete:{transaction.Id:N}";
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "malformed-run-delete-device",
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = transaction.Id,
+                    IsDeleted = true,
+                    Revision = transaction.Revision,
+                    ExpectedRevision = transaction.Revision,
+                    MutationId = mutationId,
+                    UpdatedAtUtc = transaction.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+        var result = Assert.IsType<SyncPushResult>(Assert.IsType<OkObjectResult>(response.Result).Value);
+        Assert.Empty(result.Conflicts);
+        Assert.True(await _dbContext.ProcessedSyncMutations.AnyAsync(receipt => receipt.MutationId == mutationId));
+        _dbContext.ChangeTracker.Clear();
+        var storedTransaction = await _dbContext.Transactions.IgnoreQueryFilters()
+            .SingleAsync(row => row.Id == transaction.Id);
+        Assert.True(storedTransaction.IsDeleted);
+        Assert.Equal(profile.Id, storedTransaction.LinkedRentalBillingProfileId);
+        Assert.Equal(transaction.LinkedRentalBillingRunId, storedTransaction.LinkedRentalBillingRunId);
+        Assert.Equal(25_000m, storedTransaction.SettlementAmount);
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(row => row.Id == profile.Id);
+        Assert.Equal(malformedRunsJson, stored.BillingRunsJson);
+        Assert.Equal(profileRevision, stored.Revision);
+        Assert.Equal(profileUpdatedAtUtc, stored.UpdatedAtUtc);
+        Assert.Equal("\uCCAD\uAD6C\uC911", stored.BillingStatus);
+        Assert.Equal(25_000m, stored.SettledAmount);
+        Assert.Equal(75_000m, stored.OutstandingAmount);
+        Assert.Equal("\uBD80\uBD84\uC785\uAE08", stored.SettlementStatus);
+        Assert.Equal("\uBBF8\uC644\uB8CC", stored.CompletionStatus);
+        Assert.Equal(new DateOnly(2026, 8, 1), stored.LastBilledDate);
+        Assert.Equal(new DateOnly(2026, 8, 2), stored.LastSettledDate);
+        Assert.True(stored.RequiresFollowUp);
+    }
+
+    [Theory]
+    [InlineData("invoice", 0)]
+    [InlineData("transaction", 40_000)]
+    [InlineData("payment", 40_000)]
+    public async Task RentalBillingRunTombstone_SpecificRecalculationPreservesUnscopedFinanceSummary(
+        string evidenceKind,
+        int expectedSettledAmount)
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = $"Unscoped finance {evidenceKind}",
+            NameMatchKey = $"UNSCOPEDFINANCE{evidenceKind.ToUpperInvariant()}"
+        };
+        var profile = new RentalBillingProfile
+        {
+            Id = profileId,
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"UNSCOPED-FINANCE-{profileId:N}",
+            MonthlyAmount = 100_000m,
+            BillingStatus = "\uC608\uC815",
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new
+                {
+                    RunId = runId,
+                    RunKey = "unscoped-finance-tombstone",
+                    ScheduledDate = new DateOnly(2026, 8, 1),
+                    PeriodStartDate = new DateOnly(2026, 8, 1),
+                    PeriodEndDate = new DateOnly(2026, 8, 31),
+                    CycleMonths = 1,
+                    PeriodLabel = "2026-08",
+                    Status = "\uCDE8\uC18C",
+                    BilledAmount = 0m,
+                    SettledAmount = 0m,
+                    SettlementStatus = "\uBBF8\uC785\uAE08",
+                    SettledDate = (DateOnly?)null,
+                    IsTombstoned = true,
+                    TombstonedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    TombstonedByUsername = "admin"
+                }
+            }),
+            IsActive = true
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.RentalBillingProfiles.Add(profile);
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            VersionGroupId = Guid.NewGuid(),
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = $"UNSCOPED-{Guid.NewGuid():N}",
+            InvoiceDate = new DateOnly(2026, 8, 1),
+            TotalAmount = 100_000m,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = null
+        };
+        if (evidenceKind is "invoice" or "payment")
+            _dbContext.Invoices.Add(invoice);
+        if (evidenceKind == "transaction")
+        {
+            _dbContext.Transactions.Add(new TransactionRecord
+            {
+                Id = Guid.NewGuid(),
+                CustomerId = customer.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = new DateOnly(2026, 8, 2),
+                SettlementAmount = expectedSettledAmount,
+                LinkedRentalBillingProfileId = profileId,
+                LinkedRentalBillingRunId = null
+            });
+        }
+        if (evidenceKind == "payment")
+        {
+            _dbContext.Payments.Add(new Payment
+            {
+                Id = Guid.NewGuid(),
+                InvoiceId = invoice.Id,
+                PaymentDate = new DateOnly(2026, 8, 2),
+                Amount = expectedSettledAmount
+            });
+        }
+
+        await _dbContext.SaveChangesAsync();
+        var service = new RentalSettlementRecalculationService(_dbContext);
+        await service.RecalculateRentalSettlementsAsync(
+            [(profileId, (Guid?)runId)],
+            CancellationToken.None);
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().SingleAsync(row => row.Id == profileId);
+        Assert.Equal(expectedSettledAmount, stored.SettledAmount);
+        Assert.Equal(100_000m - expectedSettledAmount, stored.OutstandingAmount);
+        Assert.NotEqual("\uC608\uC815", stored.BillingStatus);
+        Assert.True(stored.RequiresFollowUp);
+        var run = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(stored.BillingRunsJson) ?? []);
+        Assert.True(run.IsTombstoned);
+        Assert.Equal(0m, run.BilledAmount);
+        Assert.Equal(0m, run.SettledAmount);
+    }
+
+    [Fact]
+    public async Task RentalBillingRunTombstone_EmptyOfflineIdUsesDeterministicProfileIdForEvidenceGuard()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Deterministic tombstone guard customer",
+            NameMatchKey = "DETERMINISTICTOMBSTONEGUARDCUSTOMER"
+        };
+        var profileKey = $"DETERMINISTIC-TOMBSTONE-{Guid.NewGuid():N}";
+        var deterministicProfileId = SyncIdentityGenerator.CreateRentalBillingProfileId(profileKey);
+        var runId = Guid.NewGuid();
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "USENET",
+            IsActive = true
+        });
+        _dbContext.Customers.Add(customer);
+        _dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 8, 2),
+            SettlementAmount = 10_000m,
+            LinkedRentalBillingProfileId = deterministicProfileId,
+            LinkedRentalBillingRunId = runId
+        });
+        await _dbContext.SaveChangesAsync();
+        var mutationId = $"deterministic-tombstone:{Guid.NewGuid():N}";
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "deterministic-tombstone-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = Guid.Empty,
+                    CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = profileKey,
+                    BillingStatus = "\uC608\uC815",
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            RunId = runId,
+                            RunKey = "deterministic-tombstone-run",
+                            ScheduledDate = new DateOnly(2026, 8, 1),
+                            PeriodStartDate = new DateOnly(2026, 8, 1),
+                            PeriodEndDate = new DateOnly(2026, 8, 31),
+                            CycleMonths = 1,
+                            PeriodLabel = "2026-08",
+                            Status = "\uC608\uC815",
+                            BilledAmount = 0m,
+                            SettledAmount = 0m,
+                            SettlementStatus = "\uBBF8\uC785\uAE08",
+                            SettledDate = (DateOnly?)null,
+                            IsTombstoned = true,
+                            TombstonedAtUtc = DateTime.UtcNow,
+                            TombstonedByUsername = "offline-user"
+                        }
+                    }),
+                    MutationId = mutationId,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+        var result = Assert.IsType<SyncPushResult>(Assert.IsType<OkObjectResult>(response.Result).Value);
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.True(
+            conflict.Reason.Contains("evidence", StringComparison.OrdinalIgnoreCase),
+            conflict.Reason);
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AnyAsync(row => row.Id == deterministicProfileId));
+        Assert.False(await _dbContext.ProcessedSyncMutations.AnyAsync(receipt => receipt.MutationId == mutationId));
+    }
+
+    [Fact]
+    public async Task Push_RentalBillingRuns_RejectsIdentityBridgeAcrossDifferentExistingPhysicalRows()
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var mutationId = $"run-identity-bridge:{profileId:N}";
+        var originalRunsJson = JsonSerializer.Serialize(new object[]
+        {
+            new
+            {
+                RunId = runId,
+                RunKey = (string?)null,
+                Status = "\uCCAD\uAD6C\uC911",
+                BilledAmount = 100_000m,
+                SettledAmount = 40_000m,
+                SettlementStatus = "\uBD80\uBD84\uC785\uAE08"
+            },
+            new
+            {
+                RunKey = "bridge-run-key",
+                Status = "\uC608\uC815",
+                BilledAmount = 0m,
+                SettledAmount = 0m,
+                SettlementStatus = "\uBBF8\uC785\uAE08"
+            }
+        });
+        var existing = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"RUN-IDENTITY-BRIDGE-{profileId:N}",
+            CustomerName = "Run identity bridge customer",
+            ItemName = "Run identity bridge item",
+            Notes = "server note",
+            BillingStatus = "\uCCAD\uAD6C\uC911",
+            BillingRunsJson = originalRunsJson,
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+        var originalRevision = existing.Revision;
+        var originalUpdatedAtUtc = existing.UpdatedAtUtc;
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "run-identity-bridge-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = existing.TenantCode,
+                    OfficeCode = existing.OfficeCode,
+                    ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+                    ProfileKey = existing.ProfileKey,
+                    CustomerName = existing.CustomerName,
+                    ItemName = existing.ItemName,
+                    Notes = "must not apply",
+                    BillingStatus = existing.BillingStatus,
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            RunId = runId,
+                            RunKey = "bridge-run-key",
+                            Status = "\uCCAD\uAD6C\uC911",
+                            BilledAmount = 999_000m,
+                            SettledAmount = 999_000m,
+                            SettlementStatus = "\uC785\uAE08\uD655\uC778"
+                        }
+                    }),
+                    Revision = originalRevision,
+                    ExpectedRevision = originalRevision,
+                    MutationId = mutationId,
+                    UpdatedAtUtc = originalUpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.Reason.Contains("duplicate RunId or RunKey", StringComparison.OrdinalIgnoreCase));
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal(originalRevision, stored.Revision);
+        Assert.Equal(originalUpdatedAtUtc, stored.UpdatedAtUtc);
+        Assert.Equal("server note", stored.Notes);
+        Assert.Equal(originalRunsJson, stored.BillingRunsJson);
+        Assert.DoesNotContain(
+            await _dbContext.ProcessedSyncMutations.AsNoTracking().ToListAsync(),
+            mutation => mutation.MutationId == mutationId);
+    }
+
+    [Fact]
+    public async Task Push_RentalBillingRuns_IdentityEnrichmentAt512DoesNotCountAsGrowth()
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        const string targetRunKey = "legacy-run-key-511";
+        var existing = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"RUN-IDENTITY-ENRICHMENT-512-{profileId:N}",
+            CustomerName = "Run identity enrichment 512 customer",
+            ItemName = "Run identity enrichment 512 item",
+            Notes = "before 512 enrichment",
+            BillingStatus = "\uC608\uC815",
+            BillingRunsJson = JsonSerializer.Serialize(Enumerable.Range(0, 512).Select(index => new
+            {
+                RunKey = $"legacy-run-key-{index:D3}",
+                Status = "\uC608\uC815",
+                BilledAmount = 0m,
+                SettledAmount = 0m,
+                SettlementStatus = "\uBBF8\uC785\uAE08"
+            })),
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "run-identity-enrichment-512-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = existing.TenantCode,
+                    OfficeCode = existing.OfficeCode,
+                    ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+                    ProfileKey = existing.ProfileKey,
+                    CustomerName = existing.CustomerName,
+                    ItemName = existing.ItemName,
+                    Notes = "accepted 512 enrichment",
+                    BillingStatus = existing.BillingStatus,
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            RunId = runId,
+                            RunKey = targetRunKey,
+                            Status = "\uC608\uC815",
+                            BilledAmount = 0m,
+                            SettledAmount = 0m,
+                            SettlementStatus = "\uBBF8\uC785\uAE08"
+                        }
+                    }),
+                    Revision = existing.Revision,
+                    ExpectedRevision = existing.Revision,
+                    MutationId = $"run-identity-enrichment-512:{profileId:N}",
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Empty(result.Conflicts);
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        var runs = JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(stored.BillingRunsJson) ?? [];
+        Assert.Equal(512, runs.Count);
+        var enriched = Assert.Single(runs, run =>
+            string.Equals(run.RunKey, targetRunKey, StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(runId, enriched.RunId);
+        Assert.Equal("accepted 512 enrichment", stored.Notes);
+    }
+
+    [Fact]
+    public async Task Push_UnsafeRentalBillingRuns_RejectsWholeProfileMutationWithoutGeneralFieldChanges()
+    {
+        var profileId = Guid.NewGuid();
+        var existing = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"UNSAFE-RUNS-{profileId:N}",
+            CustomerName = "Unsafe runs customer",
+            ItemName = "Unsafe runs item",
+            Notes = "server note",
+            BillingStatus = "\uCCAD\uAD6C\uC911",
+            BillingRunsJson = "[]",
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+        var originalRevision = existing.Revision;
+        var originalUpdatedAtUtc = existing.UpdatedAtUtc;
+        var duplicateRunId = Guid.NewGuid();
+        var unsafePayloads = new[]
+        {
+            "{not-json",
+            JsonSerializer.Serialize(new[]
+            {
+                new { RunId = Guid.NewGuid(), ScheduledDate = "not-a-date" }
+            }),
+            JsonSerializer.Serialize(new[]
+            {
+                new { RunId = Guid.NewGuid(), BilledAmount = -1m }
+            }),
+            JsonSerializer.Serialize(new[]
+            {
+                new { RunId = Guid.NewGuid(), Status = new { Value = "\uC608\uC815" } }
+            }),
+            JsonSerializer.Serialize(new[]
+            {
+                new { RunId = Guid.NewGuid(), Status = "forged-status" }
+            }),
+            JsonSerializer.Serialize(new[]
+            {
+                new { RunId = Guid.NewGuid(), Status = (string?)null }
+            }),
+            JsonSerializer.Serialize(new[]
+            {
+                new { RunId = Guid.NewGuid(), SettlementStatus = "forged-settlement-status" }
+            }),
+            JsonSerializer.Serialize(new[]
+            {
+                new { RunId = Guid.NewGuid(), SettlementStatus = "   " }
+            }),
+            JsonSerializer.Serialize(new[]
+            {
+                new { RunId = Guid.NewGuid(), Items = new object[] { 1 } }
+            }),
+            JsonSerializer.Serialize(new[]
+            {
+                new { RunId = Guid.NewGuid(), Items = new[] { new { Quantity = "oops" } } }
+            }),
+            JsonSerializer.Serialize(new[]
+            {
+                new { RunId = Guid.NewGuid(), Items = new[] { new { IncludedAssetIds = new[] { "not-a-guid" } } } }
+            }),
+            JsonSerializer.Serialize(new[]
+            {
+                new { RunId = Guid.NewGuid(), Items = new[] { new { DisplayItemName = 123 } } }
+            }),
+            JsonSerializer.Serialize(new[]
+            {
+                new { RunId = Guid.NewGuid(), Items = new[] { new { Amount = -1m } } }
+            }),
+            JsonSerializer.Serialize(new[]
+            {
+                new { RunId = Guid.NewGuid(), Items = new[] { new { ItemId = "not-a-guid" } } }
+            }),
+            JsonSerializer.Serialize(new[]
+            {
+                new
+                {
+                    RunId = Guid.NewGuid(),
+                    IsTombstoned = "true",
+                    TombstonedAtUtc = DateTime.UtcNow,
+                    TombstonedByUsername = "admin"
+                }
+            }),
+            JsonSerializer.Serialize(new[]
+            {
+                new { RunId = Guid.NewGuid(), IsTombstoned = true }
+            }),
+            $"[{{\"RunId\":\"{Guid.NewGuid():D}\",\"Status\":\"\uC608\uC815\",\"status\":\"\uC644\uB8CC\"}}]",
+            JsonSerializer.Serialize(new[]
+            {
+                new { RunId = duplicateRunId, RunKey = "duplicate-active" },
+                new { RunId = duplicateRunId, RunKey = "duplicate-active" }
+            }),
+            JsonSerializer.Serialize(new[]
+            {
+                new { RunId = duplicateRunId, RunKey = "duplicate-a" },
+                new { RunId = duplicateRunId, RunKey = "duplicate-b" }
+            }),
+            JsonSerializer.Serialize(Enumerable.Range(0, 513).Select(index => new
+            {
+                RunId = Guid.NewGuid(),
+                RunKey = $"excessive-{index:D3}"
+            }))
+        };
+
+        for (var index = 0; index < unsafePayloads.Length; index++)
+        {
+            var response = await _controller.Push(new SyncPushRequest
+            {
+                DeviceId = "unsafe-runs-device",
+                RentalBillingProfiles =
+                [
+                    new RentalBillingProfileDto
+                    {
+                        Id = profileId,
+                        TenantCode = existing.TenantCode,
+                        OfficeCode = existing.OfficeCode,
+                        ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+                        ProfileKey = existing.ProfileKey,
+                        CustomerName = existing.CustomerName,
+                        ItemName = existing.ItemName,
+                        Notes = $"must not apply {index}",
+                        BillingRunsJson = unsafePayloads[index],
+                        Revision = originalRevision,
+                        ExpectedRevision = originalRevision,
+                        MutationId = $"unsafe-runs:{profileId:N}:{index}",
+                        UpdatedAtUtc = originalUpdatedAtUtc.AddMinutes(index + 1)
+                    }
+                ]
+            }, CancellationToken.None);
+
+            var ok = Assert.IsType<OkObjectResult>(response.Result);
+            var result = Assert.IsType<SyncPushResult>(ok.Value);
+            Assert.Equal(0, result.AcceptedCount);
+            Assert.Equal(1, result.ConflictCount);
+            Assert.True(
+                result.Conflicts.Any(conflict =>
+                    conflict.EntityName == nameof(RentalBillingProfile) &&
+                    conflict.Reason.Contains("run history", StringComparison.OrdinalIgnoreCase)),
+                $"unsafe payload index {index}: {string.Join(" | ", result.Conflicts.Select(conflict => conflict.Reason))}");
+            if (index == 0)
+            {
+                Assert.Contains(
+                    result.Conflicts,
+                    conflict => conflict.Reason.Contains(
+                        "Rental billing run history is invalid:",
+                        StringComparison.Ordinal));
+            }
+        }
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal(originalRevision, stored.Revision);
+        Assert.Equal(originalUpdatedAtUtc, stored.UpdatedAtUtc);
+        Assert.Equal("server note", stored.Notes);
+        Assert.Equal("[]", stored.BillingRunsJson);
+        Assert.DoesNotContain(
+            await _dbContext.ProcessedSyncMutations.AsNoTracking().ToListAsync(),
+            mutation => mutation.MutationId.StartsWith(
+                $"unsafe-runs:{profileId:N}:",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Push_NewRentalBillingProfile_BlankRunStatusRemainsAcceptedAsLegacyUnspecified()
+    {
+        var profileId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var mutationId = $"blank-run-status:{profileId:N}";
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "blank-run-status-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"BLANK-RUN-STATUS-{profileId:N}",
+                    CustomerName = "Blank run status customer",
+                    ItemName = "Blank run status item",
+                    BillingStatus = "\uC608\uC815",
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            RunId = runId,
+                            RunKey = "blank-status-run",
+                            Status = "   ",
+                            Items = Array.Empty<object>()
+                        }
+                    }),
+                    MutationId = mutationId,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var result = Assert.IsType<SyncPushResult>(Assert.IsType<OkObjectResult>(response.Result).Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Empty(result.Conflicts);
+        Assert.True(await _dbContext.ProcessedSyncMutations.AsNoTracking()
+            .AnyAsync(mutation => mutation.MutationId == mutationId));
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        var run = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(
+            stored.BillingRunsJson) ?? []);
+        Assert.Equal(runId, run.RunId);
+        Assert.Equal("\uC608\uC815", run.Status);
+    }
+
+    [Fact]
+    public async Task Push_RentalBillingRuns_CumulativeLimitRejectsGrowthWithoutDeletingExistingHistory()
+    {
+        var profileId = Guid.NewGuid();
+        var existingRunIds = Enumerable.Range(0, 512)
+            .Select(_ => Guid.NewGuid())
+            .ToArray();
+        var originalRunsJson = JsonSerializer.Serialize(existingRunIds.Select((runId, index) => new
+        {
+            RunId = runId,
+            RunKey = $"existing-{index:D3}",
+            Status = "\uC608\uC815",
+            BilledAmount = 0m,
+            SettledAmount = 0m,
+            SettlementStatus = "\uBBF8\uC785\uAE08"
+        }));
+        var existing = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"CUMULATIVE-RUN-LIMIT-{profileId:N}",
+            CustomerName = "Cumulative run limit customer",
+            ItemName = "Cumulative run limit item",
+            Notes = "server note",
+            BillingStatus = "\uC608\uC815",
+            BillingRunsJson = originalRunsJson,
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+        var originalRevision = existing.Revision;
+        var originalUpdatedAtUtc = existing.UpdatedAtUtc;
+
+        var sameIdentityRuns = existingRunIds.Select((runId, index) => new
+        {
+            RunId = runId,
+            RunKey = $"existing-{index:D3}",
+            Status = "\uC608\uC815",
+            BilledAmount = 0m,
+            SettledAmount = 0m,
+            SettlementStatus = "\uBBF8\uC785\uAE08"
+        }).ToArray();
+
+        var acceptedResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "cumulative-run-limit-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = existing.TenantCode,
+                    OfficeCode = existing.OfficeCode,
+                    ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+                    ProfileKey = existing.ProfileKey,
+                    CustomerName = existing.CustomerName,
+                    ItemName = existing.ItemName,
+                    Notes = "same identities accepted",
+                    BillingRunsJson = JsonSerializer.Serialize(sameIdentityRuns),
+                    Revision = originalRevision,
+                    ExpectedRevision = originalRevision,
+                    MutationId = $"cumulative-run-limit-same:{profileId:N}",
+                    UpdatedAtUtc = originalUpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var acceptedOk = Assert.IsType<OkObjectResult>(acceptedResponse.Result);
+        var acceptedResult = Assert.IsType<SyncPushResult>(acceptedOk.Value);
+        Assert.Equal(1, acceptedResult.AcceptedCount);
+        Assert.Empty(acceptedResult.Conflicts);
+        _dbContext.ChangeTracker.Clear();
+        var acceptedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal("same identities accepted", acceptedProfile.Notes);
+        var acceptedRevision = acceptedProfile.Revision;
+        var acceptedUpdatedAtUtc = acceptedProfile.UpdatedAtUtc;
+        var acceptedRunsJson = acceptedProfile.BillingRunsJson;
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "cumulative-run-limit-device",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = existing.TenantCode,
+                    OfficeCode = existing.OfficeCode,
+                    ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+                    ProfileKey = existing.ProfileKey,
+                    CustomerName = existing.CustomerName,
+                    ItemName = existing.ItemName,
+                    Notes = "must not apply",
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            RunId = Guid.NewGuid(),
+                            RunKey = "new-identity",
+                            Status = "\uC608\uC815",
+                            BilledAmount = 0m,
+                            SettledAmount = 0m,
+                            SettlementStatus = "\uBBF8\uC785\uAE08"
+                        }
+                    }),
+                    Revision = acceptedRevision,
+                    ExpectedRevision = acceptedRevision,
+                    MutationId = $"cumulative-run-limit-growth:{profileId:N}",
+                    UpdatedAtUtc = acceptedUpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.Reason.Contains("safe cumulative limit", StringComparison.OrdinalIgnoreCase));
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal(acceptedRevision, stored.Revision);
+        Assert.Equal(acceptedUpdatedAtUtc, stored.UpdatedAtUtc);
+        Assert.Equal("same identities accepted", stored.Notes);
+        Assert.Equal(acceptedRunsJson, stored.BillingRunsJson);
+    }
+
+    [Fact]
     public async Task Push_ReusesExistingRentalBillingProfile_MergesTemplateAndPreservesBillingState_WhenIncomingIdDiffers()
     {
         _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
@@ -4842,7 +12040,28 @@ public sealed class SyncControllerTests : IDisposable
             BillingTemplateJson = existingTemplateJson,
             BillingRunsJson = existingRunsJson
         };
-        _dbContext.RentalBillingProfiles.Add(existing);
+        RentalAsset CreateReferenceOnlyAsset(Guid assetId, string suffix)
+            => new()
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Duplicate merge customer",
+                CurrentCustomerName = "Duplicate merge customer",
+                InstallLocation = "Duplicate merge site",
+                InstallSiteName = "Duplicate merge site",
+                ItemName = "IMC2010",
+                ManagementId = $"DUPLICATE-MERGE-{suffix}-{assetId:N}",
+                ManagementNumber = $"DUPLICATE-MERGE-{suffix}-{assetId:N}",
+                AssetKey = $"DUPLICATE-MERGE-{suffix}-{assetId:N}"
+            };
+
+        _dbContext.AddRange(
+            existing,
+            CreateReferenceOnlyAsset(existingAssetId, "EXISTING"),
+            CreateReferenceOnlyAsset(incomingAssetId, "INCOMING"));
         await _dbContext.SaveChangesAsync();
         _dbContext.ChangeTracker.Clear();
 
@@ -4915,6 +12134,109 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Contains(runsDocument.RootElement.EnumerateArray(), run =>
             run.GetProperty("RunId").GetGuid() == runId &&
             run.GetProperty("SettlementStatus").GetString() == "부분입금");
+    }
+
+    [Fact]
+    public async Task Push_RejectsNaturalKeyRentalBillingProfileMerge_WhenRawIncomingTemplateContainsDuplicateAssetReferences()
+    {
+        var assetId = Guid.NewGuid();
+        var profileKey = $"RAW-DUPLICATE-MERGE-{Guid.NewGuid():N}";
+        var existing = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = profileKey,
+            CustomerName = "Raw duplicate merge customer",
+            ItemName = "Raw duplicate merge item",
+            BillingTemplateJson = JsonSerializer.Serialize(new[]
+            {
+                new { IncludedAssetIds = new[] { assetId } }
+            }),
+            BillingDay = 25,
+            MonthlyAmount = 40_000m,
+            IsActive = true
+        };
+        _dbContext.AddRange(
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet),
+                IsSystemDefault = true,
+                IsActive = true
+            },
+            existing,
+            new RentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = existing.CustomerName,
+                CurrentCustomerName = existing.CustomerName,
+                InstallLocation = "Raw duplicate merge site",
+                InstallSiteName = "Raw duplicate merge site",
+                ItemName = existing.ItemName,
+                ManagementId = $"RAW-DUPLICATE-MERGE-{assetId:N}",
+                ManagementNumber = $"RAW-DUPLICATE-MERGE-{assetId:N}",
+                AssetKey = $"RAW-DUPLICATE-MERGE-{assetId:N}"
+            });
+        await _dbContext.SaveChangesAsync();
+        var originalRevision = existing.Revision;
+        var originalUpdatedAtUtc = existing.UpdatedAtUtc;
+        var mutationId = $"raw-duplicate-merge:{Guid.NewGuid():N}";
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-raw-duplicate-rental-profile-merge",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = existing.TenantCode,
+                    OfficeCode = existing.OfficeCode,
+                    ResponsibleOfficeCode = existing.ResponsibleOfficeCode,
+                    ManagementCompanyCode = existing.ManagementCompanyCode,
+                    ProfileKey = profileKey,
+                    CustomerName = existing.CustomerName,
+                    ItemName = existing.ItemName,
+                    BillingTemplateJson = JsonSerializer.Serialize(new[]
+                    {
+                        new { IncludedAssetIds = new[] { assetId, assetId } }
+                    }),
+                    BillingDay = 28,
+                    MonthlyAmount = 77_000m,
+                    IsActive = true,
+                    Revision = originalRevision,
+                    ExpectedRevision = originalRevision,
+                    MutationId = mutationId,
+                    MutationCreatedAtUtc = originalUpdatedAtUtc.AddMinutes(1),
+                    CreatedAtUtc = existing.CreatedAtUtc,
+                    UpdatedAtUtc = originalUpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile));
+        Assert.False(await _dbContext.ProcessedSyncMutations.AnyAsync(mutation =>
+            mutation.MutationId == mutationId));
+        _dbContext.ChangeTracker.Clear();
+        var unchanged = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == existing.Id);
+        Assert.Equal(originalRevision, unchanged.Revision);
+        Assert.Equal(originalUpdatedAtUtc, unchanged.UpdatedAtUtc);
+        Assert.Equal(40_000m, unchanged.MonthlyAmount);
     }
 
     [Fact]
@@ -5321,6 +12643,25 @@ public sealed class SyncControllerTests : IDisposable
                     BillingAnchorMonth = 6,
                     BillingAnchorDate = new DateOnly(2026, 6, 25),
                     MonthlyAmount = 100_000m,
+                    LastBilledDate = new DateOnly(2099, 12, 31),
+                    BillingRunsJson = JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            RunId = runId,
+                            RunKey = "forged-future-run",
+                            ScheduledDate = new DateOnly(2099, 12, 31),
+                            PeriodStartDate = new DateOnly(2099, 12, 1),
+                            PeriodEndDate = new DateOnly(2099, 12, 31),
+                            CycleMonths = 12,
+                            PeriodLabel = "forged future period",
+                            Status = "\uCCAD\uAD6C\uC911",
+                            BilledAmount = 999_000m,
+                            SettledAmount = 999_000m,
+                            SettlementStatus = "\uC785\uAE08\uD655\uC778",
+                            SettledDate = new DateOnly(2099, 12, 31)
+                        }
+                    }),
                     CreatedAtUtc = createdAtUtc,
                     UpdatedAtUtc = createdAtUtc
                 }
@@ -5398,10 +12739,26 @@ public sealed class SyncControllerTests : IDisposable
         var storedTransaction = await _dbContext.Transactions.IgnoreQueryFilters()
             .AsNoTracking()
             .SingleAsync(transaction => transaction.Id == transactionId);
+        var storedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
         Assert.Equal(profileId, storedInvoice.LinkedRentalBillingProfileId);
         Assert.Equal(runId, storedInvoice.LinkedRentalBillingRunId);
         Assert.Equal(profileId, storedTransaction.LinkedRentalBillingProfileId);
         Assert.Equal(runId, storedTransaction.LinkedRentalBillingRunId);
+        Assert.Equal(new DateOnly(2026, 6, 25), storedProfile.LastBilledDate);
+        Assert.Equal(40_000m, storedProfile.SettledAmount);
+        Assert.Equal(60_000m, storedProfile.OutstandingAmount);
+        using var runsDocument = JsonDocument.Parse(storedProfile.BillingRunsJson);
+        var storedRun = Assert.Single(runsDocument.RootElement.EnumerateArray());
+        Assert.Equal(new DateOnly(2026, 6, 25), DateOnly.Parse(storedRun.GetProperty("ScheduledDate").GetString()!));
+        Assert.Equal(new DateOnly(2026, 6, 1), DateOnly.Parse(storedRun.GetProperty("PeriodStartDate").GetString()!));
+        Assert.Equal(new DateOnly(2026, 6, 30), DateOnly.Parse(storedRun.GetProperty("PeriodEndDate").GetString()!));
+        Assert.Equal("20260601-20260630", storedRun.GetProperty("RunKey").GetString());
+        Assert.Equal("2026-06", storedRun.GetProperty("PeriodLabel").GetString());
+        Assert.Equal(100_000m, storedRun.GetProperty("BilledAmount").GetDecimal());
+        Assert.Equal(40_000m, storedRun.GetProperty("SettledAmount").GetDecimal());
+        Assert.Equal("\uBD80\uBD84\uC785\uAE08", storedRun.GetProperty("SettlementStatus").GetString());
         Assert.Equal("렌탈수금", storedTransaction.TransactionKind);
     }
 
@@ -5672,11 +13029,2181 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal("2603-501", storedAsset.ManagementNumber);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task Push_RejectsExplicitRentalAssetProfile_WhenTemplateCoverageIsMissingOrAmbiguous(int coverageMode)
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var otherAssetId = Guid.NewGuid();
+        var templateJson = coverageMode switch
+        {
+            0 => JsonSerializer.Serialize(new[] { new { IncludedAssetIds = new[] { otherAssetId } } }),
+            1 => JsonSerializer.Serialize(new[] { new { IncludedAssetIds = new[] { assetId, assetId } } }),
+            _ => JsonSerializer.Serialize(new[]
+            {
+                new { IncludedAssetIds = new[] { assetId } },
+                new { IncludedAssetIds = new[] { assetId } }
+            })
+        };
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Template coverage customer",
+            NameMatchKey = "TEMPLATECOVERAGECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"TEMPLATE-COVERAGE-{coverageMode}-{Guid.NewGuid():N}",
+            CustomerId = customerId,
+            CustomerName = "Template coverage customer",
+            InstallSiteName = "Template coverage site",
+            ItemName = "Template coverage item",
+            BillingTemplateJson = templateJson,
+            BillingDay = 25,
+            MonthlyAmount = 10_000m,
+            IsActive = true
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = $"device-template-coverage-{coverageMode}",
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    CustomerId = customerId,
+                    CustomerName = "Template coverage customer",
+                    CurrentCustomerName = "Template coverage customer",
+                    InstallLocation = "Template coverage site",
+                    InstallSiteName = "Template coverage site",
+                    ItemName = "Template coverage item",
+                    ManagementId = $"COVERAGE-{coverageMode}",
+                    ManagementNumber = $"COVERAGE-{coverageMode}",
+                    AssetKey = $"COVERAGE-{coverageMode}-{assetId:N}",
+                    BillingProfileId = profileId,
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalAsset) &&
+            conflict.Reason.Contains("청구관리", StringComparison.Ordinal));
+        Assert.False(await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .AnyAsync(asset => asset.Id == assetId));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Push_NullProfileAutoMatch_UsesExplicitProfileOnlyForUniqueAssetCoverage(bool includesIncomingAsset)
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var includedAssetId = includesIncomingAsset ? assetId : Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Auto coverage customer",
+            NameMatchKey = "AUTOCOVERAGECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"AUTO-COVERAGE-{Guid.NewGuid():N}",
+            CustomerId = customerId,
+            CustomerName = "Auto coverage customer",
+            InstallSiteName = "Auto coverage site",
+            ItemName = "Auto coverage item",
+            BillingTemplateJson = JsonSerializer.Serialize(new[]
+            {
+                new { IncludedAssetIds = new[] { includedAssetId } }
+            }),
+            BillingDay = 25,
+            MonthlyAmount = 20_000m,
+            IsActive = true
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = $"device-auto-coverage-{includesIncomingAsset}",
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    CustomerId = customerId,
+                    CustomerName = "Auto coverage customer",
+                    CurrentCustomerName = "Auto coverage customer",
+                    InstallLocation = "Auto coverage site",
+                    InstallSiteName = "Auto coverage site",
+                    ItemName = "Auto coverage item",
+                    ManagementId = $"AUTO-{assetId:N}",
+                    ManagementNumber = $"AUTO-{assetId:N}",
+                    AssetKey = $"AUTO-{assetId:N}",
+                    BillingProfileId = null,
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+        var storedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(asset => asset.Id == assetId);
+        Assert.Equal(includesIncomingAsset ? profileId : null, storedAsset.BillingProfileId);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    [InlineData(6)]
+    [InlineData(7)]
+    [InlineData(8)]
+    public async Task Push_ExplicitToImplicitProfileTransition_RequiresSamePushSafeAssetUnlink(int unlinkMode)
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var now = DateTime.UtcNow.AddMinutes(-5);
+        var customer = new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Projected coverage customer",
+            NameMatchKey = "PROJECTEDCOVERAGECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var profile = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"PROJECTED-COVERAGE-{Guid.NewGuid():N}",
+            CustomerId = customerId,
+            CustomerName = customer.NameOriginal,
+            InstallSiteName = "Projected coverage site",
+            ItemName = "Projected coverage item",
+            BillingTemplateJson = unlinkMode == 8
+                ? "[]"
+                : JsonSerializer.Serialize(new[]
+                {
+                    new { IncludedAssetIds = new[] { assetId } }
+                }),
+            BillingDay = 25,
+            MonthlyAmount = 30_000m,
+            IsActive = true,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        };
+        var asset = new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            CustomerId = customerId,
+            CustomerName = customer.NameOriginal,
+            CurrentCustomerName = customer.NameOriginal,
+            InstallLocation = profile.InstallSiteName,
+            InstallSiteName = profile.InstallSiteName,
+            ItemName = profile.ItemName,
+            ManagementId = $"PROJECTED-{assetId:N}",
+            ManagementNumber = $"PROJECTED-{assetId:N}",
+            AssetKey = $"PROJECTED-{assetId:N}",
+            BillingProfileId = profileId,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        };
+        _dbContext.AddRange(
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet),
+                IsSystemDefault = true,
+                IsActive = true
+            },
+            customer,
+            profile,
+            asset);
+        await _dbContext.SaveChangesAsync();
+        var originalTemplateJson = profile.BillingTemplateJson;
+        var profileMutationId = $"projected-profile-{Guid.NewGuid():N}";
+        var assetMutationId = unlinkMode switch
+        {
+            4 => $"  PROJECTED-PROCESSED-{Guid.NewGuid():N}  ",
+            5 => $" SERVER-RECEIPT:ITEM-WAREHOUSE-STOCK:V1:{Guid.NewGuid():N} ",
+            _ => $"projected-asset-{Guid.NewGuid():N}"
+        };
+        if (unlinkMode == 4)
+        {
+            _dbContext.ProcessedSyncMutations.Add(new ProcessedSyncMutation
+            {
+                MutationId = assetMutationId.Trim().ToLowerInvariant(),
+                DeviceId = "previous-device",
+                EntityName = nameof(RentalAsset),
+                EntityId = assetId.ToString("D"),
+                ExpectedRevision = asset.Revision,
+                PayloadHash = "previous-payload",
+                ProcessedAtUtc = now.AddMinutes(1)
+            });
+            await _dbContext.SaveChangesAsync();
+        }
+
+        var assetMutations = unlinkMode is 0 or 7 or 8
+            ? new List<RentalAssetDto>()
+            :
+            [
+                new RentalAssetDto
+                {
+                    Id = asset.Id,
+                    TenantCode = asset.TenantCode,
+                    OfficeCode = asset.OfficeCode,
+                    ResponsibleOfficeCode = asset.ResponsibleOfficeCode,
+                    ManagementCompanyCode = asset.ManagementCompanyCode,
+                    CustomerId = unlinkMode == 3 ? Guid.NewGuid() : asset.CustomerId,
+                    CustomerName = asset.CustomerName,
+                    CurrentCustomerName = asset.CurrentCustomerName,
+                    InstallLocation = asset.InstallLocation,
+                    InstallSiteName = asset.InstallSiteName,
+                    ItemName = asset.ItemName,
+                    ManagementId = asset.ManagementId,
+                    ManagementNumber = asset.ManagementNumber,
+                    AssetKey = asset.AssetKey,
+                    BillingProfileId = null,
+                    Revision = asset.Revision,
+                    ExpectedRevision = unlinkMode == 1 ? asset.Revision + 1 : asset.Revision,
+                    MutationId = assetMutationId,
+                    MutationCreatedAtUtc = now.AddMinutes(2),
+                    CreatedAtUtc = asset.CreatedAtUtc,
+                    UpdatedAtUtc = now.AddMinutes(2)
+                }
+            ];
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = $"device-projected-coverage-{unlinkMode}",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profile.Id,
+                    TenantCode = profile.TenantCode,
+                    OfficeCode = profile.OfficeCode,
+                    ResponsibleOfficeCode = profile.ResponsibleOfficeCode,
+                    ManagementCompanyCode = profile.ManagementCompanyCode,
+                    ProfileKey = profile.ProfileKey,
+                    CustomerId = profile.CustomerId,
+                    CustomerName = profile.CustomerName,
+                    InstallSiteName = profile.InstallSiteName,
+                    ItemName = profile.ItemName,
+                    BillingTemplateJson = unlinkMode is 6 or 7 or 8 ? originalTemplateJson : "[]",
+                    BillingDay = profile.BillingDay,
+                    MonthlyAmount = profile.MonthlyAmount,
+                    IsActive = true,
+                    IsDeleted = unlinkMode is 6 or 7 or 8,
+                    Revision = profile.Revision,
+                    ExpectedRevision = profile.Revision,
+                    MutationId = profileMutationId,
+                    MutationCreatedAtUtc = now.AddMinutes(2),
+                    CreatedAtUtc = profile.CreatedAtUtc,
+                    UpdatedAtUtc = now.AddMinutes(2)
+                }
+            ],
+            RentalAssets = assetMutations
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        _dbContext.ChangeTracker.Clear();
+        var storedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == profileId);
+        var storedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == assetId);
+        if (unlinkMode is 2 or 6)
+        {
+            Assert.True(
+                result.ConflictCount == 0,
+                string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+            Assert.Equal(unlinkMode == 6, storedProfile.IsDeleted);
+            Assert.Equal(unlinkMode == 6 ? originalTemplateJson : "[]", storedProfile.BillingTemplateJson);
+            Assert.Null(storedAsset.BillingProfileId);
+        }
+        else
+        {
+            Assert.Contains(result.Conflicts, conflict =>
+                conflict.EntityName == nameof(RentalBillingProfile) &&
+                conflict.Reason.Contains("청구관리", StringComparison.Ordinal));
+            Assert.False(storedProfile.IsDeleted);
+            Assert.Equal(originalTemplateJson, storedProfile.BillingTemplateJson);
+            Assert.Equal(profileId, storedAsset.BillingProfileId);
+            Assert.False(await _dbContext.ProcessedSyncMutations
+                .AnyAsync(mutation => mutation.MutationId == profileMutationId));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Push_RejectsRentalBillingProfile_WhenTemplateAssetIsMissingOrDeleted(bool seedDeletedAsset)
+    {
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var mutationId = $"rental-profile-stale-template:{Guid.NewGuid():N}";
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet),
+            IsSystemDefault = true,
+            IsActive = true
+        });
+        if (seedDeletedAsset)
+        {
+            _dbContext.RentalAssets.Add(new RentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Deleted template asset customer",
+                CurrentCustomerName = "Deleted template asset customer",
+                InstallLocation = "Deleted template asset site",
+                InstallSiteName = "Deleted template asset site",
+                ItemName = "Deleted template asset item",
+                ManagementId = $"DELETED-{assetId:N}",
+                ManagementNumber = $"DELETED-{assetId:N}",
+                AssetKey = $"DELETED-{assetId:N}",
+                IsDeleted = true
+            });
+        }
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = $"device-rental-profile-stale-template-{seedDeletedAsset}",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"STALE-TEMPLATE-{Guid.NewGuid():N}",
+                    CustomerName = "Stale template customer",
+                    ItemName = "Stale template item",
+                    BillingTemplateJson = JsonSerializer.Serialize(new[]
+                    {
+                        new { IncludedAssetIds = new[] { assetId } }
+                    }),
+                    BillingDay = 25,
+                    MonthlyAmount = 10_000m,
+                    IsActive = true,
+                    MutationId = mutationId,
+                    MutationCreatedAtUtc = DateTime.UtcNow,
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile));
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == profileId));
+        Assert.False(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == mutationId));
+        Assert.DoesNotContain(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) && revision.EntityId == profileId);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Push_AcceptsRentalBillingProfile_WhenTemplateAssetIsActiveInAnotherScope(bool crossTenant)
+    {
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var assetTenantCode = crossTenant ? TenantScopeCatalog.Itworld : TenantScopeCatalog.UsenetGroup;
+        var assetOfficeCode = crossTenant ? OfficeCodeCatalog.Itworld : OfficeCodeCatalog.Yeonsu;
+        _dbContext.AddRange(
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet),
+                IsSystemDefault = true,
+                IsActive = true
+            },
+            new RentalAsset
+            {
+                Id = assetId,
+                TenantCode = assetTenantCode,
+                OfficeCode = assetOfficeCode,
+                ResponsibleOfficeCode = assetOfficeCode,
+                ManagementCompanyCode = assetOfficeCode,
+                CustomerName = "Reference only asset customer",
+                CurrentCustomerName = "Reference only asset customer",
+                InstallLocation = "Reference only asset site",
+                InstallSiteName = "Reference only asset site",
+                ItemName = "Reference only asset item",
+                ManagementId = $"REFERENCE-{assetId:N}",
+                ManagementNumber = $"REFERENCE-{assetId:N}",
+                AssetKey = $"REFERENCE-{assetId:N}"
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = $"device-rental-profile-reference-only-{crossTenant}",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"REFERENCE-ONLY-{Guid.NewGuid():N}",
+                    CustomerName = "Reference only profile customer",
+                    ItemName = "Reference only profile item",
+                    BillingTemplateJson = JsonSerializer.Serialize(new[]
+                    {
+                        new { IncludedAssetIds = new[] { assetId } }
+                    }),
+                    BillingDay = 25,
+                    MonthlyAmount = 20_000m,
+                    IsActive = true,
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(
+            result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+        Assert.True(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == profileId));
+        var unchangedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(asset => asset.Id == assetId);
+        Assert.Null(unchangedAsset.BillingProfileId);
+        Assert.Equal(assetTenantCode, unchangedAsset.TenantCode);
+        Assert.Equal(assetOfficeCode, unchangedAsset.OfficeCode);
+    }
+
+    [Fact]
+    public async Task Push_RejectsRentalBillingProfile_WhenTemplateContainsDuplicateAssetReference()
+    {
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        _dbContext.AddRange(
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet),
+                IsSystemDefault = true,
+                IsActive = true
+            },
+            new RentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Duplicate template asset customer",
+                CurrentCustomerName = "Duplicate template asset customer",
+                InstallLocation = "Duplicate template asset site",
+                InstallSiteName = "Duplicate template asset site",
+                ItemName = "Duplicate template asset item",
+                ManagementId = $"DUPLICATE-TEMPLATE-{assetId:N}",
+                ManagementNumber = $"DUPLICATE-TEMPLATE-{assetId:N}",
+                AssetKey = $"DUPLICATE-TEMPLATE-{assetId:N}"
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-profile-duplicate-template-reference",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"DUPLICATE-TEMPLATE-REFERENCE-{Guid.NewGuid():N}",
+                    CustomerName = "Duplicate template profile customer",
+                    ItemName = "Duplicate template profile item",
+                    BillingTemplateJson = JsonSerializer.Serialize(new[]
+                    {
+                        new { IncludedAssetIds = new[] { assetId } },
+                        new { IncludedAssetIds = new[] { assetId } }
+                    }),
+                    BillingDay = 25,
+                    MonthlyAmount = 20_000m,
+                    IsActive = true,
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile));
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == profileId));
+    }
+
+    [Fact]
+    public async Task Push_AcceptsRentalBillingProfileReference_WhenAssetIsReadSharedWithoutWriteAccess()
+    {
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        SeedSharingPolicy(_dbContext, new DataSharingPolicy
+        {
+            Id = Guid.NewGuid(),
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Usenet,
+            ShareRentals = true,
+            AllowTargetWrite = false,
+            Note = "read-only rental share for billing template reference"
+        });
+        _dbContext.AddRange(
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet),
+                IsSystemDefault = true,
+                IsActive = true
+            },
+            new RentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Yeonsu,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Read shared template customer",
+                CurrentCustomerName = "Read shared template customer",
+                InstallLocation = "Read shared template site",
+                InstallSiteName = "Read shared template site",
+                ItemName = "Read shared template item",
+                ManagementId = $"READ-SHARED-TEMPLATE-{assetId:N}",
+                ManagementNumber = $"READ-SHARED-TEMPLATE-{assetId:N}",
+                AssetKey = $"READ-SHARED-TEMPLATE-{assetId:N}"
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-rental-profile-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.RentalProfileEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-profile-read-shared-template-reference",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"READ-SHARED-TEMPLATE-{Guid.NewGuid():N}",
+                    CustomerName = "Read shared template profile customer",
+                    ItemName = "Read shared template profile item",
+                    BillingTemplateJson = JsonSerializer.Serialize(new[]
+                    {
+                        new { IncludedAssetIds = new[] { assetId } }
+                    }),
+                    BillingDay = 25,
+                    MonthlyAmount = 30_000m,
+                    IsActive = true,
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(
+            result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+        scopedDb.ChangeTracker.Clear();
+        Assert.True(await scopedDb.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == profileId));
+        var unchangedAsset = await scopedDb.RentalAssets.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(asset => asset.Id == assetId);
+        Assert.Null(unchangedAsset.BillingProfileId);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, unchangedAsset.ResponsibleOfficeCode);
+    }
+
+    [Fact]
+    public async Task Push_AcceptsRentalBillingProfileAndExplicitTemplateAsset_WhenCreatedInSameBatch()
+    {
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var createdAtUtc = DateTime.UtcNow.AddMinutes(-1);
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet),
+            IsSystemDefault = true,
+            IsActive = true
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-profile-explicit-asset-same-batch",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"EXPLICIT-ASSET-SAME-BATCH-{Guid.NewGuid():N}",
+                    CustomerName = "Same batch profile customer",
+                    ItemName = "Same batch profile item",
+                    BillingTemplateJson = JsonSerializer.Serialize(new[]
+                    {
+                        new { IncludedAssetIds = new[] { assetId } }
+                    }),
+                    BillingDay = 25,
+                    MonthlyAmount = 30_000m,
+                    IsActive = true,
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc
+                }
+            ],
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    CustomerName = "Same batch profile customer",
+                    CurrentCustomerName = "Same batch profile customer",
+                    InstallLocation = "Same batch site",
+                    InstallSiteName = "Same batch site",
+                    ItemName = "Same batch profile item",
+                    ManagementId = $"SAME-BATCH-{assetId:N}",
+                    ManagementNumber = $"SAME-BATCH-{assetId:N}",
+                    AssetKey = $"SAME-BATCH-{assetId:N}",
+                    BillingProfileId = profileId,
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(
+            result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+        Assert.Equal(profileId, (await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(asset => asset.Id == assetId)).BillingProfileId);
+        Assert.True(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == profileId));
+    }
+
+    [Fact]
+    public async Task Push_RejectsDeletingRentalAsset_WhenActiveProfileTemplateStillReferencesIt()
+    {
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var profile = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"DELETE-GUARD-{Guid.NewGuid():N}",
+            CustomerName = "Delete guard customer",
+            ItemName = "Delete guard item",
+            BillingTemplateJson = JsonSerializer.Serialize(new[]
+            {
+                new { IncludedAssetIds = new[] { assetId } }
+            }),
+            BillingDay = 25,
+            MonthlyAmount = 40_000m,
+            IsActive = true
+        };
+        var asset = new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            CustomerName = profile.CustomerName,
+            CurrentCustomerName = profile.CustomerName,
+            InstallLocation = "Delete guard site",
+            InstallSiteName = "Delete guard site",
+            ItemName = profile.ItemName,
+            ManagementId = $"DELETE-GUARD-{assetId:N}",
+            ManagementNumber = $"DELETE-GUARD-{assetId:N}",
+            AssetKey = $"DELETE-GUARD-{assetId:N}",
+            BillingProfileId = profileId
+        };
+        _dbContext.AddRange(profile, asset);
+        await _dbContext.SaveChangesAsync();
+        var deleteMutationId = $"delete-referenced-rental-asset:{assetId:N}";
+        var deleteDto = asset.ToDto();
+        deleteDto.IsDeleted = true;
+        deleteDto.ExpectedRevision = asset.Revision;
+        deleteDto.Revision = asset.Revision;
+        deleteDto.MutationId = deleteMutationId;
+        deleteDto.MutationCreatedAtUtc = asset.UpdatedAtUtc.AddMinutes(1);
+        deleteDto.UpdatedAtUtc = asset.UpdatedAtUtc.AddMinutes(1);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-delete-referenced-rental-asset",
+            RentalAssets = [deleteDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Contains(result.Conflicts, conflict => conflict.EntityName == nameof(RentalAsset));
+        _dbContext.ChangeTracker.Clear();
+        Assert.False((await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == assetId)).IsDeleted);
+        Assert.False(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == deleteMutationId));
+    }
+
+    [Fact]
+    public async Task Push_RejectsDeletingRentalAssets_WhenParseableInvalidTemplatesUseSupportedGuidRepresentations()
+    {
+        var assetIds = Enumerable.Range(0, 4).Select(_ => Guid.NewGuid()).ToArray();
+        var guidTexts = new[]
+        {
+            assetIds[0].ToString("D"),
+            assetIds[1].ToString("N"),
+            assetIds[2].ToString("B"),
+            assetIds[3].ToString("D").Replace("-", "\\u002D", StringComparison.Ordinal)
+        };
+        var templates = new[]
+        {
+            $"{{\"IncludedAssetIds\":[\"{guidTexts[0]}\"]}}",
+            $"[{{\"IncludedAssetIds\":[\"{guidTexts[1]}\"]}},0]",
+            $"[{{\"IncludedAssetIds\":[\"{guidTexts[2]}\"],\"IncludedAssetIds\":[]}}]",
+            $"[{{\"IncludedAssetIds\":[\"{guidTexts[3]}\"]}},false]"
+        };
+
+        for (var index = 0; index < assetIds.Length; index++)
+        {
+            var profileId = Guid.NewGuid();
+            _dbContext.AddRange(
+                new RentalBillingProfile
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"INVALID-DELETE-GUARD-{index}-{Guid.NewGuid():N}",
+                    CustomerName = "Invalid delete guard customer",
+                    ItemName = "Invalid delete guard item",
+                    BillingTemplateJson = templates[index],
+                    BillingDay = 25,
+                    MonthlyAmount = 10_000m,
+                    IsActive = true
+                },
+                new RentalAsset
+                {
+                    Id = assetIds[index],
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    CustomerName = "Invalid delete guard customer",
+                    CurrentCustomerName = "Invalid delete guard customer",
+                    InstallLocation = "Invalid delete guard site",
+                    InstallSiteName = "Invalid delete guard site",
+                    ItemName = "Invalid delete guard item",
+                    ManagementId = $"INVALID-DELETE-GUARD-{assetIds[index]:N}",
+                    ManagementNumber = $"INVALID-DELETE-GUARD-{assetIds[index]:N}",
+                    AssetKey = $"INVALID-DELETE-GUARD-{assetIds[index]:N}"
+                });
+        }
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+        var assets = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => assetIds.Contains(asset.Id))
+            .ToListAsync();
+        var deleteDtos = assets.Select(asset =>
+        {
+            var dto = asset.ToDto();
+            dto.IsDeleted = true;
+            dto.ExpectedRevision = asset.Revision;
+            dto.Revision = asset.Revision;
+            dto.MutationId = $"delete-invalid-template-asset:{asset.Id:N}";
+            dto.MutationCreatedAtUtc = asset.UpdatedAtUtc.AddMinutes(1);
+            dto.UpdatedAtUtc = asset.UpdatedAtUtc.AddMinutes(1);
+            return dto;
+        }).ToList();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-invalid-template-delete-guard",
+            RentalAssets = deleteDtos
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(assetIds.Length, result.Conflicts.Count(conflict =>
+            conflict.EntityName == nameof(RentalAsset)));
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(assetIds.Length, await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .CountAsync(asset => assetIds.Contains(asset.Id) && !asset.IsDeleted));
+        Assert.False(await _dbContext.ProcessedSyncMutations.AnyAsync(mutation =>
+            deleteDtos.Select(dto => dto.MutationId).Contains(mutation.MutationId)));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Push_RejectsDeletingRentalAsset_WhenParseableInvalidTemplateWrapsIncludedAssetIdsInObject(
+        bool usesValuesWrapper)
+    {
+        var assetId = Guid.NewGuid();
+        var wrappedIncludedAssetIds = usesValuesWrapper
+            ? $"{{\"$values\":[\"{assetId:D}\"]}}"
+            : $"{{\"0\":\"{assetId:D}\"}}";
+        _dbContext.AddRange(
+            new RentalBillingProfile
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = $"WRAPPED-INVALID-DELETE-GUARD-{Guid.NewGuid():N}",
+                CustomerName = "Wrapped invalid delete guard customer",
+                ItemName = "Wrapped invalid delete guard item",
+                BillingTemplateJson = $"[{{\"IncludedAssetIds\":{wrappedIncludedAssetIds}}}]",
+                BillingDay = 25,
+                MonthlyAmount = 10_000m,
+                IsActive = true
+            },
+            new RentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Wrapped invalid delete guard customer",
+                CurrentCustomerName = "Wrapped invalid delete guard customer",
+                InstallLocation = "Wrapped invalid delete guard site",
+                InstallSiteName = "Wrapped invalid delete guard site",
+                ItemName = "Wrapped invalid delete guard item",
+                ManagementId = $"WRAPPED-INVALID-DELETE-GUARD-{assetId:N}",
+                ManagementNumber = $"WRAPPED-INVALID-DELETE-GUARD-{assetId:N}",
+                AssetKey = $"WRAPPED-INVALID-DELETE-GUARD-{assetId:N}"
+            });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+        var asset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == assetId);
+        var deleteDto = asset.ToDto();
+        deleteDto.IsDeleted = true;
+        deleteDto.ExpectedRevision = asset.Revision;
+        deleteDto.Revision = asset.Revision;
+        deleteDto.MutationId = $"delete-wrapped-invalid-template-asset:{assetId:N}";
+        deleteDto.MutationCreatedAtUtc = asset.UpdatedAtUtc.AddMinutes(1);
+        deleteDto.UpdatedAtUtc = asset.UpdatedAtUtc.AddMinutes(1);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-wrapped-invalid-template-delete-guard",
+            RentalAssets = [deleteDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Contains(result.Conflicts, conflict => conflict.EntityName == nameof(RentalAsset));
+        _dbContext.ChangeTracker.Clear();
+        Assert.False((await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == assetId)).IsDeleted);
+        Assert.False(await _dbContext.ProcessedSyncMutations.AnyAsync(mutation =>
+            mutation.MutationId == deleteDto.MutationId));
+    }
+
+    [Fact]
+    public async Task Push_RejectsAllRequestedRentalAssetDeletes_WhenIncludedAssetIdObjectRecoveryIsIncomplete()
+    {
+        var assetIds = new[] { Guid.NewGuid(), Guid.NewGuid() };
+        _dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"INCOMPLETE-OBJECT-DELETE-GUARD-{Guid.NewGuid():N}",
+            CustomerName = "Incomplete object delete guard customer",
+            ItemName = "Incomplete object delete guard item",
+            BillingTemplateJson = "[{\"IncludedAssetIds\":{\"unsupported\":123}}]",
+            BillingDay = 25,
+            MonthlyAmount = 10_000m,
+            IsActive = true
+        });
+        foreach (var assetId in assetIds)
+        {
+            _dbContext.RentalAssets.Add(new RentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Incomplete object delete guard customer",
+                CurrentCustomerName = "Incomplete object delete guard customer",
+                InstallLocation = "Incomplete object delete guard site",
+                InstallSiteName = "Incomplete object delete guard site",
+                ItemName = "Incomplete object delete guard item",
+                ManagementId = $"INCOMPLETE-OBJECT-DELETE-GUARD-{assetId:N}",
+                ManagementNumber = $"INCOMPLETE-OBJECT-DELETE-GUARD-{assetId:N}",
+                AssetKey = $"INCOMPLETE-OBJECT-DELETE-GUARD-{assetId:N}"
+            });
+        }
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+        var assets = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => assetIds.Contains(asset.Id))
+            .ToListAsync();
+        var deleteDtos = assets.Select(asset =>
+        {
+            var dto = asset.ToDto();
+            dto.IsDeleted = true;
+            dto.ExpectedRevision = asset.Revision;
+            dto.Revision = asset.Revision;
+            dto.MutationId = $"delete-incomplete-object-template-asset:{asset.Id:N}";
+            dto.MutationCreatedAtUtc = asset.UpdatedAtUtc.AddMinutes(1);
+            dto.UpdatedAtUtc = asset.UpdatedAtUtc.AddMinutes(1);
+            return dto;
+        }).ToList();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-incomplete-object-template-delete-guard",
+            RentalAssets = deleteDtos
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(assetIds.Length, result.Conflicts.Count(conflict =>
+            conflict.EntityName == nameof(RentalAsset)));
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(assetIds.Length, await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .CountAsync(asset => assetIds.Contains(asset.Id) && !asset.IsDeleted));
+        Assert.False(await _dbContext.ProcessedSyncMutations.AnyAsync(mutation =>
+            deleteDtos.Select(dto => dto.MutationId).Contains(mutation.MutationId)));
+    }
+
+    [Fact]
+    public async Task Push_AllowsDeletingRentalAsset_WhenParseableInvalidTemplateHasNoIncludedAssetIds()
+    {
+        var assetId = Guid.NewGuid();
+        _dbContext.AddRange(
+            new RentalBillingProfile
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = $"UNRELATED-INVALID-DELETE-GUARD-{Guid.NewGuid():N}",
+                CustomerName = "Unrelated invalid delete guard customer",
+                ItemName = "Unrelated invalid delete guard item",
+                BillingTemplateJson = "[{\"Unrelated\":true},0]",
+                BillingDay = 25,
+                MonthlyAmount = 10_000m,
+                IsActive = true
+            },
+            new RentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Unrelated invalid delete guard customer",
+                CurrentCustomerName = "Unrelated invalid delete guard customer",
+                InstallLocation = "Unrelated invalid delete guard site",
+                InstallSiteName = "Unrelated invalid delete guard site",
+                ItemName = "Unrelated invalid delete guard item",
+                ManagementId = $"UNRELATED-INVALID-DELETE-GUARD-{assetId:N}",
+                ManagementNumber = $"UNRELATED-INVALID-DELETE-GUARD-{assetId:N}",
+                AssetKey = $"UNRELATED-INVALID-DELETE-GUARD-{assetId:N}"
+            });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+        var asset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == assetId);
+        var deleteDto = asset.ToDto();
+        deleteDto.IsDeleted = true;
+        deleteDto.ExpectedRevision = asset.Revision;
+        deleteDto.Revision = asset.Revision;
+        deleteDto.MutationId = $"delete-unrelated-invalid-template-asset:{assetId:N}";
+        deleteDto.MutationCreatedAtUtc = asset.UpdatedAtUtc.AddMinutes(1);
+        deleteDto.UpdatedAtUtc = asset.UpdatedAtUtc.AddMinutes(1);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-unrelated-invalid-template-delete-guard",
+            RentalAssets = [deleteDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.DoesNotContain(result.Conflicts, conflict => conflict.EntityName == nameof(RentalAsset));
+        _dbContext.ChangeTracker.Clear();
+        Assert.True((await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == assetId)).IsDeleted);
+        Assert.True(await _dbContext.ProcessedSyncMutations.AnyAsync(mutation =>
+            mutation.MutationId == deleteDto.MutationId));
+    }
+
+    [Fact]
+    public async Task Push_RejectsDeletingRentalAsset_WhenActiveTemplateIsUnparseable()
+    {
+        var assetId = Guid.NewGuid();
+        _dbContext.AddRange(
+            new RentalBillingProfile
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = $"UNPARSEABLE-DELETE-GUARD-{Guid.NewGuid():N}",
+                CustomerName = "Unparseable delete guard customer",
+                ItemName = "Unparseable delete guard item",
+                BillingTemplateJson = "[{\"IncludedAssetIds\":[\"",
+                BillingDay = 25,
+                MonthlyAmount = 10_000m,
+                IsActive = true
+            },
+            new RentalAsset
+            {
+                Id = assetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Unparseable delete guard customer",
+                CurrentCustomerName = "Unparseable delete guard customer",
+                InstallLocation = "Unparseable delete guard site",
+                InstallSiteName = "Unparseable delete guard site",
+                ItemName = "Unparseable delete guard item",
+                ManagementId = $"UNPARSEABLE-DELETE-GUARD-{assetId:N}",
+                ManagementNumber = $"UNPARSEABLE-DELETE-GUARD-{assetId:N}",
+                AssetKey = $"UNPARSEABLE-DELETE-GUARD-{assetId:N}"
+            });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+        var asset = await _dbContext.RentalAssets.IgnoreQueryFilters().SingleAsync(current => current.Id == assetId);
+        var deleteDto = asset.ToDto();
+        deleteDto.IsDeleted = true;
+        deleteDto.ExpectedRevision = asset.Revision;
+        deleteDto.Revision = asset.Revision;
+        deleteDto.MutationId = $"delete-unparseable-template-asset:{assetId:N}";
+        deleteDto.MutationCreatedAtUtc = asset.UpdatedAtUtc.AddMinutes(1);
+        deleteDto.UpdatedAtUtc = asset.UpdatedAtUtc.AddMinutes(1);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-unparseable-template-delete-guard",
+            RentalAssets = [deleteDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Contains(result.Conflicts, conflict => conflict.EntityName == nameof(RentalAsset));
+        _dbContext.ChangeTracker.Clear();
+        Assert.False((await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == assetId)).IsDeleted);
+        Assert.False(await _dbContext.ProcessedSyncMutations.AnyAsync(mutation =>
+            mutation.MutationId == deleteDto.MutationId));
+    }
+
+    [Fact]
+    public async Task Push_AcceptsDeletingRentalAsset_WhenSamePushRemovesProfileTemplateReference()
+    {
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var profile = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"DELETE-WITH-UNLINK-{Guid.NewGuid():N}",
+            CustomerName = "Delete with unlink customer",
+            ItemName = "Delete with unlink item",
+            BillingTemplateJson = JsonSerializer.Serialize(new[]
+            {
+                new { IncludedAssetIds = new[] { assetId } }
+            }),
+            BillingDay = 25,
+            MonthlyAmount = 50_000m,
+            IsActive = true
+        };
+        var asset = new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            CustomerName = profile.CustomerName,
+            CurrentCustomerName = profile.CustomerName,
+            InstallLocation = "Delete with unlink site",
+            InstallSiteName = "Delete with unlink site",
+            ItemName = profile.ItemName,
+            ManagementId = $"DELETE-WITH-UNLINK-{assetId:N}",
+            ManagementNumber = $"DELETE-WITH-UNLINK-{assetId:N}",
+            AssetKey = $"DELETE-WITH-UNLINK-{assetId:N}",
+            BillingProfileId = profileId
+        };
+        _dbContext.AddRange(
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet),
+                IsSystemDefault = true,
+                IsActive = true
+            },
+            profile,
+            asset);
+        await _dbContext.SaveChangesAsync();
+        var profileMutationId = $"remove-profile-template-reference:{profileId:N}";
+        var profileDto = profile.ToDto();
+        profileDto.BillingTemplateJson = "[]";
+        profileDto.ExpectedRevision = profile.Revision;
+        profileDto.Revision = profile.Revision;
+        profileDto.MutationId = profileMutationId;
+        profileDto.MutationCreatedAtUtc = profile.UpdatedAtUtc.AddMinutes(1);
+        profileDto.UpdatedAtUtc = profile.UpdatedAtUtc.AddMinutes(1);
+        var assetMutationId = $"delete-unlinked-rental-asset:{assetId:N}";
+        var assetDto = asset.ToDto();
+        assetDto.IsDeleted = true;
+        assetDto.ExpectedRevision = asset.Revision;
+        assetDto.Revision = asset.Revision;
+        assetDto.MutationId = assetMutationId;
+        assetDto.MutationCreatedAtUtc = asset.UpdatedAtUtc.AddMinutes(1);
+        assetDto.UpdatedAtUtc = asset.UpdatedAtUtc.AddMinutes(1);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-delete-rental-asset-with-template-unlink",
+            RentalBillingProfiles = [profileDto],
+            RentalAssets = [assetDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(
+            result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal("[]", (await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == profileId)).BillingTemplateJson);
+        Assert.True((await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == assetId)).IsDeleted);
+        Assert.True(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == profileMutationId));
+        Assert.True(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == assetMutationId));
+    }
+
+    [Fact]
+    public async Task Push_RollsBackProfile_WhenProjectedRestoredAssetIsRejectedLater()
+    {
+        var previousProfileId = Guid.NewGuid();
+        var nextProfileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var previousProfile = new RentalBillingProfile
+        {
+            Id = previousProfileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"PROJECTED-RESTORE-PREVIOUS-{Guid.NewGuid():N}",
+            CustomerName = "Projected restore customer",
+            ItemName = "Projected restore item",
+            BillingTemplateJson = JsonSerializer.Serialize(new[]
+            {
+                new { IncludedAssetIds = new[] { assetId } }
+            }),
+            BillingDay = 25,
+            MonthlyAmount = 60_000m,
+            IsActive = true
+        };
+        var deletedAsset = new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            CustomerName = previousProfile.CustomerName,
+            CurrentCustomerName = previousProfile.CustomerName,
+            InstallLocation = "Projected restore site",
+            InstallSiteName = "Projected restore site",
+            ItemName = previousProfile.ItemName,
+            ManagementId = $"PROJECTED-RESTORE-{assetId:N}",
+            ManagementNumber = $"PROJECTED-RESTORE-{assetId:N}",
+            AssetKey = $"PROJECTED-RESTORE-{assetId:N}",
+            BillingProfileId = previousProfileId,
+            IsDeleted = true
+        };
+        _dbContext.AddRange(
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet),
+                IsSystemDefault = true,
+                IsActive = true
+            },
+            previousProfile,
+            deletedAsset);
+        await _dbContext.SaveChangesAsync();
+        var profileMutationId = $"projected-restore-profile:{nextProfileId:N}";
+        var assetMutationId = $"projected-restore-asset:{assetId:N}";
+        var restoreDto = deletedAsset.ToDto();
+        restoreDto.IsDeleted = false;
+        restoreDto.BillingProfileId = nextProfileId;
+        restoreDto.ExpectedRevision = deletedAsset.Revision;
+        restoreDto.Revision = deletedAsset.Revision;
+        restoreDto.MutationId = assetMutationId;
+        restoreDto.MutationCreatedAtUtc = deletedAsset.UpdatedAtUtc.AddMinutes(1);
+        restoreDto.UpdatedAtUtc = deletedAsset.UpdatedAtUtc.AddMinutes(1);
+
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-project-restored-asset-atomicity",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = nextProfileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"PROJECTED-RESTORE-NEXT-{Guid.NewGuid():N}",
+                    CustomerName = previousProfile.CustomerName,
+                    ItemName = previousProfile.ItemName,
+                    BillingTemplateJson = JsonSerializer.Serialize(new[]
+                    {
+                        new { IncludedAssetIds = new[] { assetId } }
+                    }),
+                    BillingDay = 25,
+                    MonthlyAmount = 60_000m,
+                    IsActive = true,
+                    MutationId = profileMutationId,
+                    MutationCreatedAtUtc = DateTime.UtcNow,
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ],
+            RentalAssets = [restoreDto]
+        };
+        var response = await _controller.Push(request, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Contains(result.Notices, notice =>
+            notice.Code == "rental-profile-asset-atomicity-rollback" &&
+            notice.EntityId == nextProfileId.ToString("D"));
+        _dbContext.ChangeTracker.Clear();
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == nextProfileId));
+        Assert.True(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == previousProfileId));
+        var unchangedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(asset => asset.Id == assetId);
+        Assert.True(unchangedAsset.IsDeleted);
+        Assert.Equal(previousProfileId, unchangedAsset.BillingProfileId);
+        Assert.False(await _dbContext.ProcessedSyncMutations.AnyAsync(mutation =>
+            mutation.MutationId == profileMutationId || mutation.MutationId == assetMutationId));
+
+        var storedPreviousProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(profile => profile.Id == previousProfileId);
+        storedPreviousProfile.BillingTemplateJson = "[]";
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var retryResponse = await _controller.Push(request, CancellationToken.None);
+
+        var retryOk = Assert.IsType<OkObjectResult>(retryResponse.Result);
+        var retryResult = Assert.IsType<SyncPushResult>(retryOk.Value);
+        Assert.Equal(0, retryResult.ConflictCount);
+        Assert.DoesNotContain(retryResult.Notices, notice =>
+            notice.Code == "rental-profile-asset-atomicity-rollback");
+        _dbContext.ChangeTracker.Clear();
+        Assert.True(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == nextProfileId));
+        var restoredAsset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(asset => asset.Id == assetId);
+        Assert.False(restoredAsset.IsDeleted);
+        Assert.Equal(nextProfileId, restoredAsset.BillingProfileId);
+        Assert.True(await _dbContext.ProcessedSyncMutations.AnyAsync(mutation =>
+            mutation.MutationId == profileMutationId));
+        Assert.True(await _dbContext.ProcessedSyncMutations.AnyAsync(mutation =>
+            mutation.MutationId == assetMutationId));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Push_MixedRestoreDetectsActiveConflictFromPersistedAssetIdentifiers(
+        bool resolveDeletedAssetByNaturalKey)
+    {
+        var profileId = Guid.NewGuid();
+        var deletedAssetId = Guid.NewGuid();
+        var persistedManagementId = $"PERSISTED-CONFLICT-{Guid.NewGuid():N}";
+        var deletedAsset = new RentalAsset
+        {
+            Id = deletedAssetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ManagementId = persistedManagementId,
+            ManagementNumber = $"PERSISTED-NUMBER-{Guid.NewGuid():N}",
+            AssetKey = $"PERSISTED-KEY-{Guid.NewGuid():N}",
+            CustomerName = "Persisted identifier restore customer",
+            CurrentCustomerName = "Persisted identifier restore customer",
+            ItemName = "Persisted identifier restore copier",
+            IsDeleted = true
+        };
+        var activeConflict = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ManagementId = persistedManagementId.ToLowerInvariant(),
+            ManagementNumber = $"ACTIVE-NUMBER-{Guid.NewGuid():N}",
+            AssetKey = $"ACTIVE-KEY-{Guid.NewGuid():N}",
+            CustomerName = deletedAsset.CustomerName,
+            CurrentCustomerName = deletedAsset.CurrentCustomerName,
+            ItemName = deletedAsset.ItemName
+        };
+        _dbContext.AddRange(
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = "Persisted identifier restore company"
+            },
+            deletedAsset,
+            activeConflict);
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+        var storedDeletedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(asset => asset.Id == deletedAssetId);
+        var assetDto = storedDeletedAsset.ToDto();
+        assetDto.IsDeleted = false;
+        assetDto.BillingProfileId = null;
+        if (resolveDeletedAssetByNaturalKey)
+            assetDto.Id = Guid.NewGuid();
+        assetDto.ManagementId = $"INCOMING-NEW-{Guid.NewGuid():N}";
+        assetDto.ManagementNumber = resolveDeletedAssetByNaturalKey
+            ? storedDeletedAsset.ManagementNumber
+            : $"INCOMING-NUMBER-{Guid.NewGuid():N}";
+        assetDto.AssetKey = $"INCOMING-KEY-{Guid.NewGuid():N}";
+        assetDto.ExpectedRevision = storedDeletedAsset.Revision;
+        assetDto.Revision = storedDeletedAsset.Revision;
+        assetDto.MutationId = $"persisted-conflict-asset:{deletedAssetId:N}";
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "persisted-identifier-restore-conflict",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"persisted-conflict-profile-{profileId:N}",
+                    CustomerName = deletedAsset.CustomerName,
+                    ItemName = deletedAsset.ItemName,
+                    BillingTemplateJson = "[]",
+                    BillingDay = 25,
+                    MutationId = $"persisted-conflict-profile:{profileId:N}",
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ],
+            RentalAssets = [assetDto]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(result.ConflictCount > 0);
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.True(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AnyAsync(profile => profile.Id == profileId));
+        Assert.True(await _dbContext.RentalAssets.IgnoreQueryFilters().Where(asset => asset.Id == deletedAssetId).Select(asset => asset.IsDeleted).SingleAsync());
+        Assert.False(await _dbContext.RentalAssets.IgnoreQueryFilters().Where(asset => asset.Id == activeConflict.Id).Select(asset => asset.IsDeleted).SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_ExactRentalBillingProfileSnapshotReplay_AllowsSameGenerationDependentMutation()
+    {
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var mutationId = $"rental-profile-snapshot-replay:{Guid.NewGuid():N}";
+        var profile = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"SNAPSHOT-REPLAY-{profileId:N}",
+            CustomerName = "Snapshot replay customer",
+            ItemName = "Snapshot replay item",
+            BillingTemplateJson = JsonSerializer.Serialize(new[]
+            {
+                new { IncludedAssetIds = new[] { assetId } }
+            }),
+            IsActive = true
+        };
+        var asset = new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = $"SNAPSHOT-REPLAY-ASSET-{assetId:N}",
+            BillingProfileId = profileId,
+            CustomerName = profile.CustomerName,
+            CurrentCustomerName = profile.CustomerName,
+            InstallLocation = "Snapshot replay site",
+            InstallSiteName = "Snapshot replay site",
+            ItemName = profile.ItemName,
+            ManagementId = $"SNAPSHOT-REPLAY-{assetId:N}",
+            ManagementNumber = $"SNAPSHOT-REPLAY-{assetId:N}",
+            Notes = "before same-generation replay"
+        };
+        _dbContext.AddRange(profile, asset);
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var storedProfile = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == profileId);
+        var profileReplay = storedProfile.ToDto();
+        profileReplay.ExpectedRevision = storedProfile.Revision;
+        profileReplay.Revision = storedProfile.Revision;
+        profileReplay.MutationId = mutationId;
+        profileReplay.MutationCreatedAtUtc = storedProfile.UpdatedAtUtc;
+
+        _dbContext.ProcessedSyncMutations.Add(new ProcessedSyncMutation
+        {
+            MutationId = mutationId,
+            DeviceId = "device-rental-profile-snapshot-replay",
+            EntityName = nameof(RentalBillingProfile),
+            EntityId = profileId.ToString("D"),
+            ExpectedRevision = profileReplay.ExpectedRevision,
+            PayloadHash = SyncMutationPayloadHasher.Compute(profileReplay),
+            ProcessedAtUtc = storedProfile.UpdatedAtUtc
+        });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var storedAsset = await _dbContext.RentalAssets
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == assetId);
+        var assetUpdate = storedAsset.ToDto();
+        assetUpdate.Notes = "same-generation dependent accepted";
+        assetUpdate.ExpectedRevision = storedAsset.Revision;
+        assetUpdate.Revision = storedAsset.Revision;
+        assetUpdate.MutationId = $"rental-profile-snapshot-dependent:{assetId:N}";
+        assetUpdate.MutationCreatedAtUtc = storedAsset.UpdatedAtUtc.AddMinutes(1);
+        assetUpdate.UpdatedAtUtc = storedAsset.UpdatedAtUtc.AddMinutes(1);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-profile-snapshot-replay",
+            RentalBillingProfiles = [profileReplay],
+            RentalAssets = [assetUpdate]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(2, result.AcceptedCount);
+        Assert.Equal(1, result.DuplicateMutationCount);
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(
+            "same-generation dependent accepted",
+            await _dbContext.RentalAssets.IgnoreQueryFilters()
+                .Where(current => current.Id == assetId)
+                .Select(current => current.Notes)
+                .SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_ExactRentalBillingProfileReplay_DoesNotRevalidateChangedAssetTopology()
+    {
+        var profileId = Guid.NewGuid();
+        var includedAssetId = Guid.NewGuid();
+        var mutationId = $"rental-profile-topology-replay:{Guid.NewGuid():N}";
+        var mutationCreatedAtUtc = DateTime.UtcNow;
+        _dbContext.AddRange(
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet),
+                IsSystemDefault = true,
+                IsActive = true
+            },
+            new RentalAsset
+            {
+                Id = includedAssetId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                CustomerName = "Topology replay customer",
+                CurrentCustomerName = "Topology replay customer",
+                InstallLocation = "Topology replay site",
+                InstallSiteName = "Topology replay site",
+                ItemName = "Topology replay item",
+                ManagementId = $"TOPOLOGY-INCLUDED-{includedAssetId:N}",
+                ManagementNumber = $"TOPOLOGY-INCLUDED-{includedAssetId:N}",
+                AssetKey = $"TOPOLOGY-INCLUDED-{includedAssetId:N}",
+                BillingProfileId = profileId
+            });
+        await _dbContext.SaveChangesAsync();
+
+        RentalBillingProfileDto CreateMutation()
+            => new()
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = $"TOPOLOGY-REPLAY-{profileId:N}",
+                CustomerName = "Topology replay customer",
+                ItemName = "Topology replay item",
+                BillingTemplateJson = JsonSerializer.Serialize(new[]
+                {
+                    new { IncludedAssetIds = new[] { includedAssetId } }
+                }),
+                BillingDay = 25,
+                MonthlyAmount = 40_000m,
+                IsActive = true,
+                MutationId = mutationId,
+                MutationCreatedAtUtc = mutationCreatedAtUtc,
+                CreatedAtUtc = mutationCreatedAtUtc.AddMinutes(-1),
+                UpdatedAtUtc = mutationCreatedAtUtc
+            };
+
+        var firstResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-profile-topology-replay",
+            RentalBillingProfiles = [CreateMutation()]
+        }, CancellationToken.None);
+        var firstOk = Assert.IsType<OkObjectResult>(firstResponse.Result);
+        var firstResult = Assert.IsType<SyncPushResult>(firstOk.Value);
+        Assert.Equal(0, firstResult.ConflictCount);
+        Assert.Equal(1, firstResult.AcceptedCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var extraAssetId = Guid.NewGuid();
+        _dbContext.RentalAssets.Add(new RentalAsset
+        {
+            Id = extraAssetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            CustomerName = "Topology replay customer",
+            CurrentCustomerName = "Topology replay customer",
+            InstallLocation = "Topology replay site",
+            InstallSiteName = "Topology replay site",
+            ItemName = "Topology replay item",
+            ManagementId = $"TOPOLOGY-EXTRA-{extraAssetId:N}",
+            ManagementNumber = $"TOPOLOGY-EXTRA-{extraAssetId:N}",
+            AssetKey = $"TOPOLOGY-EXTRA-{extraAssetId:N}",
+            BillingProfileId = profileId
+        });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var replayResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-profile-topology-replay",
+            RentalBillingProfiles = [CreateMutation()]
+        }, CancellationToken.None);
+        var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
+        var replayResult = Assert.IsType<SyncPushResult>(replayOk.Value);
+        Assert.Equal(0, replayResult.ConflictCount);
+        Assert.Equal(1, replayResult.AcceptedCount);
+        Assert.Equal(1, replayResult.DuplicateMutationCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var includedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(asset => asset.Id == includedAssetId);
+        var deleteMutationId = $"delete-asset-with-profile-replay:{includedAssetId:N}";
+        var deleteDto = includedAsset.ToDto();
+        deleteDto.IsDeleted = true;
+        deleteDto.ExpectedRevision = includedAsset.Revision;
+        deleteDto.Revision = includedAsset.Revision;
+        deleteDto.MutationId = deleteMutationId;
+        deleteDto.MutationCreatedAtUtc = includedAsset.UpdatedAtUtc.AddMinutes(1);
+        deleteDto.UpdatedAtUtc = includedAsset.UpdatedAtUtc.AddMinutes(1);
+
+        var replayWithDeleteResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-profile-topology-replay",
+            RentalBillingProfiles = [CreateMutation()],
+            RentalAssets = [deleteDto]
+        }, CancellationToken.None);
+        var replayWithDeleteOk = Assert.IsType<OkObjectResult>(replayWithDeleteResponse.Result);
+        var replayWithDeleteResult = Assert.IsType<SyncPushResult>(replayWithDeleteOk.Value);
+        Assert.Equal(1, replayWithDeleteResult.DuplicateMutationCount);
+        Assert.Contains(replayWithDeleteResult.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalAsset));
+        _dbContext.ChangeTracker.Clear();
+        Assert.False((await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(asset => asset.Id == includedAssetId)).IsDeleted);
+        Assert.False(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == deleteMutationId));
+    }
+
+    [Fact]
+    public async Task Push_ExactRentalBillingProfileReplay_SkipsDeletedExternalCustomerRestorePreflight()
+    {
+        var profileId = Guid.NewGuid();
+        var customerId = Guid.NewGuid();
+        var mutationId = $"rental-profile-customer-restore-replay:{Guid.NewGuid():N}";
+        var mutationCreatedAtUtc = DateTime.UtcNow;
+        _dbContext.AddRange(
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet),
+                IsSystemDefault = true,
+                IsActive = true
+            },
+            new Customer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                NameOriginal = "External deleted replay customer",
+                NameMatchKey = "EXTERNALDELETEDREPLAYCUSTOMER",
+                TradeType = CustomerClassificationNormalizer.Sales
+            });
+        await _dbContext.SaveChangesAsync();
+
+        RentalBillingProfileDto CreateMutation()
+            => new()
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = $"CUSTOMER-RESTORE-REPLAY-{profileId:N}",
+                CustomerId = customerId,
+                CustomerName = "External deleted replay customer",
+                ItemName = "Customer restore replay item",
+                BillingTemplateJson = "[]",
+                BillingDay = 25,
+                MonthlyAmount = 40_000m,
+                IsActive = true,
+                MutationId = mutationId,
+                MutationCreatedAtUtc = mutationCreatedAtUtc,
+                CreatedAtUtc = mutationCreatedAtUtc.AddMinutes(-1),
+                UpdatedAtUtc = mutationCreatedAtUtc
+            };
+
+        var firstResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-profile-customer-restore-replay",
+            RentalBillingProfiles = [CreateMutation()]
+        }, CancellationToken.None);
+        var firstOk = Assert.IsType<OkObjectResult>(firstResponse.Result);
+        var firstResult = Assert.IsType<SyncPushResult>(firstOk.Value);
+        Assert.Equal(0, firstResult.ConflictCount);
+        Assert.Equal(1, firstResult.AcceptedCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(profile => profile.Id == profileId);
+        var storedCustomer = await _dbContext.Customers.IgnoreQueryFilters()
+            .SingleAsync(customer => customer.Id == customerId);
+        storedProfile.IsDeleted = true;
+        storedCustomer.IsDeleted = true;
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var scopedUser = new TestCurrentUserContext
+        {
+            Username = "rental-profile-replay-user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeTenantAll,
+            Permissions = [PermissionNames.RentalProfileEdit]
+        };
+        await using var scopedDb = CreateDbContext(scopedUser);
+        var scopedController = CreateController(scopedDb, scopedUser);
+        var replayResponse = await scopedController.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-profile-customer-restore-replay",
+            RentalBillingProfiles = [CreateMutation()]
+        }, CancellationToken.None);
+
+        var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
+        var replayResult = Assert.IsType<SyncPushResult>(replayOk.Value);
+        Assert.True(
+            replayResult.ConflictCount == 0,
+            string.Join(" | ", replayResult.Conflicts.Select(conflict =>
+                $"{conflict.EntityName}:{conflict.Reason}")));
+        Assert.Equal(1, replayResult.AcceptedCount);
+        Assert.Equal(1, replayResult.DuplicateMutationCount);
+        scopedDb.ChangeTracker.Clear();
+        Assert.True((await scopedDb.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(profile => profile.Id == profileId)).IsDeleted);
+        Assert.True((await scopedDb.Customers.IgnoreQueryFilters()
+            .SingleAsync(customer => customer.Id == customerId)).IsDeleted);
+    }
+
+    [Fact]
+    public async Task Push_RejectsNewRentalBillingProfileWithMalformedBillingTemplateJsonWithoutSideEffects()
+    {
+        var profileId = Guid.NewGuid();
+        var mutationId = $"malformed-rental-profile-{Guid.NewGuid():N}";
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet),
+            IsSystemDefault = true,
+            IsActive = true
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-malformed-rental-profile",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"MALFORMED-PROFILE-{Guid.NewGuid():N}",
+                    CustomerName = "Malformed profile customer",
+                    ItemName = "Malformed profile item",
+                    BillingTemplateJson = "[{\"IncludedAssetIds\":",
+                    BillingDay = 25,
+                    MonthlyAmount = 10_000m,
+                    IsActive = true,
+                    MutationId = mutationId,
+                    MutationCreatedAtUtc = DateTime.UtcNow,
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.Reason.Contains("청구관리", StringComparison.Ordinal));
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(current => current.Id == profileId));
+        Assert.False(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(current => current.MutationId == mutationId));
+    }
+
+    [Fact]
+    public async Task Push_ProjectedProfileCoverage_AllowsRentalEditAllUnlinkWithReadableCustomerReference()
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var now = DateTime.UtcNow.AddMinutes(-5);
+        var customer = new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "RentalEditAll readable customer",
+            NameMatchKey = "RENTALEDITALLREADABLECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var profile = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"RENTAL-EDIT-ALL-PROJECTED-{Guid.NewGuid():N}",
+            CustomerId = customerId,
+            CustomerName = customer.NameOriginal,
+            InstallSiteName = "RentalEditAll site",
+            ItemName = "RentalEditAll item",
+            BillingTemplateJson = JsonSerializer.Serialize(new[]
+            {
+                new { IncludedAssetIds = new[] { assetId } }
+            }),
+            BillingDay = 25,
+            MonthlyAmount = 50_000m,
+            IsActive = true,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        };
+        var asset = new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            CustomerId = customerId,
+            CustomerName = customer.NameOriginal,
+            CurrentCustomerName = customer.NameOriginal,
+            InstallLocation = profile.InstallSiteName,
+            InstallSiteName = profile.InstallSiteName,
+            ItemName = profile.ItemName,
+            ManagementId = $"RENTAL-EDIT-ALL-{assetId:N}",
+            ManagementNumber = $"RENTAL-EDIT-ALL-{assetId:N}",
+            AssetKey = $"RENTAL-EDIT-ALL-{assetId:N}",
+            BillingProfileId = profileId,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        };
+        _dbContext.AddRange(
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = OfficeCodeCatalog.GetOfficeDisplayName(OfficeCodeCatalog.Usenet),
+                IsSystemDefault = true,
+                IsActive = true
+            },
+            customer,
+            profile,
+            asset);
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "rental-edit-all-projected-user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.RentalEditAll]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-edit-all-projected",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = profile.TenantCode,
+                    OfficeCode = profile.OfficeCode,
+                    ResponsibleOfficeCode = profile.ResponsibleOfficeCode,
+                    ManagementCompanyCode = profile.ManagementCompanyCode,
+                    ProfileKey = profile.ProfileKey,
+                    CustomerId = customerId,
+                    CustomerName = customer.NameOriginal,
+                    InstallSiteName = profile.InstallSiteName,
+                    ItemName = profile.ItemName,
+                    BillingTemplateJson = "[]",
+                    BillingDay = profile.BillingDay,
+                    MonthlyAmount = profile.MonthlyAmount,
+                    IsActive = true,
+                    Revision = profile.Revision,
+                    ExpectedRevision = profile.Revision,
+                    CreatedAtUtc = profile.CreatedAtUtc,
+                    UpdatedAtUtc = now.AddMinutes(2)
+                }
+            ],
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = asset.TenantCode,
+                    OfficeCode = asset.OfficeCode,
+                    ResponsibleOfficeCode = asset.ResponsibleOfficeCode,
+                    ManagementCompanyCode = asset.ManagementCompanyCode,
+                    CustomerId = customerId,
+                    CustomerName = customer.NameOriginal,
+                    CurrentCustomerName = customer.NameOriginal,
+                    InstallLocation = asset.InstallLocation,
+                    InstallSiteName = asset.InstallSiteName,
+                    ItemName = asset.ItemName,
+                    ManagementId = asset.ManagementId,
+                    ManagementNumber = asset.ManagementNumber,
+                    AssetKey = asset.AssetKey,
+                    BillingProfileId = null,
+                    Revision = asset.Revision,
+                    ExpectedRevision = asset.Revision,
+                    CreatedAtUtc = asset.CreatedAtUtc,
+                    UpdatedAtUtc = now.AddMinutes(2)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(
+            result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+        scopedDb.ChangeTracker.Clear();
+        Assert.Equal("[]", (await scopedDb.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == profileId)).BillingTemplateJson);
+        Assert.Null((await scopedDb.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == assetId)).BillingProfileId);
+    }
+
+    [Fact]
+    public async Task Push_RejectsMovingAssetToAnotherExplicitProfile_WhenPreviousTemplateStillReferencesAsset()
+    {
+        var assetId = Guid.NewGuid();
+        var previousProfileId = Guid.NewGuid();
+        var nextProfileId = Guid.NewGuid();
+        var customerId = Guid.NewGuid();
+        var templateJson = JsonSerializer.Serialize(new[]
+        {
+            new { IncludedAssetIds = new[] { assetId } }
+        });
+        var customer = new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Profile move customer",
+            NameMatchKey = "PROFILEMOVECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        RentalBillingProfile CreateProfile(Guid id, string suffix) => new()
+        {
+            Id = id,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"PROFILE-MOVE-{suffix}-{Guid.NewGuid():N}",
+            CustomerId = customerId,
+            CustomerName = customer.NameOriginal,
+            InstallSiteName = "Profile move site",
+            ItemName = "Profile move item",
+            BillingTemplateJson = templateJson,
+            BillingDay = 25,
+            MonthlyAmount = 40_000m,
+            IsActive = true
+        };
+        var previousProfile = CreateProfile(previousProfileId, "PREVIOUS");
+        var nextProfile = CreateProfile(nextProfileId, "NEXT");
+        var asset = new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            CustomerId = customerId,
+            CustomerName = customer.NameOriginal,
+            CurrentCustomerName = customer.NameOriginal,
+            InstallLocation = previousProfile.InstallSiteName,
+            InstallSiteName = previousProfile.InstallSiteName,
+            ItemName = previousProfile.ItemName,
+            ManagementId = $"PROFILE-MOVE-{assetId:N}",
+            ManagementNumber = $"PROFILE-MOVE-{assetId:N}",
+            AssetKey = $"PROFILE-MOVE-{assetId:N}",
+            BillingProfileId = previousProfileId,
+            CreatedAtUtc = DateTime.UtcNow.AddMinutes(-2),
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-2)
+        };
+        _dbContext.AddRange(customer, previousProfile, nextProfile, asset);
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-profile-move-old-template",
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = asset.Id,
+                    TenantCode = asset.TenantCode,
+                    OfficeCode = asset.OfficeCode,
+                    ResponsibleOfficeCode = asset.ResponsibleOfficeCode,
+                    ManagementCompanyCode = asset.ManagementCompanyCode,
+                    CustomerId = asset.CustomerId,
+                    CustomerName = asset.CustomerName,
+                    CurrentCustomerName = asset.CurrentCustomerName,
+                    InstallLocation = asset.InstallLocation,
+                    InstallSiteName = asset.InstallSiteName,
+                    ItemName = asset.ItemName,
+                    ManagementId = asset.ManagementId,
+                    ManagementNumber = asset.ManagementNumber,
+                    AssetKey = asset.AssetKey,
+                    BillingProfileId = nextProfileId,
+                    Revision = asset.Revision,
+                    ExpectedRevision = asset.Revision,
+                    CreatedAtUtc = asset.CreatedAtUtc,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalAsset) &&
+            conflict.Reason.Contains("기존 청구 프로필", StringComparison.Ordinal));
+        _dbContext.ChangeTracker.Clear();
+        var unchangedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == assetId);
+        Assert.Equal(previousProfileId, unchangedAsset.BillingProfileId);
+    }
+
     [Fact]
     public async Task Push_RejectsRentalAssetBillingProfile_WhenProfileIsReadSharedButNotWritable()
     {
         var sharedReadOnlyProfileId = Guid.NewGuid();
-        _dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        SeedSharingPolicy(_dbContext, new DataSharingPolicy
         {
             Id = Guid.NewGuid(),
             SourceTenantCode = TenantScopeCatalog.UsenetGroup,
@@ -6698,7 +16225,7 @@ public sealed class SyncControllerTests : IDisposable
             SettlementAmount = 50_000m
         };
 
-        _dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        SeedSharingPolicy(_dbContext, new DataSharingPolicy
         {
             Id = Guid.NewGuid(),
             SourceTenantCode = TenantScopeCatalog.UsenetGroup,
@@ -6778,7 +16305,7 @@ public sealed class SyncControllerTests : IDisposable
             Note = "SYNC-INVOICE-ONLY-HIDDEN-PAYMENT"
         };
 
-        _dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        SeedSharingPolicy(_dbContext, new DataSharingPolicy
         {
             Id = Guid.NewGuid(),
             SourceTenantCode = TenantScopeCatalog.UsenetGroup,
@@ -6828,7 +16355,7 @@ public sealed class SyncControllerTests : IDisposable
         var hiddenRentalAssetPurgeId = Guid.NewGuid();
         var visibleTransactionPurgeId = Guid.NewGuid();
 
-        _dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        SeedSharingPolicy(_dbContext, new DataSharingPolicy
         {
             Id = Guid.NewGuid(),
             SourceTenantCode = TenantScopeCatalog.UsenetGroup,
@@ -6916,7 +16443,7 @@ public sealed class SyncControllerTests : IDisposable
         var hiddenPaymentPurgeId = Guid.NewGuid();
         var hiddenTransactionPurgeId = Guid.NewGuid();
 
-        _dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        SeedSharingPolicy(_dbContext, new DataSharingPolicy
         {
             Id = Guid.NewGuid(),
             SourceTenantCode = TenantScopeCatalog.UsenetGroup,
@@ -7616,6 +17143,816 @@ public sealed class SyncControllerTests : IDisposable
         Assert.True(storedContract.IsPrimary);
     }
 
+    [Theory]
+    [InlineData("profile", false)]
+    [InlineData("profile", true)]
+    [InlineData("asset", false)]
+    [InlineData("asset", true)]
+    public async Task Push_RequiresCustomerEditForImplicitRentalCustomerRestore(
+        string rentalKind,
+        bool grantCustomerEdit)
+    {
+        var customerId = Guid.NewGuid();
+        var matchingContractId = Guid.NewGuid();
+        var activePrimaryContractId = Guid.NewGuid();
+        var rentalId = Guid.NewGuid();
+        var customer = new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = $"Implicit restore {rentalKind} customer",
+            NameMatchKey = $"IMPLICITRESTORE{rentalKind.ToUpperInvariant()}CUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true
+        };
+        var matchingContract = new CustomerContract
+        {
+            Id = matchingContractId,
+            CustomerId = customerId,
+            ContractType = "Rental",
+            FileName = $"implicit-{rentalKind}-matching.pdf",
+            MimeType = "application/pdf",
+            IsPrimary = true,
+            IsDeleted = true
+        };
+        var activePrimaryContract = new CustomerContract
+        {
+            Id = activePrimaryContractId,
+            CustomerId = customerId,
+            ContractType = "Rental",
+            FileName = $"implicit-{rentalKind}-active.pdf",
+            MimeType = "application/pdf",
+            IsPrimary = true
+        };
+        var profile = new RentalBillingProfile
+        {
+            Id = rentalId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"implicit-restore-{rentalKind}-{rentalId:N}",
+            CustomerId = customerId,
+            CustomerName = customer.NameOriginal,
+            ItemName = "Implicit restore copier",
+            BillingDay = 25,
+            IsDeleted = true
+        };
+        var asset = new RentalAsset
+        {
+            Id = rentalId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            AssetKey = $"IMPLICIT-RESTORE-{rentalId:N}",
+            ManagementId = $"IMPLICIT-{rentalId:N}",
+            ManagementNumber = $"IMPLICIT-{rentalId:N}",
+            CustomerId = customerId,
+            CustomerName = customer.NameOriginal,
+            CurrentCustomerName = customer.NameOriginal,
+            ItemName = "Implicit restore copier",
+            AssetStatus = "Installed",
+            IsDeleted = true
+        };
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = $"Implicit restore {rentalKind} company"
+        });
+        _dbContext.AddRange(customer, matchingContract, activePrimaryContract);
+        if (rentalKind == "profile")
+            _dbContext.RentalBillingProfiles.Add(profile);
+        else
+            _dbContext.RentalAssets.Add(asset);
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var permissions = new List<string>
+        {
+            rentalKind == "profile" ? PermissionNames.RentalProfileEdit : PermissionNames.RentalAssetEdit
+        };
+        if (grantCustomerEdit)
+            permissions.Add(PermissionNames.CustomerEdit);
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = $"implicit-{rentalKind}-restore-user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = permissions
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var request = new SyncPushRequest { DeviceId = $"implicit-{rentalKind}-restore" };
+        if (rentalKind == "profile")
+        {
+            request.RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profile.Id,
+                    TenantCode = profile.TenantCode,
+                    OfficeCode = profile.OfficeCode,
+                    ResponsibleOfficeCode = profile.ResponsibleOfficeCode,
+                    ManagementCompanyCode = profile.ManagementCompanyCode,
+                    ProfileKey = profile.ProfileKey,
+                    CustomerId = customerId,
+                    CustomerName = profile.CustomerName,
+                    ItemName = profile.ItemName,
+                    BillingDay = profile.BillingDay,
+                    IsDeleted = false,
+                    Revision = profile.Revision,
+                    ExpectedRevision = profile.Revision,
+                    CreatedAtUtc = profile.CreatedAtUtc,
+                    UpdatedAtUtc = profile.UpdatedAtUtc
+                }
+            ];
+        }
+        else
+        {
+            request.RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = asset.Id,
+                    TenantCode = asset.TenantCode,
+                    OfficeCode = asset.OfficeCode,
+                    ResponsibleOfficeCode = asset.ResponsibleOfficeCode,
+                    ManagementCompanyCode = asset.ManagementCompanyCode,
+                    AssetKey = asset.AssetKey,
+                    ManagementId = asset.ManagementId,
+                    ManagementNumber = asset.ManagementNumber,
+                    CustomerId = customerId,
+                    CustomerName = asset.CustomerName,
+                    CurrentCustomerName = asset.CurrentCustomerName,
+                    ItemName = asset.ItemName,
+                    AssetStatus = asset.AssetStatus,
+                    IsDeleted = false,
+                    Revision = asset.Revision,
+                    ExpectedRevision = asset.Revision,
+                    CreatedAtUtc = asset.CreatedAtUtc,
+                    UpdatedAtUtc = asset.UpdatedAtUtc
+                }
+            ];
+        }
+
+        var response = await controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(grantCustomerEdit ? 1 : 0, result.AcceptedCount);
+        Assert.Equal(grantCustomerEdit ? 0 : 1, result.ConflictCount);
+
+        scopedDb.ChangeTracker.Clear();
+        var storedCustomer = await scopedDb.Customers.IgnoreQueryFilters().SingleAsync(current => current.Id == customerId);
+        var storedMatching = await scopedDb.CustomerContracts.IgnoreQueryFilters().SingleAsync(current => current.Id == matchingContractId);
+        var storedActivePrimary = await scopedDb.CustomerContracts.IgnoreQueryFilters().SingleAsync(current => current.Id == activePrimaryContractId);
+        Assert.Equal(!grantCustomerEdit, storedCustomer.IsDeleted);
+        Assert.Equal(!grantCustomerEdit, storedMatching.IsDeleted);
+        Assert.Equal(!grantCustomerEdit, storedActivePrimary.IsPrimary);
+        if (rentalKind == "profile")
+            Assert.Equal(!grantCustomerEdit, await scopedDb.RentalBillingProfiles.IgnoreQueryFilters().Where(current => current.Id == rentalId).Select(current => current.IsDeleted).SingleAsync());
+        else
+            Assert.Equal(!grantCustomerEdit, await scopedDb.RentalAssets.IgnoreQueryFilters().Where(current => current.Id == rentalId).Select(current => current.IsDeleted).SingleAsync());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Push_AcceptedCustomerRestore_RestoresDeletionGenerationContracts_WithOrWithoutProfile(
+        bool includeProfile)
+    {
+        var customerId = Guid.NewGuid();
+        var contractId = Guid.NewGuid();
+        var otherTimestampContractId = Guid.NewGuid();
+        var activePrimaryContractId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var customer = new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Explicit customer restore",
+            NameMatchKey = "EXPLICITCUSTOMERRESTORE",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true
+        };
+        var contract = new CustomerContract
+        {
+            Id = contractId,
+            CustomerId = customerId,
+            ContractType = "Rental",
+            FileName = "explicit-customer-restore.pdf",
+            MimeType = "application/pdf",
+            IsPrimary = true,
+            IsDeleted = true
+        };
+        var otherTimestampContract = new CustomerContract
+        {
+            Id = otherTimestampContractId,
+            CustomerId = customerId,
+            ContractType = "Rental",
+            FileName = "explicit-customer-other-generation.pdf",
+            MimeType = "application/pdf",
+            IsDeleted = true
+        };
+        var activePrimaryContract = new CustomerContract
+        {
+            Id = activePrimaryContractId,
+            CustomerId = customerId,
+            ContractType = "Rental",
+            FileName = "explicit-customer-active-primary.pdf",
+            MimeType = "application/pdf",
+            IsPrimary = true
+        };
+        var profile = new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"explicit-customer-restore-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = customer.NameOriginal,
+            ItemName = "Explicit restore copier",
+            BillingDay = 25,
+            IsDeleted = true
+        };
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "Explicit customer restore company"
+        });
+        _dbContext.AddRange(customer, contract, activePrimaryContract, profile);
+        await _dbContext.SaveChangesAsync();
+        _dbContext.CustomerContracts.Add(otherTimestampContract);
+        await _dbContext.SaveChangesAsync();
+        Assert.NotEqual(customer.UpdatedAtUtc, otherTimestampContract.UpdatedAtUtc);
+        _dbContext.ChangeTracker.Clear();
+        var deletedCustomer = await _dbContext.Customers.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == customerId);
+        var deletedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().SingleAsync(current => current.Id == profileId);
+        var customerDto = deletedCustomer.ToDto();
+        customerDto.IsDeleted = false;
+        customerDto.MutationId = $"explicit-customer-restore:{customerId:N}";
+        var request = new SyncPushRequest
+        {
+            DeviceId = "explicit-customer-restore",
+            Customers = [customerDto]
+        };
+        if (includeProfile)
+        {
+            request.RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = deletedProfile.Id,
+                    TenantCode = deletedProfile.TenantCode,
+                    OfficeCode = deletedProfile.OfficeCode,
+                    ResponsibleOfficeCode = deletedProfile.ResponsibleOfficeCode,
+                    ManagementCompanyCode = deletedProfile.ManagementCompanyCode,
+                    ProfileKey = deletedProfile.ProfileKey,
+                    CustomerId = customerId,
+                    CustomerName = deletedProfile.CustomerName,
+                    ItemName = deletedProfile.ItemName,
+                    BillingDay = deletedProfile.BillingDay,
+                    IsDeleted = false,
+                    Revision = deletedProfile.Revision,
+                    ExpectedRevision = deletedProfile.Revision,
+                    CreatedAtUtc = deletedProfile.CreatedAtUtc,
+                    UpdatedAtUtc = deletedProfile.UpdatedAtUtc
+                }
+            ];
+        }
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(includeProfile ? 2 : 1, result.AcceptedCount);
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.False(await _dbContext.Customers.IgnoreQueryFilters().Where(current => current.Id == customerId).Select(current => current.IsDeleted).SingleAsync());
+        Assert.False(await _dbContext.CustomerContracts.IgnoreQueryFilters().Where(current => current.Id == contractId).Select(current => current.IsDeleted).SingleAsync());
+        Assert.True(await _dbContext.CustomerContracts.IgnoreQueryFilters().Where(current => current.Id == otherTimestampContractId).Select(current => current.IsDeleted).SingleAsync());
+        Assert.False(await _dbContext.CustomerContracts.IgnoreQueryFilters().Where(current => current.Id == activePrimaryContractId).Select(current => current.IsPrimary).SingleAsync());
+        Assert.Equal(!includeProfile, await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().Where(current => current.Id == profileId).Select(current => current.IsDeleted).SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_AcceptedSharedCustomerRestore_DoesNotRestoreContracts_WhenContractWriteScopeDenied()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu-shared-customer-restore",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.CustomerEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        SeedSharingPolicy(scopedDb, new DataSharingPolicy
+        {
+            Id = Guid.NewGuid(),
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ShareCustomers = true,
+            ShareContracts = false,
+            AllowTargetWrite = true,
+            IsActive = true
+        });
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Shared customer restore without contract scope",
+            NameMatchKey = "SHAREDCUSTOMERRESTOREWITHOUTCONTRACTSCOPE",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true
+        };
+        var deletedPrimary = new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            ContractType = "Rental",
+            FileName = "shared-customer-deleted-primary.pdf",
+            MimeType = "application/pdf",
+            IsPrimary = true,
+            IsDeleted = true
+        };
+        var activePrimary = new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            ContractType = "Rental",
+            FileName = "shared-customer-active-primary.pdf",
+            MimeType = "application/pdf",
+            IsPrimary = true
+        };
+        scopedDb.AddRange(customer, deletedPrimary, activePrimary);
+        await scopedDb.SaveChangesAsync();
+        Assert.Equal(customer.UpdatedAtUtc, deletedPrimary.UpdatedAtUtc);
+        scopedDb.ChangeTracker.Clear();
+
+        var storedCustomer = await scopedDb.Customers.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(current => current.Id == customer.Id);
+        var storedDeletedPrimary = await scopedDb.CustomerContracts.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(current => current.Id == deletedPrimary.Id);
+        var storedActivePrimary = await scopedDb.CustomerContracts.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(current => current.Id == activePrimary.Id);
+        var customerDto = storedCustomer.ToDto();
+        customerDto.IsDeleted = false;
+        customerDto.MutationId = $"shared-customer-restore:{customer.Id:N}";
+        customerDto.MutationCreatedAtUtc = storedCustomer.UpdatedAtUtc.AddMinutes(1);
+        var controller = CreateController(scopedDb, currentUser);
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "shared-customer-restore-without-contract-scope",
+            Customers = [customerDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Single(result.AcceptedRevisions, accepted =>
+            accepted.EntityName == nameof(Customer) && accepted.EntityId == customer.Id);
+        Assert.DoesNotContain(result.AcceptedRevisions, accepted =>
+            accepted.EntityName == nameof(CustomerContract));
+
+        scopedDb.ChangeTracker.Clear();
+        Assert.False(await scopedDb.Customers.IgnoreQueryFilters()
+            .Where(current => current.Id == customer.Id)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+        var unchangedDeletedPrimary = await scopedDb.CustomerContracts.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(current => current.Id == deletedPrimary.Id);
+        var unchangedActivePrimary = await scopedDb.CustomerContracts.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(current => current.Id == activePrimary.Id);
+        Assert.True(unchangedDeletedPrimary.IsDeleted);
+        Assert.True(unchangedDeletedPrimary.IsPrimary);
+        Assert.Equal(storedDeletedPrimary.Revision, unchangedDeletedPrimary.Revision);
+        Assert.Equal(storedDeletedPrimary.UpdatedAtUtc, unchangedDeletedPrimary.UpdatedAtUtc);
+        Assert.False(unchangedActivePrimary.IsDeleted);
+        Assert.True(unchangedActivePrimary.IsPrimary);
+        Assert.Equal(storedActivePrimary.Revision, unchangedActivePrimary.Revision);
+        Assert.Equal(storedActivePrimary.UpdatedAtUtc, unchangedActivePrimary.UpdatedAtUtc);
+        var receipt = Assert.Single(await scopedDb.ProcessedSyncMutations.AsNoTracking().ToListAsync());
+        Assert.Equal(nameof(Customer), receipt.EntityName);
+        Assert.Equal(customer.Id.ToString("D"), receipt.EntityId);
+    }
+
+    [Fact]
+    public async Task Push_RollsBackCustomerAndDeletionGenerationContractRestore_WhenRentalAssetAtomicityFailsLater()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Customer restore before rental rollback",
+            NameMatchKey = "CUSTOMERRESTOREBEFORERENTALROLLBACK",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true
+        };
+        var deletedPrimary = new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            ContractType = "Rental",
+            FileName = "rollback-deleted-primary.pdf",
+            MimeType = "application/pdf",
+            IsPrimary = true,
+            IsDeleted = true
+        };
+        var activePrimary = new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            ContractType = "Rental",
+            FileName = "rollback-active-primary.pdf",
+            MimeType = "application/pdf",
+            IsPrimary = true
+        };
+        var previousProfileId = Guid.NewGuid();
+        var nextProfileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var previousProfile = new RentalBillingProfile
+        {
+            Id = previousProfileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"CUSTOMER-RESTORE-ROLLBACK-PREVIOUS-{Guid.NewGuid():N}",
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            ItemName = "Customer restore rollback copier",
+            BillingTemplateJson = JsonSerializer.Serialize(new[]
+            {
+                new { IncludedAssetIds = new[] { assetId } }
+            }),
+            BillingDay = 25,
+            MonthlyAmount = 60_000m,
+            IsActive = true
+        };
+        var deletedAsset = new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            CurrentCustomerName = customer.NameOriginal,
+            InstallLocation = "Customer restore rollback site",
+            InstallSiteName = "Customer restore rollback site",
+            ItemName = previousProfile.ItemName,
+            ManagementId = $"CUSTOMER-RESTORE-ROLLBACK-{assetId:N}",
+            ManagementNumber = $"CUSTOMER-RESTORE-ROLLBACK-{assetId:N}",
+            AssetKey = $"CUSTOMER-RESTORE-ROLLBACK-{assetId:N}",
+            BillingProfileId = previousProfileId,
+            IsDeleted = true
+        };
+        _dbContext.AddRange(
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = "Customer restore rollback company",
+                IsSystemDefault = true,
+                IsActive = true
+            },
+            customer,
+            deletedPrimary,
+            activePrimary,
+            previousProfile,
+            deletedAsset);
+        await _dbContext.SaveChangesAsync();
+        Assert.Equal(customer.UpdatedAtUtc, deletedPrimary.UpdatedAtUtc);
+        _dbContext.ChangeTracker.Clear();
+
+        var storedCustomer = await _dbContext.Customers.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(current => current.Id == customer.Id);
+        var storedDeletedPrimary = await _dbContext.CustomerContracts.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(current => current.Id == deletedPrimary.Id);
+        var storedActivePrimary = await _dbContext.CustomerContracts.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(current => current.Id == activePrimary.Id);
+        var storedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(current => current.Id == assetId);
+        var customerMutationId = $"customer-restore-before-rental-rollback:{customer.Id:N}";
+        var profileMutationId = $"customer-restore-rental-rollback-profile:{nextProfileId:N}";
+        var assetMutationId = $"customer-restore-rental-rollback-asset:{assetId:N}";
+        var customerDto = storedCustomer.ToDto();
+        customerDto.IsDeleted = false;
+        customerDto.MutationId = customerMutationId;
+        customerDto.MutationCreatedAtUtc = storedCustomer.UpdatedAtUtc.AddMinutes(1);
+        var restoreAssetDto = storedAsset.ToDto();
+        restoreAssetDto.IsDeleted = false;
+        restoreAssetDto.BillingProfileId = nextProfileId;
+        restoreAssetDto.ExpectedRevision = storedAsset.Revision;
+        restoreAssetDto.Revision = storedAsset.Revision;
+        restoreAssetDto.MutationId = assetMutationId;
+        restoreAssetDto.MutationCreatedAtUtc = storedAsset.UpdatedAtUtc.AddMinutes(1);
+        restoreAssetDto.UpdatedAtUtc = storedAsset.UpdatedAtUtc.AddMinutes(1);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "customer-restore-before-rental-atomicity-failure",
+            Customers = [customerDto],
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = nextProfileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"CUSTOMER-RESTORE-ROLLBACK-NEXT-{Guid.NewGuid():N}",
+                    CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal,
+                    ItemName = previousProfile.ItemName,
+                    BillingTemplateJson = JsonSerializer.Serialize(new[]
+                    {
+                        new { IncludedAssetIds = new[] { assetId } }
+                    }),
+                    BillingDay = 25,
+                    MonthlyAmount = 60_000m,
+                    IsActive = true,
+                    MutationId = profileMutationId,
+                    MutationCreatedAtUtc = DateTime.UtcNow,
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ],
+            RentalAssets = [restoreAssetDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Contains(result.Notices, notice =>
+            notice.Code == "rental-profile-asset-atomicity-rollback" &&
+            notice.EntityId == nextProfileId.ToString("D"));
+        Assert.DoesNotContain(result.AcceptedRevisions, accepted =>
+            accepted.EntityId == customer.Id || accepted.EntityId == deletedPrimary.Id ||
+            accepted.EntityId == activePrimary.Id || accepted.EntityId == nextProfileId ||
+            accepted.EntityId == assetId);
+
+        _dbContext.ChangeTracker.Clear();
+        var unchangedCustomer = await _dbContext.Customers.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(current => current.Id == customer.Id);
+        var unchangedDeletedPrimary = await _dbContext.CustomerContracts.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(current => current.Id == deletedPrimary.Id);
+        var unchangedActivePrimary = await _dbContext.CustomerContracts.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(current => current.Id == activePrimary.Id);
+        var unchangedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(current => current.Id == assetId);
+        Assert.True(unchangedCustomer.IsDeleted);
+        Assert.Equal(storedCustomer.Revision, unchangedCustomer.Revision);
+        Assert.Equal(storedCustomer.UpdatedAtUtc, unchangedCustomer.UpdatedAtUtc);
+        Assert.True(unchangedDeletedPrimary.IsDeleted);
+        Assert.True(unchangedDeletedPrimary.IsPrimary);
+        Assert.Equal(storedDeletedPrimary.Revision, unchangedDeletedPrimary.Revision);
+        Assert.Equal(storedDeletedPrimary.UpdatedAtUtc, unchangedDeletedPrimary.UpdatedAtUtc);
+        Assert.False(unchangedActivePrimary.IsDeleted);
+        Assert.True(unchangedActivePrimary.IsPrimary);
+        Assert.Equal(storedActivePrimary.Revision, unchangedActivePrimary.Revision);
+        Assert.Equal(storedActivePrimary.UpdatedAtUtc, unchangedActivePrimary.UpdatedAtUtc);
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == nextProfileId));
+        Assert.True(unchangedAsset.IsDeleted);
+        Assert.Equal(previousProfileId, unchangedAsset.BillingProfileId);
+        Assert.False(await _dbContext.ProcessedSyncMutations.AnyAsync(receipt =>
+            receipt.MutationId == customerMutationId ||
+            receipt.MutationId == profileMutationId ||
+            receipt.MutationId == assetMutationId));
+        Assert.False(await _dbContext.ProcessedSyncMutations.AnyAsync(receipt =>
+            receipt.EntityName == nameof(CustomerContract) &&
+            (receipt.EntityId == deletedPrimary.Id.ToString("D") ||
+             receipt.EntityId == activePrimary.Id.ToString("D"))));
+    }
+
+    [Fact]
+    public async Task Push_ExplicitCustomerRestore_Handles501DeletionGenerationContractBatches()
+    {
+        var fixtures = Enumerable.Range(0, 501)
+            .Select(index =>
+            {
+                var customer = new Customer
+                {
+                    Id = Guid.NewGuid(),
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    NameOriginal = $"Bulk deletion generation customer {index:D3}",
+                    NameMatchKey = $"BULKDELETIONGENERATIONCUSTOMER{index:D3}",
+                    TradeType = CustomerClassificationNormalizer.Sales,
+                    IsDeleted = true
+                };
+                return (
+                    Index: index,
+                    Customer: customer,
+                    DeletedPrimary: new CustomerContract
+                    {
+                        Id = Guid.NewGuid(),
+                        CustomerId = customer.Id,
+                        ContractType = "Rental",
+                        FileName = $"bulk-deletion-generation-{index:D3}-deleted.pdf",
+                        MimeType = "application/pdf",
+                        IsPrimary = true,
+                        IsDeleted = true
+                    },
+                    ActivePrimary: new CustomerContract
+                    {
+                        Id = Guid.NewGuid(),
+                        CustomerId = customer.Id,
+                        ContractType = "Rental",
+                        FileName = $"bulk-deletion-generation-{index:D3}-active.pdf",
+                        MimeType = "application/pdf",
+                        IsPrimary = true
+                    });
+            })
+            .ToList();
+        _dbContext.AddRange(fixtures.SelectMany(fixture => new object[]
+        {
+            fixture.Customer,
+            fixture.DeletedPrimary,
+            fixture.ActivePrimary
+        }));
+        await _dbContext.SaveChangesAsync();
+        Assert.All(fixtures, fixture =>
+            Assert.Equal(fixture.Customer.UpdatedAtUtc, fixture.DeletedPrimary.UpdatedAtUtc));
+        var customerDtos = fixtures.Select(fixture =>
+        {
+            var dto = fixture.Customer.ToDto();
+            dto.IsDeleted = false;
+            dto.MutationId = $"bulk-deletion-generation:{fixture.Index:D3}:{fixture.Customer.Id:N}";
+            dto.MutationCreatedAtUtc = fixture.Customer.UpdatedAtUtc.AddMinutes(1);
+            return dto;
+        }).ToList();
+        _dbContext.ChangeTracker.Clear();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "bulk-deletion-generation-customer-restore",
+            Customers = customerDtos
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(501, result.AcceptedCount);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(501, result.AcceptedRevisions.Count(accepted =>
+            accepted.EntityName == nameof(Customer)));
+        Assert.DoesNotContain(result.AcceptedRevisions, accepted =>
+            accepted.EntityName == nameof(CustomerContract));
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(501, await _dbContext.Customers.IgnoreQueryFilters()
+            .CountAsync(current => current.NameOriginal.StartsWith("Bulk deletion generation customer ") && !current.IsDeleted));
+        Assert.Equal(501, await _dbContext.CustomerContracts.IgnoreQueryFilters()
+            .CountAsync(current => current.FileName.StartsWith("bulk-deletion-generation-") &&
+                                   current.FileName.EndsWith("-deleted.pdf") &&
+                                   !current.IsDeleted && current.IsPrimary));
+        Assert.Equal(501, await _dbContext.CustomerContracts.IgnoreQueryFilters()
+            .CountAsync(current => current.FileName.StartsWith("bulk-deletion-generation-") &&
+                                   current.FileName.EndsWith("-active.pdf") &&
+                                   !current.IsDeleted && !current.IsPrimary));
+        Assert.Equal(501, await _dbContext.ProcessedSyncMutations.AsNoTracking()
+            .CountAsync(receipt => receipt.EntityName == nameof(Customer)));
+        Assert.Equal(0, await _dbContext.ProcessedSyncMutations.AsNoTracking()
+            .CountAsync(receipt => receipt.EntityName == nameof(CustomerContract)));
+
+        foreach (var boundary in new[] { fixtures[499], fixtures[500] })
+        {
+            var restoredCustomer = await _dbContext.Customers.IgnoreQueryFilters().AsNoTracking()
+                .SingleAsync(current => current.Id == boundary.Customer.Id);
+            var restoredPrimary = await _dbContext.CustomerContracts.IgnoreQueryFilters().AsNoTracking()
+                .SingleAsync(current => current.Id == boundary.DeletedPrimary.Id);
+            var demotedPrimary = await _dbContext.CustomerContracts.IgnoreQueryFilters().AsNoTracking()
+                .SingleAsync(current => current.Id == boundary.ActivePrimary.Id);
+            Assert.False(restoredCustomer.IsDeleted);
+            Assert.False(restoredPrimary.IsDeleted);
+            Assert.True(restoredPrimary.IsPrimary);
+            Assert.False(demotedPrimary.IsDeleted);
+            Assert.False(demotedPrimary.IsPrimary);
+        }
+    }
+
+    [Theory]
+    [InlineData("exact-replay")]
+    [InlineData("expected-revision-conflict")]
+    [InlineData("server-newer")]
+    public async Task Push_DoesNotRestoreDeletionGenerationContracts_ForUnacceptedCustomerRestore(
+        string rejectionKind)
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = $"Unaccepted restore {rejectionKind}",
+            NameMatchKey = $"UNACCEPTEDRESTORE{rejectionKind.Replace("-", string.Empty).ToUpperInvariant()}",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true
+        };
+        var contract = new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            ContractType = "Rental",
+            FileName = $"unaccepted-{rejectionKind}.pdf",
+            MimeType = "application/pdf",
+            IsPrimary = true,
+            IsDeleted = true
+        };
+        var activePrimary = new CustomerContract
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            ContractType = "Rental",
+            FileName = $"unaccepted-{rejectionKind}-active.pdf",
+            MimeType = "application/pdf",
+            IsPrimary = true
+        };
+        _dbContext.AddRange(customer, contract, activePrimary);
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var storedCustomer = await _dbContext.Customers.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == customer.Id);
+        var dto = storedCustomer.ToDto();
+        dto.IsDeleted = false;
+        dto.MutationId = $"unaccepted-{rejectionKind}:{customer.Id:N}";
+        if (rejectionKind == "expected-revision-conflict")
+        {
+            dto.ExpectedRevision = storedCustomer.Revision + 1;
+        }
+        else if (rejectionKind == "server-newer")
+        {
+            dto.ExpectedRevision = 0;
+            dto.Revision = Math.Max(0, storedCustomer.Revision - 1);
+            dto.UpdatedAtUtc = storedCustomer.UpdatedAtUtc.AddMinutes(-1);
+        }
+        else
+        {
+            _dbContext.ProcessedSyncMutations.Add(new ProcessedSyncMutation
+            {
+                MutationId = ProcessedSyncMutationRecorder.NormalizeMutationId(dto.MutationId),
+                DeviceId = "unaccepted-customer-restore",
+                EntityName = nameof(Customer),
+                EntityId = customer.Id.ToString("D"),
+                ExpectedRevision = dto.ExpectedRevision,
+                PayloadHash = SyncMutationPayloadHasher.Compute(dto),
+                ProcessedAtUtc = DateTime.UtcNow.AddMinutes(-1)
+            });
+            await _dbContext.SaveChangesAsync();
+            _dbContext.ChangeTracker.Clear();
+        }
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "unaccepted-customer-restore",
+            Customers = [dto]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        if (rejectionKind == "exact-replay")
+        {
+            Assert.Equal(1, result.AcceptedCount);
+            Assert.Equal(1, result.DuplicateMutationCount);
+        }
+        else
+        {
+            Assert.Equal(0, result.AcceptedCount);
+            Assert.Equal(1, result.ConflictCount);
+        }
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.True(await _dbContext.Customers.IgnoreQueryFilters().Where(current => current.Id == customer.Id).Select(current => current.IsDeleted).SingleAsync());
+        Assert.True(await _dbContext.CustomerContracts.IgnoreQueryFilters().Where(current => current.Id == contract.Id).Select(current => current.IsDeleted).SingleAsync());
+        Assert.True(await _dbContext.CustomerContracts.IgnoreQueryFilters().Where(current => current.Id == activePrimary.Id).Select(current => current.IsPrimary).SingleAsync());
+    }
+
     [Fact]
     public async Task Push_RejectsRentalAssetRestore_WhenActiveAssetUsesSameIdentifiers()
     {
@@ -7723,7 +18060,7 @@ public sealed class SyncControllerTests : IDisposable
     public async Task Push_RejectsNewRentalBillingProfile_WhenLinkedCustomerResolvesToReadSharedOffice()
     {
         var sharedReadOnlyCustomerId = Guid.NewGuid();
-        _dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        SeedSharingPolicy(_dbContext, new DataSharingPolicy
         {
             Id = Guid.NewGuid(),
             SourceTenantCode = TenantScopeCatalog.UsenetGroup,
@@ -7881,8 +18218,12 @@ public sealed class SyncControllerTests : IDisposable
 
 
     [Fact]
-    public async Task Pull_AdminRentalUser_KeepsCustomerMirrorScoped_ButStillReceivesCrossTenantRentalAssets()
+    public async Task Pull_TenantAdminExcludesCrossTenantRentalRows_WhileGlobalAdminReceivesBothTenants()
     {
+        var usenetProfileId = Guid.NewGuid();
+        var itworldProfileId = Guid.NewGuid();
+        var usenetAssetId = Guid.NewGuid();
+        var itworldAssetId = Guid.NewGuid();
         var usenetCustomer = new Customer
         {
             Id = Guid.NewGuid(),
@@ -7922,12 +18263,37 @@ public sealed class SyncControllerTests : IDisposable
                 NameMatchKey = "ITWORLDADMINITEM"
             });
 
+        _dbContext.RentalBillingProfiles.AddRange(
+            new RentalBillingProfile
+            {
+                Id = usenetProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = "USENET-ADMIN-PROFILE",
+                CustomerId = usenetCustomer.Id,
+                CustomerName = usenetCustomer.NameOriginal,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet
+            },
+            new RentalBillingProfile
+            {
+                Id = itworldProfileId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                ProfileKey = "ITWORLD-ADMIN-PROFILE",
+                CustomerId = itworldCustomer.Id,
+                CustomerName = itworldCustomer.NameOriginal,
+                ManagementCompanyCode = OfficeCodeCatalog.Itworld
+            });
         _dbContext.RentalAssets.AddRange(
             new RentalAsset
             {
-                Id = Guid.NewGuid(),
+                Id = usenetAssetId,
                 TenantCode = TenantScopeCatalog.UsenetGroup,
                 OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                BillingProfileId = usenetProfileId,
                 ManagementCompanyCode = OfficeCodeCatalog.Usenet,
                 AssetKey = "USENET|2603-911|911|USENET-ADMIN-RENTAL-CUSTOMER|MODEL-U",
                 ManagementId = "911",
@@ -7941,19 +18307,66 @@ public sealed class SyncControllerTests : IDisposable
             },
             new RentalAsset
             {
-                Id = Guid.NewGuid(),
+                Id = itworldAssetId,
                 TenantCode = TenantScopeCatalog.Itworld,
                 OfficeCode = OfficeCodeCatalog.Itworld,
                 ManagementCompanyCode = OfficeCodeCatalog.Itworld,
                 AssetKey = "ITWORLD|2603-912|912|ITWORLD-ADMIN-RENTAL-CUSTOMER|MODEL-I",
                 ManagementId = "912",
                 ManagementNumber = "2603-912",
+                BillingProfileId = itworldProfileId,
                 CustomerId = itworldCustomer.Id,
                 CustomerName = itworldCustomer.NameOriginal,
                 ItemName = "MODEL-I",
                 CurrentLocation = "ITWORLD-ROOM",
                 CreatedAtUtc = new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc),
                 UpdatedAtUtc = new DateTime(2026, 4, 8, 0, 0, 0, DateTimeKind.Utc)
+            });
+        _dbContext.RentalAssetAssignmentHistories.AddRange(
+            new RentalAssetAssignmentHistory
+            {
+                Id = Guid.NewGuid(),
+                AssetId = usenetAssetId,
+                BillingProfileId = usenetProfileId,
+                CustomerId = usenetCustomer.Id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ChangeReason = "USENET-ADMIN-HISTORY",
+                IsCurrent = true
+            },
+            new RentalAssetAssignmentHistory
+            {
+                Id = Guid.NewGuid(),
+                AssetId = itworldAssetId,
+                BillingProfileId = itworldProfileId,
+                CustomerId = itworldCustomer.Id,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                ChangeReason = "ITWORLD-ADMIN-HISTORY",
+                IsCurrent = true
+            });
+        _dbContext.RentalBillingLogs.AddRange(
+            new RentalBillingLog
+            {
+                Id = Guid.NewGuid(),
+                BillingProfileId = usenetProfileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                BillingYearMonth = "202601",
+                Note = "USENET-ADMIN-LOG"
+            },
+            new RentalBillingLog
+            {
+                Id = Guid.NewGuid(),
+                BillingProfileId = itworldProfileId,
+                TenantCode = TenantScopeCatalog.Itworld,
+                OfficeCode = OfficeCodeCatalog.Itworld,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                BillingYearMonth = "202602",
+                Note = "ITWORLD-ADMIN-LOG"
             });
         await _dbContext.SaveChangesAsync();
 
@@ -7976,8 +18389,38 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Contains(result.Customers, customer => customer.Id == itworldCustomer.Id);
         Assert.DoesNotContain(result.Items, item => item.NameOriginal == "USENET-ADMIN-ITEM");
         Assert.Contains(result.Items, item => item.NameOriginal == "ITWORLD-ADMIN-ITEM");
-        Assert.Contains(result.RentalAssets, asset => asset.ManagementNumber == "2603-911");
+        Assert.DoesNotContain(result.RentalBillingProfiles, profile => profile.ProfileKey == "USENET-ADMIN-PROFILE");
+        Assert.Contains(result.RentalBillingProfiles, profile => profile.ProfileKey == "ITWORLD-ADMIN-PROFILE");
+        Assert.DoesNotContain(result.RentalAssets, asset => asset.ManagementNumber == "2603-911");
         Assert.Contains(result.RentalAssets, asset => asset.ManagementNumber == "2603-912");
+        Assert.DoesNotContain(result.RentalAssetAssignmentHistories, history => history.ChangeReason == "USENET-ADMIN-HISTORY");
+        Assert.Contains(result.RentalAssetAssignmentHistories, history => history.ChangeReason == "ITWORLD-ADMIN-HISTORY");
+        Assert.DoesNotContain(result.RentalBillingLogs, log => log.Note == "USENET-ADMIN-LOG");
+        Assert.Contains(result.RentalBillingLogs, log => log.Note == "ITWORLD-ADMIN-LOG");
+
+        var globalAdmin = new TestCurrentUserContext
+        {
+            Username = "global_admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        };
+        await using var globalDb = CreateDbContext(globalAdmin);
+        var globalController = CreateController(globalDb, globalAdmin);
+
+        var globalResponse = await globalController.Pull(0, CancellationToken.None);
+        var globalOk = Assert.IsType<OkObjectResult>(globalResponse.Result);
+        var globalResult = Assert.IsType<SyncPullResponse>(globalOk.Value);
+
+        Assert.Contains(globalResult.RentalBillingProfiles, profile => profile.ProfileKey == "USENET-ADMIN-PROFILE");
+        Assert.Contains(globalResult.RentalBillingProfiles, profile => profile.ProfileKey == "ITWORLD-ADMIN-PROFILE");
+        Assert.Contains(globalResult.RentalAssets, asset => asset.ManagementNumber == "2603-911");
+        Assert.Contains(globalResult.RentalAssets, asset => asset.ManagementNumber == "2603-912");
+        Assert.Contains(globalResult.RentalAssetAssignmentHistories, history => history.ChangeReason == "USENET-ADMIN-HISTORY");
+        Assert.Contains(globalResult.RentalAssetAssignmentHistories, history => history.ChangeReason == "ITWORLD-ADMIN-HISTORY");
+        Assert.Contains(globalResult.RentalBillingLogs, log => log.Note == "USENET-ADMIN-LOG");
+        Assert.Contains(globalResult.RentalBillingLogs, log => log.Note == "ITWORLD-ADMIN-LOG");
     }
 
     [Fact]
@@ -9245,14 +19688,15 @@ public sealed class SyncControllerTests : IDisposable
             TrackingType = ItemTrackingTypes.Stock,
             CurrentStock = 10m
         });
-        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        var warehouseStock = new ItemWarehouseStock
         {
             ItemId = itemId,
             WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
             Quantity = 10m,
             UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
             Revision = 10
-        });
+        };
+        _dbContext.ItemWarehouseStocks.Add(warehouseStock);
         await _dbContext.SaveChangesAsync();
 
         var invoiceId = Guid.NewGuid();
@@ -9267,7 +19711,7 @@ public sealed class SyncControllerTests : IDisposable
                     ItemId = itemId,
                     WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
                     Quantity = 8m,
-                    ExpectedRevision = 10,
+                    ExpectedRevision = warehouseStock.Revision,
                     UpdatedAtUtc = DateTime.UtcNow
                 }
             ],
@@ -10090,6 +20534,1039 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal(100_000m, updatedRun.BilledAmount);
         Assert.Equal(35_000m, updatedRun.SettledAmount);
         Assert.Equal("부분입금", updatedRun.SettlementStatus);
+    }
+
+    [Fact]
+    public async Task Push_PaymentTransactionAtomicity_RejectsTransactionAndAttachment_WhenPaymentConflicts()
+    {
+        var customerId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var attachmentId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-PAYMENT-ATOMIC-CONFLICT-CUSTOMER",
+            NameMatchKey = "SYNCPAYMENTATOMICCONFLICTCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-PAYMENT-ATOMIC-CONFLICT-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 8, 3),
+            TotalAmount = 50_000m,
+            SupplyAmount = 45_455m,
+            VatAmount = 4_545m
+        });
+        await _dbContext.SaveChangesAsync();
+        var invoiceRevision = await _dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.Id == invoiceId)
+            .Select(invoice => invoice.Revision)
+            .SingleAsync();
+        var fileContent = TestPdfBytes();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-payment-atomic-payment-conflict",
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = paymentId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 8, 3),
+                    TransactionKind = "전표수금",
+                    LinkedInvoiceId = invoiceId,
+                    LinkedInvoiceNumber = "SYNC-PAYMENT-ATOMIC-CONFLICT-001",
+                    SettlementAmount = 40_000m,
+                    BankReceipt = 40_000m,
+                    ReceiptTotal = 40_000m,
+                    Note = "must roll back with rejected payment",
+                    ExpectedRevision = invoiceRevision,
+                    MutationId = "payment-atomic-payment-conflict-transaction",
+                    MutationCreatedAtUtc = new DateTime(2026, 8, 3, 0, 0, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = new DateTime(2026, 8, 3, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 8, 3, 0, 1, 0, DateTimeKind.Utc)
+                }
+            ],
+            TransactionAttachments =
+            [
+                new TransactionAttachmentDto
+                {
+                    Id = attachmentId,
+                    TransactionId = paymentId,
+                    FileName = "payment-atomic-conflict.pdf",
+                    MimeType = "application/pdf",
+                    FileSize = fileContent.LongLength,
+                    FileHash = ComputeTestSha256Hex(fileContent),
+                    FileContent = fileContent,
+                    MutationId = "payment-atomic-payment-conflict-attachment",
+                    MutationCreatedAtUtc = new DateTime(2026, 8, 3, 0, 0, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = new DateTime(2026, 8, 3, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 8, 3, 0, 1, 0, DateTimeKind.Utc)
+                }
+            ],
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = paymentId,
+                    InvoiceId = invoiceId,
+                    PaymentDate = new DateOnly(2026, 8, 3),
+                    Amount = 60_000m,
+                    Note = "amount exceeds outstanding balance",
+                    ExpectedRevision = invoiceRevision,
+                    MutationId = "payment-atomic-payment-conflict-payment",
+                    MutationCreatedAtUtc = new DateTime(2026, 8, 3, 0, 0, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = new DateTime(2026, 8, 3, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 8, 3, 0, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Contains(result.Conflicts, conflict => conflict.EntityName == nameof(Payment));
+        Assert.Contains(result.Conflicts, conflict => conflict.EntityName == nameof(TransactionRecord));
+        Assert.Contains(result.Conflicts, conflict => conflict.EntityName == nameof(TransactionAttachment));
+        Assert.False(await _dbContext.Payments.IgnoreQueryFilters().AnyAsync(payment => payment.Id == paymentId));
+        Assert.False(await _dbContext.Transactions.IgnoreQueryFilters().AnyAsync(transaction => transaction.Id == paymentId));
+        Assert.False(await _dbContext.TransactionAttachments.IgnoreQueryFilters().AnyAsync(attachment => attachment.Id == attachmentId));
+        Assert.DoesNotContain(result.AcceptedRevisions, revision =>
+            revision.EntityId == paymentId &&
+            (revision.EntityName == nameof(Payment) || revision.EntityName == nameof(TransactionRecord)));
+    }
+
+    [Fact]
+    public async Task Push_PaymentTransactionAtomicity_RejectsPayment_WhenPairedTransactionConflicts()
+    {
+        var customerId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-PAYMENT-ATOMIC-TRANSACTION-CONFLICT-CUSTOMER",
+            NameMatchKey = "SYNCPAYMENTATOMICTRANSACTIONCONFLICTCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-PAYMENT-ATOMIC-TRANSACTION-CONFLICT-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 8, 3),
+            TotalAmount = 50_000m,
+            SupplyAmount = 45_455m,
+            VatAmount = 4_545m
+        });
+        await _dbContext.SaveChangesAsync();
+        var invoiceRevision = await _dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.Id == invoiceId)
+            .Select(invoice => invoice.Revision)
+            .SingleAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-payment-atomic-transaction-conflict",
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = paymentId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 8, 3),
+                    TransactionKind = "전표수금",
+                    LinkedInvoiceId = invoiceId,
+                    LinkedInvoiceNumber = "SYNC-PAYMENT-ATOMIC-TRANSACTION-CONFLICT-001",
+                    SettlementAmount = 60_000m,
+                    BankReceipt = 60_000m,
+                    ReceiptTotal = 60_000m,
+                    ExpectedRevision = invoiceRevision,
+                    MutationId = "payment-atomic-transaction-conflict-transaction",
+                    MutationCreatedAtUtc = new DateTime(2026, 8, 3, 0, 0, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = new DateTime(2026, 8, 3, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 8, 3, 0, 1, 0, DateTimeKind.Utc)
+                }
+            ],
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = paymentId,
+                    InvoiceId = invoiceId,
+                    PaymentDate = new DateOnly(2026, 8, 3),
+                    Amount = 40_000m,
+                    Note = "payment must not survive paired transaction conflict",
+                    ExpectedRevision = invoiceRevision,
+                    MutationId = "payment-atomic-transaction-conflict-payment",
+                    MutationCreatedAtUtc = new DateTime(2026, 8, 3, 0, 0, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = new DateTime(2026, 8, 3, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 8, 3, 0, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Contains(result.Conflicts, conflict => conflict.EntityName == nameof(TransactionRecord));
+        Assert.Contains(result.Conflicts, conflict => conflict.EntityName == nameof(Payment));
+        Assert.False(await _dbContext.Payments.IgnoreQueryFilters().AnyAsync(payment => payment.Id == paymentId));
+        Assert.False(await _dbContext.Transactions.IgnoreQueryFilters().AnyAsync(transaction => transaction.Id == paymentId));
+        Assert.DoesNotContain(result.AcceptedRevisions, revision =>
+            revision.EntityId == paymentId &&
+            (revision.EntityName == nameof(Payment) || revision.EntityName == nameof(TransactionRecord)));
+    }
+
+    [Fact]
+    public async Task Push_PaymentTransactionAtomicity_RejectsTransactionOnlyMutation_OfExistingPaymentMirror()
+    {
+        var customerId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-PAYMENT-ATOMIC-ORPHAN-CUSTOMER",
+            NameMatchKey = "SYNCPAYMENTATOMICORPHANCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-PAYMENT-ATOMIC-ORPHAN-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 8, 3),
+            TotalAmount = 50_000m,
+            SupplyAmount = 45_455m,
+            VatAmount = 4_545m
+        });
+        _dbContext.Payments.Add(new Payment
+        {
+            Id = paymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 8, 3),
+            Amount = 30_000m,
+            Note = "authoritative payment note"
+        });
+        _dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = paymentId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 8, 3),
+            TransactionKind = "전표수금",
+            LinkedInvoiceId = invoiceId,
+            LinkedInvoiceNumber = "SYNC-PAYMENT-ATOMIC-ORPHAN-001",
+            SettlementAmount = 30_000m,
+            BankReceipt = 30_000m,
+            ReceiptTotal = 30_000m,
+            Note = "authoritative payment note"
+        });
+        await _dbContext.SaveChangesAsync();
+        var storedTransaction = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == paymentId);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-payment-atomic-transaction-only",
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = paymentId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 8, 4),
+                    TransactionKind = "전표수금",
+                    LinkedInvoiceId = invoiceId,
+                    LinkedInvoiceNumber = "SYNC-PAYMENT-ATOMIC-ORPHAN-001",
+                    SettlementAmount = 20_000m,
+                    BankReceipt = 20_000m,
+                    ReceiptTotal = 20_000m,
+                    Note = "must not mutate without source payment",
+                    Revision = storedTransaction.Revision,
+                    ExpectedRevision = storedTransaction.Revision,
+                    MutationId = "payment-atomic-transaction-only-mutation",
+                    MutationCreatedAtUtc = new DateTime(2026, 8, 4, 0, 0, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = storedTransaction.CreatedAtUtc,
+                    UpdatedAtUtc = storedTransaction.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Contains(result.Conflicts, conflict => conflict.EntityName == nameof(TransactionRecord));
+        var unchangedPayment = await _dbContext.Payments.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(payment => payment.Id == paymentId);
+        var unchangedTransaction = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == paymentId);
+        Assert.Equal(30_000m, unchangedPayment.Amount);
+        Assert.Equal(new DateOnly(2026, 8, 3), unchangedTransaction.TransactionDate);
+        Assert.Equal(30_000m, unchangedTransaction.SettlementAmount);
+        Assert.Equal(30_000m, unchangedTransaction.ReceiptTotal);
+        Assert.Equal("authoritative payment note", unchangedTransaction.Note);
+        Assert.Equal(storedTransaction.Revision, unchangedTransaction.Revision);
+        Assert.DoesNotContain(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(TransactionRecord) && revision.EntityId == paymentId);
+    }
+
+    [Fact]
+    public async Task Push_PaymentTransactionAtomicity_AcceptsPair_PreservesChannel_AndReplaysBothReceipts()
+    {
+        var customerId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "SYNC-PAYMENT-ATOMIC-SUCCESS-CUSTOMER",
+            NameMatchKey = "SYNCPAYMENTATOMICSUCCESSCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "SYNC-PAYMENT-ATOMIC-SUCCESS-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 8, 3),
+            TotalAmount = 50_000m,
+            SupplyAmount = 45_455m,
+            VatAmount = 4_545m
+        });
+        await _dbContext.SaveChangesAsync();
+        var invoiceRevision = await _dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.Id == invoiceId)
+            .Select(invoice => invoice.Revision)
+            .SingleAsync();
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-payment-atomic-success",
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = paymentId,
+                    CustomerId = customerId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 8, 3),
+                    TransactionKind = "전표수금",
+                    LinkedInvoiceId = invoiceId,
+                    LinkedInvoiceNumber = "SYNC-PAYMENT-ATOMIC-SUCCESS-001",
+                    SettlementAmount = 40_000m,
+                    CashReceipt = 40_000m,
+                    ReceiptTotal = 40_000m,
+                    Note = "paired cash payment",
+                    ExpectedRevision = invoiceRevision,
+                    MutationId = "payment-atomic-success-transaction",
+                    MutationCreatedAtUtc = new DateTime(2026, 8, 3, 0, 0, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = new DateTime(2026, 8, 3, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 8, 3, 0, 1, 0, DateTimeKind.Utc)
+                }
+            ],
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = paymentId,
+                    InvoiceId = invoiceId,
+                    PaymentDate = new DateOnly(2026, 8, 3),
+                    Amount = 40_000m,
+                    Note = "paired cash payment",
+                    ExpectedRevision = invoiceRevision,
+                    MutationId = "payment-atomic-success-payment",
+                    MutationCreatedAtUtc = new DateTime(2026, 8, 3, 0, 0, 0, DateTimeKind.Utc),
+                    CreatedAtUtc = new DateTime(2026, 8, 3, 0, 0, 0, DateTimeKind.Utc),
+                    UpdatedAtUtc = new DateTime(2026, 8, 3, 0, 1, 0, DateTimeKind.Utc)
+                }
+            ]
+        };
+
+        var firstResponse = await _controller.Push(request, CancellationToken.None);
+        var firstOk = Assert.IsType<OkObjectResult>(firstResponse.Result);
+        var firstResult = Assert.IsType<SyncPushResult>(firstOk.Value);
+        Assert.Equal(0, firstResult.ConflictCount);
+        Assert.Contains(firstResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(Payment) && revision.EntityId == paymentId);
+        Assert.Contains(firstResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(TransactionRecord) && revision.EntityId == paymentId);
+        var transaction = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == paymentId);
+        Assert.Equal(40_000m, transaction.CashReceipt);
+        Assert.Equal(0m, transaction.BankReceipt);
+        Assert.Equal(40_000m, transaction.ReceiptTotal);
+
+        var replayResponse = await _controller.Push(request, CancellationToken.None);
+        var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
+        var replayResult = Assert.IsType<SyncPushResult>(replayOk.Value);
+        Assert.Equal(0, replayResult.ConflictCount);
+        Assert.Equal(2, replayResult.DuplicateMutationCount);
+        Assert.Contains(replayResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(Payment) && revision.EntityId == paymentId);
+        Assert.Contains(replayResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(TransactionRecord) && revision.EntityId == paymentId);
+    }
+
+    [Fact]
+    public async Task Push_PaymentTransactionAtomicity_UpdatesPair_AndReturnsFinalCanonicalRevisions()
+    {
+        var fixture = await SeedPaymentAtomicityFixtureAsync("UPDATE", 30_000m);
+        var transactionDto = CreatePaymentAtomicityTransactionDto(
+            fixture,
+            45_000m,
+            "payment-atomic-update-transaction",
+            fixture.TransactionRevision,
+            useCash: true);
+        var paymentDto = CreatePaymentAtomicityPaymentDto(
+            fixture,
+            45_000m,
+            "payment-atomic-update-payment",
+            fixture.PaymentRevision);
+        transactionDto.Note = paymentDto.Note;
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-payment-atomic-update",
+            Transactions = [transactionDto],
+            Payments = [paymentDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+        var storedPayment = await _dbContext.Payments.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(payment => payment.Id == fixture.PaymentId);
+        var storedTransaction = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == fixture.PaymentId);
+        Assert.Equal(45_000m, storedPayment.Amount);
+        Assert.Equal(45_000m, storedTransaction.SettlementAmount);
+        Assert.Equal(45_000m, storedTransaction.CashReceipt);
+        Assert.Equal(0m, storedTransaction.BankReceipt);
+        var paymentRevision = Assert.Single(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(Payment) && revision.EntityId == fixture.PaymentId);
+        var transactionRevision = Assert.Single(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(TransactionRecord) && revision.EntityId == fixture.PaymentId);
+        Assert.Equal(storedPayment.Revision, paymentRevision.Revision);
+        Assert.Equal(storedPayment.UpdatedAtUtc, paymentRevision.UpdatedAtUtc);
+        Assert.Equal(storedTransaction.Revision, transactionRevision.Revision);
+        Assert.Equal(storedTransaction.UpdatedAtUtc, transactionRevision.UpdatedAtUtc);
+        Assert.False(paymentRevision.IsDeleted);
+        Assert.False(transactionRevision.IsDeleted);
+    }
+
+    [Fact]
+    public async Task Push_PaymentTransactionAtomicity_PreservesMixedReceiptChannels()
+    {
+        var fixture = await SeedPaymentAtomicityFixtureAsync("MIXED-CHANNEL", 30_000m);
+        var transactionDto = CreatePaymentAtomicityTransactionDto(
+            fixture,
+            45_000m,
+            "payment-atomic-mixed-channel-transaction",
+            fixture.TransactionRevision);
+        transactionDto.CashReceipt = 10_000m;
+        transactionDto.CardReceipt = 20_000m;
+        transactionDto.BankReceipt = 0m;
+        transactionDto.DiscountApplied = 15_000m;
+        transactionDto.ReceiptTotal = 45_000m;
+        var paymentDto = CreatePaymentAtomicityPaymentDto(
+            fixture,
+            45_000m,
+            "payment-atomic-mixed-channel-payment",
+            fixture.PaymentRevision);
+        transactionDto.Note = paymentDto.Note;
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-payment-atomic-mixed-channel",
+            Transactions = [transactionDto],
+            Payments = [paymentDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+        var storedTransaction = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == fixture.PaymentId);
+        Assert.Equal(10_000m, storedTransaction.CashReceipt);
+        Assert.Equal(20_000m, storedTransaction.CardReceipt);
+        Assert.Equal(0m, storedTransaction.BankReceipt);
+        Assert.Equal(15_000m, storedTransaction.DiscountApplied);
+        Assert.Equal(45_000m, storedTransaction.ReceiptTotal);
+    }
+
+    [Fact]
+    public async Task Push_PaymentTransactionAtomicity_RejectsPaymentOnlyAttachment_WhenPaymentConflicts()
+    {
+        var fixture = await SeedPaymentAtomicityFixtureAsync("ATTACHMENT-CONFLICT", 30_000m);
+        var attachmentId = Guid.NewGuid();
+        var paymentDto = CreatePaymentAtomicityPaymentDto(
+            fixture,
+            45_000m,
+            "payment-atomic-attachment-conflict-payment",
+            fixture.PaymentRevision + 100);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-payment-atomic-attachment-conflict",
+            TransactionAttachments =
+            [
+                new TransactionAttachmentDto
+                {
+                    Id = attachmentId,
+                    TransactionId = fixture.PaymentId,
+                    FileName = "payment-atomic-conflict.pdf",
+                    MimeType = "application/pdf",
+                    FileContent = TestPdfBytes(),
+                    MutationId = "payment-atomic-attachment-conflict-file",
+                    MutationCreatedAtUtc = fixture.CreatedAtUtc.AddMinutes(1),
+                    CreatedAtUtc = fixture.CreatedAtUtc,
+                    UpdatedAtUtc = fixture.CreatedAtUtc.AddMinutes(1)
+                }
+            ],
+            Payments = [paymentDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(Payment) && conflict.EntityId == fixture.PaymentId.ToString("D"));
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(TransactionAttachment) && conflict.EntityId == attachmentId.ToString("D"));
+        Assert.False(await _dbContext.TransactionAttachments.IgnoreQueryFilters()
+            .AnyAsync(attachment => attachment.Id == attachmentId));
+        var unchangedPayment = await _dbContext.Payments.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(payment => payment.Id == fixture.PaymentId);
+        Assert.Equal(30_000m, unchangedPayment.Amount);
+        var unchangedTransaction = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == fixture.PaymentId);
+        Assert.Equal(30_000m, unchangedTransaction.ReceiptTotal);
+    }
+
+    [Fact]
+    public async Task Push_PaymentTransactionAtomicity_AcceptsPaymentOnlyCreateWithAttachment_AfterMirrorCreation()
+    {
+        var fixture = await SeedPaymentAtomicityFixtureAsync("ATTACHMENT-CREATE");
+        var attachmentId = Guid.NewGuid();
+        var paymentDto = CreatePaymentAtomicityPaymentDto(
+            fixture,
+            45_000m,
+            "payment-atomic-attachment-create-payment",
+            fixture.InvoiceRevision);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-payment-atomic-attachment-create",
+            TransactionAttachments =
+            [
+                new TransactionAttachmentDto
+                {
+                    Id = attachmentId,
+                    TransactionId = fixture.PaymentId,
+                    FileName = "payment-atomic-create.pdf",
+                    MimeType = "application/pdf",
+                    FileContent = TestPdfBytes(),
+                    MutationId = "payment-atomic-attachment-create-file",
+                    MutationCreatedAtUtc = fixture.CreatedAtUtc.AddMinutes(1),
+                    CreatedAtUtc = fixture.CreatedAtUtc,
+                    UpdatedAtUtc = fixture.CreatedAtUtc.AddMinutes(1)
+                }
+            ],
+            Payments = [paymentDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.True(await _dbContext.Payments.IgnoreQueryFilters()
+            .AnyAsync(payment => payment.Id == fixture.PaymentId && !payment.IsDeleted));
+        Assert.True(await _dbContext.Transactions.IgnoreQueryFilters()
+            .AnyAsync(transaction => transaction.Id == fixture.PaymentId && !transaction.IsDeleted));
+        Assert.True(await _dbContext.TransactionAttachments.IgnoreQueryFilters()
+            .AnyAsync(attachment =>
+                attachment.Id == attachmentId &&
+                attachment.TransactionId == fixture.PaymentId &&
+                !attachment.IsDeleted));
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(Payment) && revision.EntityId == fixture.PaymentId);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(TransactionRecord) && revision.EntityId == fixture.PaymentId);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(TransactionAttachment) && revision.EntityId == attachmentId);
+    }
+
+    [Fact]
+    public async Task Push_PaymentTransactionAtomicity_DeletesPairAndAttachment_AndReturnsTombstones()
+    {
+        var fixture = await SeedPaymentAtomicityFixtureAsync("DELETE", 30_000m);
+        var attachmentId = Guid.NewGuid();
+        _dbContext.TransactionAttachments.Add(new TransactionAttachment
+        {
+            Id = attachmentId,
+            TransactionId = fixture.PaymentId,
+            FileName = "payment-atomic-delete.pdf",
+            MimeType = "application/pdf",
+            StoragePath = "transaction/payment-atomic-delete.pdf",
+            CreatedAtUtc = fixture.CreatedAtUtc,
+            UpdatedAtUtc = fixture.CreatedAtUtc
+        });
+        await _dbContext.SaveChangesAsync();
+        var attachmentRevision = await _dbContext.TransactionAttachments.IgnoreQueryFilters()
+            .Where(attachment => attachment.Id == attachmentId)
+            .Select(attachment => attachment.Revision)
+            .SingleAsync();
+        var transactionDto = CreatePaymentAtomicityTransactionDto(
+            fixture,
+            30_000m,
+            "payment-atomic-delete-transaction",
+            fixture.TransactionRevision,
+            isDeleted: true);
+        var paymentDto = CreatePaymentAtomicityPaymentDto(
+            fixture,
+            30_000m,
+            "payment-atomic-delete-payment",
+            fixture.PaymentRevision,
+            isDeleted: true);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-payment-atomic-delete",
+            Transactions = [transactionDto],
+            TransactionAttachments =
+            [
+                new TransactionAttachmentDto
+                {
+                    Id = attachmentId,
+                    TransactionId = fixture.PaymentId,
+                    FileName = "payment-atomic-delete.pdf",
+                    MimeType = "application/pdf",
+                    IsDeleted = true,
+                    Revision = attachmentRevision,
+                    ExpectedRevision = attachmentRevision,
+                    MutationId = "payment-atomic-delete-attachment",
+                    MutationCreatedAtUtc = fixture.CreatedAtUtc.AddMinutes(1),
+                    CreatedAtUtc = fixture.CreatedAtUtc,
+                    UpdatedAtUtc = fixture.CreatedAtUtc.AddMinutes(1)
+                }
+            ],
+            Payments = [paymentDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.True(await _dbContext.Payments.IgnoreQueryFilters()
+            .Where(payment => payment.Id == fixture.PaymentId)
+            .Select(payment => payment.IsDeleted)
+            .SingleAsync());
+        Assert.True(await _dbContext.Transactions.IgnoreQueryFilters()
+            .Where(transaction => transaction.Id == fixture.PaymentId)
+            .Select(transaction => transaction.IsDeleted)
+            .SingleAsync());
+        Assert.True(await _dbContext.TransactionAttachments.IgnoreQueryFilters()
+            .Where(attachment => attachment.Id == attachmentId)
+            .Select(attachment => attachment.IsDeleted)
+            .SingleAsync());
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(Payment) &&
+            revision.EntityId == fixture.PaymentId &&
+            revision.IsDeleted == true);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(TransactionRecord) &&
+            revision.EntityId == fixture.PaymentId &&
+            revision.IsDeleted == true);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(TransactionAttachment) &&
+            revision.EntityId == attachmentId &&
+            revision.IsDeleted == true);
+    }
+
+    [Fact]
+    public async Task Push_PaymentTransactionAtomicity_DeletesUnrequestedAttachment_WithAcceptedPairDelete()
+    {
+        var fixture = await SeedPaymentAtomicityFixtureAsync("DELETE-UNREQUESTED-ATTACHMENT", 30_000m);
+        var attachmentId = Guid.NewGuid();
+        _dbContext.TransactionAttachments.Add(new TransactionAttachment
+        {
+            Id = attachmentId,
+            TransactionId = fixture.PaymentId,
+            FileName = "payment-atomic-unrequested-delete.pdf",
+            MimeType = "application/pdf",
+            StoragePath = "transaction/payment-atomic-unrequested-delete.pdf",
+            CreatedAtUtc = fixture.CreatedAtUtc,
+            UpdatedAtUtc = fixture.CreatedAtUtc
+        });
+        await _dbContext.SaveChangesAsync();
+        var transactionDto = CreatePaymentAtomicityTransactionDto(
+            fixture,
+            30_000m,
+            "payment-atomic-unrequested-delete-transaction",
+            fixture.TransactionRevision,
+            isDeleted: true);
+        var paymentDto = CreatePaymentAtomicityPaymentDto(
+            fixture,
+            30_000m,
+            "payment-atomic-unrequested-delete-payment",
+            fixture.PaymentRevision,
+            isDeleted: true);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-payment-atomic-unrequested-attachment-delete",
+            Transactions = [transactionDto],
+            Payments = [paymentDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.True(await _dbContext.Payments.IgnoreQueryFilters()
+            .Where(payment => payment.Id == fixture.PaymentId)
+            .Select(payment => payment.IsDeleted)
+            .SingleAsync());
+        Assert.True(await _dbContext.Transactions.IgnoreQueryFilters()
+            .Where(transaction => transaction.Id == fixture.PaymentId)
+            .Select(transaction => transaction.IsDeleted)
+            .SingleAsync());
+        Assert.True(await _dbContext.TransactionAttachments.IgnoreQueryFilters()
+            .Where(attachment => attachment.Id == attachmentId)
+            .Select(attachment => attachment.IsDeleted)
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_PaymentTransactionAtomicity_BlocksIndependentTransactionIdHijack()
+    {
+        var fixture = await SeedPaymentAtomicityFixtureAsync("HIJACK");
+        _dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = fixture.PaymentId,
+            CustomerId = fixture.CustomerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = fixture.PaymentDate,
+            TransactionKind = "전표수금",
+            LinkedInvoiceId = fixture.InvoiceId,
+            LinkedInvoiceNumber = fixture.InvoiceNumber,
+            SettlementAmount = 30_000m,
+            BankReceipt = 30_000m,
+            ReceiptTotal = 30_000m,
+            Note = "independent transaction must survive",
+            CreatedAtUtc = fixture.CreatedAtUtc,
+            UpdatedAtUtc = fixture.CreatedAtUtc
+        });
+        await _dbContext.SaveChangesAsync();
+        var independent = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == fixture.PaymentId);
+        var transactionDto = CreatePaymentAtomicityTransactionDto(
+            fixture,
+            30_000m,
+            "payment-atomic-hijack-transaction",
+            independent.Revision);
+        var paymentDto = CreatePaymentAtomicityPaymentDto(
+            fixture,
+            30_000m,
+            "payment-atomic-hijack-payment",
+            fixture.InvoiceRevision);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-payment-atomic-hijack",
+            Transactions = [transactionDto],
+            Payments = [paymentDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Contains(result.Conflicts, conflict => conflict.EntityName == nameof(Payment));
+        Assert.Contains(result.Conflicts, conflict => conflict.EntityName == nameof(TransactionRecord));
+        Assert.False(await _dbContext.Payments.IgnoreQueryFilters()
+            .AnyAsync(payment => payment.Id == fixture.PaymentId));
+        var unchanged = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == fixture.PaymentId);
+        Assert.Equal(fixture.InvoiceId, unchanged.LinkedInvoiceId);
+        Assert.Equal(30_000m, unchanged.ReceiptTotal);
+        Assert.Equal("independent transaction must survive", unchanged.Note);
+        Assert.Equal(independent.Revision, unchanged.Revision);
+    }
+
+    [Fact]
+    public async Task Push_PaymentTransactionAtomicity_BlocksPaymentOnlyIndependentTransactionIdHijack()
+    {
+        var fixture = await SeedPaymentAtomicityFixtureAsync("PAYMENT-ONLY-HIJACK");
+        _dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = fixture.PaymentId,
+            CustomerId = fixture.CustomerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = fixture.PaymentDate,
+            TransactionKind = "일반수금",
+            LinkedInvoiceId = fixture.InvoiceId,
+            LinkedInvoiceNumber = fixture.InvoiceNumber,
+            SettlementAmount = 30_000m,
+            CashReceipt = 10_000m,
+            CardReceipt = 20_000m,
+            ReceiptTotal = 30_000m,
+            Note = "payment-only independent transaction must survive",
+            CreatedAtUtc = fixture.CreatedAtUtc,
+            UpdatedAtUtc = fixture.CreatedAtUtc
+        });
+        await _dbContext.SaveChangesAsync();
+        var independent = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == fixture.PaymentId);
+        var paymentDto = CreatePaymentAtomicityPaymentDto(
+            fixture,
+            30_000m,
+            "payment-atomic-payment-only-hijack",
+            fixture.InvoiceRevision);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-payment-atomic-payment-only-hijack",
+            Payments = [paymentDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Contains(result.Conflicts, conflict => conflict.EntityName == nameof(Payment));
+        Assert.False(await _dbContext.Payments.IgnoreQueryFilters()
+            .AnyAsync(payment => payment.Id == fixture.PaymentId));
+        var unchanged = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == fixture.PaymentId);
+        Assert.Equal(fixture.InvoiceId, unchanged.LinkedInvoiceId);
+        Assert.Equal(10_000m, unchanged.CashReceipt);
+        Assert.Equal(20_000m, unchanged.CardReceipt);
+        Assert.Equal("payment-only independent transaction must survive", unchanged.Note);
+        Assert.Equal(independent.Revision, unchanged.Revision);
+    }
+
+    [Fact]
+    public async Task Push_PaymentTransactionAtomicity_BlocksMissingPaymentDelete_FromDeletingIndependentTransaction()
+    {
+        var fixture = await SeedPaymentAtomicityFixtureAsync("MISSING-PAYMENT-DELETE-COLLISION");
+        _dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = fixture.PaymentId,
+            CustomerId = fixture.CustomerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = fixture.PaymentDate,
+            TransactionKind = "일반수금",
+            LinkedInvoiceId = fixture.InvoiceId,
+            LinkedInvoiceNumber = fixture.InvoiceNumber,
+            SettlementAmount = 30_000m,
+            BankReceipt = 30_000m,
+            ReceiptTotal = 30_000m,
+            Note = "missing payment delete must not cascade",
+            CreatedAtUtc = fixture.CreatedAtUtc,
+            UpdatedAtUtc = fixture.CreatedAtUtc
+        });
+        await _dbContext.SaveChangesAsync();
+        var independent = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == fixture.PaymentId);
+        var paymentDto = CreatePaymentAtomicityPaymentDto(
+            fixture,
+            30_000m,
+            "payment-atomic-missing-payment-delete-collision",
+            fixture.InvoiceRevision,
+            isDeleted: true);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-payment-atomic-missing-payment-delete-collision",
+            Payments = [paymentDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Contains(result.Conflicts, conflict => conflict.EntityName == nameof(Payment));
+        Assert.False(await _dbContext.Payments.IgnoreQueryFilters()
+            .AnyAsync(payment => payment.Id == fixture.PaymentId));
+        var unchanged = await _dbContext.Transactions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(transaction => transaction.Id == fixture.PaymentId);
+        Assert.False(unchanged.IsDeleted);
+        Assert.Equal("missing payment delete must not cascade", unchanged.Note);
+        Assert.Equal(independent.Revision, unchanged.Revision);
+    }
+
+    [Fact]
+    public async Task Push_PaymentTransactionAtomicity_AcceptsCanonicalTransactionOnlyRetry()
+    {
+        var fixture = await SeedPaymentAtomicityFixtureAsync("RETRY", 30_000m);
+        var transactionDto = CreatePaymentAtomicityTransactionDto(
+            fixture,
+            30_000m,
+            "payment-atomic-transaction-only-retry",
+            fixture.TransactionRevision);
+        transactionDto.Note = "atomic RETRY payment";
+        transactionDto.UpdatedAtUtc = fixture.CreatedAtUtc;
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-payment-atomic-transaction-only-retry",
+            Transactions = [transactionDto]
+        };
+
+        var firstResponse = await _controller.Push(request, CancellationToken.None);
+        var firstOk = Assert.IsType<OkObjectResult>(firstResponse.Result);
+        var firstResult = Assert.IsType<SyncPushResult>(firstOk.Value);
+        Assert.Equal(0, firstResult.ConflictCount);
+        Assert.Contains(firstResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(TransactionRecord) && revision.EntityId == fixture.PaymentId);
+
+        var replayResponse = await _controller.Push(request, CancellationToken.None);
+        var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
+        var replayResult = Assert.IsType<SyncPushResult>(replayOk.Value);
+        Assert.Equal(0, replayResult.ConflictCount);
+        Assert.Equal(1, replayResult.DuplicateMutationCount);
+        Assert.Contains(replayResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(TransactionRecord) && revision.EntityId == fixture.PaymentId);
+    }
+
+    [Fact]
+    public async Task Push_PaymentTransactionAtomicity_AcceptsMissingPairDeleteAsReplayableNoOp()
+    {
+        var missingCustomerId = Guid.NewGuid();
+        var missingInvoiceId = Guid.NewGuid();
+        var missingPaymentId = Guid.NewGuid();
+        var createdAtUtc = new DateTime(2026, 8, 3, 0, 0, 0, DateTimeKind.Utc);
+        var transactionDto = new TransactionDto
+        {
+            Id = missingPaymentId,
+            CustomerId = missingCustomerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 8, 3),
+            TransactionKind = "전표수금",
+            LinkedInvoiceId = missingInvoiceId,
+            LinkedInvoiceNumber = "MISSING-INVOICE",
+            SettlementAmount = 30_000m,
+            BankReceipt = 30_000m,
+            ReceiptTotal = 30_000m,
+            IsDeleted = true,
+            MutationId = "payment-atomic-missing-delete-transaction",
+            MutationCreatedAtUtc = createdAtUtc,
+            CreatedAtUtc = createdAtUtc,
+            UpdatedAtUtc = createdAtUtc
+        };
+        var paymentDto = new PaymentDto
+        {
+            Id = missingPaymentId,
+            InvoiceId = missingInvoiceId,
+            PaymentDate = new DateOnly(2026, 8, 3),
+            Amount = 30_000m,
+            IsDeleted = true,
+            MutationId = "payment-atomic-missing-delete-payment",
+            MutationCreatedAtUtc = createdAtUtc,
+            CreatedAtUtc = createdAtUtc,
+            UpdatedAtUtc = createdAtUtc
+        };
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-payment-atomic-missing-delete",
+            Transactions = [transactionDto],
+            Payments = [paymentDto]
+        };
+
+        var firstResponse = await _controller.Push(request, CancellationToken.None);
+        var firstOk = Assert.IsType<OkObjectResult>(firstResponse.Result);
+        var firstResult = Assert.IsType<SyncPushResult>(firstOk.Value);
+        Assert.Equal(0, firstResult.ConflictCount);
+        Assert.Contains(firstResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(TransactionRecord) &&
+            revision.EntityId == missingPaymentId &&
+            revision.IsDeleted == true);
+        Assert.Contains(firstResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(Payment) &&
+            revision.EntityId == missingPaymentId &&
+            revision.IsDeleted == true);
+
+        var replayResponse = await _controller.Push(request, CancellationToken.None);
+        var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
+        var replayResult = Assert.IsType<SyncPushResult>(replayOk.Value);
+        Assert.Equal(0, replayResult.ConflictCount);
+        Assert.Equal(2, replayResult.DuplicateMutationCount);
+        Assert.Contains(replayResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(TransactionRecord) &&
+            revision.EntityId == missingPaymentId &&
+            revision.IsDeleted == true);
+        Assert.Contains(replayResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(Payment) &&
+            revision.EntityId == missingPaymentId &&
+            revision.IsDeleted == true);
     }
 
     [Fact]
@@ -11137,7 +22614,10 @@ public sealed class SyncControllerTests : IDisposable
         var ok = Assert.IsType<OkObjectResult>(response.Result);
         var result = Assert.IsType<SyncPushResult>(ok.Value);
 
-        Assert.Equal(0, result.ConflictCount);
+        Assert.True(
+            result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => conflict.Reason)));
+        Assert.Equal(1, result.AcceptedCount);
         Assert.Contains(result.Notices, notice =>
             notice.Code == "transaction-rental-link-updated" &&
             notice.EntityId == transactionId.ToString("D"));
@@ -12636,6 +24116,95 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_ServerConflictActorQuery_SelectsOnlyLatestAuditPerFingerprintInDatabase()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        };
+        var queryCounter = new AuditActorQueryCountingInterceptor();
+        await using var scopedDb = CreateDbContext(currentUser, queryCounter);
+        var controller = CreateController(scopedDb, currentUser);
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "LONG AUDIT HISTORY CUSTOMER",
+            NameMatchKey = "LONGAUDITHISTORYCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        scopedDb.Customers.Add(customer);
+        await scopedDb.SaveChangesAsync();
+
+        var entityId = customer.Id.ToString("D");
+        scopedDb.AuditLogs.AddRange(Enumerable.Range(0, 501).Select(index => new AuditLog
+        {
+            Id = Guid.NewGuid(),
+            UserId = Guid.NewGuid(),
+            Username = $"historical-actor-{index:D3}",
+            EntityName = nameof(Customer),
+            EntityId = entityId,
+            Action = "Modified",
+            CreatedAtUtc = DateTime.UtcNow.AddDays(-2).AddSeconds(index)
+        }));
+        var latestCreatedAtUtc = DateTime.UtcNow;
+        var latestUserId = Guid.NewGuid();
+        scopedDb.AuditLogs.AddRange(
+            new AuditLog
+            {
+                Id = Guid.Parse("00000000-0000-0000-0000-000000000001"),
+                UserId = Guid.NewGuid(),
+                Username = "tie-break-lower-actor",
+                EntityName = nameof(Customer),
+                EntityId = entityId,
+                Action = "Modified",
+                CreatedAtUtc = latestCreatedAtUtc
+            },
+            new AuditLog
+            {
+                Id = Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff"),
+                UserId = latestUserId,
+                Username = "latest-database-actor",
+                EntityName = nameof(Customer),
+                EntityId = entityId,
+                Action = "Modified",
+                CreatedAtUtc = latestCreatedAtUtc
+            });
+        await scopedDb.SaveChangesAsync();
+        scopedDb.ChangeTracker.Clear();
+
+        var storedCustomer = await scopedDb.Customers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == customer.Id);
+        var staleDto = storedCustomer.ToDto();
+        staleDto.ExpectedRevision = storedCustomer.Revision + 1;
+        staleDto.MutationId = $"long-audit-history-stale:{customer.Id:N}:{staleDto.ExpectedRevision}";
+        queryCounter.Reset();
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "long-audit-history-device",
+            Customers = [staleDto]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal(latestUserId, conflict.ServerUserId);
+        Assert.Equal("latest-database-actor", conflict.ServerUsername);
+        Assert.Equal(1, queryCounter.AuditLogSelectCount);
+        Assert.Contains("ROW_NUMBER", queryCounter.AuditLogSelectCommandText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("PARTITION BY", queryCounter.AuditLogSelectCommandText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Push_ResolvesInvoiceCustomerReference_FromCustomerName_WhenCustomerIdIsMissing()
     {
         var customer = new Customer
@@ -12849,6 +24418,3859 @@ public sealed class SyncControllerTests : IDisposable
             revision.EntityName == nameof(Customer) &&
             revision.EntityId == missingCustomerId);
         Assert.False(await _dbContext.Customers.IgnoreQueryFilters().AnyAsync(customer => customer.Id == missingCustomerId));
+    }
+
+    [Fact]
+    public async Task Push_AcceptsAlreadyDeletedInventoryTransferWithoutStateOrStockChange_AndRejectsDeleteAfterRestore()
+    {
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Already deleted transfer item",
+            NameMatchKey = "ALREADYDELETEDTRANSFERITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            Unit = "EA"
+        };
+        var transfer = new InventoryTransfer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            TransferNumber = $"DELETED-TRANSFER-{Guid.NewGuid():N}"[..24],
+            TransferDate = new DateOnly(2026, 8, 1),
+            FromWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            ToWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            Memo = "server tombstone content",
+            CreatedByUsername = "admin",
+            LastSavedByUsername = "admin",
+            LastSavedAtUtc = new DateTime(2026, 8, 1, 1, 0, 0, DateTimeKind.Utc),
+            TransferStatus = InventoryTransferStatusNormalizer.Rejected,
+            RejectedByUsername = "admin",
+            RejectedAtUtc = new DateTime(2026, 8, 1, 1, 1, 0, DateTimeKind.Utc),
+            RejectReason = "server tombstone rejection",
+            IsDeleted = true,
+            Lines =
+            [
+                new InventoryTransferLine
+                {
+                    Id = Guid.NewGuid(),
+                    ItemId = item.Id,
+                    ItemNameOriginal = item.NameOriginal,
+                    Unit = item.Unit,
+                    Quantity = 3m,
+                    Remark = "server tombstone line"
+                }
+            ]
+        };
+        var sourceStock = new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 17m
+        };
+        var targetStock = new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            Quantity = 4m
+        };
+        var ledgerEntry = new InventoryLedgerEntry
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            SourceType = "Probe:AlreadyDeletedTransfer",
+            SourceDocumentId = transfer.Id,
+            SourceLineId = transfer.Lines.Single().Id,
+            QuantityDelta = -3m,
+            OccurredDate = transfer.TransferDate,
+            Note = "must remain unchanged"
+        };
+        _dbContext.AddRange(item, transfer, sourceStock, targetStock, ledgerEntry);
+        await _dbContext.SaveChangesAsync();
+
+        _dbContext.ChangeTracker.Clear();
+        var persistedTombstone = await _dbContext.InventoryTransfers.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Include(current => current.Lines)
+            .SingleAsync(current => current.Id == transfer.Id);
+        var tombstoneRevision = persistedTombstone.Revision;
+        var tombstoneUpdatedAtUtc = persistedTombstone.UpdatedAtUtc;
+        var tombstoneJson = JsonSerializer.Serialize(persistedTombstone.ToDto());
+        var stockJson = JsonSerializer.Serialize(await _dbContext.ItemWarehouseStocks
+            .AsNoTracking()
+            .Where(stock => stock.ItemId == item.Id)
+            .OrderBy(stock => stock.WarehouseCode)
+            .ToListAsync());
+        var ledgerJson = JsonSerializer.Serialize(await _dbContext.InventoryLedgerEntries
+            .AsNoTracking()
+            .Where(entry => entry.SourceDocumentId == transfer.Id)
+            .OrderBy(entry => entry.Id)
+            .ToListAsync());
+
+        var staleDelete = persistedTombstone.ToDto();
+        staleDelete.MutationId = $"already-deleted-transfer:{Guid.NewGuid():N}";
+        staleDelete.MutationCreatedAtUtc = DateTime.UtcNow;
+        staleDelete.Revision = tombstoneRevision;
+        staleDelete.ExpectedRevision = tombstoneRevision + 100;
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-already-deleted-transfer",
+            InventoryTransfers = [staleDelete]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(0, result.ConflictCount);
+        var acceptedRevision = Assert.Single(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(InventoryTransfer) &&
+            revision.EntityId == transfer.Id);
+        Assert.Equal(tombstoneRevision, acceptedRevision.Revision);
+        Assert.Equal(tombstoneUpdatedAtUtc, acceptedRevision.UpdatedAtUtc);
+
+        _dbContext.ChangeTracker.Clear();
+        var unchangedTombstone = await _dbContext.InventoryTransfers.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Include(current => current.Lines)
+            .SingleAsync(current => current.Id == transfer.Id);
+        Assert.True(unchangedTombstone.IsDeleted);
+        Assert.Equal(tombstoneRevision, unchangedTombstone.Revision);
+        Assert.Equal(tombstoneUpdatedAtUtc, unchangedTombstone.UpdatedAtUtc);
+        Assert.Equal(tombstoneJson, JsonSerializer.Serialize(unchangedTombstone.ToDto()));
+        Assert.Equal(stockJson, JsonSerializer.Serialize(await _dbContext.ItemWarehouseStocks
+            .AsNoTracking()
+            .Where(stock => stock.ItemId == item.Id)
+            .OrderBy(stock => stock.WarehouseCode)
+            .ToListAsync()));
+        Assert.Equal(ledgerJson, JsonSerializer.Serialize(await _dbContext.InventoryLedgerEntries
+            .AsNoTracking()
+            .Where(entry => entry.SourceDocumentId == transfer.Id)
+            .OrderBy(entry => entry.Id)
+            .ToListAsync()));
+
+        var implicitRestore = unchangedTombstone.ToDto();
+        implicitRestore.MutationId = $"implicit-transfer-restore:{Guid.NewGuid():N}";
+        implicitRestore.MutationCreatedAtUtc = DateTime.UtcNow;
+        implicitRestore.IsDeleted = false;
+        implicitRestore.Memo = "client must not revive server tombstone";
+        implicitRestore.Revision = tombstoneRevision;
+        implicitRestore.ExpectedRevision = tombstoneRevision;
+        implicitRestore.UpdatedAtUtc = tombstoneUpdatedAtUtc.AddMinutes(5);
+
+        var implicitRestoreResponse = await _controller.Push(
+            new SyncPushRequest
+            {
+                DeviceId = "device-implicit-transfer-restore",
+                InventoryTransfers = [implicitRestore]
+            },
+            CancellationToken.None);
+        var implicitRestoreOk =
+            Assert.IsType<OkObjectResult>(implicitRestoreResponse.Result);
+        var implicitRestoreResult =
+            Assert.IsType<SyncPushResult>(implicitRestoreOk.Value);
+
+        Assert.Equal(0, implicitRestoreResult.AcceptedCount);
+        Assert.Equal(1, implicitRestoreResult.ConflictCount);
+        var implicitRestoreConflict =
+            Assert.Single(implicitRestoreResult.Conflicts);
+        Assert.Equal(
+            nameof(InventoryTransfer),
+            implicitRestoreConflict.EntityName);
+        Assert.Equal(
+            transfer.Id.ToString("D"),
+            implicitRestoreConflict.EntityId);
+        Assert.Equal(
+            "Server inventory transfer is deleted. Restore it through the recycle bin.",
+            implicitRestoreConflict.Reason);
+
+        _dbContext.ChangeTracker.Clear();
+        var unchangedAfterImplicitRestore =
+            await _dbContext.InventoryTransfers.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Include(current => current.Lines)
+                .SingleAsync(current => current.Id == transfer.Id);
+        Assert.True(unchangedAfterImplicitRestore.IsDeleted);
+        Assert.Equal(tombstoneRevision, unchangedAfterImplicitRestore.Revision);
+        Assert.Equal(
+            tombstoneUpdatedAtUtc,
+            unchangedAfterImplicitRestore.UpdatedAtUtc);
+        Assert.Equal(
+            tombstoneJson,
+            JsonSerializer.Serialize(unchangedAfterImplicitRestore.ToDto()));
+        Assert.Equal(stockJson, JsonSerializer.Serialize(
+            await _dbContext.ItemWarehouseStocks
+                .AsNoTracking()
+                .Where(stock => stock.ItemId == item.Id)
+                .OrderBy(stock => stock.WarehouseCode)
+                .ToListAsync()));
+        Assert.Equal(ledgerJson, JsonSerializer.Serialize(
+            await _dbContext.InventoryLedgerEntries
+                .AsNoTracking()
+                .Where(entry => entry.SourceDocumentId == transfer.Id)
+                .OrderBy(entry => entry.Id)
+                .ToListAsync()));
+
+        var restoredTransfer = await _dbContext.InventoryTransfers.IgnoreQueryFilters()
+            .Include(current => current.Lines)
+            .SingleAsync(current => current.Id == transfer.Id);
+        restoredTransfer.IsDeleted = false;
+        restoredTransfer.Memo = "restored server content";
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+        var persistedRestoredTransfer = await _dbContext.InventoryTransfers.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Include(current => current.Lines)
+            .SingleAsync(current => current.Id == transfer.Id);
+        var restoredRevision = persistedRestoredTransfer.Revision;
+        var restoredJson = JsonSerializer.Serialize(persistedRestoredTransfer.ToDto());
+
+        staleDelete.MutationId = $"stale-transfer-delete-after-restore:{Guid.NewGuid():N}";
+        staleDelete.MutationCreatedAtUtc = DateTime.UtcNow;
+        staleDelete.ExpectedRevision = tombstoneRevision;
+        staleDelete.Revision = tombstoneRevision;
+        staleDelete.UpdatedAtUtc = tombstoneUpdatedAtUtc;
+
+        var staleResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-stale-transfer-delete-after-restore",
+            InventoryTransfers = [staleDelete]
+        }, CancellationToken.None);
+        var staleOk = Assert.IsType<OkObjectResult>(staleResponse.Result);
+        var staleResult = Assert.IsType<SyncPushResult>(staleOk.Value);
+
+        Assert.Equal(0, staleResult.AcceptedCount);
+        Assert.Equal(1, staleResult.ConflictCount);
+        Assert.Contains(staleResult.Conflicts, conflict =>
+            conflict.EntityName == nameof(InventoryTransfer) &&
+            conflict.EntityId == transfer.Id.ToString("D"));
+        _dbContext.ChangeTracker.Clear();
+        var unchangedRestoredTransfer = await _dbContext.InventoryTransfers.IgnoreQueryFilters()
+            .AsNoTracking()
+            .Include(current => current.Lines)
+            .SingleAsync(current => current.Id == transfer.Id);
+        Assert.False(unchangedRestoredTransfer.IsDeleted);
+        Assert.Equal(restoredRevision, unchangedRestoredTransfer.Revision);
+        Assert.Equal(restoredJson, JsonSerializer.Serialize(unchangedRestoredTransfer.ToDto()));
+        Assert.Equal(stockJson, JsonSerializer.Serialize(await _dbContext.ItemWarehouseStocks
+            .AsNoTracking()
+            .Where(stock => stock.ItemId == item.Id)
+            .OrderBy(stock => stock.WarehouseCode)
+            .ToListAsync()));
+        Assert.Equal(ledgerJson, JsonSerializer.Serialize(await _dbContext.InventoryLedgerEntries
+            .AsNoTracking()
+            .Where(entry => entry.SourceDocumentId == transfer.Id)
+            .OrderBy(entry => entry.Id)
+            .ToListAsync()));
+    }
+
+    [Fact]
+    public async Task Push_AcceptsAlreadyDeletedRentalBillingProfileWithoutStateChange_AndRejectsDeleteAfterRestore()
+    {
+        var profile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"ALREADY-DELETED-RENTAL-{Guid.NewGuid():N}",
+            CustomerName = "Already deleted rental customer",
+            ItemName = "Already deleted rental item",
+            Notes = "server tombstone content",
+            MonthlyAmount = 42_000m,
+            IsActive = false,
+            IsDeleted = true
+        };
+        _dbContext.RentalBillingProfiles.Add(profile);
+        await _dbContext.SaveChangesAsync();
+
+        var tombstoneRevision = profile.Revision;
+        var tombstoneUpdatedAtUtc = profile.UpdatedAtUtc;
+        var staleDelete = profile.ToDto();
+        staleDelete.MutationId = $"already-deleted-rental:{Guid.NewGuid():N}";
+        staleDelete.MutationCreatedAtUtc = DateTime.UtcNow;
+        staleDelete.Revision = tombstoneRevision;
+        staleDelete.ExpectedRevision = tombstoneRevision + 100;
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-already-deleted-rental",
+            RentalBillingProfiles = [staleDelete]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(0, result.ConflictCount);
+        var acceptedRevision = Assert.Single(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) &&
+            revision.EntityId == profile.Id);
+        Assert.Equal(tombstoneRevision, acceptedRevision.Revision);
+        Assert.Equal(tombstoneUpdatedAtUtc, acceptedRevision.UpdatedAtUtc);
+
+        _dbContext.ChangeTracker.Clear();
+        var unchangedTombstone = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == profile.Id);
+        Assert.True(unchangedTombstone.IsDeleted);
+        Assert.Equal(tombstoneRevision, unchangedTombstone.Revision);
+        Assert.Equal(tombstoneUpdatedAtUtc, unchangedTombstone.UpdatedAtUtc);
+        Assert.Equal("server tombstone content", unchangedTombstone.Notes);
+        Assert.Equal(42_000m, unchangedTombstone.MonthlyAmount);
+
+        unchangedTombstone.IsDeleted = false;
+        unchangedTombstone.IsActive = true;
+        unchangedTombstone.Notes = "restored server content";
+        await _dbContext.SaveChangesAsync();
+        var restoredRevision = unchangedTombstone.Revision;
+
+        var deleteAfterRestore = staleDelete;
+        deleteAfterRestore.MutationId = $"stale-rental-delete-after-restore:{Guid.NewGuid():N}";
+        deleteAfterRestore.MutationCreatedAtUtc = DateTime.UtcNow;
+        deleteAfterRestore.ExpectedRevision = tombstoneRevision;
+        deleteAfterRestore.Revision = tombstoneRevision;
+        deleteAfterRestore.UpdatedAtUtc = tombstoneUpdatedAtUtc;
+
+        var staleResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-stale-rental-delete-after-restore",
+            RentalBillingProfiles = [deleteAfterRestore]
+        }, CancellationToken.None);
+        var staleOk = Assert.IsType<OkObjectResult>(staleResponse.Result);
+        var staleResult = Assert.IsType<SyncPushResult>(staleOk.Value);
+
+        Assert.Equal(0, staleResult.AcceptedCount);
+        Assert.Equal(1, staleResult.ConflictCount);
+        Assert.Contains(staleResult.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.EntityId == profile.Id.ToString("D"));
+        _dbContext.ChangeTracker.Clear();
+        var restored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == profile.Id);
+        Assert.False(restored.IsDeleted);
+        Assert.Equal(restoredRevision, restored.Revision);
+        Assert.Equal("restored server content", restored.Notes);
+    }
+
+    [Fact]
+    public async Task Push_DoesNotResurrectPurgedRentalBillingProfileFromPriorIncarnation_AndAllowsNewGeneration()
+    {
+        var profileId = Guid.NewGuid();
+        var profileKey = $"PURGED-RENTAL-{Guid.NewGuid():N}";
+        var purgedAtUtc = new DateTime(2026, 7, 31, 5, 0, 0, DateTimeKind.Utc);
+        var purgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.RecycleBinPurgeRecords.Add(purgeRecord);
+        await _dbContext.SaveChangesAsync();
+        var purgeRevision = purgeRecord.Revision;
+        var purgeUpdatedAtUtc = purgeRecord.UpdatedAtUtc;
+
+        RentalBillingProfileDto CreatePriorIncarnation(bool deleted, string mutationId)
+            => new()
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = profileKey,
+                CustomerName = "Purged rental customer",
+                ItemName = "Purged rental item",
+                Notes = deleted ? "stale delete" : "stale active edit",
+                MonthlyAmount = 31_000m,
+                IsActive = !deleted,
+                IsDeleted = deleted,
+                Revision = purgeRevision,
+                ExpectedRevision = purgeRevision,
+                MutationId = mutationId,
+                MutationCreatedAtUtc = purgedAtUtc.AddMinutes(-1),
+                CreatedAtUtc = purgedAtUtc.AddDays(-10),
+                UpdatedAtUtc = purgedAtUtc.AddMinutes(-1)
+            };
+
+        var staleActive = CreatePriorIncarnation(
+            false,
+            $"purged-rental-stale-active:{Guid.NewGuid():N}");
+        var staleActiveResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purged-rental-stale-active",
+            RentalBillingProfiles = [staleActive]
+        }, CancellationToken.None);
+        var staleActiveOk = Assert.IsType<OkObjectResult>(staleActiveResponse.Result);
+        var staleActiveResult = Assert.IsType<SyncPushResult>(staleActiveOk.Value);
+
+        Assert.Equal(1, staleActiveResult.AcceptedCount);
+        Assert.Equal(0, staleActiveResult.ConflictCount);
+        Assert.Equal(0, staleActiveResult.DuplicateMutationCount);
+        var staleActiveAcceptedRevision = Assert.Single(staleActiveResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) &&
+            revision.EntityId == profileId);
+        Assert.Equal(purgeRevision, staleActiveAcceptedRevision.Revision);
+        Assert.Equal(purgeUpdatedAtUtc, staleActiveAcceptedRevision.UpdatedAtUtc);
+        Assert.Contains(staleActiveResult.Notices, notice =>
+            notice.EntityName == nameof(RentalBillingProfile) &&
+            notice.EntityId == profileId.ToString("D") &&
+            notice.Code == "rental-billing-profile-purged-mutation-noop");
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == profileId));
+        Assert.True(await _dbContext.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == purgeRecord.Id));
+
+        var legacyPriorIncarnation = CreatePriorIncarnation(
+            false,
+            $"purged-rental-legacy-active:{Guid.NewGuid():N}");
+        legacyPriorIncarnation.Revision = 0;
+        legacyPriorIncarnation.ExpectedRevision = 0;
+        var legacyResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purged-rental-legacy-active",
+            RentalBillingProfiles = [legacyPriorIncarnation]
+        }, CancellationToken.None);
+        var legacyOk = Assert.IsType<OkObjectResult>(legacyResponse.Result);
+        var legacyResult = Assert.IsType<SyncPushResult>(legacyOk.Value);
+        Assert.Equal(1, legacyResult.AcceptedCount);
+        Assert.Equal(0, legacyResult.ConflictCount);
+        var legacyAcceptedRevision = Assert.Single(legacyResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) &&
+            revision.EntityId == profileId);
+        Assert.Equal(purgeRevision, legacyAcceptedRevision.Revision);
+        Assert.Equal(purgeUpdatedAtUtc, legacyAcceptedRevision.UpdatedAtUtc);
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == profileId));
+
+        var boundaryLegacyPriorIncarnation = CreatePriorIncarnation(
+            false,
+            $"purged-rental-legacy-boundary:{Guid.NewGuid():N}");
+        boundaryLegacyPriorIncarnation.Revision = 0;
+        boundaryLegacyPriorIncarnation.ExpectedRevision = 0;
+        boundaryLegacyPriorIncarnation.MutationCreatedAtUtc = purgedAtUtc;
+        boundaryLegacyPriorIncarnation.UpdatedAtUtc = purgedAtUtc;
+        var boundaryLegacyResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purged-rental-legacy-boundary",
+            RentalBillingProfiles = [boundaryLegacyPriorIncarnation]
+        }, CancellationToken.None);
+        var boundaryLegacyOk = Assert.IsType<OkObjectResult>(boundaryLegacyResponse.Result);
+        var boundaryLegacyResult = Assert.IsType<SyncPushResult>(boundaryLegacyOk.Value);
+        Assert.Equal(1, boundaryLegacyResult.AcceptedCount);
+        Assert.Equal(0, boundaryLegacyResult.ConflictCount);
+        var boundaryAcceptedRevision = Assert.Single(boundaryLegacyResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) &&
+            revision.EntityId == profileId);
+        Assert.Equal(purgeRevision, boundaryAcceptedRevision.Revision);
+        Assert.Equal(purgeUpdatedAtUtc, boundaryAcceptedRevision.UpdatedAtUtc);
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == profileId));
+
+        _dbContext.ChangeTracker.Clear();
+        var replayResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purged-rental-stale-active",
+            RentalBillingProfiles = [staleActive]
+        }, CancellationToken.None);
+        var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
+        var replayResult = Assert.IsType<SyncPushResult>(replayOk.Value);
+        Assert.Equal(1, replayResult.AcceptedCount);
+        Assert.Equal(0, replayResult.ConflictCount);
+        Assert.Equal(1, replayResult.DuplicateMutationCount);
+        var replayAcceptedRevision = Assert.Single(replayResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) &&
+            revision.EntityId == profileId);
+        Assert.Equal(purgeRevision, replayAcceptedRevision.Revision);
+        Assert.Equal(purgeUpdatedAtUtc, replayAcceptedRevision.UpdatedAtUtc);
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == profileId));
+
+        var staleDelete = CreatePriorIncarnation(
+            true,
+            $"purged-rental-stale-delete:{Guid.NewGuid():N}");
+        var staleDeleteResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purged-rental-stale-delete",
+            RentalBillingProfiles = [staleDelete]
+        }, CancellationToken.None);
+        var staleDeleteOk = Assert.IsType<OkObjectResult>(staleDeleteResponse.Result);
+        var staleDeleteResult = Assert.IsType<SyncPushResult>(staleDeleteOk.Value);
+        Assert.Equal(1, staleDeleteResult.AcceptedCount);
+        Assert.Equal(0, staleDeleteResult.ConflictCount);
+        var staleDeleteAcceptedRevision = Assert.Single(staleDeleteResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) &&
+            revision.EntityId == profileId);
+        Assert.Equal(purgeRevision, staleDeleteAcceptedRevision.Revision);
+        Assert.Equal(purgeUpdatedAtUtc, staleDeleteAcceptedRevision.UpdatedAtUtc);
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == profileId));
+        Assert.True(await _dbContext.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == purgeRecord.Id));
+
+        var newGeneration = new RentalBillingProfileDto
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = profileKey,
+            CustomerName = "New generation rental customer",
+            ItemName = "New generation rental item",
+            Notes = "new generation active create",
+            MonthlyAmount = 55_000m,
+            IsActive = true,
+            Revision = 0,
+            ExpectedRevision = 0,
+            MutationId = $"purged-rental-new-generation:{Guid.NewGuid():N}",
+            MutationCreatedAtUtc = purgedAtUtc.AddMinutes(10),
+            CreatedAtUtc = purgedAtUtc.AddMinutes(10),
+            UpdatedAtUtc = purgedAtUtc.AddMinutes(10)
+        };
+        var newGenerationResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purged-rental-new-generation",
+            RentalBillingProfiles = [newGeneration]
+        }, CancellationToken.None);
+        var newGenerationOk = Assert.IsType<OkObjectResult>(newGenerationResponse.Result);
+        var newGenerationResult = Assert.IsType<SyncPushResult>(newGenerationOk.Value);
+        Assert.Equal(1, newGenerationResult.AcceptedCount);
+        Assert.Equal(0, newGenerationResult.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var created = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.False(created.IsDeleted);
+        Assert.Equal("new generation active create", created.Notes);
+        Assert.Equal(55_000m, created.MonthlyAmount);
+        Assert.False(await _dbContext.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == purgeRecord.Id));
+
+        var newerGenerationProfileId = Guid.NewGuid();
+        var newerGenerationPurgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rentalbillingprofile",
+            EntityId = newerGenerationProfileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.RecycleBinPurgeRecords.Add(newerGenerationPurgeRecord);
+        await _dbContext.SaveChangesAsync();
+        var knownNewerRevision = newerGenerationPurgeRecord.Revision + 1;
+        var knownNewerGeneration = new RentalBillingProfileDto
+        {
+            Id = newerGenerationProfileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"PURGED-RENTAL-NEWER-{Guid.NewGuid():N}",
+            CustomerName = "Known newer rental customer",
+            ItemName = "Known newer rental item",
+            Notes = "known revision newer generation",
+            MonthlyAmount = 77_000m,
+            IsActive = true,
+            Revision = knownNewerRevision,
+            ExpectedRevision = knownNewerRevision,
+            MutationId = $"purged-rental-known-newer:{Guid.NewGuid():N}",
+            MutationCreatedAtUtc = purgedAtUtc.AddMinutes(20),
+            CreatedAtUtc = purgedAtUtc.AddMinutes(20),
+            UpdatedAtUtc = purgedAtUtc.AddMinutes(20)
+        };
+        var knownNewerResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purged-rental-known-newer",
+            RentalBillingProfiles = [knownNewerGeneration]
+        }, CancellationToken.None);
+        var knownNewerOk = Assert.IsType<OkObjectResult>(knownNewerResponse.Result);
+        var knownNewerResult = Assert.IsType<SyncPushResult>(knownNewerOk.Value);
+        Assert.Equal(1, knownNewerResult.AcceptedCount);
+        Assert.Equal(0, knownNewerResult.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var knownNewerCreated = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(profile => profile.Id == newerGenerationProfileId);
+        Assert.False(knownNewerCreated.IsDeleted);
+        Assert.Equal("known revision newer generation", knownNewerCreated.Notes);
+        Assert.False(await _dbContext.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == newerGenerationPurgeRecord.Id));
+
+        var mixedProfileId = Guid.NewGuid();
+        var mixedProfileKey = $"PURGED-RENTAL-MIXED-{Guid.NewGuid():N}";
+        var mixedPurgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = mixedProfileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.RecycleBinPurgeRecords.Add(mixedPurgeRecord);
+        await _dbContext.SaveChangesAsync();
+        var mixedPriorIncarnation = new RentalBillingProfileDto
+        {
+            Id = mixedProfileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = mixedProfileKey,
+            CustomerName = "Mixed prior-incarnation customer",
+            Notes = "mixed prior-incarnation edit",
+            IsActive = true,
+            Revision = mixedPurgeRecord.Revision,
+            ExpectedRevision = mixedPurgeRecord.Revision,
+            MutationId = $"purged-rental-mixed-prior:{Guid.NewGuid():N}",
+            MutationCreatedAtUtc = purgedAtUtc.AddMinutes(-1),
+            CreatedAtUtc = purgedAtUtc.AddDays(-1),
+            UpdatedAtUtc = purgedAtUtc.AddMinutes(-1)
+        };
+        var mixedNewGeneration = new RentalBillingProfileDto
+        {
+            Id = mixedProfileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = mixedProfileKey,
+            CustomerName = "Mixed new-generation customer",
+            Notes = "mixed new-generation create",
+            IsActive = true,
+            MutationId = $"purged-rental-mixed-new:{Guid.NewGuid():N}",
+            MutationCreatedAtUtc = purgedAtUtc.AddMinutes(30),
+            CreatedAtUtc = purgedAtUtc.AddMinutes(30),
+            UpdatedAtUtc = purgedAtUtc.AddMinutes(30)
+        };
+        var mixedResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purged-rental-mixed-generation",
+            RentalBillingProfiles = [mixedPriorIncarnation, mixedNewGeneration]
+        }, CancellationToken.None);
+        var mixedOk = Assert.IsType<OkObjectResult>(mixedResponse.Result);
+        var mixedResult = Assert.IsType<SyncPushResult>(mixedOk.Value);
+        Assert.Equal(2, mixedResult.AcceptedCount);
+        Assert.Equal(0, mixedResult.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var mixedCreated = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(profile => profile.Id == mixedProfileId);
+        var mixedAcceptedRevision = Assert.Single(mixedResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) &&
+            revision.EntityId == mixedProfileId);
+        Assert.Equal(mixedCreated.Revision, mixedAcceptedRevision.Revision);
+        Assert.Equal(mixedCreated.UpdatedAtUtc, mixedAcceptedRevision.UpdatedAtUtc);
+        Assert.Equal("mixed new-generation create", mixedCreated.Notes);
+        Assert.False(await _dbContext.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == mixedPurgeRecord.Id));
+    }
+
+    [Fact]
+    public async Task Push_GuardsPurgedRentalBillingProfileBeforeNaturalKeyRemap()
+    {
+        var originalPurgedId = Guid.NewGuid();
+        var canonicalId = Guid.NewGuid();
+        var profileKey = $"PURGED-RENTAL-NATURAL-KEY-{Guid.NewGuid():N}";
+        var canonical = new RentalBillingProfile
+        {
+            Id = canonicalId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = profileKey,
+            CustomerName = "Canonical rental customer",
+            ItemName = "Canonical rental item",
+            Notes = "canonical content must remain",
+            MonthlyAmount = 88_000m,
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(canonical);
+        await _dbContext.SaveChangesAsync();
+        var canonicalRevision = canonical.Revision;
+        var canonicalUpdatedAtUtc = canonical.UpdatedAtUtc;
+
+        var purgedAtUtc = DateTime.UtcNow.AddMinutes(1);
+        var purgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = originalPurgedId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.RecycleBinPurgeRecords.Add(purgeRecord);
+        await _dbContext.SaveChangesAsync();
+
+        var staleOriginal = new RentalBillingProfileDto
+        {
+            Id = originalPurgedId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = profileKey,
+            CustomerName = "Stale original rental customer",
+            ItemName = "Stale original rental item",
+            Notes = "must not overwrite canonical",
+            MonthlyAmount = 1m,
+            IsActive = true,
+            Revision = purgeRecord.Revision,
+            ExpectedRevision = purgeRecord.Revision,
+            MutationId = $"purged-rental-natural-key-stale:{Guid.NewGuid():N}",
+            MutationCreatedAtUtc = purgedAtUtc.AddMinutes(-1),
+            CreatedAtUtc = purgedAtUtc.AddDays(-1),
+            UpdatedAtUtc = purgedAtUtc.AddMinutes(-1)
+        };
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purged-rental-natural-key-stale",
+            RentalBillingProfiles = [staleOriginal]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(0, result.ConflictCount);
+        var acceptedRevision = Assert.Single(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) &&
+            revision.EntityId == originalPurgedId);
+        Assert.Equal(purgeRecord.Revision, acceptedRevision.Revision);
+        Assert.Equal(purgeRecord.UpdatedAtUtc, acceptedRevision.UpdatedAtUtc);
+
+        _dbContext.ChangeTracker.Clear();
+        var unchangedCanonical = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(profile => profile.Id == canonicalId);
+        Assert.Equal(canonicalRevision, unchangedCanonical.Revision);
+        Assert.Equal(canonicalUpdatedAtUtc, unchangedCanonical.UpdatedAtUtc);
+        Assert.Equal("canonical content must remain", unchangedCanonical.Notes);
+        Assert.Equal(88_000m, unchangedCanonical.MonthlyAmount);
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == originalPurgedId));
+        Assert.True(await _dbContext.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == purgeRecord.Id));
+    }
+
+    [Fact]
+    public async Task Push_RejectsPurgedRentalBillingProfileAcknowledgementOutsideWritableScope()
+    {
+        var profileId = Guid.NewGuid();
+        var purgedAtUtc = new DateTime(2026, 7, 31, 7, 0, 0, DateTimeKind.Utc);
+        var purgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = profileId,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.RecycleBinPurgeRecords.Add(purgeRecord);
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-purged-rental-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.RentalProfileEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var mutationId = $"purged-rental-forbidden-scope:{Guid.NewGuid():N}";
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purged-rental-forbidden-scope",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    ProfileKey = $"PURGED-RENTAL-FORBIDDEN-{Guid.NewGuid():N}",
+                    CustomerName = "Forbidden purged rental customer",
+                    Notes = "must not be acknowledged",
+                    IsActive = true,
+                    Revision = purgeRecord.Revision,
+                    ExpectedRevision = purgeRecord.Revision,
+                    MutationId = mutationId,
+                    MutationCreatedAtUtc = purgedAtUtc.AddMinutes(-1),
+                    CreatedAtUtc = purgedAtUtc.AddDays(-1),
+                    UpdatedAtUtc = purgedAtUtc.AddMinutes(-1)
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Empty(result.AcceptedRevisions);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.EntityId == profileId.ToString("D") &&
+            conflict.Reason.Contains("cannot modify this office scope", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await scopedDb.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == mutationId));
+        Assert.False(await scopedDb.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == profileId));
+        Assert.True(await scopedDb.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == purgeRecord.Id));
+    }
+
+    [Fact]
+    public async Task Push_RejectsKnownNewerActiveMutation_WhenDurableRentalPurgeScopeIsNotWritable()
+    {
+        var profileId = Guid.NewGuid();
+        var purgedAtUtc = new DateTime(2026, 7, 31, 7, 30, 0, DateTimeKind.Utc);
+        var purgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = profileId,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.RecycleBinPurgeRecords.Add(purgeRecord);
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-purged-rental-newer-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.RentalProfileEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var mutationId = $"purged-rental-newer-forbidden:{Guid.NewGuid():N}";
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purged-rental-newer-forbidden",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"PURGED-RENTAL-NEWER-FORBIDDEN-{Guid.NewGuid():N}",
+                    CustomerName = "Mis-scoped newer rental customer",
+                    Notes = "must be rejected by durable purge scope",
+                    IsActive = true,
+                    Revision = purgeRecord.Revision + 100,
+                    ExpectedRevision = purgeRecord.Revision + 100,
+                    MutationId = mutationId,
+                    MutationCreatedAtUtc = purgedAtUtc.AddMinutes(10),
+                    CreatedAtUtc = purgedAtUtc.AddMinutes(10),
+                    UpdatedAtUtc = purgedAtUtc.AddMinutes(10)
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Empty(result.AcceptedRevisions);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.EntityId == profileId.ToString("D") &&
+            conflict.Reason.Contains("cannot modify this office scope", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await scopedDb.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == mutationId));
+        Assert.False(await scopedDb.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == profileId));
+        Assert.True(await scopedDb.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == purgeRecord.Id));
+    }
+
+    [Fact]
+    public async Task Push_RejectsKnownNewerDeleteAgainstPurgedRentalProfileWithoutGhost()
+    {
+        var profileId = Guid.NewGuid();
+        var purgedAtUtc = new DateTime(2026, 7, 31, 8, 0, 0, DateTimeKind.Utc);
+        var purgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.RecycleBinPurgeRecords.Add(purgeRecord);
+        await _dbContext.SaveChangesAsync();
+        var mutationId = $"purged-rental-newer-delete:{Guid.NewGuid():N}";
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purged-rental-newer-delete",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"PURGED-RENTAL-NEWER-DELETE-{Guid.NewGuid():N}",
+                    CustomerName = "Purged newer delete customer",
+                    Notes = "must not create a ghost tombstone",
+                    IsDeleted = true,
+                    Revision = purgeRecord.Revision + 100,
+                    ExpectedRevision = purgeRecord.Revision + 100,
+                    MutationId = mutationId,
+                    MutationCreatedAtUtc = purgedAtUtc.AddMinutes(10),
+                    CreatedAtUtc = purgedAtUtc.AddDays(-1),
+                    UpdatedAtUtc = purgedAtUtc.AddMinutes(10)
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Empty(result.AcceptedRevisions);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.EntityId == profileId.ToString("D") &&
+            conflict.Reason.Contains("pull", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == mutationId));
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == profileId));
+        Assert.True(await _dbContext.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == purgeRecord.Id));
+    }
+
+    [Fact]
+    public async Task Push_SameKeyRejectedPurgedProfile_DoesNotReceiveAliasOrRemapRentalAsset()
+    {
+        var profileKey = $"PURGED-RENTAL-MIXED-SCOPE-{Guid.NewGuid():N}";
+        var canonical = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = profileKey,
+            CustomerName = "Mixed scope canonical customer",
+            ItemName = "Canonical profile item",
+            Notes = "canonical before",
+            MonthlyAmount = 10_000m,
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(canonical);
+        await _dbContext.SaveChangesAsync();
+        var canonicalRevision = canonical.Revision;
+
+        var rejectedOriginalId = Guid.NewGuid();
+        var purgedAtUtc = new DateTime(2026, 7, 31, 8, 30, 0, DateTimeKind.Utc);
+        var purgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = rejectedOriginalId,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.RecycleBinPurgeRecords.Add(purgeRecord);
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-rental-same-key-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions =
+            [
+                PermissionNames.RentalProfileEdit,
+                PermissionNames.RentalAssetEdit
+            ]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var acceptedOriginalId = Guid.NewGuid();
+        var acceptedMutationId = $"rental-same-key-accepted:{Guid.NewGuid():N}";
+        var rejectedMutationId = $"rental-same-key-rejected:{Guid.NewGuid():N}";
+        var assetId = Guid.NewGuid();
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-same-key-mixed-scope",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = acceptedOriginalId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = profileKey,
+                    CustomerName = canonical.CustomerName,
+                    ItemName = canonical.ItemName,
+                    Notes = "accepted canonical update",
+                    MonthlyAmount = 20_000m,
+                    IsActive = true,
+                    Revision = canonicalRevision,
+                    ExpectedRevision = canonicalRevision,
+                    MutationId = acceptedMutationId,
+                    MutationCreatedAtUtc = purgedAtUtc.AddMinutes(10),
+                    CreatedAtUtc = canonical.CreatedAtUtc,
+                    UpdatedAtUtc = purgedAtUtc.AddMinutes(10)
+                },
+                new RentalBillingProfileDto
+                {
+                    Id = rejectedOriginalId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = profileKey,
+                    CustomerName = canonical.CustomerName,
+                    ItemName = canonical.ItemName,
+                    Notes = "rejected purge-scope update",
+                    MonthlyAmount = 99_000m,
+                    IsActive = true,
+                    Revision = purgeRecord.Revision + 100,
+                    ExpectedRevision = purgeRecord.Revision + 100,
+                    MutationId = rejectedMutationId,
+                    MutationCreatedAtUtc = purgedAtUtc.AddMinutes(10),
+                    CreatedAtUtc = purgedAtUtc.AddMinutes(10),
+                    UpdatedAtUtc = purgedAtUtc.AddMinutes(10)
+                }
+            ],
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = $"USENET|REJECTED-PROFILE-ASSET|{assetId:N}",
+                    BillingProfileId = rejectedOriginalId,
+                    CustomerName = "No fallback customer",
+                    CurrentCustomerName = "No fallback customer",
+                    ManagementId = "REJECTED-PROFILE-ASSET",
+                    ManagementNumber = "REJECTED-PROFILE-ASSET",
+                    ItemName = "No fallback item",
+                    CreatedAtUtc = purgedAtUtc.AddMinutes(10),
+                    UpdatedAtUtc = purgedAtUtc.AddMinutes(10)
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(2, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.EntityId == rejectedOriginalId.ToString("D"));
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalAsset) &&
+            conflict.EntityId == assetId.ToString("D"));
+
+        var rentalProfileRevisions = result.AcceptedRevisions
+            .Where(revision => revision.EntityName == nameof(RentalBillingProfile))
+            .ToList();
+        Assert.Contains(rentalProfileRevisions, revision => revision.EntityId == canonical.Id);
+        Assert.Contains(rentalProfileRevisions, revision => revision.EntityId == acceptedOriginalId);
+        Assert.DoesNotContain(rentalProfileRevisions, revision => revision.EntityId == rejectedOriginalId);
+        Assert.DoesNotContain(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalAsset) && revision.EntityId == assetId);
+
+        Assert.True(await scopedDb.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == acceptedMutationId));
+        Assert.False(await scopedDb.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == rejectedMutationId));
+        Assert.False(await scopedDb.RentalAssets.IgnoreQueryFilters()
+            .AnyAsync(asset => asset.Id == assetId));
+        Assert.True(await scopedDb.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == purgeRecord.Id));
+        scopedDb.ChangeTracker.Clear();
+        var storedCanonical = await scopedDb.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(profile => profile.Id == canonical.Id);
+        Assert.Equal("accepted canonical update", storedCanonical.Notes);
+        Assert.Equal(20_000m, storedCanonical.MonthlyAmount);
+    }
+
+    [Fact]
+    public async Task Push_RejectsEmptyIdDeterministicRentalProfile_WhenDurablePurgeScopeIsNotWritable()
+    {
+        var profileKey = $"EMPTY-ID-PURGED-FOREIGN-SCOPE-{Guid.NewGuid():N}";
+        var canonicalId = SyncIdentityGenerator.CreateRentalBillingProfileId(profileKey);
+        var purgedAtUtc = new DateTime(2026, 8, 1, 1, 0, 0, DateTimeKind.Utc);
+        var purgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = canonicalId,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.RecycleBinPurgeRecords.Add(purgeRecord);
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-empty-id-purged-rental-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.RentalProfileEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var mutationId = $"empty-id-purged-foreign-scope:{Guid.NewGuid():N}";
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-empty-id-purged-foreign-scope",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = Guid.Empty,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = profileKey,
+                    CustomerName = "Empty ID foreign purge customer",
+                    Notes = "must not resurrect deterministic purge id",
+                    MonthlyAmount = 91_000m,
+                    IsActive = true,
+                    Revision = purgeRecord.Revision + 100,
+                    ExpectedRevision = purgeRecord.Revision + 100,
+                    MutationId = mutationId,
+                    MutationCreatedAtUtc = purgedAtUtc.AddMinutes(10),
+                    CreatedAtUtc = purgedAtUtc.AddMinutes(10),
+                    UpdatedAtUtc = purgedAtUtc.AddMinutes(10)
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Empty(result.AcceptedRevisions);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.EntityId == canonicalId.ToString("D") &&
+            conflict.Reason.Contains("cannot modify this office scope", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await scopedDb.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == mutationId));
+        Assert.False(await scopedDb.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == canonicalId));
+        Assert.True(await scopedDb.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == purgeRecord.Id));
+    }
+
+    [Fact]
+    public async Task Push_AcknowledgesEmptyIdDeterministicStaleRentalProfileAgainstPurge_AndExactReplay()
+    {
+        var profileKey = $"EMPTY-ID-PURGED-STALE-{Guid.NewGuid():N}";
+        var canonicalId = SyncIdentityGenerator.CreateRentalBillingProfileId(profileKey);
+        var purgedAtUtc = new DateTime(2026, 8, 1, 1, 30, 0, DateTimeKind.Utc);
+        var purgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = canonicalId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.RecycleBinPurgeRecords.Add(purgeRecord);
+        await _dbContext.SaveChangesAsync();
+        var mutationId = $"empty-id-purged-stale:{Guid.NewGuid():N}";
+        var mutationCreatedAtUtc = purgedAtUtc.AddMinutes(-1);
+
+        RentalBillingProfileDto CreateStaleMutation()
+            => new()
+            {
+                Id = Guid.Empty,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = profileKey,
+                CustomerName = "Empty ID stale purge customer",
+                Notes = "must be acknowledged without resurrection",
+                MonthlyAmount = 32_000m,
+                IsActive = true,
+                Revision = purgeRecord.Revision,
+                ExpectedRevision = purgeRecord.Revision,
+                MutationId = mutationId,
+                MutationCreatedAtUtc = mutationCreatedAtUtc,
+                CreatedAtUtc = purgedAtUtc.AddDays(-5),
+                UpdatedAtUtc = mutationCreatedAtUtc
+            };
+
+        var firstResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-empty-id-purged-stale",
+            RentalBillingProfiles = [CreateStaleMutation()]
+        }, CancellationToken.None);
+        var firstOk = Assert.IsType<OkObjectResult>(firstResponse.Result);
+        var firstResult = Assert.IsType<SyncPushResult>(firstOk.Value);
+
+        Assert.Equal(1, firstResult.AcceptedCount);
+        Assert.Equal(0, firstResult.ConflictCount);
+        Assert.Equal(0, firstResult.DuplicateMutationCount);
+        var firstAcceptedRevision = Assert.Single(firstResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile));
+        Assert.Equal(canonicalId, firstAcceptedRevision.EntityId);
+        Assert.Equal(purgeRecord.Revision, firstAcceptedRevision.Revision);
+        Assert.Equal(purgeRecord.UpdatedAtUtc, firstAcceptedRevision.UpdatedAtUtc);
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == canonicalId));
+        Assert.True(await _dbContext.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == purgeRecord.Id));
+        var receipt = await _dbContext.ProcessedSyncMutations
+            .AsNoTracking()
+            .SingleAsync(mutation => mutation.MutationId == mutationId);
+        Assert.Equal(canonicalId.ToString("D"), receipt.EntityId);
+
+        _dbContext.ChangeTracker.Clear();
+        var replayResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-empty-id-purged-stale",
+            RentalBillingProfiles = [CreateStaleMutation()]
+        }, CancellationToken.None);
+        var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
+        var replayResult = Assert.IsType<SyncPushResult>(replayOk.Value);
+
+        Assert.Equal(1, replayResult.AcceptedCount);
+        Assert.Equal(0, replayResult.ConflictCount);
+        Assert.Equal(1, replayResult.DuplicateMutationCount);
+        var replayAcceptedRevision = Assert.Single(replayResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile));
+        Assert.Equal(canonicalId, replayAcceptedRevision.EntityId);
+        Assert.Equal(purgeRecord.Revision, replayAcceptedRevision.Revision);
+        Assert.Equal(purgeRecord.UpdatedAtUtc, replayAcceptedRevision.UpdatedAtUtc);
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == canonicalId));
+        Assert.True(await _dbContext.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == purgeRecord.Id));
+    }
+
+    [Fact]
+    public async Task Push_AllowsEmptyIdDeterministicNewRentalProfileAfterPurge()
+    {
+        var profileKey = $"EMPTY-ID-PURGED-NEW-GENERATION-{Guid.NewGuid():N}";
+        var canonicalId = SyncIdentityGenerator.CreateRentalBillingProfileId(profileKey);
+        var purgedAtUtc = new DateTime(2026, 8, 1, 2, 0, 0, DateTimeKind.Utc);
+        var purgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = canonicalId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.RecycleBinPurgeRecords.Add(purgeRecord);
+        await _dbContext.SaveChangesAsync();
+        var mutationId = $"empty-id-purged-new-generation:{Guid.NewGuid():N}";
+        var mutationCreatedAtUtc = purgedAtUtc.AddMinutes(5);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-empty-id-purged-new-generation",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = Guid.Empty,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = profileKey,
+                    CustomerName = "Empty ID new generation customer",
+                    Notes = "legitimate post-purge generation",
+                    MonthlyAmount = 45_000m,
+                    IsActive = true,
+                    Revision = 0,
+                    ExpectedRevision = 0,
+                    MutationId = mutationId,
+                    MutationCreatedAtUtc = mutationCreatedAtUtc,
+                    CreatedAtUtc = mutationCreatedAtUtc,
+                    UpdatedAtUtc = mutationCreatedAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) &&
+            revision.EntityId == canonicalId);
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(profile => profile.Id == canonicalId);
+        Assert.False(stored.IsDeleted);
+        Assert.True(stored.IsActive);
+        Assert.Equal("legitimate post-purge generation", stored.Notes);
+        Assert.False(await _dbContext.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == purgeRecord.Id));
+        var receipt = await _dbContext.ProcessedSyncMutations
+            .AsNoTracking()
+            .SingleAsync(mutation => mutation.MutationId == mutationId);
+        Assert.Equal(canonicalId.ToString("D"), receipt.EntityId);
+    }
+
+    [Fact]
+    public async Task Push_RentalProfileNaturalKeyLookup_IsTenantIsolatedForGlobalAdmin()
+    {
+        var profileKey = $"TENANT-ISOLATED-RENTAL-PROFILE-{Guid.NewGuid():N}";
+        var usenetProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = profileKey,
+            CustomerName = "USENET tenant-isolated customer",
+            ItemName = "USENET tenant-isolated item",
+            Notes = "usenet before tenant-isolated update",
+            MonthlyAmount = 10_000m,
+            IsActive = true
+        };
+        var itworldProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            ProfileKey = profileKey,
+            CustomerName = "ITWORLD tenant-isolated customer",
+            ItemName = "ITWORLD tenant-isolated item",
+            Notes = "itworld before tenant-isolated update",
+            MonthlyAmount = 20_000m,
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.AddRange(usenetProfile, itworldProfile);
+        await _dbContext.SaveChangesAsync();
+        var usenetRevision = usenetProfile.Revision;
+        var itworldRevision = itworldProfile.Revision;
+
+        RentalBillingProfileDto CreateAlias(
+            RentalBillingProfile target,
+            Guid aliasId,
+            string mutationId,
+            string notes,
+            decimal amount,
+            long expectedRevision)
+            => new()
+            {
+                Id = aliasId,
+                TenantCode = target.TenantCode,
+                OfficeCode = target.OfficeCode,
+                ResponsibleOfficeCode = target.ResponsibleOfficeCode,
+                ProfileKey = profileKey,
+                CustomerName = target.CustomerName,
+                ItemName = target.ItemName,
+                Notes = notes,
+                MonthlyAmount = amount,
+                IsActive = true,
+                Revision = expectedRevision,
+                ExpectedRevision = expectedRevision,
+                MutationId = mutationId,
+                MutationCreatedAtUtc = target.UpdatedAtUtc.AddMinutes(5),
+                CreatedAtUtc = target.CreatedAtUtc,
+                UpdatedAtUtc = target.UpdatedAtUtc.AddMinutes(5)
+            };
+
+        var itworldAliasId = Guid.NewGuid();
+        var itworldResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-tenant-isolation-itworld",
+            RentalBillingProfiles =
+            [
+                CreateAlias(
+                    itworldProfile,
+                    itworldAliasId,
+                    $"rental-tenant-isolation-itworld:{Guid.NewGuid():N}",
+                    "itworld tenant-isolated update",
+                    25_000m,
+                    itworldRevision)
+            ]
+        }, CancellationToken.None);
+        var itworldOk = Assert.IsType<OkObjectResult>(itworldResponse.Result);
+        var itworldResult = Assert.IsType<SyncPushResult>(itworldOk.Value);
+        Assert.Equal(1, itworldResult.AcceptedCount);
+        Assert.Equal(0, itworldResult.ConflictCount);
+        Assert.Contains(itworldResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) &&
+            revision.EntityId == itworldProfile.Id);
+        Assert.Contains(itworldResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) &&
+            revision.EntityId == itworldAliasId);
+
+        _dbContext.ChangeTracker.Clear();
+        var afterItworld = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .OrderBy(profile => profile.TenantCode)
+            .ToListAsync();
+        Assert.Equal("itworld tenant-isolated update", afterItworld.Single(profile => profile.Id == itworldProfile.Id).Notes);
+        Assert.Equal("usenet before tenant-isolated update", afterItworld.Single(profile => profile.Id == usenetProfile.Id).Notes);
+
+        var usenetAliasId = Guid.NewGuid();
+        var usenetResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-tenant-isolation-usenet",
+            RentalBillingProfiles =
+            [
+                CreateAlias(
+                    usenetProfile,
+                    usenetAliasId,
+                    $"rental-tenant-isolation-usenet:{Guid.NewGuid():N}",
+                    "usenet tenant-isolated update",
+                    15_000m,
+                    usenetRevision)
+            ]
+        }, CancellationToken.None);
+        var usenetOk = Assert.IsType<OkObjectResult>(usenetResponse.Result);
+        var usenetResult = Assert.IsType<SyncPushResult>(usenetOk.Value);
+        Assert.Equal(1, usenetResult.AcceptedCount);
+        Assert.Equal(0, usenetResult.ConflictCount);
+        Assert.Contains(usenetResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) &&
+            revision.EntityId == usenetProfile.Id);
+        Assert.Contains(usenetResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) &&
+            revision.EntityId == usenetAliasId);
+
+        _dbContext.ChangeTracker.Clear();
+        var finalRows = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .ToListAsync();
+        Assert.Equal("usenet tenant-isolated update", finalRows.Single(profile => profile.Id == usenetProfile.Id).Notes);
+        Assert.Equal(15_000m, finalRows.Single(profile => profile.Id == usenetProfile.Id).MonthlyAmount);
+        Assert.Equal("itworld tenant-isolated update", finalRows.Single(profile => profile.Id == itworldProfile.Id).Notes);
+        Assert.Equal(25_000m, finalRows.Single(profile => profile.Id == itworldProfile.Id).MonthlyAmount);
+    }
+
+    [Fact]
+    public async Task Push_RejectsEmptyIdDeterministicRentalProfileCollisionWithOppositeTenantActiveRow()
+    {
+        var profileKey = $"DETERMINISTIC-OPPOSITE-TENANT-ACTIVE-{Guid.NewGuid():N}";
+        var canonicalId = SyncIdentityGenerator.CreateRentalBillingProfileId(profileKey);
+        var oppositeTenantProfile = new RentalBillingProfile
+        {
+            Id = canonicalId,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            ProfileKey = profileKey,
+            CustomerName = "Opposite tenant deterministic owner",
+            ItemName = "Opposite tenant deterministic item",
+            Notes = "opposite tenant row must remain",
+            MonthlyAmount = 80_000m,
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(oppositeTenantProfile);
+        await _dbContext.SaveChangesAsync();
+        var originalRevision = oppositeTenantProfile.Revision;
+        var mutationId = $"deterministic-opposite-tenant-active:{Guid.NewGuid():N}";
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-deterministic-opposite-tenant-active",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = Guid.Empty,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = profileKey,
+                    CustomerName = "USENET collision attempt",
+                    ItemName = "USENET collision item",
+                    Notes = "must not capture opposite tenant id",
+                    MonthlyAmount = 10_000m,
+                    IsActive = true,
+                    MutationId = mutationId,
+                    MutationCreatedAtUtc = oppositeTenantProfile.UpdatedAtUtc.AddMinutes(5),
+                    CreatedAtUtc = oppositeTenantProfile.UpdatedAtUtc.AddMinutes(5),
+                    UpdatedAtUtc = oppositeTenantProfile.UpdatedAtUtc.AddMinutes(5)
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.EntityId == canonicalId.ToString("D"));
+        Assert.DoesNotContain(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile));
+        Assert.False(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == mutationId));
+        _dbContext.ChangeTracker.Clear();
+        var unchanged = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == canonicalId);
+        Assert.Equal(TenantScopeCatalog.Itworld, unchanged.TenantCode);
+        Assert.Equal(originalRevision, unchanged.Revision);
+        Assert.Equal("opposite tenant row must remain", unchanged.Notes);
+        Assert.Equal(80_000m, unchanged.MonthlyAmount);
+    }
+
+    [Fact]
+    public async Task Push_RejectsConflictingCanonicalAndLegacyRentalPurgeScopes_AndRetainsBothReceipts()
+    {
+        var profileKey = $"CONFLICTING-PURGE-SCOPES-{Guid.NewGuid():N}";
+        var canonicalId = SyncIdentityGenerator.CreateRentalBillingProfileId(profileKey);
+        var purgedAtUtc = new DateTime(2026, 8, 1, 2, 30, 0, DateTimeKind.Utc);
+        var canonicalReceipt = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = canonicalId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        var legacyReceipt = new RecycleBinPurgeRecord
+        {
+            Kind = "rentalbillingprofile",
+            EntityId = canonicalId,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            PurgedAtUtc = purgedAtUtc.AddMinutes(1),
+            CreatedAtUtc = purgedAtUtc.AddMinutes(1),
+            UpdatedAtUtc = purgedAtUtc.AddMinutes(1)
+        };
+        _dbContext.RecycleBinPurgeRecords.AddRange(canonicalReceipt, legacyReceipt);
+        await _dbContext.SaveChangesAsync();
+        var mutationId = $"conflicting-purge-scopes:{Guid.NewGuid():N}";
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-conflicting-purge-scopes",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = Guid.Empty,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = profileKey,
+                    CustomerName = "Conflicting purge scope customer",
+                    Notes = "must fail closed",
+                    IsActive = true,
+                    MutationId = mutationId,
+                    MutationCreatedAtUtc = purgedAtUtc.AddMinutes(-1),
+                    CreatedAtUtc = purgedAtUtc.AddDays(-1),
+                    UpdatedAtUtc = purgedAtUtc.AddMinutes(-1)
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.DoesNotContain(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile));
+        Assert.False(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == mutationId));
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == canonicalId));
+        Assert.Equal(2, await _dbContext.RecycleBinPurgeRecords.CountAsync(record =>
+            record.Id == canonicalReceipt.Id || record.Id == legacyReceipt.Id));
+    }
+
+    [Fact]
+    public async Task Push_AcknowledgesExplicitAliasAgainstSameTenantDeterministicPurgeWithoutGhost()
+    {
+        var profileKey = $"EXPLICIT-ALIAS-DETERMINISTIC-PURGE-STALE-{Guid.NewGuid():N}";
+        var canonicalId = SyncIdentityGenerator.CreateRentalBillingProfileId(profileKey);
+        var originalAliasId = Guid.NewGuid();
+        var purgedAtUtc = new DateTime(2026, 8, 1, 3, 0, 0, DateTimeKind.Utc);
+        var purgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = canonicalId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.RecycleBinPurgeRecords.Add(purgeRecord);
+        await _dbContext.SaveChangesAsync();
+        var mutationId = $"explicit-alias-deterministic-purge-stale:{Guid.NewGuid():N}";
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-explicit-alias-deterministic-purge-stale",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = originalAliasId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = profileKey,
+                    CustomerName = "Explicit stale alias customer",
+                    Notes = "must no-op against deterministic purge",
+                    IsActive = true,
+                    Revision = purgeRecord.Revision,
+                    ExpectedRevision = purgeRecord.Revision,
+                    MutationId = mutationId,
+                    MutationCreatedAtUtc = purgedAtUtc.AddMinutes(-1),
+                    CreatedAtUtc = purgedAtUtc.AddDays(-2),
+                    UpdatedAtUtc = purgedAtUtc.AddMinutes(-1)
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(0, result.ConflictCount);
+        var acceptedRevision = Assert.Single(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile));
+        Assert.Equal(originalAliasId, acceptedRevision.EntityId);
+        Assert.Equal(purgeRecord.Revision, acceptedRevision.Revision);
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == originalAliasId || profile.Id == canonicalId));
+        Assert.True(await _dbContext.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == purgeRecord.Id));
+        var receipt = await _dbContext.ProcessedSyncMutations
+            .AsNoTracking()
+            .SingleAsync(mutation => mutation.MutationId == mutationId);
+        Assert.Equal(originalAliasId.ToString("D"), receipt.EntityId);
+    }
+
+    [Fact]
+    public async Task Push_CreatesCanonicalFromExplicitAliasAfterSameTenantDeterministicPurge()
+    {
+        var profileKey = $"EXPLICIT-ALIAS-DETERMINISTIC-PURGE-NEW-{Guid.NewGuid():N}";
+        var canonicalId = SyncIdentityGenerator.CreateRentalBillingProfileId(profileKey);
+        var originalAliasId = Guid.NewGuid();
+        var purgedAtUtc = new DateTime(2026, 8, 1, 3, 30, 0, DateTimeKind.Utc);
+        var purgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = canonicalId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.RecycleBinPurgeRecords.Add(purgeRecord);
+        await _dbContext.SaveChangesAsync();
+        var mutationId = $"explicit-alias-deterministic-purge-new:{Guid.NewGuid():N}";
+        var createdAtUtc = purgedAtUtc.AddMinutes(5);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-explicit-alias-deterministic-purge-new",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = originalAliasId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = profileKey,
+                    CustomerName = "Explicit new alias customer",
+                    Notes = "must create deterministic canonical",
+                    MonthlyAmount = 54_000m,
+                    IsActive = true,
+                    MutationId = mutationId,
+                    MutationCreatedAtUtc = createdAtUtc,
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) &&
+            revision.EntityId == canonicalId);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) &&
+            revision.EntityId == originalAliasId);
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == originalAliasId));
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == canonicalId);
+        Assert.Equal("must create deterministic canonical", stored.Notes);
+        Assert.Equal(54_000m, stored.MonthlyAmount);
+        Assert.False(await _dbContext.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == purgeRecord.Id));
+        var receipt = await _dbContext.ProcessedSyncMutations
+            .AsNoTracking()
+            .SingleAsync(mutation => mutation.MutationId == mutationId);
+        Assert.Equal(canonicalId.ToString("D"), receipt.EntityId);
+    }
+
+    [Fact]
+    public async Task Push_RejectsExplicitAliasAgainstUnwritableSameTenantDeterministicPurge()
+    {
+        var profileKey = $"EXPLICIT-ALIAS-DETERMINISTIC-PURGE-UNWRITABLE-{Guid.NewGuid():N}";
+        var canonicalId = SyncIdentityGenerator.CreateRentalBillingProfileId(profileKey);
+        var originalAliasId = Guid.NewGuid();
+        var purgedAtUtc = new DateTime(2026, 8, 1, 4, 0, 0, DateTimeKind.Utc);
+        var purgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = canonicalId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.RecycleBinPurgeRecords.Add(purgeRecord);
+        await _dbContext.SaveChangesAsync();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-office-only-explicit-alias-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.RentalProfileEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var controller = CreateController(scopedDb, currentUser);
+        var mutationId = $"explicit-alias-deterministic-purge-unwritable:{Guid.NewGuid():N}";
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-explicit-alias-deterministic-purge-unwritable",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = originalAliasId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = profileKey,
+                    CustomerName = "Unwritable purge alias customer",
+                    Notes = "must be rejected before ghost create",
+                    IsActive = true,
+                    Revision = purgeRecord.Revision,
+                    ExpectedRevision = purgeRecord.Revision,
+                    MutationId = mutationId,
+                    MutationCreatedAtUtc = purgedAtUtc.AddMinutes(-1),
+                    CreatedAtUtc = purgedAtUtc.AddDays(-1),
+                    UpdatedAtUtc = purgedAtUtc.AddMinutes(-1)
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.EntityId == originalAliasId.ToString("D"));
+        Assert.False(await scopedDb.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == mutationId));
+        Assert.False(await scopedDb.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == originalAliasId || profile.Id == canonicalId));
+        Assert.True(await scopedDb.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == purgeRecord.Id));
+    }
+
+    [Fact]
+    public async Task Push_ExplicitAliasInOtherTenant_DoesNotConsumeOppositeTenantDeterministicPurge()
+    {
+        var profileKey = $"EXPLICIT-ALIAS-OPPOSITE-TENANT-PURGE-{Guid.NewGuid():N}";
+        var deterministicId = SyncIdentityGenerator.CreateRentalBillingProfileId(profileKey);
+        var explicitUsenetId = Guid.NewGuid();
+        var purgedAtUtc = new DateTime(2026, 8, 1, 4, 30, 0, DateTimeKind.Utc);
+        var oppositeTenantPurge = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = deterministicId,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.RecycleBinPurgeRecords.Add(oppositeTenantPurge);
+        await _dbContext.SaveChangesAsync();
+        var mutationId = $"explicit-alias-opposite-tenant-purge:{Guid.NewGuid():N}";
+        var createdAtUtc = purgedAtUtc.AddMinutes(5);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-explicit-alias-opposite-tenant-purge",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = explicitUsenetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = profileKey,
+                    CustomerName = "Explicit USENET alias customer",
+                    Notes = "separate tenant explicit id",
+                    MonthlyAmount = 61_000m,
+                    IsActive = true,
+                    MutationId = mutationId,
+                    MutationCreatedAtUtc = createdAtUtc,
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.True(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile =>
+                profile.Id == explicitUsenetId &&
+                profile.TenantCode == TenantScopeCatalog.UsenetGroup));
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == deterministicId));
+        Assert.True(await _dbContext.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == oppositeTenantPurge.Id));
+    }
+
+    [Fact]
+    public async Task Push_PurgeNoopReplay_BlocksBlankTenantSameBatchDependentsUsingResolvedTenant()
+    {
+        var profileKey = $"PURGE-NOOP-BLANK-TENANT-{Guid.NewGuid():N}";
+        var profileId = SyncIdentityGenerator.CreateRentalBillingProfileId(profileKey);
+        var purgedAtUtc = new DateTime(2026, 8, 1, 4, 30, 0, DateTimeKind.Utc);
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "PURGE-NOOP-BLANK-TENANT-CUSTOMER",
+            NameMatchKey = "PURGENOOPBLANKTENANTCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var rentalCompany = new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "USENET blank tenant dependency company"
+        };
+        var historyAsset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ManagementId = $"BLANK-HISTORY-{Guid.NewGuid():N}",
+            ManagementNumber = $"BLANK-HISTORY-{Guid.NewGuid():N}",
+            AssetKey = $"BLANK-HISTORY-ASSET-{Guid.NewGuid():N}",
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            CurrentCustomerName = customer.NameOriginal,
+            ItemName = "History anchor item"
+        };
+        var purgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.RentalManagementCompanies.Add(rentalCompany);
+        _dbContext.RentalAssets.Add(historyAsset);
+        _dbContext.RecycleBinPurgeRecords.Add(purgeRecord);
+        await _dbContext.SaveChangesAsync();
+        var replayMutationId = $"purge-noop-blank-tenant:{Guid.NewGuid():N}";
+
+        RentalBillingProfileDto CreatePriorMutation()
+            => new()
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = profileKey,
+                CustomerId = customer.Id,
+                CustomerName = customer.NameOriginal,
+                ItemName = "Blank tenant dependency item",
+                Notes = "purged generation",
+                MonthlyAmount = 50_000m,
+                IsActive = true,
+                Revision = purgeRecord.Revision,
+                ExpectedRevision = purgeRecord.Revision,
+                MutationId = replayMutationId,
+                MutationCreatedAtUtc = purgedAtUtc.AddMinutes(-1),
+                CreatedAtUtc = purgedAtUtc.AddDays(-2),
+                UpdatedAtUtc = purgedAtUtc.AddMinutes(-1)
+            };
+
+        var noopResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purge-noop-blank-tenant",
+            RentalBillingProfiles = [CreatePriorMutation()]
+        }, CancellationToken.None);
+        var noopOk = Assert.IsType<OkObjectResult>(noopResponse.Result);
+        var noopResult = Assert.IsType<SyncPushResult>(noopOk.Value);
+        Assert.Equal(1, noopResult.AcceptedCount);
+        Assert.Equal(0, noopResult.ConflictCount);
+
+        var newGenerationAtUtc = purgedAtUtc.AddMinutes(5);
+        var createResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purge-noop-blank-tenant-new-generation",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = profileKey,
+                    CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal,
+                    ItemName = "Blank tenant dependency item",
+                    Notes = "current generation must remain",
+                    MonthlyAmount = 80_000m,
+                    IsActive = true,
+                    MutationId = $"purge-noop-blank-tenant-new:{Guid.NewGuid():N}",
+                    MutationCreatedAtUtc = newGenerationAtUtc,
+                    CreatedAtUtc = newGenerationAtUtc,
+                    UpdatedAtUtc = newGenerationAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+        var createOk = Assert.IsType<OkObjectResult>(createResponse.Result);
+        var createResult = Assert.IsType<SyncPushResult>(createOk.Value);
+        Assert.True(
+            createResult.AcceptedCount == 1 && createResult.ConflictCount == 0,
+            string.Join(" | ", createResult.Conflicts.Select(conflict =>
+                $"{conflict.EntityName}:{conflict.EntityId}:{conflict.Reason}")));
+
+        var invoiceId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var historyId = Guid.NewGuid();
+        var billingLogId = Guid.NewGuid();
+        var invoiceMutationId = $"blank-tenant-invoice:{Guid.NewGuid():N}";
+        var transactionMutationId = $"blank-tenant-transaction:{Guid.NewGuid():N}";
+        var assetMutationId = $"blank-tenant-last-asset:{Guid.NewGuid():N}";
+        var paymentMutationId = $"blank-tenant-payment:{Guid.NewGuid():N}";
+        var historyMutationId = $"blank-tenant-history:{Guid.NewGuid():N}";
+        var billingLogMutationId = $"blank-tenant-billing-log:{Guid.NewGuid():N}";
+        var dependentAtUtc = newGenerationAtUtc.AddMinutes(5);
+
+        _dbContext.ChangeTracker.Clear();
+        var replayResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purge-noop-blank-tenant",
+            RentalBillingProfiles = [CreatePriorMutation()],
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal,
+                    TenantCode = " ",
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = new DateOnly(2026, 8, 1),
+                    InvoiceNumber = $"BLANK-TENANT-{invoiceId:N}",
+                    LinkedRentalBillingProfileId = profileId,
+                    Lines =
+                    [
+                        new InvoiceLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            InvoiceId = invoiceId,
+                            ItemNameOriginal = "blank tenant invoice line",
+                            Unit = "EA",
+                            Quantity = 1m,
+                            UnitPrice = 10_000m,
+                            LineAmount = 10_000m
+                        }
+                    ],
+                    MutationId = invoiceMutationId,
+                    MutationCreatedAtUtc = dependentAtUtc,
+                    CreatedAtUtc = dependentAtUtc,
+                    UpdatedAtUtc = dependentAtUtc
+                }
+            ],
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = transactionId,
+                    CustomerId = customer.Id,
+                    TenantCode = " ",
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    TransactionDate = new DateOnly(2026, 8, 1),
+                    TransactionKind = "InvoicePayment",
+                    LinkedInvoiceId = invoiceId,
+                    LinkedInvoiceNumber = $"BLANK-TENANT-{invoiceId:N}",
+                    CashPayment = 1_000m,
+                    PaymentTotal = 1_000m,
+                    SettlementAmount = 1_000m,
+                    MutationId = transactionMutationId,
+                    MutationCreatedAtUtc = dependentAtUtc,
+                    CreatedAtUtc = dependentAtUtc,
+                    UpdatedAtUtc = dependentAtUtc
+                }
+            ],
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    CustomerId = customer.Id,
+                    TenantCode = " ",
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ManagementId = $"BLANK-LAST-{assetId:N}",
+                    ManagementNumber = $"BLANK-LAST-{assetId:N}",
+                    CustomerName = customer.NameOriginal,
+                    CurrentCustomerName = customer.NameOriginal,
+                    ItemName = "Unrelated blank tenant asset item",
+                    LastBillingProfileId = profileId,
+                    MutationId = assetMutationId,
+                    MutationCreatedAtUtc = dependentAtUtc,
+                    CreatedAtUtc = dependentAtUtc,
+                    UpdatedAtUtc = dependentAtUtc
+                }
+            ],
+            RentalAssetAssignmentHistories =
+            [
+                new RentalAssetAssignmentHistoryDto
+                {
+                    Id = historyId,
+                    AssetId = historyAsset.Id,
+                    BillingProfileId = profileId,
+                    CustomerId = customer.Id,
+                    TenantCode = " ",
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    CustomerName = customer.NameOriginal,
+                    ItemName = "History anchor item",
+                    ChangeReason = "blank tenant prior-generation history",
+                    LinkedAtUtc = dependentAtUtc,
+                    MutationId = historyMutationId,
+                    MutationCreatedAtUtc = dependentAtUtc,
+                    CreatedAtUtc = dependentAtUtc,
+                    UpdatedAtUtc = dependentAtUtc
+                }
+            ],
+            RentalBillingLogs =
+            [
+                new RentalBillingLogDto
+                {
+                    Id = billingLogId,
+                    BillingProfileId = profileId,
+                    TenantCode = " ",
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    BillingYearMonth = "2026-08",
+                    ScheduledDate = new DateOnly(2026, 8, 1),
+                    Status = "Scheduled",
+                    Note = "blank tenant prior-generation billing log",
+                    MutationId = billingLogMutationId,
+                    MutationCreatedAtUtc = dependentAtUtc,
+                    CreatedAtUtc = dependentAtUtc,
+                    UpdatedAtUtc = dependentAtUtc
+                }
+            ],
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = paymentId,
+                    InvoiceId = invoiceId,
+                    PaymentDate = new DateOnly(2026, 8, 1),
+                    Amount = 1_000m,
+                    Note = "blank tenant same-batch payment",
+                    MutationId = paymentMutationId,
+                    MutationCreatedAtUtc = dependentAtUtc,
+                    CreatedAtUtc = dependentAtUtc,
+                    UpdatedAtUtc = dependentAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+        var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
+        var replayResult = Assert.IsType<SyncPushResult>(replayOk.Value);
+
+        Assert.Equal(1, replayResult.AcceptedCount);
+        Assert.Equal(6, replayResult.ConflictCount);
+        Assert.Equal(1, replayResult.DuplicateMutationCount);
+        Assert.Contains(replayResult.Conflicts, conflict =>
+            conflict.EntityName == nameof(Invoice) &&
+            conflict.EntityId == invoiceId.ToString("D"));
+        Assert.Contains(replayResult.Conflicts, conflict =>
+            conflict.EntityName == nameof(TransactionRecord) &&
+            conflict.EntityId == transactionId.ToString("D"));
+        Assert.Contains(replayResult.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalAsset) &&
+            conflict.EntityId == assetId.ToString("D"));
+        Assert.Contains(replayResult.Conflicts, conflict =>
+            conflict.EntityName == nameof(Payment) &&
+            conflict.EntityId == paymentId.ToString("D"));
+        Assert.Contains(replayResult.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalAssetAssignmentHistory) &&
+            conflict.EntityId == historyId.ToString("D"));
+        Assert.Contains(replayResult.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalBillingLog) &&
+            conflict.EntityId == billingLogId.ToString("D"));
+        Assert.False(await _dbContext.Invoices.IgnoreQueryFilters()
+            .AnyAsync(invoice => invoice.Id == invoiceId));
+        Assert.False(await _dbContext.Transactions.IgnoreQueryFilters()
+            .AnyAsync(transaction => transaction.Id == transactionId));
+        Assert.False(await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .AnyAsync(asset => asset.Id == assetId));
+        Assert.False(await _dbContext.Payments.IgnoreQueryFilters()
+            .AnyAsync(payment => payment.Id == paymentId));
+        Assert.False(await _dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters()
+            .AnyAsync(history => history.Id == historyId));
+        Assert.False(await _dbContext.RentalBillingLogs.IgnoreQueryFilters()
+            .AnyAsync(log => log.Id == billingLogId));
+        Assert.False(await _dbContext.ProcessedSyncMutations.AnyAsync(mutation =>
+            mutation.MutationId == invoiceMutationId ||
+            mutation.MutationId == transactionMutationId ||
+            mutation.MutationId == assetMutationId ||
+            mutation.MutationId == paymentMutationId ||
+            mutation.MutationId == historyMutationId ||
+            mutation.MutationId == billingLogMutationId));
+    }
+
+    [Fact]
+    public async Task Push_PurgeNoopReplay_BlocksAllPriorGenerationDependentsButAllowsUnrelatedDependent()
+    {
+        var profileKey = $"PURGE-NOOP-REPLAY-DOWNSTREAM-{Guid.NewGuid():N}";
+        var profileId = SyncIdentityGenerator.CreateRentalBillingProfileId(profileKey);
+        var purgedAtUtc = new DateTime(2026, 8, 1, 5, 0, 0, DateTimeKind.Utc);
+        var purgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.RecycleBinPurgeRecords.Add(purgeRecord);
+        await _dbContext.SaveChangesAsync();
+        var replayMutationId = $"purge-noop-replay-downstream:{Guid.NewGuid():N}";
+
+        RentalBillingProfileDto CreatePriorMutation()
+            => new()
+            {
+                Id = profileId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = profileKey,
+                CustomerName = "Prior generation downstream customer",
+                ItemName = "Prior generation downstream item",
+                Notes = "old purged generation",
+                MonthlyAmount = 30_000m,
+                IsActive = true,
+                Revision = purgeRecord.Revision,
+                ExpectedRevision = purgeRecord.Revision,
+                MutationId = replayMutationId,
+                MutationCreatedAtUtc = purgedAtUtc.AddMinutes(-1),
+                CreatedAtUtc = purgedAtUtc.AddDays(-3),
+                UpdatedAtUtc = purgedAtUtc.AddMinutes(-1)
+            };
+
+        var noopResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purge-noop-replay-downstream",
+            RentalBillingProfiles = [CreatePriorMutation()]
+        }, CancellationToken.None);
+        var noopOk = Assert.IsType<OkObjectResult>(noopResponse.Result);
+        var noopResult = Assert.IsType<SyncPushResult>(noopOk.Value);
+        Assert.Equal(1, noopResult.AcceptedCount);
+        Assert.Equal(0, noopResult.ConflictCount);
+
+        var newGenerationAtUtc = purgedAtUtc.AddMinutes(5);
+        var newGenerationResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purge-noop-new-generation",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = profileKey,
+                    CustomerName = "Current generation downstream customer",
+                    ItemName = "Current generation downstream item",
+                    Notes = "current generation must remain unchanged",
+                    MonthlyAmount = 70_000m,
+                    IsActive = true,
+                    MutationId = $"purge-noop-new-generation:{Guid.NewGuid():N}",
+                    MutationCreatedAtUtc = newGenerationAtUtc,
+                    CreatedAtUtc = newGenerationAtUtc,
+                    UpdatedAtUtc = newGenerationAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+        var newGenerationOk = Assert.IsType<OkObjectResult>(newGenerationResponse.Result);
+        var newGenerationResult = Assert.IsType<SyncPushResult>(newGenerationOk.Value);
+        Assert.Equal(1, newGenerationResult.AcceptedCount);
+        Assert.Equal(0, newGenerationResult.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var currentProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        var rentalCompany = new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "USENET replay dependency company"
+        };
+        var unrelatedProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"UNRELATED-DOWNSTREAM-{Guid.NewGuid():N}",
+            CustomerName = "Unrelated downstream customer",
+            ItemName = "Unrelated downstream item",
+            Notes = "unrelated profile",
+            MonthlyAmount = 22_000m,
+            IsActive = true
+        };
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "PRIOR-GENERATION-DOWNSTREAM-CUSTOMER",
+            NameMatchKey = "PRIORGENERATIONDOWNSTREAMCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            InvoiceNumber = $"ABA-{Guid.NewGuid():N}",
+            VersionGroupId = Guid.NewGuid(),
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 8, 1),
+            LinkedRentalBillingProfileId = profileId,
+            Memo = "blocked invoice before"
+        };
+        var transaction = new TransactionRecord
+        {
+            Id = Guid.NewGuid(),
+            CustomerId = customer.Id,
+            TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode,
+            ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            TransactionDate = new DateOnly(2026, 8, 1),
+            TransactionKind = "Sales",
+            LinkedInvoiceId = invoice.Id,
+            LinkedInvoiceNumber = invoice.InvoiceNumber,
+            LinkedRentalBillingProfileId = null,
+            Memo = "blocked transaction before"
+        };
+        var directAsset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = $"ABA-DIRECT-ASSET-{Guid.NewGuid():N}",
+            BillingProfileId = profileId,
+            ManagementId = "ABA-DIRECT-ASSET",
+            ManagementNumber = "ABA-DIRECT-ASSET",
+            CustomerName = currentProfile.CustomerName,
+            CurrentCustomerName = currentProfile.CustomerName,
+            ItemName = currentProfile.ItemName,
+            Notes = "blocked direct asset before"
+        };
+        var lastProfileAsset = new RentalAsset
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            AssetKey = $"ABA-LAST-ASSET-{Guid.NewGuid():N}",
+            LastBillingProfileId = profileId,
+            ManagementId = "ABA-LAST-ASSET",
+            ManagementNumber = "ABA-LAST-ASSET",
+            Notes = "blocked last-profile asset before"
+        };
+        var history = new RentalAssetAssignmentHistory
+        {
+            Id = Guid.NewGuid(),
+            AssetId = directAsset.Id,
+            BillingProfileId = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            CustomerName = currentProfile.CustomerName,
+            ItemName = currentProfile.ItemName,
+            ChangeReason = "blocked history before",
+            LinkedAtUtc = newGenerationAtUtc
+        };
+        var blockedLog = new RentalBillingLog
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            BillingProfileId = profileId,
+            BillingYearMonth = "2026-08",
+            ScheduledDate = new DateOnly(2026, 8, 1),
+            Status = "Scheduled",
+            Note = "blocked log before"
+        };
+        var unrelatedLog = new RentalBillingLog
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            BillingProfileId = unrelatedProfile.Id,
+            BillingYearMonth = "2026-08",
+            ScheduledDate = new DateOnly(2026, 8, 2),
+            Status = "Scheduled",
+            Note = "unrelated log before"
+        };
+        var payment = new Payment
+        {
+            Id = Guid.NewGuid(),
+            InvoiceId = invoice.Id,
+            PaymentDate = new DateOnly(2026, 8, 1),
+            Amount = 10_000m,
+            Note = "blocked payment before"
+        };
+        _dbContext.AddRange(
+            rentalCompany,
+            unrelatedProfile,
+            customer,
+            invoice,
+            transaction,
+            directAsset,
+            lastProfileAsset,
+            history,
+            blockedLog,
+            unrelatedLog,
+            payment);
+        await _dbContext.SaveChangesAsync();
+
+        var blockedMutationIds = new List<string>();
+        void StampMutation(SyncEntityDto dto, TrackedEntity entity, string prefix)
+        {
+            var mutationId = $"{prefix}:{Guid.NewGuid():N}";
+            blockedMutationIds.Add(mutationId);
+            dto.Revision = entity.Revision;
+            dto.ExpectedRevision = entity.Revision;
+            dto.MutationId = mutationId;
+            dto.MutationCreatedAtUtc = entity.UpdatedAtUtc.AddMinutes(5);
+            dto.CreatedAtUtc = entity.CreatedAtUtc;
+            dto.UpdatedAtUtc = entity.UpdatedAtUtc.AddMinutes(5);
+        }
+
+        var invoiceDto = invoice.ToDto();
+        invoiceDto.Memo = "must not update blocked invoice";
+        StampMutation(invoiceDto, invoice, "blocked-invoice");
+        var transactionDto = transaction.ToDto();
+        transactionDto.Memo = "must not update inherited transaction";
+        StampMutation(transactionDto, transaction, "blocked-transaction");
+        var directAssetDto = directAsset.ToDto();
+        directAssetDto.Notes = "must not update direct asset";
+        StampMutation(directAssetDto, directAsset, "blocked-direct-asset");
+        var lastProfileAssetDto = lastProfileAsset.ToDto();
+        lastProfileAssetDto.Notes = "must not update last-profile asset";
+        StampMutation(lastProfileAssetDto, lastProfileAsset, "blocked-last-asset");
+        var historyDto = history.ToDto();
+        historyDto.ChangeReason = "must not update blocked history";
+        StampMutation(historyDto, history, "blocked-history");
+        var blockedLogDto = blockedLog.ToDto();
+        blockedLogDto.Note = "must not update blocked log";
+        StampMutation(blockedLogDto, blockedLog, "blocked-log");
+        var paymentDto = payment.ToDto();
+        paymentDto.Note = "must not update blocked payment";
+        StampMutation(paymentDto, payment, "blocked-payment");
+        var unrelatedLogDto = unrelatedLog.ToDto();
+        unrelatedLogDto.Note = "unrelated log accepted";
+        StampMutation(unrelatedLogDto, unrelatedLog, "unrelated-log");
+        var unrelatedLogMutationId = unrelatedLogDto.MutationId;
+        blockedMutationIds.Remove(unrelatedLogMutationId);
+
+        _dbContext.ChangeTracker.Clear();
+        var replayResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purge-noop-replay-downstream",
+            RentalBillingProfiles = [CreatePriorMutation()],
+            Invoices = [invoiceDto],
+            Transactions = [transactionDto],
+            RentalAssets = [directAssetDto, lastProfileAssetDto],
+            RentalAssetAssignmentHistories = [historyDto],
+            RentalBillingLogs = [blockedLogDto, unrelatedLogDto],
+            Payments = [paymentDto]
+        }, CancellationToken.None);
+        var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
+        var replayResult = Assert.IsType<SyncPushResult>(replayOk.Value);
+
+        Assert.Equal(2, replayResult.AcceptedCount);
+        Assert.Equal(7, replayResult.ConflictCount);
+        Assert.Equal(1, replayResult.DuplicateMutationCount);
+        Assert.Contains(replayResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) &&
+            revision.EntityId == profileId);
+        Assert.Contains(replayResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingLog) &&
+            revision.EntityId == unrelatedLog.Id);
+        Assert.DoesNotContain(replayResult.AcceptedRevisions, revision =>
+            revision.EntityName != nameof(RentalBillingProfile) &&
+            revision.EntityName != nameof(RentalBillingLog));
+        Assert.Contains(replayResult.Conflicts, conflict => conflict.EntityName == nameof(Invoice) && conflict.EntityId == invoice.Id.ToString("D"));
+        Assert.Contains(replayResult.Conflicts, conflict => conflict.EntityName == nameof(TransactionRecord) && conflict.EntityId == transaction.Id.ToString("D"));
+        Assert.Contains(replayResult.Conflicts, conflict => conflict.EntityName == nameof(RentalAsset) && conflict.EntityId == directAsset.Id.ToString("D"));
+        Assert.Contains(replayResult.Conflicts, conflict => conflict.EntityName == nameof(RentalAsset) && conflict.EntityId == lastProfileAsset.Id.ToString("D"));
+        Assert.Contains(replayResult.Conflicts, conflict => conflict.EntityName == nameof(RentalAssetAssignmentHistory) && conflict.EntityId == history.Id.ToString("D"));
+        Assert.Contains(replayResult.Conflicts, conflict => conflict.EntityName == nameof(RentalBillingLog) && conflict.EntityId == blockedLog.Id.ToString("D"));
+        Assert.Contains(replayResult.Conflicts, conflict => conflict.EntityName == nameof(Payment) && conflict.EntityId == payment.Id.ToString("D"));
+        Assert.False(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => blockedMutationIds.Contains(mutation.MutationId)));
+        Assert.True(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == unrelatedLogMutationId));
+
+        _dbContext.ChangeTracker.Clear();
+        var unchangedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal(currentProfile.Revision, unchangedProfile.Revision);
+        Assert.Equal("current generation must remain unchanged", unchangedProfile.Notes);
+        Assert.Equal("blocked invoice before", await _dbContext.Invoices.IgnoreQueryFilters().Where(entity => entity.Id == invoice.Id).Select(entity => entity.Memo).SingleAsync());
+        Assert.Equal("blocked transaction before", await _dbContext.Transactions.IgnoreQueryFilters().Where(entity => entity.Id == transaction.Id).Select(entity => entity.Memo).SingleAsync());
+        Assert.Equal("blocked direct asset before", await _dbContext.RentalAssets.IgnoreQueryFilters().Where(entity => entity.Id == directAsset.Id).Select(entity => entity.Notes).SingleAsync());
+        Assert.Equal("blocked last-profile asset before", await _dbContext.RentalAssets.IgnoreQueryFilters().Where(entity => entity.Id == lastProfileAsset.Id).Select(entity => entity.Notes).SingleAsync());
+        Assert.Equal("blocked history before", await _dbContext.RentalAssetAssignmentHistories.IgnoreQueryFilters().Where(entity => entity.Id == history.Id).Select(entity => entity.ChangeReason).SingleAsync());
+        Assert.Equal("blocked log before", await _dbContext.RentalBillingLogs.IgnoreQueryFilters().Where(entity => entity.Id == blockedLog.Id).Select(entity => entity.Note).SingleAsync());
+        Assert.Equal("blocked payment before", await _dbContext.Payments.IgnoreQueryFilters().Where(entity => entity.Id == payment.Id).Select(entity => entity.Note).SingleAsync());
+        Assert.Equal("unrelated log accepted", await _dbContext.RentalBillingLogs.IgnoreQueryFilters().Where(entity => entity.Id == unrelatedLog.Id).Select(entity => entity.Note).SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_ExactAliasReplay_BlocksOriginalAliasRentalAssetReference()
+    {
+        var canonical = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"EXACT-ALIAS-DEPENDENT-BLOCK-{Guid.NewGuid():N}",
+            CustomerName = "Exact alias dependent customer",
+            ItemName = "Exact alias dependent item",
+            Notes = "canonical before exact alias",
+            MonthlyAmount = 15_000m,
+            IsActive = true
+        };
+        var rentalCompany = new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "USENET exact alias company"
+        };
+        _dbContext.AddRange(canonical, rentalCompany);
+        await _dbContext.SaveChangesAsync();
+        var originalRevision = canonical.Revision;
+        var originalCreatedAtUtc = canonical.CreatedAtUtc;
+        var aliasId = Guid.NewGuid();
+        var mutationId = $"exact-alias-dependent-block:{Guid.NewGuid():N}";
+        var mutationAtUtc = canonical.UpdatedAtUtc.AddMinutes(5);
+
+        RentalBillingProfileDto CreateAliasMutation()
+            => new()
+            {
+                Id = aliasId,
+                TenantCode = canonical.TenantCode,
+                OfficeCode = canonical.OfficeCode,
+                ResponsibleOfficeCode = canonical.ResponsibleOfficeCode,
+                ProfileKey = canonical.ProfileKey,
+                CustomerName = canonical.CustomerName,
+                ItemName = canonical.ItemName,
+                Notes = "accepted alias state",
+                MonthlyAmount = 35_000m,
+                IsActive = true,
+                Revision = originalRevision,
+                ExpectedRevision = originalRevision,
+                MutationId = mutationId,
+                MutationCreatedAtUtc = mutationAtUtc,
+                CreatedAtUtc = originalCreatedAtUtc,
+                UpdatedAtUtc = mutationAtUtc
+            };
+
+        var seedResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-exact-alias-dependent-block",
+            RentalBillingProfiles = [CreateAliasMutation()]
+        }, CancellationToken.None);
+        var seedOk = Assert.IsType<OkObjectResult>(seedResponse.Result);
+        Assert.Equal(1, Assert.IsType<SyncPushResult>(seedOk.Value).AcceptedCount);
+
+        var assetId = Guid.NewGuid();
+        var assetMutationId = $"exact-alias-dependent-asset:{Guid.NewGuid():N}";
+        _dbContext.ChangeTracker.Clear();
+        var replayResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-exact-alias-dependent-block",
+            RentalBillingProfiles = [CreateAliasMutation()],
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = $"EXACT-ALIAS-ASSET-{assetId:N}",
+                    BillingProfileId = aliasId,
+                    CustomerName = canonical.CustomerName,
+                    CurrentCustomerName = canonical.CustomerName,
+                    ItemName = canonical.ItemName,
+                    ManagementId = "EXACT-ALIAS-ASSET",
+                    ManagementNumber = "EXACT-ALIAS-ASSET",
+                    MutationId = assetMutationId,
+                    MutationCreatedAtUtc = mutationAtUtc.AddMinutes(5),
+                    CreatedAtUtc = mutationAtUtc.AddMinutes(5),
+                    UpdatedAtUtc = mutationAtUtc.AddMinutes(5)
+                }
+            ]
+        }, CancellationToken.None);
+        var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
+        var replayResult = Assert.IsType<SyncPushResult>(replayOk.Value);
+
+        Assert.Equal(1, replayResult.AcceptedCount);
+        Assert.Equal(1, replayResult.ConflictCount);
+        Assert.Equal(1, replayResult.DuplicateMutationCount);
+        Assert.Contains(replayResult.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalAsset) &&
+            conflict.EntityId == assetId.ToString("D"));
+        Assert.False(await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .AnyAsync(asset => asset.Id == assetId));
+        Assert.False(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == assetMutationId));
+    }
+
+    [Fact]
+    public async Task Push_PurgeNoopAliasReplayAfterCanonicalCreate_BlocksCanonicalRentalAssetReference()
+    {
+        var profileKey = $"PURGE-NOOP-ALIAS-ABA-{Guid.NewGuid():N}";
+        var canonicalId = SyncIdentityGenerator.CreateRentalBillingProfileId(profileKey);
+        var originalAliasId = Guid.NewGuid();
+        var purgedAtUtc = new DateTime(2026, 8, 1, 5, 30, 0, DateTimeKind.Utc);
+        var purgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = canonicalId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.RecycleBinPurgeRecords.Add(purgeRecord);
+        await _dbContext.SaveChangesAsync();
+        var replayMutationId = $"purge-noop-alias-aba:{Guid.NewGuid():N}";
+
+        RentalBillingProfileDto CreatePriorAliasMutation()
+            => new()
+            {
+                Id = originalAliasId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = profileKey,
+                CustomerName = "Prior alias ABA customer",
+                ItemName = "Prior alias ABA item",
+                Notes = "old alias generation",
+                MonthlyAmount = 24_000m,
+                IsActive = true,
+                Revision = purgeRecord.Revision,
+                ExpectedRevision = purgeRecord.Revision,
+                MutationId = replayMutationId,
+                MutationCreatedAtUtc = purgedAtUtc.AddMinutes(-1),
+                CreatedAtUtc = purgedAtUtc.AddDays(-2),
+                UpdatedAtUtc = purgedAtUtc.AddMinutes(-1)
+            };
+
+        var noopResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purge-noop-alias-aba",
+            RentalBillingProfiles = [CreatePriorAliasMutation()]
+        }, CancellationToken.None);
+        var noopOk = Assert.IsType<OkObjectResult>(noopResponse.Result);
+        var noopResult = Assert.IsType<SyncPushResult>(noopOk.Value);
+        Assert.Equal(1, noopResult.AcceptedCount);
+        Assert.Equal(0, noopResult.ConflictCount);
+
+        var newGenerationAtUtc = purgedAtUtc.AddMinutes(5);
+        var createResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purge-noop-alias-new-generation",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = originalAliasId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = profileKey,
+                    CustomerName = "Current alias ABA customer",
+                    ItemName = "Current alias ABA item",
+                    Notes = "current alias generation must remain",
+                    MonthlyAmount = 64_000m,
+                    IsActive = true,
+                    MutationId = $"purge-noop-alias-new-generation:{Guid.NewGuid():N}",
+                    MutationCreatedAtUtc = newGenerationAtUtc,
+                    CreatedAtUtc = newGenerationAtUtc,
+                    UpdatedAtUtc = newGenerationAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+        var createOk = Assert.IsType<OkObjectResult>(createResponse.Result);
+        var createResult = Assert.IsType<SyncPushResult>(createOk.Value);
+        Assert.Equal(1, createResult.AcceptedCount);
+        Assert.Equal(0, createResult.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var currentGeneration = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == canonicalId);
+        var assetId = Guid.NewGuid();
+        var assetMutationId = $"purge-noop-alias-canonical-asset:{Guid.NewGuid():N}";
+        var replayResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purge-noop-alias-aba",
+            RentalBillingProfiles = [CreatePriorAliasMutation()],
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = $"PURGE-NOOP-ALIAS-ABA-ASSET-{assetId:N}",
+                    BillingProfileId = canonicalId,
+                    CustomerName = currentGeneration.CustomerName,
+                    CurrentCustomerName = currentGeneration.CustomerName,
+                    ItemName = currentGeneration.ItemName,
+                    ManagementId = "PURGE-NOOP-ALIAS-ABA-ASSET",
+                    ManagementNumber = "PURGE-NOOP-ALIAS-ABA-ASSET",
+                    MutationId = assetMutationId,
+                    MutationCreatedAtUtc = newGenerationAtUtc.AddMinutes(5),
+                    CreatedAtUtc = newGenerationAtUtc.AddMinutes(5),
+                    UpdatedAtUtc = newGenerationAtUtc.AddMinutes(5)
+                }
+            ]
+        }, CancellationToken.None);
+        var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
+        var replayResult = Assert.IsType<SyncPushResult>(replayOk.Value);
+
+        Assert.Equal(1, replayResult.AcceptedCount);
+        Assert.Equal(1, replayResult.ConflictCount);
+        Assert.Equal(1, replayResult.DuplicateMutationCount);
+        Assert.Contains(replayResult.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalAsset) &&
+            conflict.EntityId == assetId.ToString("D"));
+        Assert.False(await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .AnyAsync(asset => asset.Id == assetId));
+        Assert.False(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == assetMutationId));
+        _dbContext.ChangeTracker.Clear();
+        var unchanged = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == canonicalId);
+        Assert.Equal(currentGeneration.Revision, unchanged.Revision);
+        Assert.Equal("current alias generation must remain", unchanged.Notes);
+        Assert.Equal(64_000m, unchanged.MonthlyAmount);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Push_PurgedOriginalAliasNoop_BlocksCanonicalDependent(bool exactReplay)
+    {
+        var profileKey = $"PURGED-ORIGINAL-ALIAS-NOOP-{Guid.NewGuid():N}";
+        var originalAliasId = Guid.NewGuid();
+        var canonicalId = SyncIdentityGenerator.CreateRentalBillingProfileId(profileKey);
+        var purgedAtUtc = new DateTime(2026, 8, 1, 5, 45, 0, DateTimeKind.Utc);
+        var purgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = originalAliasId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.RecycleBinPurgeRecords.Add(purgeRecord);
+        await _dbContext.SaveChangesAsync();
+        var priorMutationId = $"purged-original-alias-noop:{Guid.NewGuid():N}";
+
+        RentalBillingProfileDto CreatePriorAliasMutation()
+            => new()
+            {
+                Id = originalAliasId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = profileKey,
+                CustomerName = "Purged original alias customer",
+                ItemName = "Purged original alias item",
+                Notes = "prior original alias generation",
+                MonthlyAmount = 26_000m,
+                IsActive = true,
+                Revision = purgeRecord.Revision,
+                ExpectedRevision = purgeRecord.Revision,
+                MutationId = priorMutationId,
+                MutationCreatedAtUtc = purgedAtUtc.AddMinutes(-1),
+                CreatedAtUtc = purgedAtUtc.AddDays(-2),
+                UpdatedAtUtc = purgedAtUtc.AddMinutes(-1)
+            };
+
+        if (exactReplay)
+        {
+            var noopResponse = await _controller.Push(new SyncPushRequest
+            {
+                DeviceId = "device-purged-original-alias-noop",
+                RentalBillingProfiles = [CreatePriorAliasMutation()]
+            }, CancellationToken.None);
+            var noopOk = Assert.IsType<OkObjectResult>(noopResponse.Result);
+            var noopResult = Assert.IsType<SyncPushResult>(noopOk.Value);
+            Assert.Equal(1, noopResult.AcceptedCount);
+            Assert.Equal(0, noopResult.ConflictCount);
+            Assert.Equal(0, noopResult.DuplicateMutationCount);
+        }
+
+        var newGenerationAtUtc = purgedAtUtc.AddMinutes(5);
+        var createResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purged-original-alias-new-generation",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = Guid.Empty,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = profileKey,
+                    CustomerName = "Current canonical generation customer",
+                    ItemName = "Current canonical generation item",
+                    Notes = "current canonical generation must remain",
+                    MonthlyAmount = 66_000m,
+                    IsActive = true,
+                    MutationId = $"purged-original-alias-new-generation:{Guid.NewGuid():N}",
+                    MutationCreatedAtUtc = newGenerationAtUtc,
+                    CreatedAtUtc = newGenerationAtUtc,
+                    UpdatedAtUtc = newGenerationAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+        var createOk = Assert.IsType<OkObjectResult>(createResponse.Result);
+        var createResult = Assert.IsType<SyncPushResult>(createOk.Value);
+        Assert.Equal(1, createResult.AcceptedCount);
+        Assert.Equal(0, createResult.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var currentGeneration = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == canonicalId);
+        Assert.True(await _dbContext.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == purgeRecord.Id));
+        var assetId = Guid.NewGuid();
+        var assetMutationId = $"purged-original-alias-dependent:{Guid.NewGuid():N}";
+        var pushResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purged-original-alias-noop",
+            RentalBillingProfiles = [CreatePriorAliasMutation()],
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = $"PURGED-ORIGINAL-ALIAS-ASSET-{assetId:N}",
+                    BillingProfileId = canonicalId,
+                    CustomerName = currentGeneration.CustomerName,
+                    CurrentCustomerName = currentGeneration.CustomerName,
+                    ItemName = currentGeneration.ItemName,
+                    ManagementId = "PURGED-ORIGINAL-ALIAS-ASSET",
+                    ManagementNumber = "PURGED-ORIGINAL-ALIAS-ASSET",
+                    MutationId = assetMutationId,
+                    MutationCreatedAtUtc = newGenerationAtUtc.AddMinutes(5),
+                    CreatedAtUtc = newGenerationAtUtc.AddMinutes(5),
+                    UpdatedAtUtc = newGenerationAtUtc.AddMinutes(5)
+                }
+            ]
+        }, CancellationToken.None);
+        var pushOk = Assert.IsType<OkObjectResult>(pushResponse.Result);
+        var pushResult = Assert.IsType<SyncPushResult>(pushOk.Value);
+
+        Assert.Equal(1, pushResult.AcceptedCount);
+        Assert.Equal(1, pushResult.ConflictCount);
+        Assert.Equal(exactReplay ? 1 : 0, pushResult.DuplicateMutationCount);
+        Assert.Contains(pushResult.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalAsset) &&
+            conflict.EntityId == assetId.ToString("D"));
+        Assert.False(await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .AnyAsync(asset => asset.Id == assetId));
+        Assert.False(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == assetMutationId));
+        Assert.True(await _dbContext.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == purgeRecord.Id));
+        var priorReceipt = await _dbContext.ProcessedSyncMutations
+            .AsNoTracking()
+            .SingleAsync(mutation => mutation.MutationId == priorMutationId);
+        Assert.Equal(originalAliasId.ToString("D"), priorReceipt.EntityId);
+        _dbContext.ChangeTracker.Clear();
+        var unchanged = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == canonicalId);
+        Assert.Equal(currentGeneration.Revision, unchanged.Revision);
+        Assert.Equal("current canonical generation must remain", unchanged.Notes);
+        Assert.Equal(66_000m, unchanged.MonthlyAmount);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Push_PurgedAliasNoop_DoesNotBlockOppositeTenantCanonicalDependent(bool exactReplay)
+    {
+        var profileKey = $"PURGED-ALIAS-CROSS-TENANT-{Guid.NewGuid():N}";
+        var originalAliasId = Guid.NewGuid();
+        var canonicalId = SyncIdentityGenerator.CreateRentalBillingProfileId(profileKey);
+        var purgedAtUtc = new DateTime(2026, 8, 1, 5, 50, 0, DateTimeKind.Utc);
+        var oppositeTenantCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "ITWORLD-CROSS-TENANT-BLANK-CUSTOMER",
+            NameMatchKey = "ITWORLDCROSSTENANTBLANKCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var oppositeTenantProfile = new RentalBillingProfile
+        {
+            Id = canonicalId,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            ProfileKey = profileKey,
+            CustomerId = oppositeTenantCustomer.Id,
+            CustomerName = oppositeTenantCustomer.NameOriginal,
+            ItemName = "ITWORLD canonical item",
+            Notes = "opposite tenant active generation",
+            MonthlyAmount = 88_000m,
+            IsActive = true
+        };
+        var purgeRecord = new RecycleBinPurgeRecord
+        {
+            Kind = "rental-billing-profile",
+            EntityId = originalAliasId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            PurgedAtUtc = purgedAtUtc,
+            CreatedAtUtc = purgedAtUtc,
+            UpdatedAtUtc = purgedAtUtc
+        };
+        _dbContext.Customers.Add(oppositeTenantCustomer);
+        _dbContext.RentalBillingProfiles.Add(oppositeTenantProfile);
+        _dbContext.RecycleBinPurgeRecords.Add(purgeRecord);
+        await _dbContext.SaveChangesAsync();
+        var priorMutationId = $"purged-alias-cross-tenant:{Guid.NewGuid():N}";
+
+        RentalBillingProfileDto CreatePriorAliasMutation()
+            => new()
+            {
+                Id = originalAliasId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = profileKey,
+                CustomerName = "USENET prior alias customer",
+                ItemName = "USENET prior alias item",
+                Notes = "prior tenant generation",
+                MonthlyAmount = 28_000m,
+                IsActive = true,
+                Revision = purgeRecord.Revision,
+                ExpectedRevision = purgeRecord.Revision,
+                MutationId = priorMutationId,
+                MutationCreatedAtUtc = purgedAtUtc.AddMinutes(-1),
+                CreatedAtUtc = purgedAtUtc.AddDays(-2),
+                UpdatedAtUtc = purgedAtUtc.AddMinutes(-1)
+            };
+
+        if (exactReplay)
+        {
+            var noopResponse = await _controller.Push(new SyncPushRequest
+            {
+                DeviceId = "device-purged-alias-cross-tenant",
+                RentalBillingProfiles = [CreatePriorAliasMutation()]
+            }, CancellationToken.None);
+            var noopOk = Assert.IsType<OkObjectResult>(noopResponse.Result);
+            var noopResult = Assert.IsType<SyncPushResult>(noopOk.Value);
+            Assert.Equal(1, noopResult.AcceptedCount);
+            Assert.Equal(0, noopResult.ConflictCount);
+            Assert.Equal(0, noopResult.DuplicateMutationCount);
+        }
+
+        var assetId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var transactionId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var assetMutationId = $"purged-alias-cross-tenant-asset:{Guid.NewGuid():N}";
+        var invoiceMutationId = $"purged-alias-cross-tenant-invoice:{Guid.NewGuid():N}";
+        var transactionMutationId = $"purged-alias-cross-tenant-transaction:{Guid.NewGuid():N}";
+        var paymentMutationId = $"purged-alias-cross-tenant-payment:{Guid.NewGuid():N}";
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-purged-alias-cross-tenant",
+            RentalBillingProfiles = [CreatePriorAliasMutation()],
+            Invoices =
+            [
+                new InvoiceDto
+                {
+                    Id = invoiceId,
+                    CustomerId = oppositeTenantCustomer.Id,
+                    CustomerName = oppositeTenantCustomer.NameOriginal,
+                    TenantCode = " ",
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    VoucherType = VoucherType.Sales,
+                    InvoiceDate = new DateOnly(2026, 8, 1),
+                    InvoiceNumber = $"CROSS-TENANT-{invoiceId:N}",
+                    LinkedRentalBillingProfileId = canonicalId,
+                    Lines =
+                    [
+                        new InvoiceLineDto
+                        {
+                            Id = Guid.NewGuid(),
+                            InvoiceId = invoiceId,
+                            ItemNameOriginal = "cross tenant blank invoice line",
+                            Unit = "EA",
+                            Quantity = 1m,
+                            UnitPrice = 10_000m,
+                            LineAmount = 10_000m
+                        }
+                    ],
+                    MutationId = invoiceMutationId,
+                    MutationCreatedAtUtc = purgedAtUtc.AddMinutes(5),
+                    CreatedAtUtc = purgedAtUtc.AddMinutes(5),
+                    UpdatedAtUtc = purgedAtUtc.AddMinutes(5)
+                }
+            ],
+            Transactions =
+            [
+                new TransactionDto
+                {
+                    Id = transactionId,
+                    CustomerId = oppositeTenantCustomer.Id,
+                    TenantCode = " ",
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    TransactionDate = new DateOnly(2026, 8, 1),
+                    TransactionKind = "InvoicePayment",
+                    LinkedInvoiceId = invoiceId,
+                    LinkedInvoiceNumber = $"CROSS-TENANT-{invoiceId:N}",
+                    CashPayment = 1_000m,
+                    PaymentTotal = 1_000m,
+                    SettlementAmount = 1_000m,
+                    MutationId = transactionMutationId,
+                    MutationCreatedAtUtc = purgedAtUtc.AddMinutes(5),
+                    CreatedAtUtc = purgedAtUtc.AddMinutes(5),
+                    UpdatedAtUtc = purgedAtUtc.AddMinutes(5)
+                }
+            ],
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    CustomerId = oppositeTenantCustomer.Id,
+                    TenantCode = " ",
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    AssetKey = $"CROSS-TENANT-CANONICAL-ASSET-{assetId:N}",
+                    BillingProfileId = canonicalId,
+                    CustomerName = oppositeTenantProfile.CustomerName,
+                    CurrentCustomerName = oppositeTenantProfile.CustomerName,
+                    ItemName = oppositeTenantProfile.ItemName,
+                    ManagementId = "CROSS-TENANT-CANONICAL-ASSET",
+                    ManagementNumber = "CROSS-TENANT-CANONICAL-ASSET",
+                    MutationId = assetMutationId,
+                    MutationCreatedAtUtc = purgedAtUtc.AddMinutes(5),
+                    CreatedAtUtc = purgedAtUtc.AddMinutes(5),
+                    UpdatedAtUtc = purgedAtUtc.AddMinutes(5)
+                }
+            ],
+            Payments =
+            [
+                new PaymentDto
+                {
+                    Id = paymentId,
+                    InvoiceId = invoiceId,
+                    PaymentDate = new DateOnly(2026, 8, 1),
+                    Amount = 1_000m,
+                    Note = "cross tenant blank payment",
+                    MutationId = paymentMutationId,
+                    MutationCreatedAtUtc = purgedAtUtc.AddMinutes(5),
+                    CreatedAtUtc = purgedAtUtc.AddMinutes(5),
+                    UpdatedAtUtc = purgedAtUtc.AddMinutes(5)
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(5, result.AcceptedCount);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(exactReplay ? 1 : 0, result.DuplicateMutationCount);
+        Assert.True(await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .AnyAsync(asset =>
+                asset.Id == assetId &&
+                asset.TenantCode == TenantScopeCatalog.Itworld &&
+                asset.BillingProfileId == canonicalId));
+        Assert.True(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == assetMutationId));
+        Assert.True(await _dbContext.Invoices.IgnoreQueryFilters()
+            .AnyAsync(invoice =>
+                invoice.Id == invoiceId &&
+                invoice.TenantCode == TenantScopeCatalog.Itworld &&
+                invoice.LinkedRentalBillingProfileId == canonicalId));
+        Assert.True(await _dbContext.Transactions.IgnoreQueryFilters()
+            .AnyAsync(transaction =>
+                transaction.Id == transactionId &&
+                transaction.TenantCode == TenantScopeCatalog.Itworld &&
+                transaction.LinkedInvoiceId == invoiceId));
+        Assert.True(await _dbContext.Payments.IgnoreQueryFilters()
+            .AnyAsync(payment =>
+                payment.Id == paymentId &&
+                payment.InvoiceId == invoiceId));
+        Assert.True(await _dbContext.ProcessedSyncMutations.AnyAsync(mutation =>
+            mutation.MutationId == invoiceMutationId));
+        Assert.True(await _dbContext.ProcessedSyncMutations.AnyAsync(mutation =>
+            mutation.MutationId == transactionMutationId));
+        Assert.True(await _dbContext.ProcessedSyncMutations.AnyAsync(mutation =>
+            mutation.MutationId == paymentMutationId));
+        Assert.True(await _dbContext.RecycleBinPurgeRecords
+            .AnyAsync(record => record.Id == purgeRecord.Id));
+    }
+
+    [Fact]
+    public async Task Push_SoftDeleteReplayAfterRestore_BlocksCurrentGenerationRentalAssetReference()
+    {
+        var profile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"SOFT-DELETE-REPLAY-DEPENDENT-{Guid.NewGuid():N}",
+            CustomerName = "Soft delete replay customer",
+            ItemName = "Soft delete replay item",
+            Notes = "active before delete",
+            MonthlyAmount = 17_000m,
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(profile);
+        await _dbContext.SaveChangesAsync();
+        var deleteRevision = profile.Revision;
+        var deleteMutationId = $"soft-delete-replay-dependent:{Guid.NewGuid():N}";
+        var deleteAtUtc = profile.UpdatedAtUtc.AddMinutes(5);
+
+        RentalBillingProfileDto CreateDeleteMutation()
+            => new()
+            {
+                Id = profile.Id,
+                TenantCode = profile.TenantCode,
+                OfficeCode = profile.OfficeCode,
+                ResponsibleOfficeCode = profile.ResponsibleOfficeCode,
+                ProfileKey = profile.ProfileKey,
+                CustomerName = profile.CustomerName,
+                ItemName = profile.ItemName,
+                Notes = "deleted generation payload",
+                MonthlyAmount = profile.MonthlyAmount,
+                IsActive = false,
+                IsDeleted = true,
+                Revision = deleteRevision,
+                ExpectedRevision = deleteRevision,
+                MutationId = deleteMutationId,
+                MutationCreatedAtUtc = deleteAtUtc,
+                CreatedAtUtc = profile.CreatedAtUtc,
+                UpdatedAtUtc = deleteAtUtc
+            };
+
+        var deleteResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-soft-delete-replay-dependent",
+            RentalBillingProfiles = [CreateDeleteMutation()]
+        }, CancellationToken.None);
+        var deleteOk = Assert.IsType<OkObjectResult>(deleteResponse.Result);
+        Assert.Equal(1, Assert.IsType<SyncPushResult>(deleteOk.Value).AcceptedCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var restored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == profile.Id);
+        restored.IsDeleted = false;
+        restored.IsActive = true;
+        restored.Notes = "restored current generation";
+        restored.MonthlyAmount = 47_000m;
+        await _dbContext.SaveChangesAsync();
+        var restoredRevision = restored.Revision;
+
+        var assetId = Guid.NewGuid();
+        var assetMutationId = $"soft-delete-replay-dependent-asset:{Guid.NewGuid():N}";
+        _dbContext.ChangeTracker.Clear();
+        var replayResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-soft-delete-replay-dependent",
+            RentalBillingProfiles = [CreateDeleteMutation()],
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = $"SOFT-DELETE-REPLAY-ASSET-{assetId:N}",
+                    BillingProfileId = profile.Id,
+                    CustomerName = profile.CustomerName,
+                    CurrentCustomerName = profile.CustomerName,
+                    ItemName = profile.ItemName,
+                    ManagementId = "SOFT-DELETE-REPLAY-ASSET",
+                    ManagementNumber = "SOFT-DELETE-REPLAY-ASSET",
+                    MutationId = assetMutationId,
+                    MutationCreatedAtUtc = deleteAtUtc.AddMinutes(10),
+                    CreatedAtUtc = deleteAtUtc.AddMinutes(10),
+                    UpdatedAtUtc = deleteAtUtc.AddMinutes(10)
+                }
+            ]
+        }, CancellationToken.None);
+        var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
+        var replayResult = Assert.IsType<SyncPushResult>(replayOk.Value);
+
+        Assert.Equal(1, replayResult.AcceptedCount);
+        Assert.Equal(1, replayResult.ConflictCount);
+        Assert.Equal(1, replayResult.DuplicateMutationCount);
+        Assert.Contains(replayResult.Conflicts, conflict =>
+            conflict.EntityName == nameof(RentalAsset) &&
+            conflict.EntityId == assetId.ToString("D"));
+        Assert.False(await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .AnyAsync(asset => asset.Id == assetId));
+        Assert.False(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == assetMutationId));
+        _dbContext.ChangeTracker.Clear();
+        var unchanged = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == profile.Id);
+        Assert.Equal(restoredRevision, unchanged.Revision);
+        Assert.Equal("restored current generation", unchanged.Notes);
+        Assert.Equal(47_000m, unchanged.MonthlyAmount);
+    }
+
+    [Fact]
+    public async Task Push_AliasAndCanonicalConflictGroup_RejectsAllWithoutAcceptedRevisionOverlap()
+    {
+        var profileKey = $"RENTAL-ALIAS-CANONICAL-CONFLICT-{Guid.NewGuid():N}";
+        var canonical = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = profileKey,
+            CustomerName = "Alias canonical conflict customer",
+            ItemName = "Alias canonical conflict item",
+            Notes = "canonical before mixed request",
+            MonthlyAmount = 10_000m,
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(canonical);
+        await _dbContext.SaveChangesAsync();
+        var originalRevision = canonical.Revision;
+        var originalAliasId = Guid.NewGuid();
+        var aliasMutationId = $"rental-alias-before-canonical-conflict:{Guid.NewGuid():N}";
+        var conflictMutationId = $"rental-canonical-conflict-after-alias:{Guid.NewGuid():N}";
+        var mutationAtUtc = canonical.UpdatedAtUtc.AddMinutes(5);
+
+        RentalBillingProfileDto CreateAlias()
+            => new()
+            {
+                Id = originalAliasId,
+                TenantCode = canonical.TenantCode,
+                OfficeCode = canonical.OfficeCode,
+                ResponsibleOfficeCode = canonical.ResponsibleOfficeCode,
+                ProfileKey = canonical.ProfileKey,
+                CustomerName = canonical.CustomerName,
+                ItemName = canonical.ItemName,
+                Notes = "accepted alias content",
+                MonthlyAmount = 25_000m,
+                IsActive = true,
+                Revision = originalRevision,
+                ExpectedRevision = originalRevision,
+                MutationId = aliasMutationId,
+                MutationCreatedAtUtc = mutationAtUtc,
+                CreatedAtUtc = canonical.CreatedAtUtc,
+                UpdatedAtUtc = mutationAtUtc
+            };
+
+        RentalBillingProfileDto CreateCanonicalConflict()
+            => new()
+            {
+                Id = canonical.Id,
+                TenantCode = canonical.TenantCode,
+                OfficeCode = canonical.OfficeCode,
+                ResponsibleOfficeCode = canonical.ResponsibleOfficeCode,
+                ProfileKey = canonical.ProfileKey,
+                CustomerName = canonical.CustomerName,
+                ItemName = canonical.ItemName,
+                Notes = "conflicting canonical content",
+                MonthlyAmount = 99_000m,
+                IsActive = true,
+                Revision = originalRevision,
+                ExpectedRevision = originalRevision + 100,
+                MutationId = conflictMutationId,
+                MutationCreatedAtUtc = mutationAtUtc,
+                CreatedAtUtc = canonical.CreatedAtUtc,
+                UpdatedAtUtc = mutationAtUtc
+            };
+
+        async Task<SyncPushResult> PushMixedRequestAsync()
+        {
+            var response = await _controller.Push(new SyncPushRequest
+            {
+                DeviceId = "device-rental-alias-canonical-conflict",
+                RentalBillingProfiles = [CreateAlias(), CreateCanonicalConflict()]
+            }, CancellationToken.None);
+            var ok = Assert.IsType<OkObjectResult>(response.Result);
+            return Assert.IsType<SyncPushResult>(ok.Value);
+        }
+
+        var result = await PushMixedRequestAsync();
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(2, result.ConflictCount);
+        Assert.Equal(0, result.DuplicateMutationCount);
+        Assert.Equal(2, result.Conflicts.Count(conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.EntityId == canonical.Id.ToString("D")));
+        Assert.DoesNotContain(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile));
+
+        _dbContext.ChangeTracker.Clear();
+        var storedAfterFirstPush = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == canonical.Id);
+        Assert.Equal("canonical before mixed request", storedAfterFirstPush.Notes);
+        Assert.Equal(10_000m, storedAfterFirstPush.MonthlyAmount);
+        Assert.False(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == aliasMutationId));
+        Assert.False(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == conflictMutationId));
+
+        var storedRevision = storedAfterFirstPush.Revision;
+        var storedUpdatedAtUtc = storedAfterFirstPush.UpdatedAtUtc;
+        var replayResult = await PushMixedRequestAsync();
+        Assert.Equal(0, replayResult.AcceptedCount);
+        Assert.Equal(2, replayResult.ConflictCount);
+        Assert.Equal(0, replayResult.DuplicateMutationCount);
+        Assert.Equal(2, replayResult.Conflicts.Count(conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.EntityId == canonical.Id.ToString("D")));
+        Assert.DoesNotContain(replayResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile));
+
+        _dbContext.ChangeTracker.Clear();
+        var storedAfterReplay = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == canonical.Id);
+        Assert.Equal(storedRevision, storedAfterReplay.Revision);
+        Assert.Equal(storedUpdatedAtUtc, storedAfterReplay.UpdatedAtUtc);
+        Assert.Equal("canonical before mixed request", storedAfterReplay.Notes);
+        Assert.Equal(10_000m, storedAfterReplay.MonthlyAmount);
+        Assert.False(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == aliasMutationId));
+        Assert.False(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == conflictMutationId));
+    }
+
+    [Fact]
+    public async Task Push_NovelAliasAndDirectCanonical_RejectsAmbiguousCanonicalCollision()
+    {
+        var canonical = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"RENTAL-ALIAS-DIRECT-COLLISION-{Guid.NewGuid():N}",
+            CustomerName = "Alias direct collision customer",
+            ItemName = "Alias direct collision item",
+            Notes = "canonical before alias direct collision",
+            MonthlyAmount = 11_000m,
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(canonical);
+        await _dbContext.SaveChangesAsync();
+        var originalRevision = canonical.Revision;
+        var originalUpdatedAtUtc = canonical.UpdatedAtUtc;
+        var aliasId = Guid.NewGuid();
+        var aliasMutationId = $"rental-novel-alias-collision:{Guid.NewGuid():N}";
+        var directMutationId = $"rental-novel-direct-collision:{Guid.NewGuid():N}";
+
+        RentalBillingProfileDto CreateMutation(Guid id, string mutationId, string notes)
+            => new()
+            {
+                Id = id,
+                TenantCode = canonical.TenantCode,
+                OfficeCode = canonical.OfficeCode,
+                ResponsibleOfficeCode = canonical.ResponsibleOfficeCode,
+                ProfileKey = canonical.ProfileKey,
+                CustomerName = canonical.CustomerName,
+                ItemName = canonical.ItemName,
+                Notes = notes,
+                MonthlyAmount = 77_000m,
+                IsActive = true,
+                Revision = originalRevision,
+                ExpectedRevision = originalRevision,
+                MutationId = mutationId,
+                MutationCreatedAtUtc = originalUpdatedAtUtc.AddMinutes(5),
+                CreatedAtUtc = canonical.CreatedAtUtc,
+                UpdatedAtUtc = originalUpdatedAtUtc.AddMinutes(5)
+            };
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-novel-alias-direct-collision",
+            RentalBillingProfiles =
+            [
+                CreateMutation(aliasId, aliasMutationId, "novel alias content"),
+                CreateMutation(canonical.Id, directMutationId, "novel direct content")
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(2, result.ConflictCount);
+        Assert.DoesNotContain(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile));
+        Assert.Equal(2, result.Conflicts.Count(conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.EntityId == canonical.Id.ToString("D")));
+        Assert.False(await _dbContext.ProcessedSyncMutations.AnyAsync(mutation =>
+            mutation.MutationId == aliasMutationId ||
+            mutation.MutationId == directMutationId));
+        _dbContext.ChangeTracker.Clear();
+        var unchanged = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == canonical.Id);
+        Assert.Equal(originalRevision, unchanged.Revision);
+        Assert.Equal(originalUpdatedAtUtc, unchanged.UpdatedAtUtc);
+        Assert.Equal("canonical before alias direct collision", unchanged.Notes);
+        Assert.Equal(11_000m, unchanged.MonthlyAmount);
+    }
+
+    [Fact]
+    public async Task Push_ExactReplayAndOneNovelRentalProfileMutation_RejectsWholeCanonicalGroup()
+    {
+        var canonical = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"RENTAL-REPLAY-NOVEL-COLLISION-{Guid.NewGuid():N}",
+            CustomerName = "Replay novel collision customer",
+            ItemName = "Replay novel collision item",
+            Notes = "canonical before replay seed",
+            MonthlyAmount = 12_000m,
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(canonical);
+        await _dbContext.SaveChangesAsync();
+        var seedRevision = canonical.Revision;
+        var replayAliasId = Guid.NewGuid();
+        var novelAliasId = Guid.NewGuid();
+        var replayMutationId = $"rental-replay-before-novel:{Guid.NewGuid():N}";
+        var novelMutationId = $"rental-novel-after-replay:{Guid.NewGuid():N}";
+        var seedMutationAtUtc = canonical.UpdatedAtUtc.AddMinutes(5);
+
+        RentalBillingProfileDto CreateReplayMutation()
+            => new()
+            {
+                Id = replayAliasId,
+                TenantCode = canonical.TenantCode,
+                OfficeCode = canonical.OfficeCode,
+                ResponsibleOfficeCode = canonical.ResponsibleOfficeCode,
+                ProfileKey = canonical.ProfileKey,
+                CustomerName = canonical.CustomerName,
+                ItemName = canonical.ItemName,
+                Notes = "accepted replay seed content",
+                MonthlyAmount = 20_000m,
+                IsActive = true,
+                Revision = seedRevision,
+                ExpectedRevision = seedRevision,
+                MutationId = replayMutationId,
+                MutationCreatedAtUtc = seedMutationAtUtc,
+                CreatedAtUtc = canonical.CreatedAtUtc,
+                UpdatedAtUtc = seedMutationAtUtc
+            };
+
+        var seedResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-replay-novel-collision",
+            RentalBillingProfiles = [CreateReplayMutation()]
+        }, CancellationToken.None);
+        var seedOk = Assert.IsType<OkObjectResult>(seedResponse.Result);
+        var seedResult = Assert.IsType<SyncPushResult>(seedOk.Value);
+        Assert.Equal(1, seedResult.AcceptedCount);
+        Assert.Equal(0, seedResult.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedAfterSeed = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == canonical.Id);
+
+        RentalBillingProfileDto CreateNovelMutation()
+            => new()
+            {
+                Id = novelAliasId,
+                TenantCode = canonical.TenantCode,
+                OfficeCode = canonical.OfficeCode,
+                ResponsibleOfficeCode = canonical.ResponsibleOfficeCode,
+                ProfileKey = canonical.ProfileKey,
+                CustomerName = canonical.CustomerName,
+                ItemName = canonical.ItemName,
+                Notes = "must not apply mixed novel content",
+                MonthlyAmount = 99_000m,
+                IsActive = true,
+                Revision = storedAfterSeed.Revision,
+                ExpectedRevision = storedAfterSeed.Revision,
+                MutationId = novelMutationId,
+                MutationCreatedAtUtc = storedAfterSeed.UpdatedAtUtc.AddMinutes(5),
+                CreatedAtUtc = storedAfterSeed.CreatedAtUtc,
+                UpdatedAtUtc = storedAfterSeed.UpdatedAtUtc.AddMinutes(5)
+            };
+
+        var mixedResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-replay-novel-collision",
+            RentalBillingProfiles = [CreateReplayMutation(), CreateNovelMutation()]
+        }, CancellationToken.None);
+        var mixedOk = Assert.IsType<OkObjectResult>(mixedResponse.Result);
+        var mixedResult = Assert.IsType<SyncPushResult>(mixedOk.Value);
+
+        Assert.Equal(0, mixedResult.AcceptedCount);
+        Assert.Equal(2, mixedResult.ConflictCount);
+        Assert.Equal(0, mixedResult.DuplicateMutationCount);
+        Assert.DoesNotContain(mixedResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile));
+        Assert.False(await _dbContext.ProcessedSyncMutations
+            .AnyAsync(mutation => mutation.MutationId == novelMutationId));
+        _dbContext.ChangeTracker.Clear();
+        var unchanged = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == canonical.Id);
+        Assert.Equal(storedAfterSeed.Revision, unchanged.Revision);
+        Assert.Equal(storedAfterSeed.UpdatedAtUtc, unchanged.UpdatedAtUtc);
+        Assert.Equal("accepted replay seed content", unchanged.Notes);
+        Assert.Equal(20_000m, unchanged.MonthlyAmount);
+    }
+
+    [Fact]
+    public async Task Push_IdenticalSameMutationRentalProfileDuplicates_RemainsIdempotent()
+    {
+        var canonical = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"RENTAL-IDENTICAL-MUTATION-DUPLICATE-{Guid.NewGuid():N}",
+            CustomerName = "Identical mutation duplicate customer",
+            ItemName = "Identical mutation duplicate item",
+            Notes = "canonical before identical duplicate",
+            MonthlyAmount = 13_000m,
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(canonical);
+        await _dbContext.SaveChangesAsync();
+        var originalRevision = canonical.Revision;
+        var aliasId = Guid.NewGuid();
+        var mutationId = $"rental-identical-mutation-duplicate:{Guid.NewGuid():N}";
+        var mutationAtUtc = canonical.UpdatedAtUtc.AddMinutes(5);
+
+        RentalBillingProfileDto CreateIdenticalMutation()
+            => new()
+            {
+                Id = aliasId,
+                TenantCode = canonical.TenantCode,
+                OfficeCode = canonical.OfficeCode,
+                ResponsibleOfficeCode = canonical.ResponsibleOfficeCode,
+                ProfileKey = canonical.ProfileKey,
+                CustomerName = canonical.CustomerName,
+                ItemName = canonical.ItemName,
+                Notes = "identical mutation applied once",
+                MonthlyAmount = 31_000m,
+                IsActive = true,
+                Revision = originalRevision,
+                ExpectedRevision = originalRevision,
+                MutationId = mutationId,
+                MutationCreatedAtUtc = mutationAtUtc,
+                CreatedAtUtc = canonical.CreatedAtUtc,
+                UpdatedAtUtc = mutationAtUtc
+            };
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-identical-mutation-duplicate",
+            RentalBillingProfiles = [CreateIdenticalMutation(), CreateIdenticalMutation()]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(2, result.AcceptedCount);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(1, result.DuplicateMutationCount);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) &&
+            revision.EntityId == canonical.Id);
+        Assert.Contains(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile) &&
+            revision.EntityId == aliasId);
+        Assert.Equal(1, await _dbContext.ProcessedSyncMutations
+            .CountAsync(mutation => mutation.MutationId == mutationId));
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(profile => profile.Id == canonical.Id);
+        Assert.Equal("identical mutation applied once", stored.Notes);
+        Assert.Equal(31_000m, stored.MonthlyAmount);
+    }
+
+    [Fact]
+    public async Task Push_TwoNovelRentalProfileAliases_RejectsAmbiguousCanonicalCollision()
+    {
+        var profileKey = $"RENTAL-LEGAL-ALIASES-{Guid.NewGuid():N}";
+        var canonical = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = profileKey,
+            CustomerName = "Legal alias canonical customer",
+            ItemName = "Legal alias item",
+            Notes = "canonical before",
+            MonthlyAmount = 10_000m,
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(canonical);
+        await _dbContext.SaveChangesAsync();
+        var originalRevision = canonical.Revision;
+        var firstOriginalId = Guid.NewGuid();
+        var secondOriginalId = Guid.NewGuid();
+        var firstMutationId = $"rental-legal-alias-first:{Guid.NewGuid():N}";
+        var secondMutationId = $"rental-legal-alias-second:{Guid.NewGuid():N}";
+        var mutationAtUtc = canonical.UpdatedAtUtc.AddMinutes(5);
+
+        RentalBillingProfileDto CreateAlias(Guid originalId, string mutationId, string notes)
+            => new()
+            {
+                Id = originalId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = profileKey,
+                CustomerName = canonical.CustomerName,
+                ItemName = canonical.ItemName,
+                Notes = notes,
+                MonthlyAmount = 30_000m,
+                IsActive = true,
+                Revision = originalRevision,
+                ExpectedRevision = originalRevision,
+                MutationId = mutationId,
+                MutationCreatedAtUtc = mutationAtUtc,
+                CreatedAtUtc = canonical.CreatedAtUtc,
+                UpdatedAtUtc = mutationAtUtc
+            };
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-legal-aliases",
+            RentalBillingProfiles =
+            [
+                CreateAlias(firstOriginalId, firstMutationId, "first accepted alias"),
+                CreateAlias(secondOriginalId, secondMutationId, "second accepted alias")
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(2, result.ConflictCount);
+        Assert.Equal(0, result.DuplicateMutationCount);
+        Assert.DoesNotContain(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalBillingProfile));
+        Assert.Equal(2, result.Conflicts.Count(conflict =>
+            conflict.EntityName == nameof(RentalBillingProfile) &&
+            conflict.EntityId == canonical.Id.ToString("D")));
+        Assert.False(await _dbContext.ProcessedSyncMutations.AnyAsync(mutation =>
+            mutation.MutationId == firstMutationId ||
+            mutation.MutationId == secondMutationId));
+
+        _dbContext.ChangeTracker.Clear();
+        var storedAfterPush = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .SingleAsync(profile => profile.Id == canonical.Id);
+        Assert.Equal(originalRevision, storedAfterPush.Revision);
+        Assert.Equal("canonical before", storedAfterPush.Notes);
+        Assert.Equal(10_000m, storedAfterPush.MonthlyAmount);
+    }
+
+    [Fact]
+    public async Task Push_AcceptsAlreadyDeletedMasterRetriesWithoutStateChanges_AndRejectsDeleteAfterRestore()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "ALREADY-DELETED-SYNC-CUSTOMER",
+            NameMatchKey = "ALREADYDELETEDSYNCCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true
+        };
+        var unit = new Unit
+        {
+            Id = Guid.NewGuid(),
+            Name = "ALREADY-DELETED-SYNC-UNIT",
+            IsActive = false,
+            IsDeleted = true
+        };
+        var category = new CustomerCategory
+        {
+            Id = Guid.NewGuid(),
+            Name = "ALREADY-DELETED-SYNC-CATEGORY",
+            IsDeleted = true
+        };
+        var priceGrade = new PriceGradeOption
+        {
+            Id = Guid.NewGuid(),
+            Name = "ALREADY-DELETED-SYNC-GRADE",
+            PriceSource = "A",
+            SortOrder = 90,
+            IsActive = false,
+            IsDeleted = true
+        };
+        _dbContext.AddRange(customer, unit, category, priceGrade);
+        await _dbContext.SaveChangesAsync();
+
+        var deletedCustomerRevision = customer.Revision;
+        var deletedCustomerUpdatedAtUtc = customer.UpdatedAtUtc;
+        var deletedUnitRevision = unit.Revision;
+        var deletedUnitUpdatedAtUtc = unit.UpdatedAtUtc;
+        var deletedCategoryRevision = category.Revision;
+        var deletedCategoryUpdatedAtUtc = category.UpdatedAtUtc;
+        var deletedPriceGradeRevision = priceGrade.Revision;
+        var deletedPriceGradeUpdatedAtUtc = priceGrade.UpdatedAtUtc;
+        var auditCountBeforeRetry = await _dbContext.AuditLogs.CountAsync();
+
+        var customerDelete = customer.ToDto();
+        customerDelete.MutationId = $"already-deleted-customer:{Guid.NewGuid():N}";
+        customerDelete.MutationCreatedAtUtc = DateTime.UtcNow;
+        customerDelete.Revision = deletedCustomerRevision;
+        customerDelete.ExpectedRevision = deletedCustomerRevision + 100;
+        var unitDelete = unit.ToDto();
+        unitDelete.MutationId = $"already-deleted-unit:{Guid.NewGuid():N}";
+        unitDelete.MutationCreatedAtUtc = DateTime.UtcNow;
+        unitDelete.Revision = deletedUnitRevision;
+        unitDelete.ExpectedRevision = deletedUnitRevision + 100;
+        var categoryDelete = category.ToDto();
+        categoryDelete.MutationId = $"already-deleted-category:{Guid.NewGuid():N}";
+        categoryDelete.MutationCreatedAtUtc = DateTime.UtcNow;
+        categoryDelete.Revision = deletedCategoryRevision;
+        categoryDelete.ExpectedRevision = deletedCategoryRevision + 100;
+        var priceGradeDelete = priceGrade.ToDto();
+        priceGradeDelete.MutationId = $"already-deleted-price-grade:{Guid.NewGuid():N}";
+        priceGradeDelete.MutationCreatedAtUtc = DateTime.UtcNow;
+        priceGradeDelete.Revision = deletedPriceGradeRevision;
+        priceGradeDelete.ExpectedRevision = deletedPriceGradeRevision + 100;
+
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-already-deleted-master-retry",
+            Customers = [customerDelete],
+            Units = [unitDelete],
+            CustomerCategories = [categoryDelete],
+            PriceGradeOptions = [priceGradeDelete]
+        };
+
+        var firstResponse = await _controller.Push(request, CancellationToken.None);
+        var firstOk = Assert.IsType<OkObjectResult>(firstResponse.Result);
+        var firstResult = Assert.IsType<SyncPushResult>(firstOk.Value);
+
+        Assert.Equal(0, firstResult.ConflictCount);
+        Assert.Equal(4, firstResult.AcceptedCount);
+        Assert.Equal(0, firstResult.DuplicateMutationCount);
+        Assert.Equal(4, await _dbContext.ProcessedSyncMutations.CountAsync(mutation =>
+            mutation.MutationId == customerDelete.MutationId ||
+            mutation.MutationId == unitDelete.MutationId ||
+            mutation.MutationId == categoryDelete.MutationId ||
+            mutation.MutationId == priceGradeDelete.MutationId));
+        Assert.Equal(auditCountBeforeRetry, await _dbContext.AuditLogs.CountAsync());
+
+        _dbContext.ChangeTracker.Clear();
+        var customerAfterRetry = await _dbContext.Customers.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == customer.Id);
+        var unitAfterRetry = await _dbContext.Units.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == unit.Id);
+        var categoryAfterRetry = await _dbContext.CustomerCategories.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == category.Id);
+        var priceGradeAfterRetry = await _dbContext.PriceGradeOptions.IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(current => current.Id == priceGrade.Id);
+        Assert.True(customerAfterRetry.IsDeleted);
+        Assert.Equal(deletedCustomerRevision, customerAfterRetry.Revision);
+        Assert.Equal(deletedCustomerUpdatedAtUtc, customerAfterRetry.UpdatedAtUtc);
+        Assert.True(unitAfterRetry.IsDeleted);
+        Assert.Equal(deletedUnitRevision, unitAfterRetry.Revision);
+        Assert.Equal(deletedUnitUpdatedAtUtc, unitAfterRetry.UpdatedAtUtc);
+        Assert.True(categoryAfterRetry.IsDeleted);
+        Assert.Equal(deletedCategoryRevision, categoryAfterRetry.Revision);
+        Assert.Equal(deletedCategoryUpdatedAtUtc, categoryAfterRetry.UpdatedAtUtc);
+        Assert.True(priceGradeAfterRetry.IsDeleted);
+        Assert.Equal(deletedPriceGradeRevision, priceGradeAfterRetry.Revision);
+        Assert.Equal(deletedPriceGradeUpdatedAtUtc, priceGradeAfterRetry.UpdatedAtUtc);
+
+        var duplicateResponse = await _controller.Push(request, CancellationToken.None);
+        var duplicateOk = Assert.IsType<OkObjectResult>(duplicateResponse.Result);
+        var duplicateResult = Assert.IsType<SyncPushResult>(duplicateOk.Value);
+        Assert.Equal(0, duplicateResult.ConflictCount);
+        Assert.Equal(4, duplicateResult.AcceptedCount);
+        Assert.Equal(4, duplicateResult.DuplicateMutationCount);
+
+        var restoredCustomer = await _dbContext.Customers.IgnoreQueryFilters()
+            .SingleAsync(current => current.Id == customer.Id);
+        restoredCustomer.IsDeleted = false;
+        await _dbContext.SaveChangesAsync();
+        var restoredRevision = restoredCustomer.Revision;
+
+        var staleDeleteAfterRestore = restoredCustomer.ToDto();
+        staleDeleteAfterRestore.IsDeleted = true;
+        staleDeleteAfterRestore.MutationId = $"stale-delete-after-restore:{Guid.NewGuid():N}";
+        staleDeleteAfterRestore.MutationCreatedAtUtc = DateTime.UtcNow;
+        staleDeleteAfterRestore.ExpectedRevision = deletedCustomerRevision;
+        staleDeleteAfterRestore.Revision = deletedCustomerRevision;
+        staleDeleteAfterRestore.UpdatedAtUtc = deletedCustomerUpdatedAtUtc;
+
+        var staleResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-stale-delete-after-restore",
+            Customers = [staleDeleteAfterRestore]
+        }, CancellationToken.None);
+        var staleOk = Assert.IsType<OkObjectResult>(staleResponse.Result);
+        var staleResult = Assert.IsType<SyncPushResult>(staleOk.Value);
+        Assert.Equal(1, staleResult.ConflictCount);
+        Assert.Equal(0, staleResult.AcceptedCount);
+        Assert.Contains(staleResult.Conflicts, conflict =>
+            conflict.EntityName == nameof(Customer) &&
+            conflict.EntityId == customer.Id.ToString("D"));
+        Assert.False(await _dbContext.Customers.IgnoreQueryFilters()
+            .Where(current => current.Id == customer.Id)
+            .Select(current => current.IsDeleted)
+            .SingleAsync());
+        Assert.Equal(restoredRevision, await _dbContext.Customers.IgnoreQueryFilters()
+            .Where(current => current.Id == customer.Id)
+            .Select(current => current.Revision)
+            .SingleAsync());
     }
 
     [Fact]
@@ -14113,7 +29535,1929 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task Push_ReusesExistingRentalManagementCompany_WhenIncomingIdDiffersButTenantAndCodeMatch()
+    public async Task Push_PreloadsRentalManagementCompanies_InBoundedQueriesFor501Aliases()
+    {
+        var canonicalCompany = new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "USENET BULK CANONICAL",
+            UpdatedAtUtc = new DateTime(2026, 7, 30, 3, 0, 0, DateTimeKind.Utc)
+        };
+        _dbContext.RentalManagementCompanies.Add(canonicalCompany);
+        await _dbContext.SaveChangesAsync();
+        var originalRevision = canonicalCompany.Revision;
+        var aliases = Enumerable.Range(0, 501)
+            .Select(index => new RentalManagementCompanyDto
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = canonicalCompany.TenantCode,
+                Code = canonicalCompany.Code,
+                Name = $"USENET BULK ALIAS {index:D3}",
+                Revision = originalRevision,
+                ExpectedRevision = originalRevision,
+                CreatedAtUtc = canonicalCompany.CreatedAtUtc,
+                UpdatedAtUtc = canonicalCompany.UpdatedAtUtc.AddMinutes(1)
+            })
+            .ToList();
+        const string collisionReason =
+            "Multiple incoming rental management company rows resolve to the same canonical company.";
+        var historicalConflictIds = aliases
+            .Select(_ => Guid.NewGuid())
+            .ToList();
+        _dbContext.ConflictLogs.AddRange(aliases.Select((alias, index) => new ConflictLog
+        {
+            Id = historicalConflictIds[index],
+            EntityName = nameof(RentalManagementCompany),
+            EntityId = alias.Id.ToString("D"),
+            Reason = collisionReason,
+            Status = "Open",
+            CreatedAtUtc = new DateTime(2026, 7, 29, 0, 0, 0, DateTimeKind.Utc)
+        }));
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        };
+        var queryCounter = new RentalManagementCompanyQueryCountingInterceptor();
+        await using var scopedDb = CreateDbContext(currentUser, queryCounter);
+        var controller = CreateController(scopedDb, currentUser);
+        queryCounter.Reset();
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-company-bulk-preload",
+            RentalManagementCompanies = aliases
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(501, result.ConflictCount);
+        Assert.InRange(queryCounter.SelectCount, 1, 4);
+        Assert.Equal(6, queryCounter.ConflictSelectCount);
+        Assert.Equal(2, queryCounter.ConflictDeleteCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedCompany = await _dbContext.RentalManagementCompanies
+            .IgnoreQueryFilters()
+            .SingleAsync();
+        Assert.Equal(canonicalCompany.Id, storedCompany.Id);
+        Assert.Equal("USENET BULK CANONICAL", storedCompany.Name);
+        Assert.Equal(originalRevision, storedCompany.Revision);
+        Assert.Empty(await _dbContext.ProcessedSyncMutations.ToListAsync());
+        var openConflicts = await _dbContext.ConflictLogs
+            .AsNoTracking()
+            .Where(conflict =>
+                conflict.EntityName == nameof(RentalManagementCompany) &&
+                conflict.Reason == collisionReason &&
+                conflict.Status == "Open")
+            .ToListAsync();
+        Assert.Equal(501, openConflicts.Count);
+        Assert.DoesNotContain(openConflicts, conflict => historicalConflictIds.Contains(conflict.Id));
+    }
+
+    [Fact]
+    public async Task Push_ProfileOnlyRentalBillingProfiles_UsesBoundedReferenceSelects()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Profile batch customer",
+            NameMatchKey = "PROFILEBATCHCUSTOMER",
+            BusinessNumber = "123-45-67890"
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "Profile batch company"
+        });
+
+        var fixtures = Enumerable.Range(0, 33)
+            .Select(index =>
+            {
+                var profileId = Guid.NewGuid();
+                var assetId = Guid.NewGuid();
+                var templateJson = JsonSerializer.Serialize(new[]
+                {
+                    new { IncludedAssetIds = new[] { assetId } }
+                });
+                return (
+                    Profile: new RentalBillingProfile
+                    {
+                        Id = profileId,
+                        TenantCode = TenantScopeCatalog.UsenetGroup,
+                        OfficeCode = OfficeCodeCatalog.Usenet,
+                        ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                        ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                        ProfileKey = $"profile-batch-{index:D3}-{profileId:N}",
+                        CustomerId = customer.Id,
+                        CustomerName = customer.NameOriginal,
+                        BusinessNumber = customer.BusinessNumber,
+                        ItemName = $"Profile batch item {index:D3}",
+                        BillingTemplateJson = templateJson,
+                        BillingType = "bundle",
+                        BillingAdvanceMode = "postpaid",
+                        BillingDay = 25,
+                        BillingCycleMonths = 1,
+                        BillingMethod = "cash",
+                        IsActive = true
+                    },
+                    Asset: new RentalAsset
+                    {
+                        Id = assetId,
+                        TenantCode = TenantScopeCatalog.UsenetGroup,
+                        OfficeCode = OfficeCodeCatalog.Usenet,
+                        ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                        ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                        AssetKey = $"PROFILE-BATCH-ASSET-{index:D3}-{assetId:N}",
+                        CustomerId = customer.Id,
+                        BillingProfileId = profileId,
+                        CustomerName = customer.NameOriginal,
+                        CurrentCustomerName = customer.NameOriginal,
+                        ManagementId = $"PROFILE-BATCH-{index:D3}",
+                        ManagementNumber = $"PROFILE-BATCH-{index:D3}",
+                        ItemName = $"Profile batch item {index:D3}"
+                    });
+            })
+            .ToList();
+        _dbContext.RentalBillingProfiles.AddRange(fixtures.Select(fixture => fixture.Profile));
+        _dbContext.RentalAssets.AddRange(fixtures.Select(fixture => fixture.Asset));
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        };
+
+        async Task<RentalProfilePushSelectCounts> PushBatchAsync(
+            IReadOnlyList<(RentalBillingProfile Profile, RentalAsset Asset)> batch,
+            string deviceId)
+        {
+            var queryCounter = new RentalProfilePushQueryCountingInterceptor();
+            await using var scopedDb = CreateDbContext(currentUser, queryCounter);
+            var controller = CreateController(scopedDb, currentUser);
+            queryCounter.Reset();
+
+            var response = await controller.Push(new SyncPushRequest
+            {
+                DeviceId = deviceId,
+                RentalBillingProfiles = batch.Select((fixture, index) => new RentalBillingProfileDto
+                {
+                    Id = fixture.Profile.Id,
+                    TenantCode = fixture.Profile.TenantCode,
+                    OfficeCode = fixture.Profile.OfficeCode,
+                    ResponsibleOfficeCode = fixture.Profile.ResponsibleOfficeCode,
+                    ManagementCompanyCode = fixture.Profile.ManagementCompanyCode,
+                    ProfileKey = fixture.Profile.ProfileKey,
+                    CustomerId = fixture.Profile.CustomerId,
+                    CustomerName = fixture.Profile.CustomerName,
+                    BusinessNumber = fixture.Profile.BusinessNumber,
+                    ItemName = fixture.Profile.ItemName,
+                    BillingTemplateJson = fixture.Profile.BillingTemplateJson,
+                    BillingType = fixture.Profile.BillingType,
+                    BillingAdvanceMode = fixture.Profile.BillingAdvanceMode,
+                    BillingDay = fixture.Profile.BillingDay,
+                    BillingCycleMonths = fixture.Profile.BillingCycleMonths,
+                    BillingMethod = fixture.Profile.BillingMethod,
+                    Notes = $"bounded profile update {index:D3}",
+                    IsActive = true,
+                    Revision = fixture.Profile.Revision,
+                    ExpectedRevision = fixture.Profile.Revision,
+                    MutationId = $"{deviceId}:{fixture.Profile.Id:N}",
+                    CreatedAtUtc = fixture.Profile.CreatedAtUtc,
+                    UpdatedAtUtc = fixture.Profile.UpdatedAtUtc.AddMinutes(1)
+                }).ToList()
+            }, CancellationToken.None);
+
+            var ok = Assert.IsType<OkObjectResult>(response.Result);
+            var result = Assert.IsType<SyncPushResult>(ok.Value);
+            Assert.Empty(result.Conflicts);
+            Assert.Equal(batch.Count, result.AcceptedCount);
+            return queryCounter.Snapshot();
+        }
+
+        var singleCounts = await PushBatchAsync(fixtures.Take(1).ToList(), "profile-only-query-single");
+        var batchCounts = await PushBatchAsync(fixtures.Skip(1).Take(32).ToList(), "profile-only-query-32");
+
+        var bounded =
+            batchCounts.RentalBillingProfileSelectCount <= singleCounts.RentalBillingProfileSelectCount + 2 &&
+            batchCounts.RentalAssetSelectCount <= singleCounts.RentalAssetSelectCount + 1 &&
+            batchCounts.CustomerSelectCount <= singleCounts.CustomerSelectCount + 1 &&
+            batchCounts.RentalManagementCompanySelectCount <= singleCounts.RentalManagementCompanySelectCount + 1;
+        Assert.All(
+            new[]
+            {
+                batchCounts.RentalBillingProfileSelectCount,
+                batchCounts.RentalAssetSelectCount,
+                batchCounts.CustomerSelectCount,
+                batchCounts.RentalManagementCompanySelectCount
+            },
+            count => Assert.True(count > 0));
+        Assert.True(bounded, $"single={singleCounts}; batch32={batchCounts}");
+    }
+
+    [Fact]
+    public async Task Push_RestoringProfileCustomersAndContracts_UsesExactBoundedSelectCounts()
+    {
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        };
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "Profile restore batch company"
+        });
+
+        var fixtures = Enumerable.Range(0, 33)
+            .Select(index =>
+            {
+                var customerId = Guid.NewGuid();
+                var profileId = Guid.NewGuid();
+                return (
+                    Customer: new Customer
+                    {
+                        Id = customerId,
+                        TenantCode = TenantScopeCatalog.UsenetGroup,
+                        OfficeCode = OfficeCodeCatalog.Usenet,
+                        ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                        NameOriginal = $"Profile restore customer {index:D3}",
+                        NameMatchKey = $"PROFILERESTORECUSTOMER{index:D3}",
+                        TradeType = CustomerClassificationNormalizer.Sales,
+                        IsDeleted = true
+                    },
+                    Profile: new RentalBillingProfile
+                    {
+                        Id = profileId,
+                        TenantCode = TenantScopeCatalog.UsenetGroup,
+                        OfficeCode = OfficeCodeCatalog.Usenet,
+                        ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                        ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                        ProfileKey = $"profile-restore-batch-{index:D3}-{profileId:N}",
+                        CustomerId = customerId,
+                        CustomerName = $"Profile restore customer {index:D3}",
+                        ItemName = $"Profile restore item {index:D3}",
+                        BillingDay = 25,
+                        IsDeleted = true
+                    },
+                    MatchingContract: new CustomerContract
+                    {
+                        Id = Guid.NewGuid(),
+                        CustomerId = customerId,
+                        ContractType = "Rental",
+                        FileName = $"matching-{index:D3}.pdf",
+                        MimeType = "application/pdf",
+                        IsPrimary = index % 2 == 0,
+                        IsDeleted = true
+                    },
+                    OtherTimestampContract: new CustomerContract
+                    {
+                        Id = Guid.NewGuid(),
+                        CustomerId = customerId,
+                        ContractType = "Rental",
+                        FileName = $"other-timestamp-{index:D3}.pdf",
+                        MimeType = "application/pdf",
+                        IsDeleted = true
+                    },
+                    ActivePrimaryContract: new CustomerContract
+                    {
+                        Id = Guid.NewGuid(),
+                        CustomerId = customerId,
+                        ContractType = "Rental",
+                        FileName = $"active-primary-{index:D3}.pdf",
+                        MimeType = "application/pdf",
+                        IsPrimary = true
+                    });
+            })
+            .ToList();
+        _dbContext.Customers.AddRange(fixtures.Select(fixture => fixture.Customer));
+        _dbContext.RentalBillingProfiles.AddRange(fixtures.Select(fixture => fixture.Profile));
+        _dbContext.CustomerContracts.AddRange(fixtures.Select(fixture => fixture.MatchingContract));
+        await _dbContext.SaveChangesAsync();
+
+        _dbContext.CustomerContracts.AddRange(fixtures.Select(fixture => fixture.OtherTimestampContract));
+        _dbContext.CustomerContracts.AddRange(fixtures.Select(fixture => fixture.ActivePrimaryContract));
+        await _dbContext.SaveChangesAsync();
+        foreach (var fixture in fixtures)
+            Assert.NotEqual(fixture.Customer.UpdatedAtUtc, fixture.OtherTimestampContract.UpdatedAtUtc);
+        _dbContext.ChangeTracker.Clear();
+
+        async Task<RentalProfilePushSelectCounts> PushBatchAsync(
+            IReadOnlyList<(Customer Customer, RentalBillingProfile Profile, CustomerContract MatchingContract, CustomerContract OtherTimestampContract, CustomerContract ActivePrimaryContract)> batch,
+            string deviceId)
+        {
+            var queryCounter = new RentalProfilePushQueryCountingInterceptor();
+            await using var scopedDb = CreateDbContext(currentUser, queryCounter);
+            var controller = CreateController(scopedDb, currentUser);
+            queryCounter.Reset();
+
+            var response = await controller.Push(new SyncPushRequest
+            {
+                DeviceId = deviceId,
+                RentalBillingProfiles = batch.Select(fixture => new RentalBillingProfileDto
+                {
+                    Id = fixture.Profile.Id,
+                    TenantCode = fixture.Profile.TenantCode,
+                    OfficeCode = fixture.Profile.OfficeCode,
+                    ResponsibleOfficeCode = fixture.Profile.ResponsibleOfficeCode,
+                    ManagementCompanyCode = fixture.Profile.ManagementCompanyCode,
+                    ProfileKey = fixture.Profile.ProfileKey,
+                    CustomerId = fixture.Profile.CustomerId,
+                    CustomerName = fixture.Profile.CustomerName,
+                    ItemName = fixture.Profile.ItemName,
+                    BillingDay = fixture.Profile.BillingDay,
+                    IsDeleted = false,
+                    Revision = fixture.Profile.Revision,
+                    ExpectedRevision = fixture.Profile.Revision,
+                    MutationId = $"{deviceId}:{fixture.Profile.Id:N}",
+                    CreatedAtUtc = fixture.Profile.CreatedAtUtc,
+                    UpdatedAtUtc = fixture.Profile.UpdatedAtUtc
+                }).ToList()
+            }, CancellationToken.None);
+
+            var ok = Assert.IsType<OkObjectResult>(response.Result);
+            var result = Assert.IsType<SyncPushResult>(ok.Value);
+            Assert.Empty(result.Conflicts);
+            Assert.Equal(batch.Count, result.AcceptedCount);
+            return queryCounter.Snapshot();
+        }
+
+        var single = fixtures.Take(1).ToList();
+        var batch32 = fixtures.Skip(1).Take(32).ToList();
+        var singleCounts = await PushBatchAsync(single, "profile-restore-query-single");
+        var batchCounts = await PushBatchAsync(batch32, "profile-restore-query-32");
+
+        Assert.Equal(singleCounts, batchCounts);
+        Assert.Equal(new RentalProfilePushSelectCounts(5, 2, 3, 1, 3), batchCounts);
+
+        _dbContext.ChangeTracker.Clear();
+        var customerIds = fixtures.Select(fixture => fixture.Customer.Id).ToList();
+        var matchingContractIds = fixtures.Select(fixture => fixture.MatchingContract.Id).ToList();
+        var otherTimestampContractIds = fixtures.Select(fixture => fixture.OtherTimestampContract.Id).ToList();
+        var activePrimaryContractIds = fixtures.Select(fixture => fixture.ActivePrimaryContract.Id).ToList();
+        Assert.All(
+            await _dbContext.Customers.IgnoreQueryFilters().Where(customer => customerIds.Contains(customer.Id)).ToListAsync(),
+            customer => Assert.False(customer.IsDeleted));
+        Assert.All(
+            await _dbContext.CustomerContracts.IgnoreQueryFilters().Where(contract => matchingContractIds.Contains(contract.Id)).ToListAsync(),
+            contract =>
+            {
+                Assert.False(contract.IsDeleted);
+                var fixture = Assert.Single(fixtures, current => current.MatchingContract.Id == contract.Id);
+                Assert.Equal(fixture.MatchingContract.IsPrimary, contract.IsPrimary);
+            });
+        Assert.All(
+            await _dbContext.CustomerContracts.IgnoreQueryFilters().Where(contract => otherTimestampContractIds.Contains(contract.Id)).ToListAsync(),
+            contract => Assert.True(contract.IsDeleted));
+        Assert.All(
+            await _dbContext.CustomerContracts.IgnoreQueryFilters().Where(contract => activePrimaryContractIds.Contains(contract.Id)).ToListAsync(),
+            contract =>
+            {
+                Assert.False(contract.IsDeleted);
+                var fixture = Assert.Single(fixtures, current => current.ActivePrimaryContract.Id == contract.Id);
+                Assert.Equal(!fixture.MatchingContract.IsPrimary, contract.IsPrimary);
+            });
+    }
+
+    [Fact]
+    public async Task Push_NewProfilesWithIncludedAssets_UsesExactBoundedEndToEndSelectCounts()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Mixed profile asset batch customer",
+            NameMatchKey = "MIXEDPROFILEASSETBATCHCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Mixed profile asset batch copier",
+            NameMatchKey = "MIXEDPROFILEASSETBATCHCOPIER",
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset,
+            Unit = "EA"
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.Items.Add(item);
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "Mixed profile asset batch company"
+        });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var fixtures = Enumerable.Range(0, 33)
+            .Select(index =>
+            {
+                var profileId = Guid.NewGuid();
+                var assetId = Guid.NewGuid();
+                var profile = new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"mixed-profile-asset-{index:D3}-{profileId:N}",
+                    CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal,
+                    ItemName = item.NameOriginal,
+                    BillingTemplateJson = JsonSerializer.Serialize(new[]
+                    {
+                        new { IncludedAssetIds = new[] { assetId } }
+                    }),
+                    BillingType = "bundle",
+                    BillingAdvanceMode = "postpaid",
+                    BillingDay = 25,
+                    BillingCycleMonths = 1,
+                    BillingMethod = "cash",
+                    IsActive = true,
+                    MutationId = $"mixed-profile:{profileId:N}",
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                };
+                var asset = new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = $"MIXED-PROFILE-ASSET-{index:D3}-{assetId:N}",
+                    ManagementId = $"MIXED-ID-{index:D3}-{assetId:N}",
+                    ManagementNumber = $"MIXED-NUMBER-{index:D3}-{assetId:N}",
+                    CustomerId = customer.Id,
+                    ItemId = item.Id,
+                    BillingProfileId = profileId,
+                    CustomerName = customer.NameOriginal,
+                    CurrentCustomerName = customer.NameOriginal,
+                    ItemName = item.NameOriginal,
+                    MachineNumber = $"MIXED-SERIAL-{index:D3}-{assetId:N}",
+                    AssetStatus = "Installed",
+                    MutationId = $"mixed-asset:{assetId:N}",
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                };
+                return (Profile: profile, Asset: asset);
+            })
+            .ToList();
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        };
+
+        async Task<RentalProfileAssetPushSelectCounts> PushBatchAsync(
+            IReadOnlyList<(RentalBillingProfileDto Profile, RentalAssetDto Asset)> batch,
+            string deviceId)
+        {
+            var queryCounter = new RentalProfilePushQueryCountingInterceptor();
+            await using var scopedDb = CreateDbContext(currentUser, queryCounter);
+            var controller = CreateController(scopedDb, currentUser);
+            queryCounter.Reset();
+
+            var response = await controller.Push(new SyncPushRequest
+            {
+                DeviceId = deviceId,
+                RentalBillingProfiles = batch.Select(fixture => fixture.Profile).ToList(),
+                RentalAssets = batch.Select(fixture => fixture.Asset).ToList()
+            }, CancellationToken.None);
+            var ok = Assert.IsType<OkObjectResult>(response.Result);
+            var result = Assert.IsType<SyncPushResult>(ok.Value);
+            Assert.Empty(result.Conflicts);
+            Assert.Equal(batch.Count * 2, result.AcceptedCount);
+            return queryCounter.MixedSnapshot();
+        }
+
+        var singleCounts = await PushBatchAsync(fixtures.Take(1).ToList(), "mixed-profile-asset-single");
+        var batchCounts = await PushBatchAsync(fixtures.Skip(1).Take(32).ToList(), "mixed-profile-asset-32");
+
+        Assert.Equal(singleCounts, batchCounts);
+        Assert.Equal(new RentalProfileAssetPushSelectCounts(5, 10, 3, 1, 1, 9, 32), batchCounts);
+
+        _dbContext.ChangeTracker.Clear();
+        var profileIds = fixtures.Select(fixture => fixture.Profile.Id).ToList();
+        var assetIds = fixtures.Select(fixture => fixture.Asset.Id).ToList();
+        var storedProfiles = await _dbContext.RentalBillingProfiles
+            .Where(profile => profileIds.Contains(profile.Id))
+            .ToDictionaryAsync(profile => profile.Id);
+        var storedAssets = await _dbContext.RentalAssets
+            .Where(asset => assetIds.Contains(asset.Id))
+            .ToDictionaryAsync(asset => asset.Id);
+        Assert.Equal(fixtures.Count, storedProfiles.Count);
+        Assert.Equal(fixtures.Count, storedAssets.Count);
+        foreach (var fixture in fixtures)
+        {
+            var storedProfile = storedProfiles[fixture.Profile.Id];
+            var storedAsset = storedAssets[fixture.Asset.Id];
+            Assert.Equal(storedProfile.Id, storedAsset.BillingProfileId);
+            Assert.True(RentalBillingTemplateAssetCoverageRules.AllowsLink(
+                storedProfile.BillingTemplateJson,
+                storedAsset.Id));
+        }
+    }
+
+    [Fact]
+    public async Task Push_MixedSnapshotResolvesExistingProfileReferencedOnlyByAssetId()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Asset direct profile customer",
+            NameMatchKey = "ASSETDIRECTPROFILECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var assetId = Guid.NewGuid();
+        var existingProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"asset-direct-existing-{Guid.NewGuid():N}",
+            CustomerId = null,
+            CustomerName = "Different profile customer",
+            ItemName = "Different profile item",
+            BillingTemplateJson = JsonSerializer.Serialize(new[]
+            {
+                new { IncludedAssetIds = new[] { assetId } }
+            }),
+            BillingDay = 25,
+            IsActive = true
+        };
+        _dbContext.AddRange(
+            customer,
+            existingProfile,
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = "Asset direct profile company"
+            });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var unrelatedProfileId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "mixed-snapshot-existing-profile-id",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = unrelatedProfileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"unrelated-profile-{unrelatedProfileId:N}",
+                    CustomerName = "Unrelated profile customer",
+                    ItemName = "Unrelated profile item",
+                    BillingTemplateJson = "[]",
+                    BillingDay = 25,
+                    IsActive = true,
+                    MutationId = $"unrelated-profile:{unrelatedProfileId:N}",
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ],
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = $"ASSET-DIRECT-PROFILE-{assetId:N}",
+                    ManagementId = $"ASSET-DIRECT-ID-{assetId:N}",
+                    ManagementNumber = $"ASSET-DIRECT-NUMBER-{assetId:N}",
+                    CustomerId = customer.Id,
+                    BillingProfileId = existingProfile.Id,
+                    CustomerName = customer.NameOriginal,
+                    CurrentCustomerName = customer.NameOriginal,
+                    ItemName = "Asset direct item",
+                    MachineNumber = $"ASSET-DIRECT-SERIAL-{assetId:N}",
+                    AssetStatus = "Installed",
+                    MutationId = $"asset-direct-profile:{assetId:N}",
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Empty(result.Conflicts);
+        Assert.Equal(2, result.AcceptedCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedAsset = await _dbContext.RentalAssets.SingleAsync(asset => asset.Id == assetId);
+        Assert.Equal(existingProfile.Id, storedAsset.BillingProfileId);
+        Assert.True(await _dbContext.RentalBillingProfiles.AnyAsync(profile => profile.Id == unrelatedProfileId));
+    }
+
+    [Fact]
+    public async Task Push_MixedSnapshot_NormalizesHistoricalDuplicatePersistedAssetIdentifier()
+    {
+        var duplicateId = $"HISTORICAL-DUPLICATE-{Guid.NewGuid():N}";
+        var target = CreatePersistedAsset("TARGET", duplicateId);
+        var duplicate = CreatePersistedAsset("DUPLICATE", duplicateId);
+        _dbContext.AddRange(target, duplicate, new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(), TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet, Name = "Historical duplicate company"
+        });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+        var storedTarget = await _dbContext.RentalAssets.AsNoTracking().SingleAsync(asset => asset.Id == target.Id);
+        var dto = storedTarget.ToDto();
+        dto.ManagementId = $"INCOMING-DIFFERENT-{Guid.NewGuid():N}";
+        dto.Notes = "updated through mixed snapshot";
+        dto.ExpectedRevision = storedTarget.Revision;
+        dto.Revision = storedTarget.Revision;
+        dto.MutationId = $"historical-duplicate-asset:{target.Id:N}";
+        var profileId = Guid.NewGuid();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "historical-duplicate-identifier",
+            RentalBillingProfiles = [CreateUnrelatedProfile(profileId, "historical-duplicate-profile")],
+            RentalAssets = [dto]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Empty(result.Conflicts);
+        Assert.Equal(2, result.AcceptedCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var updatedTarget = await _dbContext.RentalAssets.SingleAsync(asset => asset.Id == target.Id);
+        var unchangedDuplicate = await _dbContext.RentalAssets.SingleAsync(asset => asset.Id == duplicate.Id);
+        Assert.NotEqual(duplicateId, updatedTarget.ManagementId);
+        Assert.NotEqual(unchangedDuplicate.ManagementId, updatedTarget.ManagementId);
+        Assert.Equal(duplicateId, unchangedDuplicate.ManagementId);
+        Assert.Equal("updated through mixed snapshot", updatedTarget.Notes);
+        Assert.True(await _dbContext.ProcessedSyncMutations.AnyAsync(receipt => receipt.MutationId == dto.MutationId));
+
+        RentalBillingProfileDto CreateUnrelatedProfile(Guid id, string key)
+            => new()
+            {
+                Id = id, TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet, ProfileKey = key,
+                CustomerName = "Historical unrelated profile", ItemName = "Historical unrelated item",
+                BillingTemplateJson = "[]", BillingDay = 25, MutationId = $"historical-profile:{id:N}",
+                CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1), UpdatedAtUtc = DateTime.UtcNow
+            };
+        RentalAsset CreatePersistedAsset(string suffix, string managementId)
+            => new()
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = $"HISTORICAL-{suffix}-{Guid.NewGuid():N}",
+                ManagementId = managementId,
+                ManagementNumber = $"HISTORICAL-{suffix}-{Guid.NewGuid():N}",
+                CustomerName = "Historical duplicate customer",
+                CurrentCustomerName = "Historical duplicate customer",
+                ItemName = "Historical duplicate copier"
+            };
+    }
+
+    [Fact]
+    public async Task Push_DeletedAssetNoop_DoesNotMaterializeActiveAssetsForMixedSnapshot()
+    {
+        var deleted = new RentalAsset
+        {
+            Id = Guid.NewGuid(), TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            AssetKey = $"DELETED-NOOP-{Guid.NewGuid():N}", ManagementId = $"DELETED-ID-{Guid.NewGuid():N}",
+            ManagementNumber = $"DELETED-NUMBER-{Guid.NewGuid():N}", ItemName = "Deleted noop copier", IsDeleted = true
+        };
+        var active = new RentalAsset
+        {
+            Id = Guid.NewGuid(), TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            AssetKey = $"ACTIVE-NOOP-{Guid.NewGuid():N}", ManagementId = $"ACTIVE-ID-{Guid.NewGuid():N}",
+            ManagementNumber = $"ACTIVE-NUMBER-{Guid.NewGuid():N}", ItemName = "Active noop copier"
+        };
+        _dbContext.AddRange(deleted, active);
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+        var deletedDto = (await _dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(asset => asset.Id == deleted.Id)).ToDto();
+        deletedDto.MutationId = $"deleted-noop:{deleted.Id:N}";
+        var materializationCounter = new ActiveRentalAssetMaterializationInterceptor();
+        var user = CreateOfficeSyncUser(PermissionNames.RentalProfileEdit, PermissionNames.RentalAssetEdit);
+        await using var scopedDb = CreateDbContext(user, materializationCounter);
+        var controller = CreateController(scopedDb, user);
+        materializationCounter.Reset();
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "deleted-asset-noop-materialization",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = Guid.NewGuid(), TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"invalid-noop-profile-{Guid.NewGuid():N}", BillingRunsJson = "{",
+                    CustomerName = "Invalid noop profile", ItemName = "Invalid", BillingDay = 25
+                }
+            ],
+            RentalAssets = [deletedDto]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(1, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Equal(0, materializationCounter.ActiveRentalAssetCount);
+        scopedDb.ChangeTracker.Clear();
+        Assert.True(await scopedDb.RentalAssets.IgnoreQueryFilters().Where(asset => asset.Id == deleted.Id).Select(asset => asset.IsDeleted).SingleAsync());
+        Assert.False(await scopedDb.RentalAssets.IgnoreQueryFilters().Where(asset => asset.Id == active.Id).Select(asset => asset.IsDeleted).SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_501NewProfilesWithIncludedAssets_UsesChunkBoundedSelects()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(), TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Chunk boundary customer", NameMatchKey = "CHUNKBOUNDARYCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(), TenantCode = TenantScopeCatalog.UsenetGroup, OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Chunk boundary copier", NameMatchKey = "CHUNKBOUNDARYCOPIER",
+            ItemKind = ItemKinds.Asset, TrackingType = ItemTrackingTypes.Asset, Unit = "EA"
+        };
+        _dbContext.AddRange(customer, item, new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(), TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet, Name = "Chunk boundary company"
+        });
+        await _dbContext.SaveChangesAsync();
+        var fixtures = Enumerable.Range(0, 501).Select(index =>
+        {
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            return (
+                Profile: CreateProfile(profileId, assetId, index),
+                Asset: CreateAsset(assetId, profileId, index));
+        }).ToList();
+        var user = new TestCurrentUserContext
+        {
+            Username = "admin", TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet, ScopeType = TenantScopeCatalog.ScopeAdmin, IsAdmin = true
+        };
+        var queryCounter = new RentalProfilePushQueryCountingInterceptor();
+        await using var scopedDb = CreateDbContext(user, queryCounter);
+        var controller = CreateController(scopedDb, user);
+        queryCounter.Reset();
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "chunk-boundary-501",
+            RentalBillingProfiles = fixtures.Select(fixture => fixture.Profile).ToList(),
+            RentalAssets = fixtures.Select(fixture => fixture.Asset).ToList()
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Empty(result.Conflicts);
+        Assert.Equal(1002, result.AcceptedCount);
+        var counts = queryCounter.MixedSnapshot();
+        Assert.InRange(counts.RentalBillingProfileSelectCount, 1, 12);
+        Assert.InRange(counts.RentalAssetSelectCount, 1, 24);
+        Assert.InRange(counts.CustomerSelectCount, 1, 6);
+        Assert.InRange(counts.RentalManagementCompanySelectCount, 1, 3);
+        Assert.InRange(counts.CustomerContractSelectCount, 1, 3);
+        Assert.InRange(counts.ItemSelectCount, 1, 22);
+        Assert.InRange(counts.TotalSelectCount, 1, 99);
+        scopedDb.ChangeTracker.Clear();
+        foreach (var fixture in new[] { fixtures[0], fixtures[250], fixtures[500] })
+        {
+            var storedAsset = await scopedDb.RentalAssets.SingleAsync(asset => asset.Id == fixture.Asset.Id);
+            var storedProfile = await scopedDb.RentalBillingProfiles.SingleAsync(profile => profile.Id == fixture.Profile.Id);
+            Assert.Equal(storedProfile.Id, storedAsset.BillingProfileId);
+            Assert.True(RentalBillingTemplateAssetCoverageRules.AllowsLink(storedProfile.BillingTemplateJson, storedAsset.Id));
+        }
+
+        RentalBillingProfileDto CreateProfile(Guid profileId, Guid assetId, int index)
+            => new()
+            {
+                Id = profileId, TenantCode = TenantScopeCatalog.UsenetGroup, OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet, ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = $"chunk-profile-{index:D3}-{profileId:N}", CustomerId = customer.Id,
+                CustomerName = customer.NameOriginal, ItemName = item.NameOriginal, BillingDay = 25,
+                BillingTemplateJson = JsonSerializer.Serialize(new[] { new { IncludedAssetIds = new[] { assetId } } }),
+                MutationId = $"chunk-profile:{profileId:N}", CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1), UpdatedAtUtc = DateTime.UtcNow
+            };
+        RentalAssetDto CreateAsset(Guid assetId, Guid profileId, int index)
+            => new()
+            {
+                Id = assetId, TenantCode = TenantScopeCatalog.UsenetGroup, OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet, ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = $"CHUNK-ASSET-{index:D3}-{assetId:N}", ManagementId = $"CHUNK-ID-{index:D3}-{assetId:N}",
+                ManagementNumber = $"CHUNK-NUMBER-{index:D3}-{assetId:N}", CustomerId = customer.Id,
+                ItemId = item.Id, BillingProfileId = profileId, CustomerName = customer.NameOriginal,
+                CurrentCustomerName = customer.NameOriginal, ItemName = item.NameOriginal,
+                MachineNumber = $"CHUNK-SERIAL-{index:D3}-{assetId:N}", MutationId = $"chunk-asset:{assetId:N}",
+                CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1), UpdatedAtUtc = DateTime.UtcNow
+            };
+    }
+
+    [Theory]
+    [InlineData("blank-both")]
+    [InlineData("duplicate-id")]
+    [InlineData("duplicate-number")]
+    public async Task Push_MixedGeneratedAssetIdentifiers_UsesExactBoundedSelectCounts(string mode)
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(), TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = $"Generated identifier {mode} customer",
+            NameMatchKey = $"GENERATEDIDENTIFIER{mode.Replace("-", string.Empty).ToUpperInvariant()}CUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(), TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet, NameOriginal = "Generated identifier copier",
+            NameMatchKey = "GENERATEDIDENTIFIERCOPIER", ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset, Unit = "EA"
+        };
+        _dbContext.AddRange(customer, item, new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(), TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet, Name = $"Generated identifier {mode} company"
+            });
+        await _dbContext.SaveChangesAsync();
+        var fixtures = Enumerable.Range(0, 33).Select(index =>
+        {
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var duplicateScope = index == 0 ? "SINGLE" : "BATCH";
+            var managementId = mode == "blank-both" ? string.Empty : mode == "duplicate-id" ? $"DUPLICATE-ID-{duplicateScope}" : $"UNIQUE-ID-{index:D3}-{assetId:N}";
+            var managementNumber = mode == "blank-both" ? string.Empty : mode == "duplicate-number" ? $"DUPLICATE-NUMBER-{duplicateScope}" : $"UNIQUE-NUMBER-{index:D3}-{assetId:N}";
+            return (
+                Profile: new RentalBillingProfileDto
+                {
+                    Id = profileId, TenantCode = TenantScopeCatalog.UsenetGroup, OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet, ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"generated-{mode}-{index:D3}-{profileId:N}", CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal, ItemName = "Generated identifier copier", BillingDay = 25,
+                    BillingTemplateJson = JsonSerializer.Serialize(new[] { new { IncludedAssetIds = new[] { assetId } } }),
+                    MutationId = $"generated-profile:{profileId:N}", CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1), UpdatedAtUtc = DateTime.UtcNow
+                },
+                Asset: new RentalAssetDto
+                {
+                    Id = assetId, TenantCode = TenantScopeCatalog.UsenetGroup, OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet, ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = $"GENERATED-ASSET-{assetId:N}", ManagementId = managementId, ManagementNumber = managementNumber,
+                    CustomerId = customer.Id, ItemId = item.Id, BillingProfileId = profileId, CustomerName = customer.NameOriginal,
+                    CurrentCustomerName = customer.NameOriginal, ItemName = "Generated identifier copier",
+                    MachineNumber = $"GENERATED-SERIAL-{assetId:N}", MutationId = $"generated-asset:{assetId:N}",
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-1), UpdatedAtUtc = DateTime.UtcNow
+                });
+        }).ToList();
+        var user = new TestCurrentUserContext
+        {
+            Username = "admin", TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet, ScopeType = TenantScopeCatalog.ScopeAdmin, IsAdmin = true
+        };
+
+        async Task<RentalProfileAssetPushSelectCounts> PushBatchAsync(
+            IReadOnlyList<(RentalBillingProfileDto Profile, RentalAssetDto Asset)> batch,
+            string suffix)
+        {
+            var counter = new RentalProfilePushQueryCountingInterceptor();
+            await using var db = CreateDbContext(user, counter);
+            var controller = CreateController(db, user);
+            counter.Reset();
+            var response = await controller.Push(new SyncPushRequest
+            {
+                DeviceId = $"generated-{mode}-{suffix}",
+                RentalBillingProfiles = batch.Select(row => row.Profile).ToList(),
+                RentalAssets = batch.Select(row => row.Asset).ToList()
+            }, CancellationToken.None);
+            var ok = Assert.IsType<OkObjectResult>(response.Result);
+            var result = Assert.IsType<SyncPushResult>(ok.Value);
+            Assert.Empty(result.Conflicts);
+            Assert.Equal(batch.Count * 2, result.AcceptedCount);
+            return counter.MixedSnapshot();
+        }
+
+        var singleCounts = await PushBatchAsync(fixtures.Take(1).ToList(), "single");
+        var batchCounts = await PushBatchAsync(fixtures.Skip(1).Take(32).ToList(), "batch32");
+        var expectedSingle = mode == "blank-both"
+            ? new RentalProfileAssetPushSelectCounts(5, 9, 3, 1, 1, 7, 31)
+            : new RentalProfileAssetPushSelectCounts(5, 10, 3, 1, 1, 9, 32);
+        var expectedBatch = mode == "blank-both"
+            ? new RentalProfileAssetPushSelectCounts(5, 9, 3, 1, 1, 7, 31)
+            : new RentalProfileAssetPushSelectCounts(5, 11, 3, 1, 1, 9, 33);
+        Assert.Equal(expectedSingle, singleCounts);
+        Assert.Equal(expectedBatch, batchCounts);
+
+        _dbContext.ChangeTracker.Clear();
+        var assetIds = fixtures.Select(row => row.Asset.Id).ToList();
+        var storedAssets = await _dbContext.RentalAssets.Where(asset => assetIds.Contains(asset.Id)).ToListAsync();
+        Assert.Equal(33, storedAssets.Count);
+        Assert.All(storedAssets, asset =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(asset.ManagementId));
+            Assert.False(string.IsNullOrWhiteSpace(asset.ManagementNumber));
+            Assert.NotNull(asset.BillingProfileId);
+        });
+        Assert.Equal(33, storedAssets.Select(asset => asset.ManagementId).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.Equal(33, storedAssets.Select(asset => asset.ManagementNumber).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+    }
+
+    [Fact]
+    public async Task Push_GeneratedRentalAssetIdentifiers_IncludeDeletedAssetsInOccupiedMaximums()
+    {
+        var createdAtUtc = new DateTime(2026, 8, 4, 0, 0, 0, DateTimeKind.Utc);
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Deleted identifier maximum customer",
+            NameMatchKey = "DELETEDIDENTIFIERMAXIMUMCUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Deleted identifier maximum copier",
+            NameMatchKey = "DELETEDIDENTIFIERMAXIMUMCOPIER",
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset,
+            Unit = "EA"
+        };
+        _dbContext.AddRange(
+            customer,
+            item,
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = "Deleted identifier maximum company",
+                IsActive = true
+            },
+            new RentalAsset
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                AssetKey = $"DELETED-IDENTIFIER-MAXIMUM-{Guid.NewGuid():N}",
+                ManagementId = "9000",
+                ManagementNumber = "2608-042",
+                CustomerId = customer.Id,
+                CustomerName = customer.NameOriginal,
+                CurrentCustomerName = customer.NameOriginal,
+                ItemId = item.Id,
+                ItemName = item.NameOriginal,
+                MachineNumber = "DELETED-MAXIMUM-9000",
+                CreatedAtUtc = createdAtUtc,
+                UpdatedAtUtc = createdAtUtc,
+                IsDeleted = true
+            });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var profileMutationId = $"deleted-identifier-maximum-profile:{profileId:N}";
+        var assetMutationId = $"deleted-identifier-maximum-asset:{assetId:N}";
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "deleted-rental-asset-identifier-maximum",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = profileId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"deleted-identifier-maximum-{profileId:N}",
+                    CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal,
+                    ItemName = item.NameOriginal,
+                    BillingDay = 25,
+                    BillingTemplateJson = JsonSerializer.Serialize(new[]
+                    {
+                        new { IncludedAssetIds = new[] { assetId } }
+                    }),
+                    MutationId = profileMutationId,
+                    MutationCreatedAtUtc = createdAtUtc.AddMinutes(1),
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc.AddMinutes(1)
+                }
+            ],
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    AssetKey = $"GENERATED-AFTER-DELETED-MAXIMUM-{assetId:N}",
+                    ManagementId = string.Empty,
+                    ManagementNumber = string.Empty,
+                    CustomerId = customer.Id,
+                    CustomerName = customer.NameOriginal,
+                    CurrentCustomerName = customer.NameOriginal,
+                    ItemId = item.Id,
+                    ItemName = item.NameOriginal,
+                    MachineNumber = "GENERATED-AFTER-DELETED-MAXIMUM",
+                    BillingProfileId = profileId,
+                    MutationId = assetMutationId,
+                    MutationCreatedAtUtc = createdAtUtc.AddMinutes(1),
+                    CreatedAtUtc = createdAtUtc,
+                    UpdatedAtUtc = createdAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(2, result.AcceptedCount);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Contains(result.AcceptedRevisions, accepted =>
+            accepted.EntityName == nameof(RentalBillingProfile) && accepted.EntityId == profileId);
+        Assert.Contains(result.AcceptedRevisions, accepted =>
+            accepted.EntityName == nameof(RentalAsset) && accepted.EntityId == assetId);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(asset => asset.Id == assetId);
+        var storedProfile = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(profile => profile.Id == profileId);
+        Assert.Equal("9001", storedAsset.ManagementId);
+        Assert.Equal("2608-043", storedAsset.ManagementNumber);
+        Assert.Equal(profileId, storedAsset.BillingProfileId);
+        Assert.True(RentalBillingTemplateAssetCoverageRules.AllowsLink(
+            storedProfile.BillingTemplateJson,
+            storedAsset.Id));
+        Assert.True(await _dbContext.ProcessedSyncMutations.AnyAsync(receipt =>
+            receipt.MutationId == profileMutationId));
+        Assert.True(await _dbContext.ProcessedSyncMutations.AnyAsync(receipt =>
+            receipt.MutationId == assetMutationId));
+    }
+
+    [Fact]
+    public async Task Push_ProfileOnlySnapshot_FindsLegacyProfileAfterCustomerCanonicalization()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Canonical legacy customer",
+            NameMatchKey = "CANONICALLEGACYCUSTOMER",
+            BusinessNumber = "321-54-98760",
+            Email = "canonical-legacy@example.test"
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "Canonical legacy company"
+        });
+        var canonicalLegacyKey = RentalDuplicateNormalizer.BuildLegacyProfileKey(
+            OfficeCodeCatalog.Usenet,
+            customer.Id,
+            customer.BusinessNumber,
+            customer.NameOriginal,
+            "bundle",
+            "postpaid",
+            25,
+            1,
+            "cash");
+        var existing = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = canonicalLegacyKey,
+            CustomerId = customer.Id,
+            CustomerName = customer.NameOriginal,
+            BusinessNumber = customer.BusinessNumber,
+            Email = customer.Email,
+            ItemName = "Canonical legacy item",
+            BillingTemplateJson = "[]",
+            BillingType = "bundle",
+            BillingAdvanceMode = "postpaid",
+            BillingDay = 25,
+            BillingCycleMonths = 1,
+            BillingMethod = "cash",
+            Notes = "before canonical snapshot update",
+            IsActive = true
+        };
+        _dbContext.RentalBillingProfiles.Add(existing);
+        await _dbContext.SaveChangesAsync();
+        var originalRevision = existing.Revision;
+        _dbContext.ChangeTracker.Clear();
+
+        var incomingId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "profile-canonical-legacy-snapshot",
+            RentalBillingProfiles =
+            [
+                new RentalBillingProfileDto
+                {
+                    Id = incomingId,
+                    TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                    ProfileKey = $"stale-client-key-{incomingId:N}",
+                    CustomerName = customer.NameOriginal,
+                    BusinessNumber = customer.BusinessNumber,
+                    ItemName = existing.ItemName,
+                    BillingTemplateJson = "[]",
+                    BillingType = existing.BillingType,
+                    BillingAdvanceMode = existing.BillingAdvanceMode,
+                    BillingDay = existing.BillingDay,
+                    BillingCycleMonths = existing.BillingCycleMonths,
+                    BillingMethod = existing.BillingMethod,
+                    Notes = "after canonical snapshot update",
+                    IsActive = true,
+                    Revision = originalRevision,
+                    ExpectedRevision = originalRevision,
+                    MutationId = $"profile-canonical-legacy:{incomingId:N}",
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(1)
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Empty(result.Conflicts);
+        Assert.Equal(1, result.AcceptedCount);
+        var profiles = await _dbContext.RentalBillingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .ToListAsync();
+        var stored = Assert.Single(profiles);
+        Assert.Equal(existing.Id, stored.Id);
+        Assert.Equal("after canonical snapshot update", stored.Notes);
+        Assert.DoesNotContain(profiles, profile => profile.Id == incomingId);
+    }
+
+    [Fact]
+    public async Task Push_ProfileOnlySameNaturalIdentityNovelRows_RejectsBothBeforeMutation()
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Ambiguous profile-only customer",
+            NameMatchKey = "AMBIGUOUSPROFILEONLYCUSTOMER"
+        };
+        _dbContext.Customers.Add(customer);
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "Ambiguous profile-only company"
+        });
+        await _dbContext.SaveChangesAsync();
+        _dbContext.ChangeTracker.Clear();
+
+        var profileKey = $"ambiguous-profile-only-{Guid.NewGuid():N}";
+        RentalBillingProfileDto CreateMutation(Guid id, string mutationId, string notes)
+            => new()
+            {
+                Id = id,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+                ProfileKey = profileKey,
+                CustomerId = customer.Id,
+                CustomerName = customer.NameOriginal,
+                ItemName = "Ambiguous profile-only item",
+                BillingTemplateJson = "[]",
+                BillingType = "bundle",
+                BillingAdvanceMode = "postpaid",
+                BillingDay = 25,
+                BillingCycleMonths = 1,
+                BillingMethod = "cash",
+                Notes = notes,
+                IsActive = true,
+                MutationId = mutationId,
+                UpdatedAtUtc = DateTime.UtcNow
+            };
+
+        var firstId = Guid.NewGuid();
+        var secondId = Guid.NewGuid();
+        var firstMutationId = $"ambiguous-profile-only:first:{Guid.NewGuid():N}";
+        var secondMutationId = $"ambiguous-profile-only:second:{Guid.NewGuid():N}";
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "ambiguous-profile-only-device",
+            RentalBillingProfiles =
+            [
+                CreateMutation(firstId, firstMutationId, "first novel row"),
+                CreateMutation(secondId, secondMutationId, "second novel row")
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(2, result.ConflictCount);
+        Assert.All(result.Conflicts, conflict =>
+            Assert.Contains("same canonical identity", conflict.Reason, StringComparison.OrdinalIgnoreCase));
+        Assert.False(await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
+            .AnyAsync(profile => profile.Id == firstId || profile.Id == secondId));
+        Assert.False(await _dbContext.ProcessedSyncMutations.AnyAsync(mutation =>
+            mutation.MutationId == firstMutationId || mutation.MutationId == secondMutationId));
+    }
+
+    [Fact]
+    public async Task Push_ReturnsOriginalRentalManagementCompanyIdentity_ForStaleCanonicalConflicts()
+    {
+        var canonicalCompanies = new[]
+        {
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.Itworld,
+                Code = OfficeCodeCatalog.Itworld,
+                Name = "아이티월드",
+                UpdatedAtUtc = new DateTime(2026, 7, 30, 0, 0, 0, DateTimeKind.Utc)
+            },
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = "유즈넷",
+                UpdatedAtUtc = new DateTime(2026, 7, 30, 0, 0, 0, DateTimeKind.Utc)
+            }
+        };
+        _dbContext.RentalManagementCompanies.AddRange(canonicalCompanies);
+        await _dbContext.SaveChangesAsync();
+
+        var staleRevisions = canonicalCompanies.ToDictionary(company => company.Id, company => company.Revision);
+        foreach (var company in canonicalCompanies)
+        {
+            company.Name += "(서버수정)";
+            company.UpdatedAtUtc = company.UpdatedAtUtc.AddMinutes(1);
+        }
+        await _dbContext.SaveChangesAsync();
+
+        var originalIds = new[] { Guid.NewGuid(), Guid.NewGuid() };
+        var mutationIds = new[]
+        {
+            $"rental-company-stale:{Guid.NewGuid():N}",
+            $"rental-company-stale:{Guid.NewGuid():N}"
+        };
+        var mutationCreatedAtUtc = new DateTime(2026, 7, 30, 0, 2, 0, DateTimeKind.Utc);
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-company-stale-original-identity",
+            RentalManagementCompanies =
+            [
+                new RentalManagementCompanyDto
+                {
+                    Id = originalIds[0],
+                    TenantCode = canonicalCompanies[0].TenantCode,
+                    Code = canonicalCompanies[0].Code,
+                    Name = "아이티월드(클라이언트수정)",
+                    Revision = staleRevisions[canonicalCompanies[0].Id],
+                    ExpectedRevision = staleRevisions[canonicalCompanies[0].Id],
+                    MutationId = mutationIds[0],
+                    MutationCreatedAtUtc = mutationCreatedAtUtc,
+                    CreatedAtUtc = canonicalCompanies[0].CreatedAtUtc,
+                    UpdatedAtUtc = mutationCreatedAtUtc
+                },
+                new RentalManagementCompanyDto
+                {
+                    Id = originalIds[1],
+                    TenantCode = canonicalCompanies[1].TenantCode,
+                    Code = canonicalCompanies[1].Code,
+                    Name = "유즈넷(클라이언트수정)",
+                    Revision = staleRevisions[canonicalCompanies[1].Id],
+                    ExpectedRevision = staleRevisions[canonicalCompanies[1].Id],
+                    MutationId = mutationIds[1],
+                    MutationCreatedAtUtc = mutationCreatedAtUtc,
+                    CreatedAtUtc = canonicalCompanies[1].CreatedAtUtc,
+                    UpdatedAtUtc = mutationCreatedAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(2, result.ConflictCount);
+
+        for (var index = 0; index < canonicalCompanies.Length; index++)
+        {
+            var conflict = Assert.Single(result.Conflicts, candidate =>
+                candidate.EntityName == nameof(RentalManagementCompany) &&
+                candidate.EntityId == originalIds[index].ToString("D"));
+            var clientSnapshot = JsonSerializer.Deserialize<RentalManagementCompanyDto>(conflict.ClientJson);
+            var serverSnapshot = JsonSerializer.Deserialize<RentalManagementCompanyDto>(conflict.ServerJson);
+            Assert.NotNull(clientSnapshot);
+            Assert.NotNull(serverSnapshot);
+            Assert.Equal(originalIds[index], clientSnapshot.Id);
+            Assert.Equal(mutationIds[index], clientSnapshot.MutationId);
+            Assert.Equal(canonicalCompanies[index].Id, serverSnapshot.Id);
+        }
+
+        _dbContext.ChangeTracker.Clear();
+        var storedConflicts = await _dbContext.ConflictLogs
+            .Where(log => log.EntityName == nameof(RentalManagementCompany))
+            .ToListAsync();
+        Assert.Equal(2, storedConflicts.Count);
+        for (var index = 0; index < canonicalCompanies.Length; index++)
+        {
+            var storedConflict = Assert.Single(storedConflicts, candidate =>
+                candidate.EntityId == canonicalCompanies[index].Id.ToString("D"));
+            var storedClientSnapshot = JsonSerializer.Deserialize<RentalManagementCompanyDto>(storedConflict.ClientJson);
+            var storedServerSnapshot = JsonSerializer.Deserialize<RentalManagementCompanyDto>(storedConflict.ServerJson);
+            Assert.NotNull(storedClientSnapshot);
+            Assert.NotNull(storedServerSnapshot);
+            Assert.Equal(canonicalCompanies[index].Id, storedClientSnapshot.Id);
+            Assert.Equal(canonicalCompanies[index].Id, storedServerSnapshot.Id);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Push_RejectsCanonicalAndAliasRentalManagementCompanyRows_BeforeApply(
+        bool useDivergentPayload)
+    {
+        var canonicalCompany = new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet,
+            Name = "USENET",
+            UpdatedAtUtc =
+                new DateTime(
+                    2026,
+                    7,
+                    30,
+                    2,
+                    0,
+                    0,
+                    DateTimeKind.Utc)
+        };
+        _dbContext.RentalManagementCompanies.Add(canonicalCompany);
+        await _dbContext.SaveChangesAsync();
+        var originalName = canonicalCompany.Name;
+        var originalRevision = canonicalCompany.Revision;
+        var aliasId = Guid.NewGuid();
+        var canonicalMutationId =
+            $"rental-company-canonical:{Guid.NewGuid():N}";
+        var aliasMutationId =
+            $"rental-company-alias:{Guid.NewGuid():N}";
+        RentalManagementCompanyDto CreateDto(
+            Guid id,
+            string mutationId,
+            string name)
+            => new()
+            {
+                Id = id,
+                TenantCode = canonicalCompany.TenantCode,
+                Code = canonicalCompany.Code,
+                Name = name,
+                Revision = originalRevision,
+                ExpectedRevision = originalRevision,
+                MutationId = mutationId,
+                MutationCreatedAtUtc =
+                    canonicalCompany.UpdatedAtUtc.AddMinutes(1),
+                CreatedAtUtc = canonicalCompany.CreatedAtUtc,
+                UpdatedAtUtc =
+                    canonicalCompany.UpdatedAtUtc.AddMinutes(1)
+            };
+
+        var response = await _controller.Push(
+            new SyncPushRequest
+            {
+                DeviceId =
+                    "device-rental-company-same-natural-key-correlation",
+                RentalManagementCompanies =
+                [
+                    CreateDto(
+                        canonicalCompany.Id,
+                        canonicalMutationId,
+                        "USENET CLIENT EDIT"),
+                    CreateDto(
+                        aliasId,
+                        aliasMutationId,
+                        useDivergentPayload
+                            ? "USENET ALIAS DIVERGENT EDIT"
+                            : "USENET CLIENT EDIT")
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(2, result.ConflictCount);
+        Assert.Empty(result.AcceptedRevisions);
+
+        var canonicalConflict = Assert.Single(
+            result.Conflicts,
+            conflict =>
+                conflict.EntityName ==
+                    nameof(RentalManagementCompany) &&
+                conflict.EntityId ==
+                    canonicalCompany.Id.ToString("D"));
+        var aliasConflict = Assert.Single(
+            result.Conflicts,
+            conflict =>
+                conflict.EntityName ==
+                    nameof(RentalManagementCompany) &&
+                conflict.EntityId == aliasId.ToString("D"));
+        var canonicalClient =
+            JsonSerializer.Deserialize<RentalManagementCompanyDto>(
+                canonicalConflict.ClientJson);
+        var aliasClient =
+            JsonSerializer.Deserialize<RentalManagementCompanyDto>(
+                aliasConflict.ClientJson);
+        Assert.NotNull(canonicalClient);
+        Assert.NotNull(aliasClient);
+        Assert.Equal(canonicalCompany.Id, canonicalClient.Id);
+        Assert.Equal(canonicalMutationId, canonicalClient.MutationId);
+        Assert.Equal(aliasId, aliasClient.Id);
+        Assert.Equal(aliasMutationId, aliasClient.MutationId);
+        Assert.Empty(canonicalConflict.ServerJson);
+        Assert.Empty(aliasConflict.ServerJson);
+        Assert.Contains("same canonical company", canonicalConflict.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("same canonical company", aliasConflict.Reason, StringComparison.OrdinalIgnoreCase);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedCompany = await _dbContext.RentalManagementCompanies
+            .IgnoreQueryFilters()
+            .SingleAsync(company => company.Id == canonicalCompany.Id);
+        Assert.Equal(originalName, storedCompany.Name);
+        Assert.Equal(originalRevision, storedCompany.Revision);
+        Assert.Empty(await _dbContext.ProcessedSyncMutations.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Push_RejectsAllRentalManagementCompanyRows_WithDuplicateMutationIdBeforeApply()
+    {
+        var canonicalCompanies = new[]
+        {
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.Itworld,
+                Code = OfficeCodeCatalog.Itworld,
+                Name = "ITWORLD",
+                UpdatedAtUtc = new DateTime(2026, 7, 30, 2, 10, 0, DateTimeKind.Utc)
+            },
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = "USENET",
+                UpdatedAtUtc = new DateTime(2026, 7, 30, 2, 10, 0, DateTimeKind.Utc)
+            }
+        };
+        _dbContext.RentalManagementCompanies.AddRange(canonicalCompanies);
+        await _dbContext.SaveChangesAsync();
+        var originalNames = canonicalCompanies.ToDictionary(company => company.Id, company => company.Name);
+        var originalRevisions = canonicalCompanies.ToDictionary(company => company.Id, company => company.Revision);
+        var aliasIds = new[] { Guid.NewGuid(), Guid.NewGuid() };
+        var duplicateMutationId =
+            $"rental-company-duplicate:{Guid.NewGuid():N}";
+        RentalManagementCompanyDto CreateDto(int index)
+            => new()
+            {
+                Id = aliasIds[index],
+                TenantCode = canonicalCompanies[index].TenantCode,
+                Code = canonicalCompanies[index].Code,
+                Name = $"{canonicalCompanies[index].Name} CLIENT EDIT",
+                Revision = originalRevisions[canonicalCompanies[index].Id],
+                ExpectedRevision = originalRevisions[canonicalCompanies[index].Id],
+                MutationId = duplicateMutationId,
+                MutationCreatedAtUtc =
+                    canonicalCompanies[index].UpdatedAtUtc.AddMinutes(1),
+                CreatedAtUtc = canonicalCompanies[index].CreatedAtUtc,
+                UpdatedAtUtc =
+                    canonicalCompanies[index].UpdatedAtUtc.AddMinutes(1)
+            };
+
+        var response = await _controller.Push(
+            new SyncPushRequest
+            {
+                DeviceId =
+                    "device-rental-company-ambiguous-mutation",
+                RentalManagementCompanies =
+                [
+                    CreateDto(0),
+                    CreateDto(1)
+                ]
+            },
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(2, result.ConflictCount);
+        Assert.Empty(result.AcceptedRevisions);
+        for (var index = 0; index < aliasIds.Length; index++)
+        {
+            var conflict = Assert.Single(result.Conflicts, candidate =>
+                candidate.EntityName == nameof(RentalManagementCompany) &&
+                candidate.EntityId == aliasIds[index].ToString("D"));
+            var client = JsonSerializer.Deserialize<RentalManagementCompanyDto>(conflict.ClientJson);
+            Assert.NotNull(client);
+            Assert.Equal(aliasIds[index], client.Id);
+            Assert.Equal(duplicateMutationId, client.MutationId);
+            Assert.Empty(conflict.ServerJson);
+            Assert.Contains("mutation id is duplicated", conflict.Reason, StringComparison.OrdinalIgnoreCase);
+        }
+
+        _dbContext.ChangeTracker.Clear();
+        var storedCompanies = await _dbContext.RentalManagementCompanies
+            .IgnoreQueryFilters()
+            .OrderBy(company => company.Code)
+            .ToListAsync();
+        Assert.Equal(2, storedCompanies.Count);
+        Assert.All(storedCompanies, company =>
+        {
+            Assert.Equal(originalNames[company.Id], company.Name);
+            Assert.Equal(originalRevisions[company.Id], company.Revision);
+        });
+        Assert.Empty(await _dbContext.ProcessedSyncMutations.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Push_RejectsAllRentalManagementCompanyRows_WhenOriginalIdTargetsDifferentCanonicalCompanies()
+    {
+        var canonicalCompanies = new[]
+        {
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = "USENET",
+                UpdatedAtUtc = new DateTime(2026, 7, 30, 2, 20, 0, DateTimeKind.Utc)
+            },
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.Itworld,
+                Code = OfficeCodeCatalog.Itworld,
+                Name = "ITWORLD",
+                UpdatedAtUtc = new DateTime(2026, 7, 30, 2, 20, 0, DateTimeKind.Utc)
+            }
+        };
+        _dbContext.RentalManagementCompanies.AddRange(canonicalCompanies);
+        await _dbContext.SaveChangesAsync();
+
+        var originalId = Guid.NewGuid();
+        var mutationIds = new[]
+        {
+            $"rental-company-original-reuse-usenet:{Guid.NewGuid():N}",
+            $"rental-company-original-reuse-itworld:{Guid.NewGuid():N}"
+        };
+        var originalNames = canonicalCompanies.ToDictionary(company => company.Id, company => company.Name);
+        var originalRevisions = canonicalCompanies.ToDictionary(company => company.Id, company => company.Revision);
+        RentalManagementCompanyDto CreateDto(int index)
+            => new()
+            {
+                Id = originalId,
+                TenantCode = canonicalCompanies[index].TenantCode,
+                Code = canonicalCompanies[index].Code,
+                Name = $"{canonicalCompanies[index].Name} CLIENT EDIT",
+                Revision = originalRevisions[canonicalCompanies[index].Id],
+                ExpectedRevision = originalRevisions[canonicalCompanies[index].Id],
+                MutationId = mutationIds[index],
+                MutationCreatedAtUtc = canonicalCompanies[index].UpdatedAtUtc.AddMinutes(1),
+                CreatedAtUtc = canonicalCompanies[index].CreatedAtUtc,
+                UpdatedAtUtc = canonicalCompanies[index].UpdatedAtUtc.AddMinutes(1)
+            };
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-company-original-id-reuse",
+            RentalManagementCompanies = [CreateDto(0), CreateDto(1)]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(2, result.ConflictCount);
+        Assert.Empty(result.AcceptedRevisions);
+
+        var conflictsByMutationId = result.Conflicts
+            .Select(conflict => new
+            {
+                Conflict = conflict,
+                Client = JsonSerializer.Deserialize<RentalManagementCompanyDto>(conflict.ClientJson)
+            })
+            .ToDictionary(entry => Assert.IsType<RentalManagementCompanyDto>(entry.Client).MutationId);
+        Assert.Equal(mutationIds.Order(), conflictsByMutationId.Keys.Order());
+        foreach (var mutationId in mutationIds)
+        {
+            var entry = conflictsByMutationId[mutationId];
+            Assert.Equal(originalId.ToString("D"), entry.Conflict.EntityId);
+            Assert.Equal(originalId, entry.Client!.Id);
+            Assert.Empty(entry.Conflict.ServerJson);
+            Assert.Contains("original id is duplicated", entry.Conflict.Reason, StringComparison.OrdinalIgnoreCase);
+        }
+
+        _dbContext.ChangeTracker.Clear();
+        var storedCompanies = await _dbContext.RentalManagementCompanies
+            .IgnoreQueryFilters()
+            .ToListAsync();
+        Assert.Equal(2, storedCompanies.Count);
+        Assert.All(storedCompanies, company =>
+        {
+            Assert.Equal(originalNames[company.Id], company.Name);
+            Assert.Equal(originalRevisions[company.Id], company.Revision);
+        });
+        Assert.Empty(await _dbContext.ProcessedSyncMutations.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Push_RawPreflightRejectsDuplicateOriginalId_BeforeForbiddenScopeLookupOrWritableApply()
+    {
+        var canonicalCompanies = new[]
+        {
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Yeonsu,
+                Name = "YEONSU FORBIDDEN",
+                UpdatedAtUtc = new DateTime(2026, 7, 30, 2, 30, 0, DateTimeKind.Utc)
+            },
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = "USENET WRITABLE",
+                UpdatedAtUtc = new DateTime(2026, 7, 30, 2, 30, 0, DateTimeKind.Utc)
+            }
+        };
+        _dbContext.RentalManagementCompanies.AddRange(canonicalCompanies);
+        await _dbContext.SaveChangesAsync();
+        var originalNames = canonicalCompanies.ToDictionary(company => company.Id, company => company.Name);
+        var originalRevisions = canonicalCompanies.ToDictionary(company => company.Id, company => company.Revision);
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-rental-settings-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.RentalSettingsEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var officeScopeService = new OfficeScopeService(currentUser, scopedDb);
+        Assert.False(officeScopeService.CanWriteOfficeForRentals(
+            canonicalCompanies[0].Code,
+            canonicalCompanies[0].TenantCode));
+        Assert.True(officeScopeService.CanWriteOfficeForRentals(
+            canonicalCompanies[1].Code,
+            canonicalCompanies[1].TenantCode));
+        var controller = CreateController(scopedDb, currentUser);
+        var originalId = Guid.NewGuid();
+        var mutationIds = new[]
+        {
+            $"raw-original-yeonsu-forbidden:{Guid.NewGuid():N}",
+            $"raw-original-usenet-writable:{Guid.NewGuid():N}"
+        };
+        RentalManagementCompanyDto CreateDto(int index)
+            => new()
+            {
+                Id = originalId,
+                TenantCode = canonicalCompanies[index].TenantCode,
+                Code = canonicalCompanies[index].Code,
+                Name = $"{canonicalCompanies[index].Name} CLIENT EDIT",
+                Revision = originalRevisions[canonicalCompanies[index].Id],
+                ExpectedRevision = originalRevisions[canonicalCompanies[index].Id],
+                MutationId = mutationIds[index],
+                MutationCreatedAtUtc = canonicalCompanies[index].UpdatedAtUtc.AddMinutes(1),
+                CreatedAtUtc = canonicalCompanies[index].CreatedAtUtc,
+                UpdatedAtUtc = canonicalCompanies[index].UpdatedAtUtc.AddMinutes(1)
+            };
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-raw-rental-original-scope-mix",
+            RentalManagementCompanies = [CreateDto(0), CreateDto(1)]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(2, result.ConflictCount);
+        Assert.Empty(result.AcceptedRevisions);
+        var clientsByMutationId = result.Conflicts
+            .Select(conflict => new
+            {
+                Conflict = conflict,
+                Client = Assert.IsType<RentalManagementCompanyDto>(
+                    JsonSerializer.Deserialize<RentalManagementCompanyDto>(conflict.ClientJson))
+            })
+            .ToDictionary(entry => entry.Client.MutationId);
+        Assert.Equal(mutationIds.Order(), clientsByMutationId.Keys.Order());
+        Assert.All(clientsByMutationId.Values, entry =>
+        {
+            Assert.Equal(originalId.ToString("D"), entry.Conflict.EntityId);
+            Assert.Equal(originalId, entry.Client.Id);
+            Assert.Contains("original id is duplicated", entry.Conflict.Reason, StringComparison.OrdinalIgnoreCase);
+        });
+
+        scopedDb.ChangeTracker.Clear();
+        var storedCompanies = await scopedDb.RentalManagementCompanies
+            .IgnoreQueryFilters()
+            .ToListAsync();
+        Assert.Equal(2, storedCompanies.Count);
+        Assert.All(storedCompanies, company =>
+        {
+            Assert.Equal(originalNames[company.Id], company.Name);
+            Assert.Equal(originalRevisions[company.Id], company.Revision);
+        });
+        Assert.Empty(await scopedDb.ProcessedSyncMutations.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Push_RawPreflightRejectsDuplicateMutationId_BeforeForbiddenScopeLookupOrWritableApply()
+    {
+        var canonicalCompanies = new[]
+        {
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.Itworld,
+                Code = OfficeCodeCatalog.Itworld,
+                Name = "ITWORLD FORBIDDEN",
+                UpdatedAtUtc = new DateTime(2026, 7, 30, 2, 40, 0, DateTimeKind.Utc)
+            },
+            new RentalManagementCompany
+            {
+                Id = Guid.NewGuid(),
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                Code = OfficeCodeCatalog.Usenet,
+                Name = "USENET WRITABLE",
+                UpdatedAtUtc = new DateTime(2026, 7, 30, 2, 40, 0, DateTimeKind.Utc)
+            }
+        };
+        _dbContext.RentalManagementCompanies.AddRange(canonicalCompanies);
+        await _dbContext.SaveChangesAsync();
+        var originalNames = canonicalCompanies.ToDictionary(company => company.Id, company => company.Name);
+        var originalRevisions = canonicalCompanies.ToDictionary(company => company.Id, company => company.Revision);
+
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "usenet-rental-settings-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.RentalSettingsEdit]
+        };
+        await using var scopedDb = CreateDbContext(currentUser);
+        var officeScopeService = new OfficeScopeService(currentUser, scopedDb);
+        Assert.False(officeScopeService.CanWriteOfficeForRentals(
+            canonicalCompanies[0].Code,
+            canonicalCompanies[0].TenantCode));
+        Assert.True(officeScopeService.CanWriteOfficeForRentals(
+            canonicalCompanies[1].Code,
+            canonicalCompanies[1].TenantCode));
+        var controller = CreateController(scopedDb, currentUser);
+        var originalIds = canonicalCompanies
+            .Select(company => company.Id)
+            .ToArray();
+        var duplicateMutationId = $"raw-duplicate-mutation:{Guid.NewGuid():N}";
+        RentalManagementCompanyDto CreateDto(int index)
+            => new()
+            {
+                Id = originalIds[index],
+                TenantCode = canonicalCompanies[index].TenantCode,
+                Code = canonicalCompanies[index].Code,
+                Name = $"{canonicalCompanies[index].Name} CLIENT EDIT",
+                Revision = originalRevisions[canonicalCompanies[index].Id],
+                ExpectedRevision = originalRevisions[canonicalCompanies[index].Id],
+                MutationId = duplicateMutationId,
+                MutationCreatedAtUtc = canonicalCompanies[index].UpdatedAtUtc.AddMinutes(1),
+                CreatedAtUtc = canonicalCompanies[index].CreatedAtUtc,
+                UpdatedAtUtc = canonicalCompanies[index].UpdatedAtUtc.AddMinutes(1)
+            };
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-raw-rental-mutation-scope-mix",
+            RentalManagementCompanies = [CreateDto(0), CreateDto(1)]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(2, result.ConflictCount);
+        Assert.Empty(result.AcceptedRevisions);
+        foreach (var originalId in originalIds)
+        {
+            var conflict = Assert.Single(result.Conflicts, candidate =>
+                candidate.EntityId == originalId.ToString("D"));
+            var client = Assert.IsType<RentalManagementCompanyDto>(
+                JsonSerializer.Deserialize<RentalManagementCompanyDto>(conflict.ClientJson));
+            Assert.Equal(originalId, client.Id);
+            Assert.Equal(duplicateMutationId, client.MutationId);
+            Assert.Contains("mutation id is duplicated", conflict.Reason, StringComparison.OrdinalIgnoreCase);
+        }
+
+        scopedDb.ChangeTracker.Clear();
+        var storedCompanies = await scopedDb.RentalManagementCompanies
+            .IgnoreQueryFilters()
+            .ToListAsync();
+        Assert.Equal(2, storedCompanies.Count);
+        Assert.All(storedCompanies, company =>
+        {
+            Assert.Equal(originalNames[company.Id], company.Name);
+            Assert.Equal(originalRevisions[company.Id], company.Revision);
+        });
+        Assert.Empty(await scopedDb.ProcessedSyncMutations.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Push_ReturnsRentalManagementCompanyRevisionAlias_WhenNaturalKeyResolvesAndAnotherMutationConflicts()
     {
         var existing = new RentalManagementCompany
         {
@@ -14125,18 +31469,34 @@ public sealed class SyncControllerTests : IDisposable
         };
         _dbContext.RentalManagementCompanies.Add(existing);
         await _dbContext.SaveChangesAsync();
+        var originalCompanyId = Guid.NewGuid();
+        var missingUnitId = Guid.NewGuid();
 
         var request = new SyncPushRequest
         {
+            DeviceId = "device-rental-company-natural-key-alias",
             RentalManagementCompanies =
             [
                 new RentalManagementCompanyDto
                 {
-                    Id = Guid.NewGuid(),
+                    Id = originalCompanyId,
                     TenantCode = TenantScopeCatalog.Itworld,
                     Code = OfficeCodeCatalog.Itworld,
                     Name = "아이티월드(수정)",
+                    Revision = existing.Revision,
+                    ExpectedRevision = existing.Revision,
                     CreatedAtUtc = existing.CreatedAtUtc,
+                    UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(1)
+                }
+            ],
+            Units =
+            [
+                new UnitDto
+                {
+                    Id = missingUnitId,
+                    Name = "BOX",
+                    IsActive = false,
+                    IsDeleted = true,
                     UpdatedAtUtc = existing.UpdatedAtUtc.AddMinutes(1)
                 }
             ]
@@ -14145,12 +31505,97 @@ public sealed class SyncControllerTests : IDisposable
         var response = await _controller.Push(request, CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
         var result = Assert.IsType<SyncPushResult>(ok.Value);
-        Assert.Equal(0, result.ConflictCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(Unit) &&
+            conflict.EntityId == missingUnitId.ToString("D"));
+
+        var canonicalAcceptedRevision = Assert.Single(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalManagementCompany) &&
+            revision.EntityId == existing.Id);
+        var originalAcceptedRevision = Assert.Single(result.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalManagementCompany) &&
+            revision.EntityId == originalCompanyId);
+        Assert.Equal(canonicalAcceptedRevision.Revision, originalAcceptedRevision.Revision);
+        Assert.Equal(canonicalAcceptedRevision.UpdatedAtUtc, originalAcceptedRevision.UpdatedAtUtc);
 
         var companies = await _dbContext.RentalManagementCompanies.IgnoreQueryFilters().ToListAsync();
         Assert.Single(companies);
         Assert.Equal(existing.Id, companies[0].Id);
         Assert.Equal("아이티월드(수정)", companies[0].Name);
+        Assert.DoesNotContain(companies, company => company.Id == originalCompanyId);
+    }
+
+    [Fact]
+    public async Task Push_ReturnsRentalManagementCompanyRevisionAlias_ForFreshDuplicateMutationReplay()
+    {
+        var existing = new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            Code = OfficeCodeCatalog.Itworld,
+            Name = "아이티월드",
+            UpdatedAtUtc = new DateTime(2026, 7, 30, 1, 0, 0, DateTimeKind.Utc)
+        };
+        _dbContext.RentalManagementCompanies.Add(existing);
+        await _dbContext.SaveChangesAsync();
+
+        var originalCompanyId = Guid.NewGuid();
+        var expectedRevision = existing.Revision;
+        var mutationId = $"rental-company-replay:{Guid.NewGuid():N}";
+        var mutationCreatedAtUtc = new DateTime(2026, 7, 30, 1, 1, 0, DateTimeKind.Utc);
+        RentalManagementCompanyDto CreateFreshDto()
+            => new()
+            {
+                Id = originalCompanyId,
+                TenantCode = existing.TenantCode,
+                Code = existing.Code,
+                Name = "아이티월드(동기화수정)",
+                Revision = expectedRevision,
+                ExpectedRevision = expectedRevision,
+                MutationId = mutationId,
+                MutationCreatedAtUtc = mutationCreatedAtUtc,
+                CreatedAtUtc = existing.CreatedAtUtc,
+                UpdatedAtUtc = mutationCreatedAtUtc
+            };
+
+        var firstResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-company-replay",
+            RentalManagementCompanies = [CreateFreshDto()]
+        }, CancellationToken.None);
+        var firstOk = Assert.IsType<OkObjectResult>(firstResponse.Result);
+        var firstResult = Assert.IsType<SyncPushResult>(firstOk.Value);
+        Assert.Equal(1, firstResult.AcceptedCount);
+        Assert.Equal(0, firstResult.ConflictCount);
+        Assert.Equal(0, firstResult.DuplicateMutationCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var replayResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-rental-company-replay",
+            RentalManagementCompanies = [CreateFreshDto()]
+        }, CancellationToken.None);
+        var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
+        var replayResult = Assert.IsType<SyncPushResult>(replayOk.Value);
+        Assert.Equal(1, replayResult.AcceptedCount);
+        Assert.Equal(0, replayResult.ConflictCount);
+        Assert.Equal(1, replayResult.DuplicateMutationCount);
+
+        var canonicalAcceptedRevision = Assert.Single(replayResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalManagementCompany) &&
+            revision.EntityId == existing.Id);
+        var originalAcceptedRevision = Assert.Single(replayResult.AcceptedRevisions, revision =>
+            revision.EntityName == nameof(RentalManagementCompany) &&
+            revision.EntityId == originalCompanyId);
+        Assert.Equal(canonicalAcceptedRevision.Revision, originalAcceptedRevision.Revision);
+        Assert.Equal(canonicalAcceptedRevision.UpdatedAtUtc, originalAcceptedRevision.UpdatedAtUtc);
+
+        var processedMutation = await _dbContext.ProcessedSyncMutations
+            .AsNoTracking()
+            .SingleAsync(mutation => mutation.MutationId == mutationId);
+        Assert.Equal(existing.Id.ToString("D"), processedMutation.EntityId);
+        Assert.Single(await _dbContext.RentalManagementCompanies.IgnoreQueryFilters().ToListAsync());
     }
 
     [Fact]
@@ -14268,6 +31713,144 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal(existing.Id, items[0].Id);
         Assert.Equal("병합 업데이트", items[0].Notes);
         Assert.Equal("SN-501-UPDATED", items[0].SerialNumber);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Push_RejectsAmbiguousExistingItemIdentity(bool useMaterialNumber)
+    {
+        var sharedIdentity = useMaterialNumber ? "DUP-MATERIAL-001" : "DUP-SERIAL-001";
+        var first = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "Ambiguous Item A",
+            NameMatchKey = "AMBIGUOUSITEMA",
+            SpecificationOriginal = "MODEL-A",
+            SpecificationMatchKey = "MODELA",
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset,
+            MaterialNumber = useMaterialNumber ? sharedIdentity : string.Empty,
+            SerialNumber = useMaterialNumber ? string.Empty : sharedIdentity,
+            Notes = "unchanged-a"
+        };
+        var second = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "Ambiguous Item B",
+            NameMatchKey = "AMBIGUOUSITEMB",
+            SpecificationOriginal = "MODEL-B",
+            SpecificationMatchKey = "MODELB",
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset,
+            MaterialNumber = useMaterialNumber ? sharedIdentity : string.Empty,
+            SerialNumber = useMaterialNumber ? string.Empty : sharedIdentity,
+            Notes = "unchanged-b"
+        };
+        _dbContext.Items.AddRange(first, second);
+        await _dbContext.SaveChangesAsync();
+
+        var incomingId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = $"device-item-ambiguous-{useMaterialNumber}",
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = incomingId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = first.NameOriginal,
+                    NameMatchKey = first.NameMatchKey,
+                    SpecificationOriginal = first.SpecificationOriginal,
+                    SpecificationMatchKey = first.SpecificationMatchKey,
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = useMaterialNumber ? sharedIdentity : string.Empty,
+                    SerialNumber = useMaterialNumber ? string.Empty : sharedIdentity,
+                    Notes = "must-not-overwrite",
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(Item) &&
+            conflict.Reason.Contains("ambiguous", StringComparison.OrdinalIgnoreCase));
+
+        _dbContext.ChangeTracker.Clear();
+        var items = await _dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.OfficeCode == OfficeCodeCatalog.Itworld)
+            .OrderBy(item => item.Id)
+            .ToListAsync();
+        Assert.Equal(2, items.Count);
+        Assert.DoesNotContain(items, item => item.Id == incomingId);
+        Assert.Contains(items, item => item.Id == first.Id && item.Notes == "unchanged-a");
+        Assert.Contains(items, item => item.Id == second.Id && item.Notes == "unchanged-b");
+    }
+
+    [Fact]
+    public async Task Push_RejectsItemIdentityMatch_WhenDescriptorConflicts()
+    {
+        var existing = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "Identity Owner",
+            NameMatchKey = "IDENTITYOWNER",
+            SpecificationOriginal = "MODEL-OWNER",
+            SpecificationMatchKey = "MODELOWNER",
+            ItemKind = ItemKinds.Asset,
+            TrackingType = ItemTrackingTypes.Asset,
+            MaterialNumber = "MATERIAL-OWNER-001",
+            Notes = "unchanged"
+        };
+        _dbContext.Items.Add(existing);
+        await _dbContext.SaveChangesAsync();
+
+        var incomingId = Guid.NewGuid();
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-item-descriptor-conflict",
+            Items =
+            [
+                new ItemDto
+                {
+                    Id = incomingId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    NameOriginal = "Different Identity Claimant",
+                    NameMatchKey = "DIFFERENTIDENTITYCLAIMANT",
+                    SpecificationOriginal = "MODEL-DIFFERENT",
+                    SpecificationMatchKey = "MODELDIFFERENT",
+                    ItemKind = ItemKinds.Asset,
+                    TrackingType = ItemTrackingTypes.Asset,
+                    MaterialNumber = existing.MaterialNumber,
+                    Notes = "must-not-overwrite",
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == existing.Id);
+        Assert.Equal("unchanged", stored.Notes);
+        Assert.False(await _dbContext.Items.IgnoreQueryFilters().AnyAsync(item => item.Id == incomingId));
     }
 
     [Fact]
@@ -14414,7 +31997,16 @@ public sealed class SyncControllerTests : IDisposable
             TrackingType = ItemTrackingTypes.Stock
         };
         scopedDb.Items.Add(item);
+        var authorizedStock = new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 4m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-1)
+        };
+        scopedDb.ItemWarehouseStocks.Add(authorizedStock);
         await scopedDb.SaveChangesAsync();
+        var authorizedStockRevision = authorizedStock.Revision;
 
         var request = new SyncPushRequest
         {
@@ -14424,9 +32016,20 @@ public sealed class SyncControllerTests : IDisposable
                 new ItemWarehouseStockDto
                 {
                     ItemId = item.Id,
+                    WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 6m,
+                    UpdatedAtUtc = DateTime.UtcNow,
+                    Revision = authorizedStockRevision,
+                    ExpectedRevision = authorizedStockRevision
+                },
+                new ItemWarehouseStockDto
+                {
+                    ItemId = item.Id,
                     WarehouseCode = OfficeCodeCatalog.ItworldMainWarehouse,
                     Quantity = 5m,
-                    UpdatedAtUtc = DateTime.UtcNow
+                    UpdatedAtUtc = DateTime.UtcNow,
+                    Revision = authorizedStockRevision,
+                    ExpectedRevision = authorizedStockRevision
                 }
             ]
         };
@@ -14435,8 +32038,239 @@ public sealed class SyncControllerTests : IDisposable
         var ok = Assert.IsType<OkObjectResult>(response.Result);
         var result = Assert.IsType<SyncPushResult>(ok.Value);
 
+        Assert.Equal(1, result.ConflictCount);
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal(nameof(ItemWarehouseStock), conflict.EntityName);
+        Assert.Equal(
+            $"{item.Id:D}|{OfficeCodeCatalog.ItworldMainWarehouse}",
+            conflict.EntityId);
+        Assert.Equal("Current account cannot modify this warehouse scope.", conflict.Reason);
+        var acceptedStockKey = Assert.Single(result.AcceptedItemWarehouseStockKeys);
+        Assert.Equal(item.Id, acceptedStockKey.ItemId);
+        Assert.Equal(OfficeCodeCatalog.UsenetMainWarehouse, acceptedStockKey.WarehouseCode);
         Assert.Contains(result.Notices, notice => notice.Code == "item-warehouse-stock-skip-out-of-scope-warehouse");
-        Assert.False(await scopedDb.ItemWarehouseStocks.AnyAsync(stock => stock.ItemId == item.Id));
+        var storedAuthorizedStock = Assert.Single(
+            await scopedDb.ItemWarehouseStocks
+                .Where(stock => stock.ItemId == item.Id)
+                .ToListAsync());
+        Assert.Equal(OfficeCodeCatalog.UsenetMainWarehouse, storedAuthorizedStock.WarehouseCode);
+        Assert.Equal(6m, storedAuthorizedStock.Quantity);
+        Assert.True(storedAuthorizedStock.Revision > authorizedStockRevision);
+    }
+
+    [Fact]
+    public async Task Push_PreservesReadOnlySharedWarehouseSibling_WhenWritableItemSnapshotOmitsIt()
+    {
+        SeedSharingPolicy(_dbContext, new DataSharingPolicy
+        {
+            Id = Guid.NewGuid(),
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ShareItems = true,
+            AllowTargetWrite = false,
+            IsActive = true
+        });
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "연수 소유 다중 창고 품목",
+            NameMatchKey = "연수소유다중창고품목",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 15m
+        };
+        var readOnlySharedStock = new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 5m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-10)
+        };
+        _dbContext.Items.Add(item);
+        _dbContext.ItemWarehouseStocks.Add(readOnlySharedStock);
+        await _dbContext.SaveChangesAsync();
+        var readOnlySharedRevision = readOnlySharedStock.Revision;
+
+        var writableStock = new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5)
+        };
+        _dbContext.ItemWarehouseStocks.Add(writableStock);
+        await _dbContext.SaveChangesAsync();
+        var writableStockRevision = writableStock.Revision;
+        Assert.True(readOnlySharedRevision < writableStockRevision);
+
+        var scopedUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu-read-shared-stock-editor",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+        await using var scopedDb = CreateDbContext(scopedUser);
+        var controller = CreateController(scopedDb, scopedUser);
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-read-only-shared-stock-preserve",
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = item.Id,
+                    WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+                    Quantity = 11m,
+                    UpdatedAtUtc = DateTime.UtcNow,
+                    Revision = writableStockRevision,
+                    ExpectedRevision = writableStockRevision
+                }
+            ],
+            ItemWarehouseStockSnapshotMarkers =
+            [
+                new ItemWarehouseStockSnapshotMarkerDto
+                {
+                    ItemId = item.Id,
+                    MaxKnownRevision =
+                        writableStockRevision
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Contains(result.Notices, notice => notice.Code == "item-warehouse-stock-preserve-read-only-row");
+        scopedDb.ChangeTracker.Clear();
+        var storedStocks = await scopedDb.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == item.Id)
+            .ToListAsync();
+        Assert.Equal(2, storedStocks.Count);
+        var storedWritableStock = Assert.Single(
+            storedStocks,
+            stock => stock.WarehouseCode == OfficeCodeCatalog.YeonsuMainWarehouse);
+        Assert.Equal(11m, storedWritableStock.Quantity);
+        Assert.True(storedWritableStock.Revision > writableStockRevision);
+        var storedReadOnlySharedStock = Assert.Single(
+            storedStocks,
+            stock => stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse);
+        Assert.Equal(5m, storedReadOnlySharedStock.Quantity);
+        Assert.Equal(readOnlySharedRevision, storedReadOnlySharedStock.Revision);
+        Assert.Equal(
+            16m,
+            await scopedDb.Items
+                .IgnoreQueryFilters()
+                .Where(current => current.Id == item.Id)
+                .Select(current => current.CurrentStock)
+                .SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_PreservesWarehouseRows_WhenReadOnlySharedItemOwnerIsNotWritable()
+    {
+        _dbContext.DataSharingPolicies.Add(new DataSharingPolicy
+        {
+            Id = Guid.NewGuid(),
+            SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+            SourceOfficeCode = OfficeCodeCatalog.Usenet,
+            TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+            TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ShareItems = true,
+            AllowTargetWrite = false,
+            IsActive = true
+        });
+        var item = new Item
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "유즈넷 소유 읽기 공유 품목",
+            NameMatchKey = "유즈넷소유읽기공유품목",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 15m
+        };
+        var yeonsuSiblingStock = new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            Quantity = 5m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-10)
+        };
+        _dbContext.Items.Add(item);
+        _dbContext.ItemWarehouseStocks.Add(yeonsuSiblingStock);
+        await _dbContext.SaveChangesAsync();
+        var yeonsuSiblingRevision = yeonsuSiblingStock.Revision;
+
+        var usenetStock = new ItemWarehouseStock
+        {
+            ItemId = item.Id,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5)
+        };
+        _dbContext.ItemWarehouseStocks.Add(usenetStock);
+        await _dbContext.SaveChangesAsync();
+        var usenetStockRevision = usenetStock.Revision;
+
+        var scopedUser = new TestCurrentUserContext
+        {
+            Username = "yeonsu-read-only-shared-item-user",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+        };
+        await using var scopedDb = CreateDbContext(scopedUser);
+        var controller = CreateController(scopedDb, scopedUser);
+
+        var response = await controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-read-only-shared-item-stock-preserve",
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = item.Id,
+                    WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 99m,
+                    UpdatedAtUtc = DateTime.UtcNow,
+                    Revision = usenetStockRevision,
+                    ExpectedRevision = usenetStockRevision
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal(nameof(ItemWarehouseStock), conflict.EntityName);
+        Assert.Equal(
+            $"{item.Id:D}|{OfficeCodeCatalog.UsenetMainWarehouse}",
+            conflict.EntityId);
+        Assert.Equal("Current account cannot modify this item scope.", conflict.Reason);
+        Assert.Contains(result.Notices, notice => notice.Code == "item-warehouse-stock-skip-out-of-scope-item");
+        scopedDb.ChangeTracker.Clear();
+        var storedStocks = await scopedDb.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == item.Id)
+            .ToListAsync();
+        Assert.Equal(2, storedStocks.Count);
+        var storedUsenetStock = Assert.Single(
+            storedStocks,
+            stock => stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse);
+        Assert.Equal(10m, storedUsenetStock.Quantity);
+        Assert.Equal(usenetStockRevision, storedUsenetStock.Revision);
+        var storedYeonsuSibling = Assert.Single(
+            storedStocks,
+            stock => stock.WarehouseCode == OfficeCodeCatalog.YeonsuMainWarehouse);
+        Assert.Equal(5m, storedYeonsuSibling.Quantity);
+        Assert.Equal(yeonsuSiblingRevision, storedYeonsuSibling.Revision);
     }
 
     [Fact]
@@ -14838,6 +32672,1609 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_AcknowledgesOnlyAcceptedWarehouseStockKeys_AndInvalidRowsBlockSiblingDeletion()
+    {
+        var blankWarehouseItemId = Guid.NewGuid();
+        var duplicateWarehouseItemId = Guid.NewGuid();
+        _dbContext.Items.AddRange(
+            new Item
+            {
+                Id = blankWarehouseItemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Blank warehouse guard item",
+                NameMatchKey = "BLANKWAREHOUSEGUARDITEM",
+                ItemKind = ItemKinds.Product,
+                TrackingType = ItemTrackingTypes.Stock,
+                CurrentStock = 15m
+            },
+            new Item
+            {
+                Id = duplicateWarehouseItemId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "Duplicate warehouse guard item",
+                NameMatchKey = "DUPLICATEWAREHOUSEGUARDITEM",
+                ItemKind = ItemKinds.Product,
+                TrackingType = ItemTrackingTypes.Stock,
+                CurrentStock = 27m
+            });
+        var blankWarehouseSibling = new ItemWarehouseStock
+        {
+            ItemId = blankWarehouseItemId,
+            WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            Quantity = 5m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-10)
+        };
+        var duplicateWarehouseSibling = new ItemWarehouseStock
+        {
+            ItemId = duplicateWarehouseItemId,
+            WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            Quantity = 7m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-10)
+        };
+        _dbContext.ItemWarehouseStocks.AddRange(blankWarehouseSibling, duplicateWarehouseSibling);
+        await _dbContext.SaveChangesAsync();
+        var blankWarehouseSiblingRevision = blankWarehouseSibling.Revision;
+        var duplicateWarehouseSiblingRevision = duplicateWarehouseSibling.Revision;
+
+        var blankWarehousePrimary = new ItemWarehouseStock
+        {
+            ItemId = blankWarehouseItemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5)
+        };
+        var duplicateWarehousePrimary = new ItemWarehouseStock
+        {
+            ItemId = duplicateWarehouseItemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 20m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5)
+        };
+        _dbContext.ItemWarehouseStocks.AddRange(blankWarehousePrimary, duplicateWarehousePrimary);
+        await _dbContext.SaveChangesAsync();
+        var blankWarehousePrimaryRevision = blankWarehousePrimary.Revision;
+        var duplicateWarehousePrimaryRevision = duplicateWarehousePrimary.Revision;
+        Assert.True(blankWarehouseSiblingRevision < blankWarehousePrimaryRevision);
+        Assert.True(duplicateWarehouseSiblingRevision < duplicateWarehousePrimaryRevision);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-stock-invalid-row-ack-guard",
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = blankWarehouseItemId,
+                    WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 11m,
+                    Revision = blankWarehousePrimaryRevision,
+                    ExpectedRevision = blankWarehousePrimaryRevision,
+                    UpdatedAtUtc = DateTime.UtcNow
+                },
+                new ItemWarehouseStockDto
+                {
+                    ItemId = blankWarehouseItemId,
+                    WarehouseCode = "   ",
+                    Quantity = 999m,
+                    UpdatedAtUtc = DateTime.UtcNow
+                },
+                new ItemWarehouseStockDto
+                {
+                    ItemId = Guid.Empty,
+                    WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 999m,
+                    UpdatedAtUtc = DateTime.UtcNow
+                },
+                new ItemWarehouseStockDto
+                {
+                    ItemId = duplicateWarehouseItemId,
+                    WarehouseCode = "USENET",
+                    Quantity = 20m,
+                    Revision = duplicateWarehousePrimaryRevision,
+                    ExpectedRevision = duplicateWarehousePrimaryRevision,
+                    UpdatedAtUtc = DateTime.UtcNow
+                },
+                new ItemWarehouseStockDto
+                {
+                    ItemId = duplicateWarehouseItemId,
+                    WarehouseCode = $" {OfficeCodeCatalog.UsenetMainWarehouse} ",
+                    Quantity = 21m,
+                    Revision = duplicateWarehousePrimaryRevision,
+                    ExpectedRevision = duplicateWarehousePrimaryRevision,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(3, result.ConflictCount);
+        var blankWarehouseConflict = Assert.Single(
+            result.Conflicts,
+            conflict => conflict.Reason == "Warehouse stock row has an empty warehouse code.");
+        Assert.Equal(nameof(ItemWarehouseStock), blankWarehouseConflict.EntityName);
+        Assert.Equal(
+            $"{blankWarehouseItemId:D}|INVALID-WAREHOUSE-CODE",
+            blankWarehouseConflict.EntityId);
+        Assert.Contains(
+            "\"WarehouseCode\":\"INVALID-WAREHOUSE-CODE\"",
+            blankWarehouseConflict.ClientJson,
+            StringComparison.Ordinal);
+        var emptyItemConflict = Assert.Single(
+            result.Conflicts,
+            conflict => conflict.Reason == "Warehouse stock row has an empty item id.");
+        Assert.Equal(nameof(ItemWarehouseStock), emptyItemConflict.EntityName);
+        Assert.Equal($"{Guid.Empty:D}|INVALID-ITEM-ID", emptyItemConflict.EntityId);
+        Assert.Contains(
+            "\"WarehouseCode\":\"INVALID-ITEM-ID\"",
+            emptyItemConflict.ClientJson,
+            StringComparison.Ordinal);
+        Assert.Contains(result.Conflicts, conflict =>
+            conflict.EntityName == nameof(ItemWarehouseStock) &&
+            conflict.EntityId == $"{duplicateWarehouseItemId:D}|{OfficeCodeCatalog.UsenetMainWarehouse}" &&
+            conflict.Reason == "Multiple warehouse stock rows normalize to the same item and warehouse key.");
+        Assert.Contains(result.Notices, notice =>
+            notice.Code == "item-warehouse-stock-skip-empty-warehouse-code" &&
+            notice.EntityId == blankWarehouseItemId.ToString("D"));
+        Assert.Contains(result.Notices, notice =>
+            notice.Code == "item-warehouse-stock-skip-empty-item-id" &&
+            string.IsNullOrEmpty(notice.EntityId));
+        Assert.Contains(result.Notices, notice =>
+            notice.Code == "item-warehouse-stock-normalized-duplicate-key" &&
+            notice.EntityId == duplicateWarehouseItemId.ToString("D"));
+
+        Assert.Equal(2, result.AcceptedItemWarehouseStockKeys.Count);
+        var blankWarehouseAck = Assert.Single(
+            result.AcceptedItemWarehouseStockKeys,
+            key => key.ItemId == blankWarehouseItemId);
+        Assert.Equal(OfficeCodeCatalog.UsenetMainWarehouse, blankWarehouseAck.WarehouseCode);
+        var duplicateWarehouseAck = Assert.Single(
+            result.AcceptedItemWarehouseStockKeys,
+            key => key.ItemId == duplicateWarehouseItemId);
+        Assert.Equal(OfficeCodeCatalog.UsenetMainWarehouse, duplicateWarehouseAck.WarehouseCode);
+
+        _dbContext.ChangeTracker.Clear();
+        var blankWarehouseStocks = await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == blankWarehouseItemId)
+            .ToListAsync();
+        Assert.Equal(2, blankWarehouseStocks.Count);
+        var storedBlankWarehousePrimary = Assert.Single(
+            blankWarehouseStocks,
+            stock => stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse);
+        Assert.Equal(11m, storedBlankWarehousePrimary.Quantity);
+        Assert.True(storedBlankWarehousePrimary.Revision > blankWarehousePrimaryRevision);
+        var storedBlankWarehouseSibling = Assert.Single(
+            blankWarehouseStocks,
+            stock => stock.WarehouseCode == OfficeCodeCatalog.YeonsuMainWarehouse);
+        Assert.Equal(5m, storedBlankWarehouseSibling.Quantity);
+        Assert.Equal(blankWarehouseSiblingRevision, storedBlankWarehouseSibling.Revision);
+
+        var duplicateWarehouseStocks = await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == duplicateWarehouseItemId)
+            .ToListAsync();
+        Assert.Equal(2, duplicateWarehouseStocks.Count);
+        var storedDuplicateWarehousePrimary = Assert.Single(
+            duplicateWarehouseStocks,
+            stock => stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse);
+        Assert.Equal(21m, storedDuplicateWarehousePrimary.Quantity);
+        Assert.True(storedDuplicateWarehousePrimary.Revision > duplicateWarehousePrimaryRevision);
+        var storedDuplicateWarehouseSibling = Assert.Single(
+            duplicateWarehouseStocks,
+            stock => stock.WarehouseCode == OfficeCodeCatalog.YeonsuMainWarehouse);
+        Assert.Equal(7m, storedDuplicateWarehouseSibling.Quantity);
+        Assert.Equal(duplicateWarehouseSiblingRevision, storedDuplicateWarehouseSibling.Revision);
+
+        var currentStocks = await _dbContext.Items
+            .IgnoreQueryFilters()
+            .Where(item => item.Id == blankWarehouseItemId || item.Id == duplicateWarehouseItemId)
+            .ToDictionaryAsync(item => item.Id, item => item.CurrentStock);
+        Assert.Equal(16m, currentStocks[blankWarehouseItemId]);
+        Assert.Equal(28m, currentStocks[duplicateWarehouseItemId]);
+    }
+
+    [Fact]
+    public async Task Push_RejectsUnknownWarehouseCodeWithoutOverwritingCanonicalStockOrDeletingSiblings()
+    {
+        var itemId = Guid.NewGuid();
+        var hostileWarehouseCode = "WAREHOUSE-X\r\n" + new string('Z', 4096);
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Unknown warehouse guard item",
+            NameMatchKey = "UNKNOWNWAREHOUSEGUARDITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 15m
+        });
+        var siblingStock = new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            Quantity = 5m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-10)
+        };
+        _dbContext.ItemWarehouseStocks.Add(siblingStock);
+        await _dbContext.SaveChangesAsync();
+        var siblingStockRevision = siblingStock.Revision;
+
+        var canonicalStock = new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5)
+        };
+        _dbContext.ItemWarehouseStocks.Add(canonicalStock);
+        await _dbContext.SaveChangesAsync();
+        var canonicalStockRevision = canonicalStock.Revision;
+        Assert.True(siblingStockRevision < canonicalStockRevision);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-stock-unknown-warehouse-guard",
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode = OfficeCodeCatalog.ItworldMainWarehouse,
+                    Quantity = 3m,
+                    UpdatedAtUtc = DateTime.UtcNow
+                },
+                new ItemWarehouseStockDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode = hostileWarehouseCode,
+                    Quantity = 999m,
+                    Revision = canonicalStockRevision,
+                    ExpectedRevision = canonicalStockRevision,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal(nameof(ItemWarehouseStock), conflict.EntityName);
+        Assert.Equal($"{itemId:D}|INVALID-WAREHOUSE-CODE", conflict.EntityId);
+        Assert.Equal("Warehouse stock row has an unknown warehouse code.", conflict.Reason);
+        Assert.True(conflict.EntityId.Length <= 64);
+        Assert.True(conflict.ClientJson.Length <= 512);
+        Assert.True(conflict.Reason.Length <= 128);
+        Assert.DoesNotContain("WAREHOUSE-X", conflict.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("WAREHOUSE-X", conflict.EntityId, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("WAREHOUSE-X", conflict.ClientJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(conflict.EntityId, char.IsControl);
+        Assert.DoesNotContain(conflict.ClientJson, char.IsControl);
+        Assert.DoesNotContain(conflict.Reason, char.IsControl);
+        using (var clientJson = JsonDocument.Parse(conflict.ClientJson))
+        {
+            Assert.Equal(
+                "INVALID-WAREHOUSE-CODE",
+                clientJson.RootElement.GetProperty(nameof(ItemWarehouseStockDto.WarehouseCode)).GetString());
+        }
+        Assert.Contains(result.Notices, notice =>
+            notice.Code == "item-warehouse-stock-skip-unknown-warehouse-code" &&
+            notice.EntityId == itemId.ToString("D") &&
+            !notice.Message.Contains("WAREHOUSE-X", StringComparison.OrdinalIgnoreCase));
+        var acceptedStockKey = Assert.Single(result.AcceptedItemWarehouseStockKeys);
+        Assert.Equal(itemId, acceptedStockKey.ItemId);
+        Assert.Equal(OfficeCodeCatalog.ItworldMainWarehouse, acceptedStockKey.WarehouseCode);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedConflict = await _dbContext.ConflictLogs.SingleAsync(log =>
+            log.EntityName == nameof(ItemWarehouseStock) &&
+            log.Reason == "Warehouse stock row has an unknown warehouse code.");
+        Assert.Equal(conflict.EntityId, storedConflict.EntityId);
+        Assert.Equal(conflict.ClientJson, storedConflict.ClientJson);
+        Assert.Equal(conflict.Reason, storedConflict.Reason);
+        Assert.True(storedConflict.EntityId.Length <= 64);
+        Assert.True(storedConflict.ClientJson.Length <= 512);
+        Assert.True(storedConflict.Reason.Length <= 128);
+        Assert.DoesNotContain("WAREHOUSE-X", storedConflict.EntityId, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("WAREHOUSE-X", storedConflict.ClientJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("WAREHOUSE-X", storedConflict.Reason, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(storedConflict.EntityId, char.IsControl);
+        Assert.DoesNotContain(storedConflict.ClientJson, char.IsControl);
+        Assert.DoesNotContain(storedConflict.Reason, char.IsControl);
+
+        var storedStocks = await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId)
+            .ToListAsync();
+        Assert.Equal(3, storedStocks.Count);
+        var storedCanonicalStock = Assert.Single(
+            storedStocks,
+            stock => stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse);
+        Assert.Equal(10m, storedCanonicalStock.Quantity);
+        Assert.Equal(canonicalStockRevision, storedCanonicalStock.Revision);
+        var storedSiblingStock = Assert.Single(
+            storedStocks,
+            stock => stock.WarehouseCode == OfficeCodeCatalog.YeonsuMainWarehouse);
+        Assert.Equal(5m, storedSiblingStock.Quantity);
+        Assert.Equal(siblingStockRevision, storedSiblingStock.Revision);
+        var storedAcceptedStock = Assert.Single(
+            storedStocks,
+            stock => stock.WarehouseCode == OfficeCodeCatalog.ItworldMainWarehouse);
+        Assert.Equal(3m, storedAcceptedStock.Quantity);
+        Assert.Equal(
+            18m,
+            await _dbContext.Items
+                .IgnoreQueryFilters()
+                .Where(item => item.Id == itemId)
+                .Select(item => item.CurrentStock)
+                .SingleAsync());
+    }
+
+    [Theory]
+    [InlineData(42L, 0L)]
+    [InlineData(0L, 42L)]
+    public async Task Push_RejectsMissingWarehouseSnapshot_WhenRevisionSignalsExistingRow(
+        long expectedRevision,
+        long revision)
+    {
+        var itemId = Guid.NewGuid();
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Deleted between sync phases item",
+            NameMatchKey = "DELETEDBETWEENSYNCPHASESITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 5m
+        });
+        var siblingStock = new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            Quantity = 5m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5)
+        };
+        _dbContext.ItemWarehouseStocks.Add(siblingStock);
+        await _dbContext.SaveChangesAsync();
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+             UPDATE "ItemWarehouseStocks"
+             SET "Revision" = {41L}
+             WHERE "ItemId" = {itemId}
+               AND "WarehouseCode" = {OfficeCodeCatalog.YeonsuMainWarehouse};
+             """);
+        _dbContext.ChangeTracker.Clear();
+        var siblingStockRevision = await _dbContext.ItemWarehouseStocks
+            .Where(stock =>
+                stock.ItemId == itemId &&
+                stock.WarehouseCode == OfficeCodeCatalog.YeonsuMainWarehouse)
+            .Select(stock => stock.Revision)
+            .SingleAsync();
+        Assert.Equal(41L, siblingStockRevision);
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = $"device-stock-missing-existing-row-{expectedRevision}-{revision}",
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 99m,
+                    Revision = revision,
+                    ExpectedRevision = expectedRevision,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Empty(result.AcceptedItemWarehouseStockKeys);
+        Assert.Empty(result.AcceptedRevisions);
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal(nameof(ItemWarehouseStock), conflict.EntityName);
+        Assert.Equal(
+            $"{itemId:D}|{OfficeCodeCatalog.UsenetMainWarehouse}",
+            conflict.EntityId);
+        Assert.Contains("client=42", conflict.Reason, StringComparison.Ordinal);
+        Assert.Contains("server=0", conflict.Reason, StringComparison.Ordinal);
+        Assert.Contains("no longer exists", conflict.Reason, StringComparison.OrdinalIgnoreCase);
+        var tombstone = JsonSerializer.Deserialize<ItemWarehouseStockDto>(conflict.ServerJson);
+        Assert.NotNull(tombstone);
+        Assert.Equal(itemId, tombstone.ItemId);
+        Assert.Equal(OfficeCodeCatalog.UsenetMainWarehouse, tombstone.WarehouseCode);
+        Assert.True(tombstone.IsDeleted);
+        Assert.Equal(0L, tombstone.Revision);
+        Assert.Equal(42L, tombstone.ExpectedRevision);
+        Assert.Equal(DateTime.UnixEpoch, tombstone.UpdatedAtUtc);
+        Assert.Equal(0m, tombstone.Quantity);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedStock = Assert.Single(await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId)
+            .ToListAsync());
+        Assert.Equal(OfficeCodeCatalog.YeonsuMainWarehouse, storedStock.WarehouseCode);
+        Assert.Equal(5m, storedStock.Quantity);
+        Assert.Equal(siblingStockRevision, storedStock.Revision);
+        Assert.False(await _dbContext.ItemWarehouseStocks.AnyAsync(stock =>
+            stock.ItemId == itemId &&
+            stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse));
+        Assert.Equal(
+            5m,
+            await _dbContext.Items
+                .IgnoreQueryFilters()
+                .Where(item => item.Id == itemId)
+                .Select(item => item.CurrentStock)
+                .SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_ExactReplayOfAcceptedExistingItemWarehouseStock_DoesNotRewindNewerUpdate()
+    {
+        var itemId = Guid.NewGuid();
+        var warehouseCode = OfficeCodeCatalog.UsenetMainWarehouse;
+        var initialUpdatedAtUtc = new DateTime(2026, 7, 30, 0, 0, 0, DateTimeKind.Utc);
+        var requestAUpdatedAtUtc = new DateTime(2026, 7, 30, 0, 1, 0, DateTimeKind.Utc);
+        var requestBUpdatedAtUtc = new DateTime(2026, 7, 30, 0, 2, 0, DateTimeKind.Utc);
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Existing stock replay item",
+            NameMatchKey = "EXISTINGSTOCKREPLAYITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 10m
+        });
+        var stock = new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = warehouseCode,
+            Quantity = 10m,
+            UpdatedAtUtc = initialUpdatedAtUtc
+        };
+        _dbContext.ItemWarehouseStocks.Add(stock);
+        await _dbContext.SaveChangesAsync();
+        var initialRevision = stock.Revision;
+
+        SyncPushRequest CreateRequestA()
+            => new()
+            {
+                DeviceId = "device-existing-stock-replay",
+                ItemWarehouseStocks =
+                [
+                    new ItemWarehouseStockDto
+                    {
+                        ItemId = itemId,
+                        WarehouseCode = warehouseCode,
+                        Quantity = 12m,
+                        Revision = initialRevision,
+                        ExpectedRevision = initialRevision,
+                        UpdatedAtUtc = requestAUpdatedAtUtc
+                    }
+                ]
+            };
+
+        var responseA = await _controller.Push(CreateRequestA(), CancellationToken.None);
+        var okA = Assert.IsType<OkObjectResult>(responseA.Result);
+        var resultA = Assert.IsType<SyncPushResult>(okA.Value);
+        Assert.Equal(0, resultA.ConflictCount);
+        var acceptedKeyA = Assert.Single(resultA.AcceptedItemWarehouseStockKeys);
+        Assert.Equal(itemId, acceptedKeyA.ItemId);
+        Assert.Equal(warehouseCode, acceptedKeyA.WarehouseCode);
+
+        _dbContext.ChangeTracker.Clear();
+        var acceptedA = await _dbContext.ItemWarehouseStocks
+            .SingleAsync(current => current.ItemId == itemId && current.WarehouseCode == warehouseCode);
+        var revisionA = acceptedA.Revision;
+        Assert.Equal(12m, acceptedA.Quantity);
+        Assert.True(revisionA > initialRevision);
+
+        var responseB = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-existing-stock-replay",
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode = warehouseCode,
+                    Quantity = 18m,
+                    Revision = revisionA,
+                    ExpectedRevision = revisionA,
+                    UpdatedAtUtc = requestBUpdatedAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+        var okB = Assert.IsType<OkObjectResult>(responseB.Result);
+        var resultB = Assert.IsType<SyncPushResult>(okB.Value);
+        Assert.Equal(0, resultB.ConflictCount);
+        var acceptedKeyB = Assert.Single(resultB.AcceptedItemWarehouseStockKeys);
+        Assert.Equal(itemId, acceptedKeyB.ItemId);
+        Assert.Equal(warehouseCode, acceptedKeyB.WarehouseCode);
+
+        _dbContext.ChangeTracker.Clear();
+        var acceptedB = await _dbContext.ItemWarehouseStocks
+            .SingleAsync(current => current.ItemId == itemId && current.WarehouseCode == warehouseCode);
+        var revisionB = acceptedB.Revision;
+        Assert.Equal(18m, acceptedB.Quantity);
+        Assert.True(revisionB > revisionA);
+
+        var replayResponse = await _controller.Push(CreateRequestA(), CancellationToken.None);
+        var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
+        var replayResult = Assert.IsType<SyncPushResult>(replayOk.Value);
+        Assert.Equal(0, replayResult.ConflictCount);
+        var replayAcceptedKey = Assert.Single(replayResult.AcceptedItemWarehouseStockKeys);
+        Assert.Equal(itemId, replayAcceptedKey.ItemId);
+        Assert.Equal(warehouseCode, replayAcceptedKey.WarehouseCode);
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.ItemWarehouseStocks
+            .SingleAsync(current => current.ItemId == itemId && current.WarehouseCode == warehouseCode);
+        Assert.Equal(18m, stored.Quantity);
+        Assert.Equal(revisionB, stored.Revision);
+        Assert.Equal(requestBUpdatedAtUtc, stored.UpdatedAtUtc);
+
+        var receiptEntityId = $"{itemId:D}|{warehouseCode}";
+        var receipts = await _dbContext.ProcessedSyncMutations
+            .AsNoTracking()
+            .Where(receipt =>
+                receipt.EntityName == nameof(ItemWarehouseStock) &&
+                receipt.EntityId == receiptEntityId)
+            .ToListAsync();
+        Assert.Equal(2, receipts.Count);
+        Assert.Contains(receipts, receipt => receipt.ExpectedRevision == initialRevision);
+        Assert.Contains(receipts, receipt => receipt.ExpectedRevision == revisionA);
+        Assert.All(receipts, receipt => Assert.False(string.IsNullOrWhiteSpace(receipt.PayloadHash)));
+    }
+
+    [Fact]
+    public async Task Push_ExactReplayOfAcceptedNewItemWarehouseStock_DoesNotRewindNewerUpdate()
+    {
+        var itemId = Guid.NewGuid();
+        var warehouseCode = OfficeCodeCatalog.UsenetMainWarehouse;
+        var requestAUpdatedAtUtc = new DateTime(2026, 7, 30, 1, 1, 0, DateTimeKind.Utc);
+        var requestBUpdatedAtUtc = new DateTime(2026, 7, 30, 1, 2, 0, DateTimeKind.Utc);
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "New stock replay item",
+            NameMatchKey = "NEWSTOCKREPLAYITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock
+        });
+        await _dbContext.SaveChangesAsync();
+
+        SyncPushRequest CreateRequestA()
+            => new()
+            {
+                DeviceId = "device-new-stock-replay",
+                ItemWarehouseStocks =
+                [
+                    new ItemWarehouseStockDto
+                    {
+                        ItemId = itemId,
+                        WarehouseCode = warehouseCode,
+                        Quantity = 4m,
+                        Revision = 0,
+                        ExpectedRevision = 0,
+                        UpdatedAtUtc = requestAUpdatedAtUtc
+                    }
+                ]
+            };
+
+        var responseA = await _controller.Push(CreateRequestA(), CancellationToken.None);
+        var okA = Assert.IsType<OkObjectResult>(responseA.Result);
+        var resultA = Assert.IsType<SyncPushResult>(okA.Value);
+        Assert.Equal(0, resultA.ConflictCount);
+        var acceptedKeyA = Assert.Single(resultA.AcceptedItemWarehouseStockKeys);
+        Assert.Equal(itemId, acceptedKeyA.ItemId);
+        Assert.Equal(warehouseCode, acceptedKeyA.WarehouseCode);
+
+        _dbContext.ChangeTracker.Clear();
+        var acceptedA = await _dbContext.ItemWarehouseStocks
+            .SingleAsync(current => current.ItemId == itemId && current.WarehouseCode == warehouseCode);
+        var revisionA = acceptedA.Revision;
+        Assert.Equal(4m, acceptedA.Quantity);
+        Assert.True(revisionA > 0);
+
+        var responseB = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-new-stock-replay",
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode = warehouseCode,
+                    Quantity = 9m,
+                    Revision = revisionA,
+                    ExpectedRevision = revisionA,
+                    UpdatedAtUtc = requestBUpdatedAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+        var okB = Assert.IsType<OkObjectResult>(responseB.Result);
+        var resultB = Assert.IsType<SyncPushResult>(okB.Value);
+        Assert.Equal(0, resultB.ConflictCount);
+        var acceptedKeyB = Assert.Single(resultB.AcceptedItemWarehouseStockKeys);
+        Assert.Equal(itemId, acceptedKeyB.ItemId);
+        Assert.Equal(warehouseCode, acceptedKeyB.WarehouseCode);
+
+        _dbContext.ChangeTracker.Clear();
+        var acceptedB = await _dbContext.ItemWarehouseStocks
+            .SingleAsync(current => current.ItemId == itemId && current.WarehouseCode == warehouseCode);
+        var revisionB = acceptedB.Revision;
+        Assert.Equal(9m, acceptedB.Quantity);
+        Assert.True(revisionB > revisionA);
+
+        var replayResponse = await _controller.Push(CreateRequestA(), CancellationToken.None);
+        var replayOk = Assert.IsType<OkObjectResult>(replayResponse.Result);
+        var replayResult = Assert.IsType<SyncPushResult>(replayOk.Value);
+        Assert.Equal(0, replayResult.ConflictCount);
+        var replayAcceptedKey = Assert.Single(replayResult.AcceptedItemWarehouseStockKeys);
+        Assert.Equal(itemId, replayAcceptedKey.ItemId);
+        Assert.Equal(warehouseCode, replayAcceptedKey.WarehouseCode);
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.ItemWarehouseStocks
+            .SingleAsync(current => current.ItemId == itemId && current.WarehouseCode == warehouseCode);
+        Assert.Equal(9m, stored.Quantity);
+        Assert.Equal(revisionB, stored.Revision);
+        Assert.Equal(requestBUpdatedAtUtc, stored.UpdatedAtUtc);
+
+        var receiptEntityId = $"{itemId:D}|{warehouseCode}";
+        var receipts = await _dbContext.ProcessedSyncMutations
+            .AsNoTracking()
+            .Where(receipt =>
+                receipt.EntityName == nameof(ItemWarehouseStock) &&
+                receipt.EntityId == receiptEntityId)
+            .ToListAsync();
+        Assert.Equal(2, receipts.Count);
+        Assert.Contains(receipts, receipt => receipt.ExpectedRevision == 0);
+        Assert.Contains(receipts, receipt => receipt.ExpectedRevision == revisionA);
+        Assert.All(receipts, receipt => Assert.False(string.IsNullOrWhiteSpace(receipt.PayloadHash)));
+    }
+
+    [Fact]
+    public async Task Push_ExactStockReceiptReplay_DoesNotSuppressNewInventoryTransferDelta()
+    {
+        var itemId = Guid.NewGuid();
+        var warehouseCode =
+            OfficeCodeCatalog.UsenetMainWarehouse;
+        var requestAUpdatedAtUtc =
+            new DateTime(
+                2026,
+                7,
+                30,
+                1,
+                30,
+                0,
+                DateTimeKind.Utc);
+        var requestBUpdatedAtUtc =
+            requestAUpdatedAtUtc.AddMinutes(1);
+        _dbContext.Items.Add(
+            new Item
+            {
+                Id = itemId,
+                TenantCode =
+                    TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Shared,
+                NameOriginal =
+                    "Stock receipt replay transfer item",
+                NameMatchKey =
+                    "STOCKRECEIPTREPLAYTRANSFERITEM",
+                Unit = "EA",
+                ItemKind = ItemKinds.Product,
+                TrackingType =
+                    ItemTrackingTypes.Stock,
+                CurrentStock = 10m
+            });
+        var stock = new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = warehouseCode,
+            Quantity = 10m,
+            UpdatedAtUtc =
+                requestAUpdatedAtUtc.AddMinutes(-1)
+        };
+        _dbContext.ItemWarehouseStocks.Add(stock);
+        await _dbContext.SaveChangesAsync();
+        var initialRevision = stock.Revision;
+
+        SyncPushRequest CreateRequestA()
+            => new()
+            {
+                DeviceId =
+                    "device-stock-replay-with-transfer",
+                ItemWarehouseStocks =
+                [
+                    new ItemWarehouseStockDto
+                    {
+                        ItemId = itemId,
+                        WarehouseCode = warehouseCode,
+                        Quantity = 8m,
+                        Revision = initialRevision,
+                        ExpectedRevision =
+                            initialRevision,
+                        UpdatedAtUtc =
+                            requestAUpdatedAtUtc
+                    }
+                ]
+            };
+
+        var responseA = await _controller.Push(
+            CreateRequestA(),
+            CancellationToken.None);
+        var okA = Assert.IsType<OkObjectResult>(
+            responseA.Result);
+        var resultA = Assert.IsType<SyncPushResult>(
+            okA.Value);
+        Assert.Equal(0, resultA.ConflictCount);
+        Assert.Single(
+            resultA.AcceptedItemWarehouseStockKeys);
+
+        _dbContext.ChangeTracker.Clear();
+        var acceptedA = await _dbContext
+            .ItemWarehouseStocks
+            .SingleAsync(
+                current =>
+                    current.ItemId == itemId &&
+                    current.WarehouseCode ==
+                    warehouseCode);
+        var revisionA = acceptedA.Revision;
+        Assert.Equal(8m, acceptedA.Quantity);
+
+        var responseB = await _controller.Push(
+            new SyncPushRequest
+            {
+                DeviceId =
+                    "device-stock-replay-with-transfer",
+                ItemWarehouseStocks =
+                [
+                    new ItemWarehouseStockDto
+                    {
+                        ItemId = itemId,
+                        WarehouseCode =
+                            warehouseCode,
+                        Quantity = 12m,
+                        Revision = revisionA,
+                        ExpectedRevision = revisionA,
+                        UpdatedAtUtc =
+                            requestBUpdatedAtUtc
+                    }
+                ]
+            },
+            CancellationToken.None);
+        var okB = Assert.IsType<OkObjectResult>(
+            responseB.Result);
+        var resultB = Assert.IsType<SyncPushResult>(
+            okB.Value);
+        Assert.Equal(0, resultB.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var acceptedB = await _dbContext
+            .ItemWarehouseStocks
+            .SingleAsync(
+                current =>
+                    current.ItemId == itemId &&
+                    current.WarehouseCode ==
+                    warehouseCode);
+        var revisionB = acceptedB.Revision;
+        Assert.Equal(12m, acceptedB.Quantity);
+
+        var transferId = Guid.NewGuid();
+        var replayWithTransfer = CreateRequestA();
+        replayWithTransfer.InventoryTransfers =
+        [
+            new InventoryTransferDto
+            {
+                Id = transferId,
+                TenantCode =
+                    TenantScopeCatalog.UsenetGroup,
+                SourceOfficeCode =
+                    OfficeCodeCatalog.Usenet,
+                TargetOfficeCode =
+                    OfficeCodeCatalog.Yeonsu,
+                TransferNumber =
+                    "TR-STOCK-REPLAY-DELTA-001",
+                TransferDate =
+                    new DateOnly(2026, 7, 30),
+                FromWarehouseCode =
+                    warehouseCode,
+                ToWarehouseCode =
+                    OfficeCodeCatalog
+                        .YeonsuMainWarehouse,
+                TransferStatus =
+                    InventoryTransferStatusNormalizer
+                        .Pending,
+                MutationId =
+                    $"device-stock-replay-with-transfer:InventoryTransfer:{transferId:N}:1",
+                MutationCreatedAtUtc =
+                    requestBUpdatedAtUtc.AddMinutes(1),
+                Lines =
+                [
+                    new InventoryTransferLineDto
+                    {
+                        Id = Guid.NewGuid(),
+                        TransferId = transferId,
+                        ItemId = itemId,
+                        ItemNameOriginal =
+                            "Stock receipt replay transfer item",
+                        Unit = "EA",
+                        Quantity = 2m
+                    }
+                ]
+            }
+        ];
+
+        var replayResponse = await _controller.Push(
+            replayWithTransfer,
+            CancellationToken.None);
+        var replayOk =
+            Assert.IsType<OkObjectResult>(
+                replayResponse.Result);
+        var replayResult =
+            Assert.IsType<SyncPushResult>(
+                replayOk.Value);
+        Assert.Equal(0, replayResult.ConflictCount);
+        Assert.Single(
+            replayResult.AcceptedItemWarehouseStockKeys);
+        Assert.Equal(1, replayResult.AcceptedCount);
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext
+            .ItemWarehouseStocks
+            .SingleAsync(
+                current =>
+                    current.ItemId == itemId &&
+                    current.WarehouseCode ==
+                    warehouseCode);
+        Assert.Equal(10m, stored.Quantity);
+        Assert.True(stored.Revision > revisionB);
+        Assert.True(
+            await _dbContext.InventoryLedgerEntries
+                .AnyAsync(
+                    entry =>
+                        entry.SourceDocumentId ==
+                        transferId));
+    }
+
+    [Fact]
+    public async Task Push_RejectsGenericMutationIdUsingItemWarehouseStockReceiptNamespace()
+    {
+        var customerId = Guid.NewGuid();
+        var forgedMutationId =
+            $"{ItemWarehouseStockMutationReceipt.MutationIdPrefix}client-forged";
+
+        var response = await _controller.Push(
+            new SyncPushRequest
+            {
+                DeviceId =
+                    "device-reserved-stock-receipt-namespace",
+                Customers =
+                [
+                    new CustomerDto
+                    {
+                        Id = customerId,
+                        TenantCode =
+                            TenantScopeCatalog.UsenetGroup,
+                        OfficeCode =
+                            OfficeCodeCatalog.Usenet,
+                        ResponsibleOfficeCode =
+                            OfficeCodeCatalog.Usenet,
+                        NameOriginal =
+                            "Reserved receipt namespace customer",
+                        NameMatchKey =
+                            "RESERVEDRECEIPTNAMESPACECUSTOMER",
+                        TradeType =
+                            CustomerClassificationNormalizer
+                                .Sales,
+                        MutationId = forgedMutationId,
+                        MutationCreatedAtUtc =
+                            new DateTime(
+                                2026,
+                                7,
+                                30,
+                                2,
+                                0,
+                                0,
+                                DateTimeKind.Utc)
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok =
+            Assert.IsType<OkObjectResult>(
+                response.Result);
+        var result =
+            Assert.IsType<SyncPushResult>(
+                ok.Value);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Equal(0, result.AcceptedCount);
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal(nameof(Customer), conflict.EntityName);
+        Assert.Equal(
+            customerId.ToString("D"),
+            conflict.EntityId);
+        Assert.Contains(
+            "server-reserved receipt namespace",
+            conflict.Reason,
+            StringComparison.OrdinalIgnoreCase);
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.False(
+            await _dbContext.Customers
+                .IgnoreQueryFilters()
+                .AnyAsync(
+                    customer =>
+                        customer.Id == customerId));
+        Assert.False(
+            await _dbContext.ProcessedSyncMutations
+                .AnyAsync(
+                    receipt =>
+                        receipt.MutationId ==
+                        forgedMutationId));
+    }
+
+    [Fact]
+    public async Task Push_PartialItemWarehouseStockSnapshotWithoutMarker_PreservesOmittedSibling()
+    {
+        var itemId = Guid.NewGuid();
+        _dbContext.Items.Add(
+            new Item
+            {
+                Id = itemId,
+                TenantCode =
+                    TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal =
+                    "Partial warehouse stock snapshot item",
+                NameMatchKey =
+                    "PARTIALWAREHOUSESTOCKSNAPSHOTITEM",
+                ItemKind = ItemKinds.Product,
+                TrackingType =
+                    ItemTrackingTypes.Stock,
+                CurrentStock = 15m
+            });
+        var includedStock =
+            new ItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode =
+                    OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 10m,
+                UpdatedAtUtc =
+                    new DateTime(
+                        2026,
+                        7,
+                        30,
+                        2,
+                        10,
+                        0,
+                        DateTimeKind.Utc)
+            };
+        var omittedSibling =
+            new ItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode =
+                    OfficeCodeCatalog.YeonsuMainWarehouse,
+                Quantity = 5m,
+                UpdatedAtUtc =
+                    new DateTime(
+                        2026,
+                        7,
+                        30,
+                        2,
+                        11,
+                        0,
+                        DateTimeKind.Utc)
+            };
+        _dbContext.ItemWarehouseStocks.AddRange(
+            includedStock,
+            omittedSibling);
+        await _dbContext.SaveChangesAsync();
+        var includedRevision = includedStock.Revision;
+        var omittedSiblingRevision =
+            omittedSibling.Revision;
+
+        var response = await _controller.Push(
+            new SyncPushRequest
+            {
+                DeviceId =
+                    "device-partial-stock-without-marker",
+                ItemWarehouseStocks =
+                [
+                    new ItemWarehouseStockDto
+                    {
+                        ItemId = itemId,
+                        WarehouseCode =
+                            includedStock.WarehouseCode,
+                        Quantity = 12m,
+                        Revision = includedRevision,
+                        ExpectedRevision =
+                            includedRevision,
+                        UpdatedAtUtc =
+                            new DateTime(
+                                2026,
+                                7,
+                                30,
+                                2,
+                                12,
+                                0,
+                                DateTimeKind.Utc)
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok =
+            Assert.IsType<OkObjectResult>(
+                response.Result);
+        var result =
+            Assert.IsType<SyncPushResult>(
+                ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Single(
+            result.AcceptedItemWarehouseStockKeys);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedStocks =
+            await _dbContext.ItemWarehouseStocks
+                .Where(stock =>
+                    stock.ItemId == itemId)
+                .ToListAsync();
+        Assert.Equal(2, storedStocks.Count);
+        var storedIncluded =
+            Assert.Single(
+                storedStocks,
+                stock =>
+                    stock.WarehouseCode ==
+                    includedStock.WarehouseCode);
+        Assert.Equal(12m, storedIncluded.Quantity);
+        Assert.True(
+            storedIncluded.Revision >
+            includedRevision);
+        var storedOmittedSibling =
+            Assert.Single(
+                storedStocks,
+                stock =>
+                    stock.WarehouseCode ==
+                    omittedSibling.WarehouseCode);
+        Assert.Equal(
+            5m,
+            storedOmittedSibling.Quantity);
+        Assert.Equal(
+            omittedSiblingRevision,
+            storedOmittedSibling.Revision);
+    }
+
+    [Fact]
+    public async Task Push_ExactStockReceiptReplay_AllowsLaterCompleteSnapshotMarker()
+    {
+        var itemId = Guid.NewGuid();
+        var includedWarehouse =
+            OfficeCodeCatalog.UsenetMainWarehouse;
+        var omittedWarehouse =
+            OfficeCodeCatalog.YeonsuMainWarehouse;
+        var requestUpdatedAtUtc =
+            new DateTime(
+                2026,
+                7,
+                30,
+                2,
+                15,
+                0,
+                DateTimeKind.Utc);
+        _dbContext.Items.Add(
+            new Item
+            {
+                Id = itemId,
+                TenantCode =
+                    TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal =
+                    "Receipt replay complete snapshot item",
+                NameMatchKey =
+                    "RECEIPTREPLAYCOMPLETESNAPSHOTITEM",
+                ItemKind = ItemKinds.Product,
+                TrackingType =
+                    ItemTrackingTypes.Stock,
+                CurrentStock = 15m
+            });
+        var includedStock =
+            new ItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode = includedWarehouse,
+                Quantity = 10m,
+                UpdatedAtUtc =
+                    requestUpdatedAtUtc.AddMinutes(-2)
+            };
+        var omittedStock =
+            new ItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode = omittedWarehouse,
+                Quantity = 5m,
+                UpdatedAtUtc =
+                    requestUpdatedAtUtc.AddMinutes(-1)
+            };
+        _dbContext.ItemWarehouseStocks.AddRange(
+            includedStock,
+            omittedStock);
+        await _dbContext.SaveChangesAsync();
+        var includedRevision = includedStock.Revision;
+        var omittedRevision = omittedStock.Revision;
+
+        SyncPushRequest CreatePartialRequest()
+            => new()
+            {
+                DeviceId =
+                    "device-receipt-then-complete-marker",
+                ItemWarehouseStocks =
+                [
+                    new ItemWarehouseStockDto
+                    {
+                        ItemId = itemId,
+                        WarehouseCode =
+                            includedWarehouse,
+                        Quantity = 12m,
+                        Revision = includedRevision,
+                        ExpectedRevision =
+                            includedRevision,
+                        UpdatedAtUtc =
+                            requestUpdatedAtUtc
+                    }
+                ]
+            };
+
+        var partialResponse =
+            await _controller.Push(
+                CreatePartialRequest(),
+                CancellationToken.None);
+        var partialResult =
+            Assert.IsType<SyncPushResult>(
+                Assert.IsType<OkObjectResult>(
+                    partialResponse.Result).Value);
+        Assert.Equal(0, partialResult.ConflictCount);
+
+        _dbContext.ChangeTracker.Clear();
+        Assert.Equal(
+            5m,
+            await _dbContext.ItemWarehouseStocks
+                .Where(stock =>
+                    stock.ItemId == itemId &&
+                    stock.WarehouseCode ==
+                    omittedWarehouse)
+                .Select(stock => stock.Quantity)
+                .SingleAsync());
+
+        var completeRequest = CreatePartialRequest();
+        completeRequest
+            .ItemWarehouseStockSnapshotMarkers =
+        [
+            new ItemWarehouseStockSnapshotMarkerDto
+            {
+                ItemId = itemId,
+                MaxKnownRevision =
+                    Math.Max(
+                        includedRevision,
+                        omittedRevision)
+            }
+        ];
+        var completeResponse =
+            await _controller.Push(
+                completeRequest,
+                CancellationToken.None);
+        var completeResult =
+            Assert.IsType<SyncPushResult>(
+                Assert.IsType<OkObjectResult>(
+                    completeResponse.Result).Value);
+
+        Assert.Equal(0, completeResult.ConflictCount);
+        Assert.Single(
+            completeResult
+                .AcceptedItemWarehouseStockKeys);
+        _dbContext.ChangeTracker.Clear();
+        var zeroedOmittedStock =
+            await _dbContext.ItemWarehouseStocks
+                .SingleAsync(stock =>
+                    stock.ItemId == itemId &&
+                    stock.WarehouseCode ==
+                    omittedWarehouse);
+        Assert.Equal(0m, zeroedOmittedStock.Quantity);
+        Assert.True(
+            zeroedOmittedStock.Revision >
+            omittedRevision);
+        Assert.Equal(
+            12m,
+            await _dbContext.Items
+                .IgnoreQueryFilters()
+                .Where(item => item.Id == itemId)
+                .Select(item => item.CurrentStock)
+                .SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_CompleteItemWarehouseStockSnapshot_ZeroesOmittedSiblingAndRejectsStaleZeroRevisionPayload()
+    {
+        var itemId = Guid.NewGuid();
+        _dbContext.Items.Add(
+            new Item
+            {
+                Id = itemId,
+                TenantCode =
+                    TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal =
+                    "Complete warehouse stock snapshot item",
+                NameMatchKey =
+                    "COMPLETEWAREHOUSESTOCKSNAPSHOTITEM",
+                ItemKind = ItemKinds.Product,
+                TrackingType =
+                    ItemTrackingTypes.Stock,
+                CurrentStock = 15m
+            });
+        var includedStock =
+            new ItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode =
+                    OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 10m,
+                UpdatedAtUtc =
+                    new DateTime(
+                        2026,
+                        7,
+                        30,
+                        2,
+                        20,
+                        0,
+                        DateTimeKind.Utc)
+            };
+        var omittedSibling =
+            new ItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode =
+                    OfficeCodeCatalog.YeonsuMainWarehouse,
+                Quantity = 5m,
+                UpdatedAtUtc =
+                    new DateTime(
+                        2026,
+                        7,
+                        30,
+                        2,
+                        21,
+                        0,
+                        DateTimeKind.Utc)
+            };
+        _dbContext.ItemWarehouseStocks.AddRange(
+            includedStock,
+            omittedSibling);
+        await _dbContext.SaveChangesAsync();
+        var includedRevision = includedStock.Revision;
+        var omittedSiblingRevision =
+            omittedSibling.Revision;
+        var maxKnownRevision =
+            Math.Max(
+                includedRevision,
+                omittedSiblingRevision);
+
+        var response = await _controller.Push(
+            new SyncPushRequest
+            {
+                DeviceId =
+                    "device-complete-stock-with-marker",
+                ItemWarehouseStocks =
+                [
+                    new ItemWarehouseStockDto
+                    {
+                        ItemId = itemId,
+                        WarehouseCode =
+                            includedStock.WarehouseCode,
+                        Quantity = 12m,
+                        Revision = includedRevision,
+                        ExpectedRevision =
+                            includedRevision,
+                        UpdatedAtUtc =
+                            new DateTime(
+                                2026,
+                                7,
+                                30,
+                                2,
+                                22,
+                                0,
+                                DateTimeKind.Utc)
+                    }
+                ],
+                ItemWarehouseStockSnapshotMarkers =
+                [
+                    new ItemWarehouseStockSnapshotMarkerDto
+                    {
+                        ItemId = itemId,
+                        MaxKnownRevision =
+                            maxKnownRevision
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok =
+            Assert.IsType<OkObjectResult>(
+                response.Result);
+        var result =
+            Assert.IsType<SyncPushResult>(
+                ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Single(
+            result.AcceptedItemWarehouseStockKeys);
+
+        _dbContext.ChangeTracker.Clear();
+        var zeroedSibling =
+            await _dbContext.ItemWarehouseStocks
+                .SingleAsync(
+                    stock =>
+                        stock.ItemId == itemId &&
+                        stock.WarehouseCode ==
+                        omittedSibling.WarehouseCode);
+        var zeroedSiblingRevision =
+            zeroedSibling.Revision;
+        Assert.Equal(0m, zeroedSibling.Quantity);
+        Assert.True(
+            zeroedSiblingRevision >
+            omittedSiblingRevision);
+
+        var conflictResponse = await _controller.Push(
+            new SyncPushRequest
+            {
+                DeviceId =
+                    "device-stale-zero-revision-stock",
+                ItemWarehouseStocks =
+                [
+                    new ItemWarehouseStockDto
+                    {
+                        ItemId = itemId,
+                        WarehouseCode =
+                            omittedSibling.WarehouseCode,
+                        Quantity = 7m,
+                        Revision = 0,
+                        ExpectedRevision = 0,
+                        UpdatedAtUtc =
+                            new DateTime(
+                                2026,
+                                7,
+                                30,
+                                2,
+                                23,
+                                0,
+                                DateTimeKind.Utc)
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var conflictOk =
+            Assert.IsType<OkObjectResult>(
+                conflictResponse.Result);
+        var conflictResult =
+            Assert.IsType<SyncPushResult>(
+                conflictOk.Value);
+        Assert.Equal(
+            1,
+            conflictResult.ConflictCount);
+        Assert.Empty(
+            conflictResult
+                .AcceptedItemWarehouseStockKeys);
+        var conflict =
+            Assert.Single(
+                conflictResult.Conflicts);
+        Assert.Equal(
+            nameof(ItemWarehouseStock),
+            conflict.EntityName);
+        Assert.Equal(
+            $"{itemId:D}|{omittedSibling.WarehouseCode}",
+            conflict.EntityId);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedSibling =
+            await _dbContext.ItemWarehouseStocks
+                .SingleAsync(
+                    stock =>
+                        stock.ItemId == itemId &&
+                        stock.WarehouseCode ==
+                        omittedSibling.WarehouseCode);
+        Assert.Equal(0m, storedSibling.Quantity);
+        Assert.Equal(
+            zeroedSiblingRevision,
+            storedSibling.Revision);
+    }
+
+    [Fact]
+    public async Task Push_CompleteEmptyItemWarehouseStockSnapshot_ZeroesLastRowAndPreservesTombstone()
+    {
+        var itemId = Guid.NewGuid();
+        _dbContext.Items.Add(
+            new Item
+            {
+                Id = itemId,
+                TenantCode =
+                    TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal =
+                    "Complete empty warehouse stock snapshot item",
+                NameMatchKey =
+                    "COMPLETEEMPTYWAREHOUSESTOCKSNAPSHOTITEM",
+                ItemKind = ItemKinds.Product,
+                TrackingType =
+                    ItemTrackingTypes.Stock,
+                CurrentStock = 9m
+            });
+        var lastStockRow =
+            new ItemWarehouseStock
+            {
+                ItemId = itemId,
+                WarehouseCode =
+                    OfficeCodeCatalog.UsenetMainWarehouse,
+                Quantity = 9m,
+                UpdatedAtUtc =
+                    new DateTime(
+                        2026,
+                        7,
+                        30,
+                        2,
+                        30,
+                        0,
+                        DateTimeKind.Utc)
+            };
+        _dbContext.ItemWarehouseStocks.Add(
+            lastStockRow);
+        await _dbContext.SaveChangesAsync();
+        var lastStockRevision =
+            lastStockRow.Revision;
+
+        var response = await _controller.Push(
+            new SyncPushRequest
+            {
+                DeviceId =
+                    "device-complete-empty-stock-snapshot",
+                ItemWarehouseStockSnapshotMarkers =
+                [
+                    new ItemWarehouseStockSnapshotMarkerDto
+                    {
+                        ItemId = itemId,
+                        MaxKnownRevision =
+                            lastStockRevision
+                    }
+                ]
+            },
+            CancellationToken.None);
+
+        var ok =
+            Assert.IsType<OkObjectResult>(
+                response.Result);
+        var result =
+            Assert.IsType<SyncPushResult>(
+                ok.Value);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.Empty(
+            result.AcceptedItemWarehouseStockKeys);
+
+        _dbContext.ChangeTracker.Clear();
+        var storedRow =
+            await _dbContext.ItemWarehouseStocks
+                .SingleAsync(
+                    stock =>
+                        stock.ItemId == itemId);
+        Assert.Equal(0m, storedRow.Quantity);
+        Assert.True(
+            storedRow.Revision >
+            lastStockRevision);
+        Assert.Equal(
+            0m,
+            await _dbContext.Items
+                .IgnoreQueryFilters()
+                .Where(item =>
+                    item.Id == itemId)
+                .Select(item =>
+                    item.CurrentStock)
+                .SingleAsync());
+    }
+
+    [Fact]
+    public async Task Push_RejectsDifferentZeroRevisionPayloadForExistingItemWarehouseStock()
+    {
+        var itemId = Guid.NewGuid();
+        var warehouseCode = OfficeCodeCatalog.UsenetMainWarehouse;
+        var requestUpdatedAtUtc = new DateTime(2026, 7, 30, 2, 1, 0, DateTimeKind.Utc);
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Zero revision stock payload guard item",
+            NameMatchKey = "ZEROREVISIONSTOCKPAYLOADGUARDITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var acceptedResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-zero-revision-stock-payload-guard",
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode = warehouseCode,
+                    Quantity = 5m,
+                    Revision = 0,
+                    ExpectedRevision = 0,
+                    UpdatedAtUtc = requestUpdatedAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+        var acceptedOk = Assert.IsType<OkObjectResult>(acceptedResponse.Result);
+        var acceptedResult = Assert.IsType<SyncPushResult>(acceptedOk.Value);
+        Assert.Equal(0, acceptedResult.ConflictCount);
+        Assert.Single(acceptedResult.AcceptedItemWarehouseStockKeys);
+
+        _dbContext.ChangeTracker.Clear();
+        var acceptedStock = await _dbContext.ItemWarehouseStocks
+            .SingleAsync(current => current.ItemId == itemId && current.WarehouseCode == warehouseCode);
+        var acceptedRevision = acceptedStock.Revision;
+        Assert.Equal(5m, acceptedStock.Quantity);
+        Assert.True(acceptedRevision > 0);
+
+        var conflictResponse = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "device-zero-revision-stock-payload-guard",
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode = warehouseCode,
+                    Quantity = 99m,
+                    Revision = 0,
+                    ExpectedRevision = 0,
+                    UpdatedAtUtc = requestUpdatedAtUtc
+                }
+            ]
+        }, CancellationToken.None);
+        var conflictOk = Assert.IsType<OkObjectResult>(conflictResponse.Result);
+        var conflictResult = Assert.IsType<SyncPushResult>(conflictOk.Value);
+        Assert.Equal(1, conflictResult.ConflictCount);
+        Assert.Empty(conflictResult.AcceptedItemWarehouseStockKeys);
+        var conflict = Assert.Single(conflictResult.Conflicts);
+        Assert.Equal(nameof(ItemWarehouseStock), conflict.EntityName);
+        Assert.Equal($"{itemId:D}|{warehouseCode}", conflict.EntityId);
+
+        _dbContext.ChangeTracker.Clear();
+        var stored = await _dbContext.ItemWarehouseStocks
+            .SingleAsync(current => current.ItemId == itemId && current.WarehouseCode == warehouseCode);
+        Assert.Equal(5m, stored.Quantity);
+        Assert.Equal(acceptedRevision, stored.Revision);
+        Assert.Equal(requestUpdatedAtUtc, stored.UpdatedAtUtc);
+    }
+
+    [Fact]
     public async Task Push_RejectsStaleItemWarehouseStockExpectedRevision()
     {
         var itemId = Guid.NewGuid();
@@ -14851,15 +34288,17 @@ public sealed class SyncControllerTests : IDisposable
             ItemKind = ItemKinds.Product,
             TrackingType = ItemTrackingTypes.Stock
         });
-        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        var warehouseStock = new ItemWarehouseStock
         {
             ItemId = itemId,
             WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
             Quantity = 10m,
             UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
             Revision = 200
-        });
+        };
+        _dbContext.ItemWarehouseStocks.Add(warehouseStock);
         await _dbContext.SaveChangesAsync();
+        var storedRevision = warehouseStock.Revision;
 
         var request = new SyncPushRequest
         {
@@ -14872,8 +34311,8 @@ public sealed class SyncControllerTests : IDisposable
                     WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
                     Quantity = 99m,
                     UpdatedAtUtc = DateTime.UtcNow,
-                    Revision = 199,
-                    ExpectedRevision = 199
+                    Revision = storedRevision - 1,
+                    ExpectedRevision = storedRevision - 1
                 }
             ]
         };
@@ -14885,7 +34324,83 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal(1, result.ConflictCount);
         var stored = await _dbContext.ItemWarehouseStocks.FirstAsync(stock => stock.ItemId == itemId);
         Assert.Equal(10m, stored.Quantity);
-        Assert.Equal(200, stored.Revision);
+        Assert.Equal(storedRevision, stored.Revision);
+    }
+
+    [Fact]
+    public async Task Push_PreservesOmittedSiblingItemWarehouseStock_WhenIncomingRowHasRevisionConflict()
+    {
+        var itemId = Guid.NewGuid();
+        _dbContext.Items.Add(new Item
+        {
+            Id = itemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Conflicting multi warehouse item",
+            NameMatchKey = "CONFLICTINGMULTIWAREHOUSEITEM",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 15m
+        });
+        var omittedSiblingStock = new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            Quantity = 5m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-10)
+        };
+        _dbContext.ItemWarehouseStocks.Add(omittedSiblingStock);
+        await _dbContext.SaveChangesAsync();
+        var omittedSiblingRevision = omittedSiblingStock.Revision;
+
+        var conflictingStock = new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5)
+        };
+        _dbContext.ItemWarehouseStocks.Add(conflictingStock);
+        await _dbContext.SaveChangesAsync();
+        var conflictingStockRevision = conflictingStock.Revision;
+        Assert.True(omittedSiblingRevision < conflictingStockRevision);
+
+        var request = new SyncPushRequest
+        {
+            DeviceId = "device-stock-conflict-preserve-sibling",
+            ItemWarehouseStocks =
+            [
+                new ItemWarehouseStockDto
+                {
+                    ItemId = itemId,
+                    WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+                    Quantity = 99m,
+                    UpdatedAtUtc = DateTime.UtcNow,
+                    Revision = omittedSiblingRevision,
+                    ExpectedRevision = omittedSiblingRevision
+                }
+            ]
+        };
+
+        var response = await _controller.Push(request, CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+
+        Assert.Equal(1, result.ConflictCount);
+        var storedStocks = await _dbContext.ItemWarehouseStocks
+            .Where(stock => stock.ItemId == itemId)
+            .ToListAsync();
+        Assert.Equal(2, storedStocks.Count);
+        var storedConflictingStock = Assert.Single(
+            storedStocks,
+            stock => stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse);
+        Assert.Equal(10m, storedConflictingStock.Quantity);
+        Assert.Equal(conflictingStockRevision, storedConflictingStock.Revision);
+        var storedOmittedSibling = Assert.Single(
+            storedStocks,
+            stock => stock.WarehouseCode == OfficeCodeCatalog.YeonsuMainWarehouse);
+        Assert.Equal(5m, storedOmittedSibling.Quantity);
+        Assert.Equal(omittedSiblingRevision, storedOmittedSibling.Revision);
     }
 
     [Fact]
@@ -14904,24 +34419,33 @@ public sealed class SyncControllerTests : IDisposable
             CurrentStock = 15m,
             Revision = 100
         });
-        _dbContext.ItemWarehouseStocks.AddRange(
-            new ItemWarehouseStock
-            {
-                ItemId = itemId,
-                WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
-                Quantity = 10m,
-                UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
-                Revision = 200
-            },
-            new ItemWarehouseStock
-            {
-                ItemId = itemId,
-                WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
-                Quantity = 5m,
-                UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
-                Revision = 300
-            });
+        var mainWarehouseStock = new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 10m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+            Revision = 200
+        };
+        _dbContext.ItemWarehouseStocks.Add(mainWarehouseStock);
         await _dbContext.SaveChangesAsync();
+        var mainWarehouseRevision = mainWarehouseStock.Revision;
+        var initialItemRevision = await _dbContext.Items.IgnoreQueryFilters()
+            .Where(item => item.Id == itemId)
+            .Select(item => item.Revision)
+            .SingleAsync();
+
+        var newerWarehouseStock = new ItemWarehouseStock
+        {
+            ItemId = itemId,
+            WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            Quantity = 5m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-1),
+            Revision = 300
+        };
+        _dbContext.ItemWarehouseStocks.Add(newerWarehouseStock);
+        await _dbContext.SaveChangesAsync();
+        Assert.True(newerWarehouseStock.Revision > mainWarehouseRevision);
 
         var request = new SyncPushRequest
         {
@@ -14934,8 +34458,17 @@ public sealed class SyncControllerTests : IDisposable
                     WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
                     Quantity = 11m,
                     UpdatedAtUtc = DateTime.UtcNow,
-                    Revision = 200,
-                    ExpectedRevision = 200
+                    Revision = mainWarehouseRevision,
+                    ExpectedRevision = mainWarehouseRevision
+                }
+            ],
+            ItemWarehouseStockSnapshotMarkers =
+            [
+                new ItemWarehouseStockSnapshotMarkerDto
+                {
+                    ItemId = itemId,
+                    MaxKnownRevision =
+                        mainWarehouseRevision
                 }
             ]
         };
@@ -14949,10 +34482,10 @@ public sealed class SyncControllerTests : IDisposable
         Assert.True(await _dbContext.ItemWarehouseStocks.AnyAsync(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.YeonsuMainWarehouse));
         var updated = await _dbContext.ItemWarehouseStocks.FirstAsync(stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse);
         Assert.Equal(11m, updated.Quantity);
-        Assert.True(updated.Revision > 200);
+        Assert.True(updated.Revision > mainWarehouseRevision);
         var refreshedItem = await _dbContext.Items.IgnoreQueryFilters().FirstAsync(item => item.Id == itemId);
         Assert.Equal(16m, refreshedItem.CurrentStock);
-        Assert.True(refreshedItem.Revision > 100);
+        Assert.True(refreshedItem.Revision > initialItemRevision);
     }
 
     [Fact]
@@ -15753,14 +35286,90 @@ public sealed class SyncControllerTests : IDisposable
         _connection.Dispose();
     }
 
-    private AppDbContext CreateDbContext(TestCurrentUserContext currentUser)
+    private static void SeedSharingPolicy(
+        AppDbContext dbContext,
+        DataSharingPolicy policy)
+    {
+        SeedActiveTenantDefinition(dbContext, policy.SourceTenantCode);
+        SeedActiveTenantDefinition(dbContext, policy.TargetTenantCode);
+        SeedActiveOfficeDefinition(
+            dbContext,
+            policy.SourceTenantCode,
+            policy.SourceOfficeCode);
+        SeedActiveOfficeDefinition(
+            dbContext,
+            policy.TargetTenantCode,
+            policy.TargetOfficeCode);
+        dbContext.DataSharingPolicies.Add(policy);
+    }
+
+    private static void SeedActiveTenantDefinition(
+        AppDbContext dbContext,
+        string tenantCode)
+    {
+        var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(tenantCode);
+        var tenant = dbContext.TenantDefinitions.Local.FirstOrDefault(current =>
+                         current.TenantCode == normalizedTenantCode)
+                     ?? dbContext.TenantDefinitions.IgnoreQueryFilters().FirstOrDefault(current =>
+                         current.TenantCode == normalizedTenantCode);
+        if (tenant is null)
+        {
+            dbContext.TenantDefinitions.Add(new TenantDefinition
+            {
+                TenantCode = normalizedTenantCode,
+                DisplayName = TenantScopeCatalog.GetTenantDisplayName(normalizedTenantCode),
+                StorageMode = TenantScopeCatalog.StorageSharedDatabase,
+                IsActive = true,
+                IsDeleted = false
+            });
+            return;
+        }
+
+        tenant.IsActive = true;
+        tenant.IsDeleted = false;
+    }
+
+    private static void SeedActiveOfficeDefinition(
+        AppDbContext dbContext,
+        string tenantCode,
+        string officeCode)
+    {
+        var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(tenantCode);
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode);
+        var office = dbContext.TenantOfficeDefinitions.Local.FirstOrDefault(current =>
+                         current.TenantCode == normalizedTenantCode &&
+                         current.OfficeCode == normalizedOfficeCode)
+                     ?? dbContext.TenantOfficeDefinitions.IgnoreQueryFilters().FirstOrDefault(current =>
+                         current.TenantCode == normalizedTenantCode &&
+                         current.OfficeCode == normalizedOfficeCode);
+        if (office is null)
+        {
+            dbContext.TenantOfficeDefinitions.Add(new TenantOfficeDefinition
+            {
+                TenantCode = normalizedTenantCode,
+                OfficeCode = normalizedOfficeCode,
+                DisplayName = OfficeCodeCatalog.GetOfficeDisplayName(normalizedOfficeCode),
+                IsActive = true,
+                IsDeleted = false
+            });
+            return;
+        }
+
+        office.IsActive = true;
+        office.IsDeleted = false;
+    }
+
+    private AppDbContext CreateDbContext(
+        TestCurrentUserContext currentUser,
+        params IInterceptor[] interceptors)
     {
         var revisionClock = new RevisionClock();
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseSqlite(_connection)
-            .Options;
+        var optionsBuilder = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlite(_connection);
+        if (interceptors.Length > 0)
+            optionsBuilder.AddInterceptors(interceptors);
 
-        var dbContext = new AppDbContext(options, currentUser, revisionClock);
+        var dbContext = new AppDbContext(optionsBuilder.Options, currentUser, revisionClock);
         dbContext.Database.EnsureCreated();
         return dbContext;
     }
@@ -15772,12 +35381,14 @@ public sealed class SyncControllerTests : IDisposable
     {
         var revisionClock = new RevisionClock();
         var officeScopeService = new OfficeScopeService(currentUser, dbContext);
+        var resolvedFileStorage = fileStorage ?? new StubCentralFileStorage();
         return new SyncController(
             dbContext,
             currentUser,
             new StubInvoiceNumberService(),
             officeScopeService,
-            fileStorage ?? new StubCentralFileStorage(),
+            resolvedFileStorage,
+            new TestStoredFileReferenceReconciler(dbContext, resolvedFileStorage),
             revisionClock,
             new InventoryLedgerService(dbContext),
             new InvoiceStockSnapshotService(dbContext, revisionClock),
@@ -15785,8 +35396,349 @@ public sealed class SyncControllerTests : IDisposable
             new RentalSettlementRecalculationService(dbContext));
     }
 
+    private async Task<VersionedInvoiceStockFixture> SeedVersionedInvoiceStockAsync()
+    {
+        var fixture = new VersionedInvoiceStockFixture(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            0);
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = fixture.CustomerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Versioned Stock Fixture Customer",
+            NameMatchKey = "VERSIONEDSTOCKFIXTURECUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        _dbContext.Items.Add(new Item
+        {
+            Id = fixture.ItemId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Shared,
+            NameOriginal = "Versioned Stock Fixture Item",
+            NameMatchKey = "VERSIONEDSTOCKFIXTUREITEM",
+            Unit = "EA",
+            ItemKind = ItemKinds.Product,
+            TrackingType = ItemTrackingTypes.Stock,
+            CurrentStock = 8m
+        });
+        _dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
+        {
+            ItemId = fixture.ItemId,
+            WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            Quantity = 8m,
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+            Revision = 10
+        });
+        var firstInvoice = new Invoice
+        {
+            Id = fixture.FirstInvoiceId,
+            CustomerId = fixture.CustomerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            InvoiceNumber = "VERSIONED-STOCK-FIXTURE-001",
+            VersionGroupId = fixture.FirstInvoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 7, 27),
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-2),
+            Lines =
+            [
+                new InvoiceLine
+                {
+                    Id = Guid.NewGuid(),
+                    InvoiceId = fixture.FirstInvoiceId,
+                    ItemId = fixture.ItemId,
+                    ItemNameOriginal = "Versioned Stock Fixture Item",
+                    Unit = "EA",
+                    Quantity = 2m,
+                    UnitPrice = 1_000m,
+                    LineAmount = 2_000m,
+                    ItemTrackingType = ItemTrackingTypes.Stock
+                }
+            ]
+        };
+        _dbContext.Invoices.Add(firstInvoice);
+        await _dbContext.SaveChangesAsync();
+        return fixture with
+        {
+            FirstInvoiceRevision = firstInvoice.Revision
+        };
+    }
+
+    private static InvoiceDto CreateVersionedInvoiceStockDto(
+        VersionedInvoiceStockFixture fixture,
+        Guid invoiceId,
+        int versionNumber,
+        Guid previousVersionId,
+        decimal quantity)
+    {
+        var baseRevision =
+            previousVersionId == fixture.FirstInvoiceId
+                ? fixture.FirstInvoiceRevision
+                : 0;
+        return new InvoiceDto
+        {
+            Id = invoiceId,
+            CustomerId = fixture.CustomerId,
+            CustomerName = "Versioned Stock Fixture Customer",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse,
+            InvoiceNumber = $"VERSIONED-STOCK-FIXTURE-{versionNumber:000}",
+            VersionGroupId = fixture.FirstInvoiceId,
+            VersionNumber = versionNumber,
+            PreviousVersionId = previousVersionId,
+            IsLatestVersion = true,
+            Revision = baseRevision,
+            ExpectedRevision = baseRevision,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 7, 27),
+            UpdatedAtUtc = DateTime.UtcNow.AddSeconds(versionNumber),
+            Lines =
+            [
+                new InvoiceLineDto
+                {
+                    Id = Guid.NewGuid(),
+                    InvoiceId = invoiceId,
+                    ItemId = fixture.ItemId,
+                    ItemNameOriginal = "Versioned Stock Fixture Item",
+                    Unit = "EA",
+                    Quantity = quantity,
+                    UnitPrice = 1_000m,
+                    LineAmount = quantity * 1_000m,
+                    ItemTrackingType = ItemTrackingTypes.Stock
+                }
+            ]
+        };
+    }
+
+    private static InvoiceDto CreateHistoricalInvoiceVersionDto(
+        Guid customerId,
+        Guid invoiceId,
+        Guid versionGroupId,
+        int versionNumber,
+        Guid? previousVersionId,
+        long historicalRevision)
+    {
+        var timestamp = new DateTime(
+            2026,
+            Math.Clamp(versionNumber, 1, 12),
+            1,
+            0,
+            0,
+            0,
+            DateTimeKind.Utc);
+        return new InvoiceDto
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            CustomerName = "Historical Invoice Chain Customer",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = $"HISTORICAL-CHAIN-{versionNumber:000}",
+            VersionGroupId = versionGroupId,
+            VersionNumber = versionNumber,
+            PreviousVersionId = previousVersionId,
+            IsLatestVersion = true,
+            Revision = historicalRevision,
+            ExpectedRevision = historicalRevision,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = DateOnly.FromDateTime(timestamp),
+            CreatedAtUtc = timestamp,
+            UpdatedAtUtc = timestamp
+        };
+    }
+
+    private sealed record VersionedInvoiceStockFixture(
+        Guid CustomerId,
+        Guid ItemId,
+        Guid FirstInvoiceId,
+        long FirstInvoiceRevision);
+
+    private async Task<PaymentAtomicityFixture> SeedPaymentAtomicityFixtureAsync(
+        string suffix,
+        decimal? paymentAmount = null)
+    {
+        var customerId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var paymentDate = new DateOnly(2026, 8, 3);
+        var createdAtUtc = new DateTime(2026, 8, 3, 0, 0, 0, DateTimeKind.Utc);
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = $"SYNC-PAYMENT-ATOMIC-{suffix}-CUSTOMER",
+            NameMatchKey = $"SYNCPAYMENTATOMIC{suffix}CUSTOMER",
+            TradeType = CustomerClassificationNormalizer.Sales
+        });
+        _dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = $"SYNC-PAYMENT-ATOMIC-{suffix}-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = paymentDate,
+            TotalAmount = 100_000m,
+            SupplyAmount = 90_909m,
+            VatAmount = 9_091m,
+            CreatedAtUtc = createdAtUtc,
+            UpdatedAtUtc = createdAtUtc
+        });
+        if (paymentAmount.HasValue)
+        {
+            _dbContext.Payments.Add(new Payment
+            {
+                Id = paymentId,
+                InvoiceId = invoiceId,
+                PaymentDate = paymentDate,
+                Amount = paymentAmount.Value,
+                Note = $"atomic {suffix} payment",
+                CreatedAtUtc = createdAtUtc,
+                UpdatedAtUtc = createdAtUtc
+            });
+            _dbContext.Transactions.Add(new TransactionRecord
+            {
+                Id = paymentId,
+                CustomerId = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                TransactionDate = paymentDate,
+                TransactionKind = "전표수금",
+                LinkedInvoiceId = invoiceId,
+                LinkedInvoiceNumber = $"SYNC-PAYMENT-ATOMIC-{suffix}-001",
+                SettlementAmount = paymentAmount.Value,
+                BankReceipt = paymentAmount.Value,
+                ReceiptTotal = paymentAmount.Value,
+                Note = $"atomic {suffix} payment",
+                CreatedAtUtc = createdAtUtc,
+                UpdatedAtUtc = createdAtUtc
+            });
+        }
+
+        await _dbContext.SaveChangesAsync();
+        var invoiceRevision = await _dbContext.Invoices.IgnoreQueryFilters()
+            .Where(invoice => invoice.Id == invoiceId)
+            .Select(invoice => invoice.Revision)
+            .SingleAsync();
+        var paymentRevision = paymentAmount.HasValue
+            ? await _dbContext.Payments.IgnoreQueryFilters()
+                .Where(payment => payment.Id == paymentId)
+                .Select(payment => payment.Revision)
+                .SingleAsync()
+            : 0;
+        var transactionRevision = paymentAmount.HasValue
+            ? await _dbContext.Transactions.IgnoreQueryFilters()
+                .Where(transaction => transaction.Id == paymentId)
+                .Select(transaction => transaction.Revision)
+                .SingleAsync()
+            : 0;
+        return new PaymentAtomicityFixture(
+            customerId,
+            invoiceId,
+            paymentId,
+            paymentDate,
+            createdAtUtc,
+            invoiceRevision,
+            paymentRevision,
+            transactionRevision,
+            $"SYNC-PAYMENT-ATOMIC-{suffix}-001");
+    }
+
+    private static TransactionDto CreatePaymentAtomicityTransactionDto(
+        PaymentAtomicityFixture fixture,
+        decimal amount,
+        string mutationId,
+        long expectedRevision,
+        bool isDeleted = false,
+        bool useCash = false)
+        => new()
+        {
+            Id = fixture.PaymentId,
+            CustomerId = fixture.CustomerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = fixture.PaymentDate,
+            TransactionKind = "전표수금",
+            LinkedInvoiceId = fixture.InvoiceId,
+            LinkedInvoiceNumber = fixture.InvoiceNumber,
+            SettlementAmount = amount,
+            CashReceipt = useCash ? amount : 0m,
+            BankReceipt = useCash ? 0m : amount,
+            ReceiptTotal = amount,
+            Note = $"atomic {mutationId}",
+            Revision = expectedRevision,
+            ExpectedRevision = expectedRevision,
+            IsDeleted = isDeleted,
+            MutationId = mutationId,
+            MutationCreatedAtUtc = fixture.CreatedAtUtc.AddMinutes(1),
+            CreatedAtUtc = fixture.CreatedAtUtc,
+            UpdatedAtUtc = fixture.CreatedAtUtc.AddMinutes(1)
+        };
+
+    private static PaymentDto CreatePaymentAtomicityPaymentDto(
+        PaymentAtomicityFixture fixture,
+        decimal amount,
+        string mutationId,
+        long expectedRevision,
+        bool isDeleted = false)
+        => new()
+        {
+            Id = fixture.PaymentId,
+            InvoiceId = fixture.InvoiceId,
+            PaymentDate = fixture.PaymentDate,
+            Amount = amount,
+            Note = $"atomic {mutationId}",
+            Revision = expectedRevision,
+            ExpectedRevision = expectedRevision,
+            IsDeleted = isDeleted,
+            MutationId = mutationId,
+            MutationCreatedAtUtc = fixture.CreatedAtUtc.AddMinutes(1),
+            CreatedAtUtc = fixture.CreatedAtUtc,
+            UpdatedAtUtc = fixture.CreatedAtUtc.AddMinutes(1)
+        };
+
+    private sealed record PaymentAtomicityFixture(
+        Guid CustomerId,
+        Guid InvoiceId,
+        Guid PaymentId,
+        DateOnly PaymentDate,
+        DateTime CreatedAtUtc,
+        long InvoiceRevision,
+        long PaymentRevision,
+        long TransactionRevision,
+        string InvoiceNumber);
+
     private static string ComputeTestSha256Hex(byte[] content)
         => Convert.ToHexString(SHA256.HashData(content));
+
+    private static string ComputePreCanonicalMutationPayloadHash(SyncEntityDto dto)
+    {
+        var payload = JsonSerializer.SerializeToUtf8Bytes(
+            dto,
+            dto.GetType(),
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        return Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant();
+    }
 
     private static byte[] TestPdfBytes()
         => "%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n"u8.ToArray();
@@ -15804,6 +35756,299 @@ public sealed class SyncControllerTests : IDisposable
         public decimal SettledAmount { get; set; }
         public string SettlementStatus { get; set; } = string.Empty;
         public DateOnly? SettledDate { get; set; }
+        public bool IsTombstoned { get; set; }
+        public DateTime? TombstonedAtUtc { get; set; }
+        public string TombstonedByUsername { get; set; } = string.Empty;
+    }
+
+    private sealed class RentalManagementCompanyQueryCountingInterceptor : DbCommandInterceptor
+    {
+        private int _selectCount;
+        private int _conflictSelectCount;
+        private int _conflictDeleteCount;
+
+        public int SelectCount => Volatile.Read(ref _selectCount);
+        public int ConflictSelectCount => Volatile.Read(ref _conflictSelectCount);
+        public int ConflictDeleteCount => Volatile.Read(ref _conflictDeleteCount);
+
+        public void Reset()
+        {
+            Interlocked.Exchange(ref _selectCount, 0);
+            Interlocked.Exchange(ref _conflictSelectCount, 0);
+            Interlocked.Exchange(ref _conflictDeleteCount, 0);
+        }
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result)
+        {
+            CountRentalManagementCompanySelect(command);
+            CountConflictLogSelect(command);
+            return base.ReaderExecuting(command, eventData, result);
+        }
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            CountRentalManagementCompanySelect(command);
+            CountConflictLogSelect(command);
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
+
+        public override InterceptionResult<int> NonQueryExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result)
+        {
+            CountConflictLogDelete(command);
+            return base.NonQueryExecuting(command, eventData, result);
+        }
+
+        public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            CountConflictLogDelete(command);
+            return base.NonQueryExecutingAsync(command, eventData, result, cancellationToken);
+        }
+
+        private void CountRentalManagementCompanySelect(DbCommand command)
+        {
+            var commandText = command.CommandText.TrimStart();
+            if (commandText.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase) &&
+                commandText.Contains("RentalManagementCompanies", StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref _selectCount);
+            }
+        }
+
+        private void CountConflictLogSelect(DbCommand command)
+        {
+            var commandText = command.CommandText.TrimStart();
+            if (commandText.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase) &&
+                commandText.Contains("ConflictLogs", StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref _conflictSelectCount);
+            }
+        }
+
+        private void CountConflictLogDelete(DbCommand command)
+        {
+            var commandText = command.CommandText.TrimStart();
+            if (commandText.StartsWith("DELETE", StringComparison.OrdinalIgnoreCase) &&
+                commandText.Contains("ConflictLogs", StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref _conflictDeleteCount);
+            }
+        }
+    }
+
+    private sealed class RentalProfilePushQueryCountingInterceptor : DbCommandInterceptor
+    {
+        private int _rentalBillingProfileSelectCount;
+        private int _rentalAssetSelectCount;
+        private int _customerSelectCount;
+        private int _rentalManagementCompanySelectCount;
+        private int _customerContractSelectCount;
+        private int _itemSelectCount;
+        private int _totalSelectCount;
+
+        public void Reset()
+        {
+            Interlocked.Exchange(ref _rentalBillingProfileSelectCount, 0);
+            Interlocked.Exchange(ref _rentalAssetSelectCount, 0);
+            Interlocked.Exchange(ref _customerSelectCount, 0);
+            Interlocked.Exchange(ref _rentalManagementCompanySelectCount, 0);
+            Interlocked.Exchange(ref _customerContractSelectCount, 0);
+            Interlocked.Exchange(ref _itemSelectCount, 0);
+            Interlocked.Exchange(ref _totalSelectCount, 0);
+        }
+
+        public RentalProfilePushSelectCounts Snapshot()
+            => new(
+                Volatile.Read(ref _rentalBillingProfileSelectCount),
+                Volatile.Read(ref _rentalAssetSelectCount),
+                Volatile.Read(ref _customerSelectCount),
+                Volatile.Read(ref _rentalManagementCompanySelectCount),
+                Volatile.Read(ref _customerContractSelectCount));
+
+        public RentalProfileAssetPushSelectCounts MixedSnapshot()
+            => new(
+                Volatile.Read(ref _rentalBillingProfileSelectCount),
+                Volatile.Read(ref _rentalAssetSelectCount),
+                Volatile.Read(ref _customerSelectCount),
+                Volatile.Read(ref _rentalManagementCompanySelectCount),
+                Volatile.Read(ref _customerContractSelectCount),
+                Volatile.Read(ref _itemSelectCount),
+                Volatile.Read(ref _totalSelectCount));
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result)
+        {
+            CountSelect(command);
+            return base.ReaderExecuting(command, eventData, result);
+        }
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            CountSelect(command);
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
+
+        private void CountSelect(DbCommand command)
+        {
+            var commandText = command.CommandText.TrimStart();
+            if (!commandText.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            Interlocked.Increment(ref _totalSelectCount);
+
+            if (commandText.Contains("RentalBillingProfiles", StringComparison.Ordinal))
+                Interlocked.Increment(ref _rentalBillingProfileSelectCount);
+            if (commandText.Contains("RentalAssets", StringComparison.Ordinal))
+                Interlocked.Increment(ref _rentalAssetSelectCount);
+            if (commandText.Contains("Customers", StringComparison.Ordinal))
+                Interlocked.Increment(ref _customerSelectCount);
+            if (commandText.Contains("RentalManagementCompanies", StringComparison.Ordinal))
+                Interlocked.Increment(ref _rentalManagementCompanySelectCount);
+            if (commandText.Contains("CustomerContracts", StringComparison.Ordinal))
+                Interlocked.Increment(ref _customerContractSelectCount);
+            if (commandText.Contains("Items", StringComparison.Ordinal))
+                Interlocked.Increment(ref _itemSelectCount);
+        }
+    }
+
+    private sealed record RentalProfilePushSelectCounts(
+        int RentalBillingProfileSelectCount,
+        int RentalAssetSelectCount,
+        int CustomerSelectCount,
+        int RentalManagementCompanySelectCount,
+        int CustomerContractSelectCount);
+
+    private sealed record RentalProfileAssetPushSelectCounts(
+        int RentalBillingProfileSelectCount,
+        int RentalAssetSelectCount,
+        int CustomerSelectCount,
+        int RentalManagementCompanySelectCount,
+        int CustomerContractSelectCount,
+        int ItemSelectCount,
+        int TotalSelectCount);
+
+    private sealed class ActiveRentalAssetMaterializationInterceptor : IMaterializationInterceptor
+    {
+        private int _activeRentalAssetCount;
+
+        public int ActiveRentalAssetCount => Volatile.Read(ref _activeRentalAssetCount);
+
+        public void Reset()
+            => Interlocked.Exchange(ref _activeRentalAssetCount, 0);
+
+        public object InitializedInstance(
+            MaterializationInterceptionData materializationData,
+            object entity)
+        {
+            if (entity is RentalAsset { IsDeleted: false })
+                Interlocked.Increment(ref _activeRentalAssetCount);
+            return entity;
+        }
+    }
+
+    private sealed class ConflictLogUpdateCountingInterceptor : DbCommandInterceptor
+    {
+        private int _updateCount;
+
+        public int UpdateCount => Volatile.Read(ref _updateCount);
+
+        public void Reset()
+            => Interlocked.Exchange(ref _updateCount, 0);
+
+        public override InterceptionResult<int> NonQueryExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result)
+        {
+            CountConflictLogUpdate(command);
+            return base.NonQueryExecuting(command, eventData, result);
+        }
+
+        public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            CountConflictLogUpdate(command);
+            return base.NonQueryExecutingAsync(command, eventData, result, cancellationToken);
+        }
+
+        private void CountConflictLogUpdate(DbCommand command)
+        {
+            var commandText = command.CommandText.TrimStart();
+            if (commandText.StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase) &&
+                commandText.Contains("ConflictLogs", StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref _updateCount);
+            }
+        }
+    }
+
+    private sealed class AuditActorQueryCountingInterceptor : DbCommandInterceptor
+    {
+        private int _auditLogSelectCount;
+        private string _auditLogSelectCommandText = string.Empty;
+
+        public int AuditLogSelectCount => Volatile.Read(ref _auditLogSelectCount);
+        public string AuditLogSelectCommandText => _auditLogSelectCommandText;
+
+        public void Reset()
+        {
+            Interlocked.Exchange(ref _auditLogSelectCount, 0);
+            _auditLogSelectCommandText = string.Empty;
+        }
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result)
+        {
+            CountAuditLogSelect(command);
+            return base.ReaderExecuting(command, eventData, result);
+        }
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            CountAuditLogSelect(command);
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
+
+        private void CountAuditLogSelect(DbCommand command)
+        {
+            var commandText = command.CommandText.TrimStart();
+            if (!commandText.StartsWith("SELECT", StringComparison.OrdinalIgnoreCase) ||
+                !commandText.Contains("AuditLogs", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            Interlocked.Increment(ref _auditLogSelectCount);
+            _auditLogSelectCommandText = command.CommandText;
+        }
     }
 
     private sealed class TestCurrentUserContext : ICurrentUserContext
@@ -15854,6 +36099,57 @@ public sealed class SyncControllerTests : IDisposable
         public void DeleteIfExists(string? storedPath)
         {
         }
+    }
+
+    private sealed class TestStoredFileReferenceReconciler(
+        AppDbContext dbContext,
+        ICentralFileStorage fileStorage) : IStoredFileReferenceReconciler
+    {
+        public async Task DeleteUnreferencedAsync(
+            IEnumerable<string> candidatePaths,
+            CancellationToken cancellationToken = default)
+        {
+            var candidates = candidatePaths
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var referenced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var path in await dbContext.CustomerContracts
+                         .IgnoreQueryFilters()
+                         .Where(current => candidates.Contains(current.StoragePath))
+                         .Select(current => current.StoragePath)
+                         .ToListAsync(cancellationToken))
+            {
+                referenced.Add(path);
+            }
+
+            foreach (var path in await dbContext.TransactionAttachments
+                         .IgnoreQueryFilters()
+                         .Where(current => candidates.Contains(current.StoragePath))
+                         .Select(current => current.StoragePath)
+                         .ToListAsync(cancellationToken))
+            {
+                referenced.Add(path);
+            }
+
+            foreach (var path in await dbContext.PaymentAttachments
+                         .IgnoreQueryFilters()
+                         .Where(current => candidates.Contains(current.StoragePath))
+                         .Select(current => current.StoragePath)
+                         .ToListAsync(cancellationToken))
+            {
+                referenced.Add(path);
+            }
+
+            foreach (var path in candidates.Where(path => !referenced.Contains(path)))
+                fileStorage.DeleteIfExists(path);
+        }
+
+        public Task<PaymentAttachment?> FindPaymentAttachmentAsync(
+            Guid attachmentId,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult<PaymentAttachment?>(null);
     }
 
     private sealed class RecordingCentralFileStorage : ICentralFileStorage

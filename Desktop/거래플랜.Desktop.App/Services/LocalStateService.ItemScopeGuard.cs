@@ -25,13 +25,47 @@ public sealed partial class LocalStateService
     {
         EnsureCanUpsertItem(item, session, preferredOfficeCode);
 
-        if (_db.Database.CurrentTransaction is not null)
-            return await SaveItemAndPriceGradesAsync(item, session, preferredOfficeCode, itemPriceGrades, ct);
+        return await UpsertItemWithDeletedRestorePolicyAsync(
+            item,
+            session,
+            preferredOfficeCode,
+            itemPriceGrades,
+            allowDeletedRestore: false,
+            ct);
+    }
 
-        await using var transaction = await _db.Database.BeginTransactionAsync(ct);
+    private async Task<LocalItem> RestoreDeletedMissingItemAsync(
+        LocalItem item,
+        SessionState session,
+        string? preferredOfficeCode,
+        CancellationToken ct)
+    {
+        EnsureCanUpsertItem(item, session, preferredOfficeCode);
+        return await UpsertItemWithDeletedRestorePolicyAsync(
+            item,
+            session,
+            preferredOfficeCode,
+            itemPriceGrades: null,
+            allowDeletedRestore: true,
+            ct);
+    }
+
+    private async Task<LocalItem> UpsertItemWithDeletedRestorePolicyAsync(
+        LocalItem item,
+        SessionState session,
+        string? preferredOfficeCode,
+        IEnumerable<LocalItemPriceGrade>? itemPriceGrades,
+        bool allowDeletedRestore,
+        CancellationToken ct)
+    {
+
+        if (_db.Database.CurrentTransaction is not null)
+            return await SaveItemAndPriceGradesAsync(item, session, preferredOfficeCode, itemPriceGrades, allowDeletedRestore, ct);
+
+        await using var transaction = await _db.BeginRuntimeMutationTransactionAsync(ct);
         try
         {
-            var saved = await SaveItemAndPriceGradesAsync(item, session, preferredOfficeCode, itemPriceGrades, ct);
+            var saved = await SaveItemAndPriceGradesAsync(item, session, preferredOfficeCode, itemPriceGrades, allowDeletedRestore, ct);
             await transaction.CommitAsync(ct);
             return saved;
         }
@@ -48,12 +82,15 @@ public sealed partial class LocalStateService
         SessionState session,
         string? preferredOfficeCode,
         IEnumerable<LocalItemPriceGrade>? itemPriceGrades,
+        bool allowDeletedRestore,
         CancellationToken ct)
     {
         var saved = await UpsertItemAsync(
             item,
             preferredOfficeCode,
             synchronizeLinkedRentalAssets: CanEditRentalAssets(session),
+            preserveExistingInventoryStock: true,
+            allowDeletedRestore,
             ct);
         if (itemPriceGrades is not null)
             await SaveItemPriceGradesForItemAsync(saved.Id, itemPriceGrades, ct);

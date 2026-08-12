@@ -1,5 +1,6 @@
 ﻿using System.Collections.ObjectModel;
 using System.IO;
+using System.Net.Http;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -34,9 +35,16 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     private Guid _companyProfileId = Guid.NewGuid();
     private int _assignedCompanyProfileLoadVersion;
     private bool _isDataIntegrityNavigationBusy;
+    private long _editingUserExpectedRevision;
+    private bool _editingUserRevisionRequiresReload;
+
+    internal Func<string, Guid?, Task> AssignedUserCompanyProfileWriter { get; set; }
 
     [ObservableProperty] private string _statusMessage = "환경설정을 불러왔습니다.";
-    [ObservableProperty] private bool _isBusy;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanInteract))]
+    private bool _isBusy;
+    public bool CanInteract => !IsBusy;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanEditCompanyProfiles))]
@@ -110,7 +118,8 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         StatementPrintService print,
         RentalDocumentService rentalDocuments,
         IPrintService invoicePrintService,
-        Func<Task>? applyBusinessDatabaseChangeAsync = null)
+        Func<Task>? applyBusinessDatabaseChangeAsync = null,
+        Func<Func<Task>, Task>? runBusinessDatabaseTransitionAsync = null)
     {
         _local = local;
         _session = session;
@@ -125,7 +134,10 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         _invoicePrintService = invoicePrintService;
         _legacyMigrationService = new LegacyDataMigrationService(local);
         _updateService = new DesktopAppUpdateService(api);
+        AssignedUserCompanyProfileWriter = (username, profileId) =>
+            _local.SetAssignedCompanyProfileAsync(username, profileId);
         _applyBusinessDatabaseChangeAsync = applyBusinessDatabaseChangeAsync;
+        _runBusinessDatabaseTransitionAsync = runBusinessDatabaseTransitionAsync;
         InitializeRecycleBinTypeOptions();
         InitializeUpdateState();
         InitializeBusinessDatabaseSelection();
@@ -332,7 +344,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             Filter = "이미지 파일|*.png;*.jpg;*.jpeg;*.bmp"
         };
 
-        if (dialog.ShowDialog() != true)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) != true)
             return;
 
         CompanyStampImage = File.ReadAllBytes(dialog.FileName);
@@ -367,7 +379,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             CheckFileExists = true
         };
 
-        if (dialog.ShowDialog() != true)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) != true)
             return;
 
         LegacySourceDbPath = dialog.FileName;
@@ -394,7 +406,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             InitialDirectory = initialDirectory
         };
 
-        if (dialog.ShowDialog() != true)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) != true)
             return;
 
         LegacyCustomerExcelPath = dialog.FileName;
@@ -421,7 +433,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             InitialDirectory = initialDirectory
         };
 
-        if (dialog.ShowDialog() != true)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) != true)
             return;
 
         LegacyItemExcelPath = dialog.FileName;
@@ -599,6 +611,8 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         EditingUserCompanyProfileId = string.Empty;
         EditingPassword = string.Empty;
         EditingPasswordConfirm = string.Empty;
+        _editingUserExpectedRevision = 0;
+        _editingUserRevisionRequiresReload = false;
         EditingUserScopeType = TenantScopeCatalog.ScopeOfficeOnly;
         SetDefaultEditingUserOfficeCode();
         EditingUserCompanyProfileId = ResolveDefaultCompanyProfileId(EditingUserOfficeCode);
@@ -654,14 +668,22 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             return;
         }
 
+        if (_editingUserRevisionRequiresReload)
+        {
+            StatusMessage = "이전 사용자 변경 결과를 확정하지 못했습니다. 사용자 목록을 다시 불러와 계정을 다시 선택하거나 새 사용자 입력을 다시 시작한 뒤 저장하세요.";
+            return;
+        }
+
         var permissions = BuildPermissionsForRole(EditingUserRole);
         var username = EditingUsername.Trim();
+        var assignedCompanyProfileId = ParseCompanyProfileId(EditingUserCompanyProfileId);
+        var preservePasswordForRetry = false;
         try
         {
             IsBusy = true;
             if (EditingUserId == Guid.Empty)
             {
-                await _api.CreateUserAsync(new CreateUserRequest
+                var createRequest = new CreateUserRequest
                 {
                     Username = username,
                     Password = EditingPassword,
@@ -671,14 +693,34 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
                     ScopeType = EditingUserScopeType,
                     IsActive = EditingUserIsActive,
                     Permissions = permissions
-                });
-                StatusMessage = "사용자를 추가했습니다.";
+                };
+                try
+                {
+                    var createdUser = await _api.CreateUserAsync(createRequest)
+                        ?? throw new InvalidDataException("사용자 생성 응답이 비어 있습니다.");
+                    StatusMessage = await CompleteConfirmedUserCreateAsync(
+                        createdUser,
+                        assignedCompanyProfileId);
+                }
+                catch (AmbiguousMutationOutcomeException ex)
+                {
+                    var reconciliation = await ReconcileAmbiguousUserCreateAsync(
+                        ex);
+                    StatusMessage = reconciliation.Status;
+                    preservePasswordForRetry = !reconciliation.Confirmed;
+                    if (preservePasswordForRetry)
+                    {
+                        EditingPassword = createRequest.Password;
+                        EditingPasswordConfirm = createRequest.Password;
+                    }
+                }
             }
             else
             {
-                await _api.UpdateUserAsync(EditingUserId, new UpdateUserRequest
+                var requestedPassword = EditingPassword;
+                var updateRequest = new UpdateUserRequest
                 {
-                    ExpectedRevision = SelectedUser?.Revision ?? 0,
+                    ExpectedRevision = _editingUserExpectedRevision,
                     Username = username,
                     Role = EditingUserRole,
                     TenantCode = EditingUserTenantCode,
@@ -686,24 +728,66 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
                     ScopeType = EditingUserScopeType,
                     IsActive = EditingUserIsActive,
                     Permissions = permissions
-                });
-
-                if (!string.IsNullOrWhiteSpace(EditingPassword))
+                };
+                ExistingUserSaveResult? saveResult = null;
+                try
                 {
-                    await _api.UpdateUserPasswordAsync(EditingUserId, new UpdateUserPasswordRequest
+                    saveResult = await RunExistingUserSaveAsync(
+                        EditingUserId,
+                        updateRequest,
+                        EditingPassword,
+                        (userId, request) => _api.UpdateUserAsync(userId, request),
+                        (userId, request) => _api.UpdateUserPasswordAsync(userId, request),
+                        authoritativeUser => AssignedUserCompanyProfileWriter(
+                            authoritativeUser.Username,
+                            assignedCompanyProfileId),
+                        async authoritativeUser =>
+                        {
+                            await ReloadUsersAsync();
+                            SelectedUser = Users.SingleOrDefault(current => current.Id == authoritativeUser.Id)
+                                ?? throw new InvalidDataException(
+                                    "저장된 사용자를 새 사용자 목록에서 찾지 못했습니다.");
+                        });
+                }
+                catch (AmbiguousMutationOutcomeException ex)
+                {
+                    preservePasswordForRetry = !string.IsNullOrWhiteSpace(requestedPassword);
+                    StatusMessage = await ReconcileAmbiguousUserUpdateAsync(
+                        EditingUserId,
+                        updateRequest,
+                        assignedCompanyProfileId,
+                        !string.IsNullOrWhiteSpace(requestedPassword),
+                        ex);
+                    if (preservePasswordForRetry)
                     {
-                        ExpectedRevision = SelectedUser?.Revision ?? 0,
-                        Password = EditingPassword
-                    });
+                        EditingPassword = requestedPassword;
+                        EditingPasswordConfirm = requestedPassword;
+                    }
                 }
 
-                StatusMessage = "사용자 정보를 저장했습니다.";
+                if (saveResult is not null)
+                {
+                    if (saveResult.ReloadFailure is not null)
+                        ApplyAuthoritativeUserToEditor(saveResult.UpdatedUser);
+
+                    _editingUserRevisionRequiresReload = saveResult.RequiresAuthoritativeReload;
+                    StatusMessage = BuildExistingUserSaveStatus(saveResult);
+
+                    if (saveResult.PasswordState is UserPasswordSaveState.DefinitiveFailure or
+                        UserPasswordSaveState.Ambiguous)
+                    {
+                        preservePasswordForRetry = true;
+                        EditingPassword = requestedPassword;
+                        EditingPasswordConfirm = requestedPassword;
+                    }
+                }
             }
 
-            await _local.SetAssignedCompanyProfileAsync(username, ParseCompanyProfileId(EditingUserCompanyProfileId));
-            await ReloadUsersAsync();
-            EditingPassword = string.Empty;
-            EditingPasswordConfirm = string.Empty;
+            if (!preservePasswordForRetry)
+            {
+                EditingPassword = string.Empty;
+                EditingPasswordConfirm = string.Empty;
+            }
         }
         catch (Exception ex)
         {
@@ -712,6 +796,292 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         finally
         {
             IsBusy = false;
+        }
+    }
+
+    internal enum UserPasswordSaveState
+    {
+        NotRequested,
+        Succeeded,
+        DefinitiveFailure,
+        Ambiguous
+    }
+
+    internal sealed record ExistingUserSaveResult(
+        UserAccountDto UpdatedUser,
+        UserPasswordSaveState PasswordState,
+        Exception? PasswordFailure,
+        Exception? CompanyProfileFailure,
+        Exception? ReloadFailure)
+    {
+        public bool RequiresAuthoritativeReload =>
+            ReloadFailure is not null &&
+            PasswordState is UserPasswordSaveState.Succeeded or UserPasswordSaveState.Ambiguous;
+    }
+
+    internal static async Task<ExistingUserSaveResult> RunExistingUserSaveAsync(
+        Guid userId,
+        UpdateUserRequest updateRequest,
+        string? password,
+        Func<Guid, UpdateUserRequest, Task<UserAccountDto?>> updateUserAsync,
+        Func<Guid, UpdateUserPasswordRequest, Task> updatePasswordAsync,
+        Func<UserAccountDto, Task> applyCompanyProfileAsync,
+        Func<UserAccountDto, Task> reloadAuthoritativeUserAsync)
+    {
+        var updatedUser = await updateUserAsync(userId, updateRequest);
+        ValidateUpdatedUserResponse(userId, updateRequest, updatedUser);
+
+        var passwordState = UserPasswordSaveState.NotRequested;
+        Exception? passwordFailure = null;
+        if (!string.IsNullOrWhiteSpace(password))
+        {
+            try
+            {
+                await updatePasswordAsync(userId, new UpdateUserPasswordRequest
+                {
+                    ExpectedRevision = updatedUser!.Revision,
+                    Password = password
+                });
+                passwordState = UserPasswordSaveState.Succeeded;
+            }
+            catch (Exception ex)
+            {
+                passwordFailure = ex;
+                passwordState = IsAmbiguousPasswordFailure(ex)
+                    ? UserPasswordSaveState.Ambiguous
+                    : UserPasswordSaveState.DefinitiveFailure;
+            }
+        }
+
+        Exception? companyProfileFailure = null;
+        try
+        {
+            await applyCompanyProfileAsync(updatedUser!);
+        }
+        catch (Exception ex)
+        {
+            companyProfileFailure = ex;
+        }
+
+        Exception? reloadFailure = null;
+        try
+        {
+            await reloadAuthoritativeUserAsync(updatedUser!);
+        }
+        catch (Exception ex)
+        {
+            reloadFailure = ex;
+        }
+
+        return new ExistingUserSaveResult(
+            updatedUser!,
+            passwordState,
+            passwordFailure,
+            companyProfileFailure,
+            reloadFailure);
+    }
+
+    private static bool IsAmbiguousPasswordFailure(Exception exception)
+        => exception is AmbiguousMutationOutcomeException or TimeoutException or TaskCanceledException or
+           HttpRequestException { StatusCode: null };
+
+    private async Task<string> CompleteConfirmedUserCreateAsync(
+        UserAccountDto createdUser,
+        Guid? assignedCompanyProfileId)
+    {
+        if (!Users.Any(user => user.Id == createdUser.Id))
+            Users.Add(createdUser);
+        SelectedUser = createdUser;
+
+        Exception? companyProfileFailure = null;
+        try
+        {
+            await AssignedUserCompanyProfileWriter(
+                createdUser.Username,
+                assignedCompanyProfileId);
+        }
+        catch (Exception ex)
+        {
+            companyProfileFailure = ex;
+        }
+
+        Exception? reloadFailure = null;
+        try
+        {
+            await ReloadUsersAsync();
+            SelectedUser = Users.SingleOrDefault(user => user.Id == createdUser.Id)
+                ?? throw new InvalidDataException("생성된 사용자를 새 사용자 목록에서 찾지 못했습니다.");
+        }
+        catch (Exception ex)
+        {
+            reloadFailure = ex;
+            if (!Users.Any(user => user.Id == createdUser.Id))
+                Users.Add(createdUser);
+            SelectedUser = createdUser;
+        }
+
+        if (companyProfileFailure is null && reloadFailure is null)
+            return "사용자를 추가했습니다.";
+
+        var status = "사용자 생성 완료";
+        if (companyProfileFailure is not null)
+            status += $", 회사설정 적용 실패: {companyProfileFailure.Message}";
+        if (reloadFailure is not null)
+            status += $", 사용자 목록 새로고침 실패: {reloadFailure.Message}";
+        return status + ". 서버 생성은 확정되었으므로 생성을 반복하지 마세요.";
+    }
+
+    private async Task<(string Status, bool Confirmed)> ReconcileAmbiguousUserCreateAsync(
+        AmbiguousMutationOutcomeException ambiguousFailure)
+    {
+        try
+        {
+            var users = await _api.GetUsersAsync();
+            ReplaceUsers(users);
+            _editingUserRevisionRequiresReload = true;
+            return ($"사용자 생성 요청 귀속 미확정(서버 상태 일치 여부와 무관, 자동 재시도·반복 금지): " +
+                    $"{ambiguousFailure.Message} 회사설정은 변경하지 않았고 입력값을 보존했습니다.", false);
+        }
+        catch (Exception ex)
+        {
+            _editingUserRevisionRequiresReload = true;
+            return ($"사용자 생성 요청 귀속 미확정(서버 상태 일치 여부와 무관, 자동 재시도·반복 금지): " +
+                    $"{ambiguousFailure.Message} 회사설정은 변경하지 않았고 입력값을 보존했습니다. " +
+                    $"사용자 목록 재조회 실패: {ex.Message}", false);
+        }
+    }
+
+    private async Task<string> ReconcileAmbiguousUserUpdateAsync(
+        Guid userId,
+        UpdateUserRequest request,
+        Guid? assignedCompanyProfileId,
+        bool passwordWasRequested,
+        AmbiguousMutationOutcomeException ambiguousFailure)
+    {
+        try
+        {
+            var users = await _api.GetUsersAsync();
+            ReplaceUsers(users);
+            var updatedUser = users.SingleOrDefault(user => user.Id == userId);
+            if (updatedUser is null)
+                throw new InvalidDataException("수정 대상 사용자를 목록에서 찾지 못했습니다.");
+            ValidateUpdatedUserResponse(userId, request, updatedUser);
+
+            Exception? companyProfileFailure = null;
+            try
+            {
+                await AssignedUserCompanyProfileWriter(
+                    updatedUser.Username,
+                    assignedCompanyProfileId);
+            }
+            catch (Exception ex)
+            {
+                companyProfileFailure = ex;
+            }
+
+            SelectedUser = updatedUser;
+            var status = passwordWasRequested
+                ? "사용자 정보 저장은 서버 재조회로 확인했습니다. 비밀번호 변경은 실행하지 않았습니다."
+                : "사용자 정보 저장 결과를 서버 재조회로 확인했습니다.";
+            if (companyProfileFailure is not null)
+                status += $" 회사설정 적용 실패: {companyProfileFailure.Message}";
+            return status;
+        }
+        catch (Exception ex)
+        {
+            _editingUserRevisionRequiresReload = true;
+            return $"사용자 정보 저장 상태 미확정(비밀번호 변경 미실행, 자동 재시도 안 함): {ambiguousFailure.Message} 사용자 목록 확인 실패: {ex.Message}";
+        }
+    }
+
+    private static string BuildExistingUserSaveStatus(ExistingUserSaveResult result)
+    {
+        var status = result.PasswordState switch
+        {
+            UserPasswordSaveState.NotRequested => "사용자 정보를 저장했습니다.",
+            UserPasswordSaveState.Succeeded => "사용자 정보와 비밀번호를 저장했습니다.",
+            UserPasswordSaveState.DefinitiveFailure =>
+                $"사용자 정보 저장 완료, 비밀번호 변경 실패: {result.PasswordFailure?.Message}",
+            UserPasswordSaveState.Ambiguous =>
+                $"사용자 정보 저장 완료, 비밀번호 상태 미확정(자동 재시도 안 함): {result.PasswordFailure?.Message}",
+            _ => "사용자 정보를 저장했습니다."
+        };
+
+        if (result.CompanyProfileFailure is not null)
+            status += $" 회사설정 적용 실패: {result.CompanyProfileFailure.Message}";
+        if (result.ReloadFailure is not null)
+            status += $" 사용자 목록 재조회 실패: {result.ReloadFailure.Message}";
+        if (result.RequiresAuthoritativeReload)
+            status += " 다시 저장하기 전에 사용자 목록을 불러와 계정을 다시 선택하세요.";
+        return status;
+    }
+
+    private void ApplyAuthoritativeUserToEditor(UserAccountDto user)
+    {
+        _editingUserExpectedRevision = user.Revision;
+        EditingUserId = user.Id;
+        EditingUsername = user.Username;
+        EditingUserRole = string.Equals(user.Role, "Admin", StringComparison.OrdinalIgnoreCase) ? "Admin" : "User";
+        EditingUserTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(user.TenantCode, user.OfficeCode);
+        EditingUserOfficeCode = user.OfficeCode;
+        EditingUserScopeType = TenantScopeCatalog.NormalizeScopeTypeOrDefault(user.ScopeType);
+        EditingUserIsActive = user.IsActive;
+    }
+
+    private static void ValidateUpdatedUserResponse(
+        Guid expectedUserId,
+        UpdateUserRequest request,
+        UserAccountDto? updatedUser)
+    {
+        var expectedPermissions = request.Permissions
+            .Where(permission => !string.IsNullOrWhiteSpace(permission))
+            .Select(permission => permission.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var actualPermissions = updatedUser?.Permissions?
+            .Where(permission => !string.IsNullOrWhiteSpace(permission))
+            .Select(permission => permission.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var expectedRole = string.Equals(request.Role, "Admin", StringComparison.OrdinalIgnoreCase)
+            ? "Admin"
+            : "User";
+        var expectedTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            request.TenantCode,
+            request.OfficeCode);
+        var hasActualTenant = TenantScopeCatalog.TryNormalizeTenantCode(
+            updatedUser?.TenantCode,
+            out var actualTenantCode);
+        var hasActualOffice = OfficeCodeCatalog.TryNormalizeOfficeCode(
+            updatedUser?.OfficeCode,
+            out var actualOfficeCode);
+        var hasExpectedOffice = OfficeCodeCatalog.TryNormalizeOfficeCode(
+            request.OfficeCode,
+            out var expectedOfficeCode);
+        var hasActualScope = TenantScopeCatalog.TryNormalizeScopeType(
+            updatedUser?.ScopeType,
+            out var actualScopeType);
+        var hasExpectedScope = TenantScopeCatalog.TryNormalizeScopeType(
+            request.ScopeType,
+            out var expectedScopeType);
+
+        if (updatedUser is null ||
+            updatedUser.Id != expectedUserId ||
+            updatedUser.Revision <= request.ExpectedRevision ||
+            !string.Equals(updatedUser.Username, request.Username.Trim(), StringComparison.Ordinal) ||
+            !string.Equals(updatedUser.Role, expectedRole, StringComparison.Ordinal) ||
+            updatedUser.IsActive != request.IsActive ||
+            actualPermissions is null ||
+            !actualPermissions.SetEquals(expectedPermissions) ||
+            !hasActualTenant ||
+            !string.Equals(actualTenantCode, expectedTenantCode, StringComparison.OrdinalIgnoreCase) ||
+            !hasActualOffice ||
+            !hasExpectedOffice ||
+            !string.Equals(actualOfficeCode, expectedOfficeCode, StringComparison.OrdinalIgnoreCase) ||
+            !hasActualScope ||
+            !hasExpectedScope ||
+            !string.Equals(actualScopeType, expectedScopeType, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "사용자 수정 응답의 ID, 권한 범위 또는 revision이 요청과 일치하지 않습니다.");
         }
     }
 
@@ -724,19 +1094,43 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             return;
         }
 
+        if (_editingUserRevisionRequiresReload)
+        {
+            StatusMessage = "이전 사용자 변경 결과를 확정하지 못했습니다. 자동 재삭제하지 말고 사용자 목록을 다시 확인하세요.";
+            return;
+        }
+
         if (SelectedUser is null)
         {
             StatusMessage = "삭제할 사용자를 선택하세요.";
             return;
         }
 
+        var deletingUser = SelectedUser;
         try
         {
             IsBusy = true;
-            await _api.DeleteUserAsync(SelectedUser.Id, SelectedUser.Revision);
-            StatusMessage = "사용자를 삭제했습니다.";
-            await ReloadUsersAsync();
+            await _api.DeleteUserAsync(deletingUser.Id, deletingUser.Revision);
+            foreach (var user in Users.Where(user => user.Id == deletingUser.Id).ToList())
+                Users.Remove(user);
             NewUser();
+
+            try
+            {
+                await ReloadUsersAsync();
+                foreach (var user in Users.Where(user => user.Id == deletingUser.Id).ToList())
+                    Users.Remove(user);
+                StatusMessage = "사용자를 삭제했습니다.";
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"사용자 삭제 완료, 사용자 목록 새로고침 실패: {ex.Message}. " +
+                                "서버 삭제는 확정되었으므로 삭제를 반복하지 마세요.";
+            }
+        }
+        catch (AmbiguousMutationOutcomeException ex)
+        {
+            await ReconcileAmbiguousUserDeleteAsync(deletingUser.Id, ex);
         }
         catch (Exception ex)
         {
@@ -751,13 +1145,45 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task ReloadUsersAsync()
     {
-        Users.Clear();
         if (!CanManageUsers)
+        {
+            Users.Clear();
             return;
+        }
 
         var users = await _api.GetUsersAsync();
+        ReplaceUsers(users);
+    }
+
+    private void ReplaceUsers(IEnumerable<UserAccountDto> users)
+    {
+        Users.Clear();
         foreach (var user in users.OrderBy(current => current.Username, StringComparer.OrdinalIgnoreCase))
             Users.Add(user);
+    }
+
+    private async Task ReconcileAmbiguousUserDeleteAsync(
+        Guid deletedUserId,
+        AmbiguousMutationOutcomeException ambiguousFailure)
+    {
+        try
+        {
+            var users = await _api.GetUsersAsync();
+            ReplaceUsers(users);
+            var existingUser = users.SingleOrDefault(user => user.Id == deletedUserId);
+            SelectedUser = existingUser;
+            _editingUserRevisionRequiresReload = true;
+            StatusMessage = existingUser is null
+                ? $"사용자 삭제 요청 결과 미확정(자동 재시도·반복 금지): {ambiguousFailure.Message} " +
+                  "대상이 현재 관리 목록에 보이지 않지만 삭제와 관리 범위 변경을 구분할 수 없습니다. 자동 재삭제하지 마세요."
+                : $"사용자 삭제 요청 결과 미확정(자동 재시도·반복 금지): {ambiguousFailure.Message} " +
+                  "대상이 현재 관리 목록에 남아 있으며 자동 재삭제하지 않았습니다.";
+        }
+        catch (Exception ex)
+        {
+            _editingUserRevisionRequiresReload = true;
+            StatusMessage = $"사용자 삭제 상태 미확정(자동 재시도 안 함): {ambiguousFailure.Message} 사용자 목록 재조회 실패: {ex.Message}";
+        }
     }
 
     partial void OnSelectedUserChanged(UserAccountDto? value)
@@ -766,6 +1192,8 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             return;
 
         EditingUserId = value.Id;
+        _editingUserExpectedRevision = value.Revision;
+        _editingUserRevisionRequiresReload = false;
         EditingUsername = value.Username;
         EditingUserRole = string.Equals(value.Role, "Admin", StringComparison.OrdinalIgnoreCase) ? "Admin" : "User";
         EditingUserTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(value.TenantCode, value.OfficeCode);
@@ -996,7 +1424,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     {
         var version = Interlocked.Increment(ref _assignedCompanyProfileLoadVersion);
         UiTaskHelper.Forget(
-            LoadAssignedCompanyProfileForSelectedUserAsync(username, officeCode, version),
+            () => LoadAssignedCompanyProfileForSelectedUserAsync(username, officeCode, version),
             "SETTINGS",
             "사용자 회사설정 조회",
             ex =>

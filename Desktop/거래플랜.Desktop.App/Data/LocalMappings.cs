@@ -304,7 +304,7 @@ public static class LocalMappings
         ExpireDate = dto.ExpireDate,
         IsPrimary = dto.IsPrimary,
         UploadedByUsername = dto.UploadedByUsername,
-        UploadedAtUtc = dto.UploadedAtUtc,
+        UploadedAtUtc = EnsureUtc(dto.UploadedAtUtc),
         FileContent = dto.FileContent ?? [],
         CreatedAtUtc = dto.CreatedAtUtc,
         UpdatedAtUtc = dto.UpdatedAtUtc,
@@ -327,7 +327,7 @@ public static class LocalMappings
         ExpireDate = e.ExpireDate,
         IsPrimary = e.IsPrimary,
         UploadedByUsername = e.UploadedByUsername,
-        UploadedAtUtc = e.UploadedAtUtc,
+        UploadedAtUtc = EnsureUtc(e.UploadedAtUtc),
         FileContent = e.FileContent ?? [],
         CreatedAtUtc = e.CreatedAtUtc,
         UpdatedAtUtc = e.UpdatedAtUtc,
@@ -349,6 +349,8 @@ public static class LocalMappings
         ItemKind = ItemOperationalPolicy.NormalizeItemKind(dto.ItemKind, dto.TrackingType, dto.CategoryName, dto.IsRental),
         TrackingType = ItemOperationalPolicy.NormalizeTrackingType(dto.TrackingType, dto.ItemKind, dto.CategoryName, dto.IsRental),
         Unit = UnitCatalogNormalizer.Normalize(dto.Unit),
+        BoxQuantity = dto.BoxQuantity ?? 0m,
+        StorageLocation = dto.StorageLocation ?? string.Empty,
         CurrentStock = dto.CurrentStock,
         SafetyStock = dto.SafetyStock,
         PurchasePrice = dto.PurchasePrice,
@@ -357,6 +359,8 @@ public static class LocalMappings
         PriceGradeA = dto.PriceGradeA,
         PriceGradeB = dto.PriceGradeB,
         PriceGradeC = dto.PriceGradeC,
+        LastPurchaseDate = dto.LastPurchaseDate,
+        LastSaleDate = dto.LastSaleDate,
         SimpleMemo = dto.SimpleMemo,
         IsRental = dto.IsRental,
         IsSale = dto.IsSale,
@@ -386,6 +390,8 @@ public static class LocalMappings
         ItemKind = ItemOperationalPolicy.NormalizeItemKind(e.ItemKind, e.TrackingType, e.CategoryName, e.IsRental),
         TrackingType = ItemOperationalPolicy.NormalizeTrackingType(e.TrackingType, e.ItemKind, e.CategoryName, e.IsRental),
         Unit = UnitCatalogNormalizer.Normalize(e.Unit),
+        BoxQuantity = e.BoxQuantity,
+        StorageLocation = e.StorageLocation,
         CurrentStock = e.CurrentStock,
         SafetyStock = e.SafetyStock,
         PurchasePrice = e.PurchasePrice,
@@ -394,6 +400,10 @@ public static class LocalMappings
         PriceGradeA = e.PriceGradeA,
         PriceGradeB = e.PriceGradeB,
         PriceGradeC = e.PriceGradeC,
+        LastPurchaseDate = e.LastPurchaseDate,
+        LastPurchaseDateSpecified = true,
+        LastSaleDate = e.LastSaleDate,
+        LastSaleDateSpecified = true,
         SimpleMemo = e.SimpleMemo,
         IsRental = e.IsRental,
         IsSale = e.IsSale,
@@ -817,7 +827,11 @@ public static class LocalMappings
         UpdatedAtUtc = EnsureUtc(e.UpdatedAtUtc),
         Revision = e.Revision,
         IsDeleted = e.IsDeleted,
-        Lines = e.Lines.Where(line => !line.IsDeleted).Select(ToDto).ToList()
+        Lines = e.Lines
+            .Where(line => !line.IsDeleted)
+            .OrderBy(line => line.Id)
+            .Select(ToDto)
+            .ToList()
     };
 
     public static LocalInventoryTransferLine ToLocal(InventoryTransferLineDto dto) => new()

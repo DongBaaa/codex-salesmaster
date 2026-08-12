@@ -18,14 +18,22 @@ public partial class InventoryWindow : Window
     public InventoryWindow(InventoryViewModel vm)
     {
         InitializeComponent();
+        ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(this);
         DataContext = vm;
         Activated += InventoryWindow_Activated;
         Closing += Window_Closing;
         Loaded += (_, _) => _editSessionMonitor?.Start();
+        vm.PropertyChanged += InventoryViewModel_PropertyChanged;
         Closed += (_, _) =>
         {
+            vm.PropertyChanged -= InventoryViewModel_PropertyChanged;
             _editSessionMonitor?.Dispose();
-            vm.Dispose();
+            var cleanupTask = vm.CancelPendingBackgroundWorkAsync();
+            UiTaskHelper.Forget(
+                cleanupTask,
+                "UI",
+                "재고 창 종료 작업 정리",
+                ex => AppLogger.Error("UI", "재고 창 종료 작업 정리 실패", ex));
         };
 
         _editSessionMonitor = EntityEditSessionMonitor.TryCreate(
@@ -34,13 +42,25 @@ public partial class InventoryWindow : Window
             () =>
             {
                 var selected = vm.SelectedItem;
-                return selected is null
-                    ? null
-                    : new EditSessionSubject(
-                        "Item",
-                        selected.Id.ToString("D"),
-                        string.IsNullOrWhiteSpace(selected.NameOriginal) ? "품목" : selected.NameOriginal);
+                var editingItemId = selected?.Id ?? (!vm.IsNew ? vm.EditId : Guid.Empty);
+                if (editingItemId == Guid.Empty)
+                    return null;
+
+                var displayName = selected?.NameOriginal ?? vm.EditName;
+                return new EditSessionSubject(
+                    "Item",
+                    editingItemId.ToString("D"),
+                    string.IsNullOrWhiteSpace(displayName) ? "품목" : displayName);
             });
+    }
+
+    private void InventoryViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (string.Equals(e.PropertyName, nameof(InventoryViewModel.SelectedItem), StringComparison.Ordinal) ||
+            string.Equals(e.PropertyName, nameof(InventoryViewModel.IsNew), StringComparison.Ordinal) ||
+            string.Equals(e.PropertyName, nameof(InventoryViewModel.EditId), StringComparison.Ordinal) ||
+            string.Equals(e.PropertyName, nameof(InventoryViewModel.EditName), StringComparison.Ordinal))
+            _editSessionMonitor?.RefreshSubject();
     }
 
     private void InventoryWindow_Activated(object? sender, EventArgs e)
@@ -85,6 +105,42 @@ public partial class InventoryWindow : Window
             "UI",
             "재고이동 창 열기",
             "재고이동 창을 여는 중 오류가 발생했습니다.");
+
+    private void DeleteItemButton_Click(object sender, RoutedEventArgs e)
+        => UiTaskHelper.Run(
+            this,
+            DeleteSelectedItemAsync,
+            "UI",
+            "품목 삭제",
+            "품목을 삭제하는 중 오류가 발생했습니다.");
+
+    private async Task DeleteSelectedItemAsync()
+    {
+        if (DataContext is not InventoryViewModel vm ||
+            vm.SelectedItem is not { } selectedItem ||
+            !vm.CanDeleteSelectedItem)
+        {
+            return;
+        }
+
+        var itemName = string.IsNullOrWhiteSpace(selectedItem.NameOriginal)
+            ? "선택한 품목"
+            : selectedItem.NameOriginal.Trim();
+        var unsavedDraftWarning = vm.HasMeaningfulDraftContentForClose && vm.HasPendingChanges
+            ? "현재 편집 중인 저장되지 않은 변경 내용도 함께 사라집니다.\n\n"
+            : string.Empty;
+        var confirmation = MessageBox.Show(
+            this,
+            $"{unsavedDraftWarning}'{itemName}' 품목을 휴지통으로 이동할까요?\n현재 재고 표시가 0으로 정리됩니다. 기존 전표와 재고이동 이력은 유지되며 휴지통에서 복원할 수 있습니다.",
+            "품목 삭제 확인",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+        if (confirmation != MessageBoxResult.Yes)
+            return;
+
+        await vm.DeleteItemCommand.ExecuteAsync(null);
+    }
 
     private void ResetInventoryButton_Click(object sender, RoutedEventArgs e)
         => UiTaskHelper.Run(

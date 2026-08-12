@@ -28,17 +28,20 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private readonly UiDebouncer _searchDebouncer = new();
     private readonly UiDebouncer _editAutoSaveDebouncer = new();
+    private readonly BackgroundTaskTracker _backgroundWork = new();
+    private readonly SemaphoreSlim _editAutoSaveOwnerGate = new(1, 1);
     private readonly SemaphoreSlim _autoSaveGate = new(1, 1);
     private readonly SemaphoreSlim _filterReloadGate = new(1, 1);
     private CancellationTokenSource? _filterReloadCts;
     private CancellationTokenSource? _assignmentHistoryLoadCts;
     private CancellationTokenSource? _selectedAssetDetailLoadCts;
     private bool _suppressFilterReload;
-    private bool _suppressSelectionAutoSave;
+    private int _selectionAutoSaveSuppressionCount;
     private bool _suppressEditAutoSave;
     private bool _pendingFilterReload;
     private bool _hasInitializedOfficeFilters;
     private bool _isDisposed;
+    private readonly UiAsyncRefreshCoalescer _externalStateRefresh;
     private int _filterReloadVersion;
     private IReadOnlyList<LocalOffice>? _officeFilterSourceCache;
     private IReadOnlyList<LocalItemCategoryOption>? _itemCategoryOptionsCache;
@@ -46,6 +49,12 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private string _pendingFilterReloadSignature = string.Empty;
     private string _activeFilterReloadSignature = string.Empty;
     private long _editRevision;
+    private int _editAutoSaveOwnerCount;
+    private int _editAutoSaveDebounceScheduled;
+    private int _editAutoSaveRescheduleRequested;
+    private int _reloadAfterEditAutoSaveOwnershipRequested;
+    private int _filterReloadAfterEditAutoSaveOwnershipRequested;
+    private RentalAssetAutoSaveReceipt? _lastCompletedEditAutoSave;
 
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private bool _isOfficeFilterPopupOpen;
@@ -119,20 +128,50 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     public bool CanViewAll => _rental.CanViewAllAssetScope(_session);
     public bool CanManageAll => _rental.CanManageAllAssetScope(_session);
-    public bool CanEditOfficeSelection => CanManageAll;
-    public bool CanCreateAsset => _rental.CanEditAssetScope(ResolveDefaultEditOfficeCode(EditOfficeCode), _session);
-    public bool CanSave => SelectedRow is null
-        ? CanCreateAsset
-        : SelectedRow.HasFullDetail && CanEditCurrentSelection;
-    public bool CanDeleteSelected => SelectedRow is not null && CanEditCurrentSelection;
+    public bool IsEditAutoSaveOwnershipActive =>
+        Volatile.Read(ref _editAutoSaveOwnerCount) > 0;
+    public bool CanQueryAssets => !IsEditAutoSaveOwnershipActive && !_isDisposed;
+    public bool CanSelectAssetsForMutation =>
+        !IsEditAutoSaveOwnershipActive &&
+        (_session.HasAdministrativePrivileges ||
+         _session.HasPermission(AppPermissionNames.RentalEditAll) ||
+         _session.HasPermission(AppPermissionNames.RentalAssetEdit));
+    public string RentalScopeGuidanceText =>
+        _session.HasAdministrativePrivileges ||
+        _session.HasPermission(AppPermissionNames.RentalEditAll) ||
+        _session.HasPermission(AppPermissionNames.RentalAssetEdit)
+            ? "렌탈 자산은 업체·지점 공유 조회 대상입니다. 수정은 권한 있는 담당 범위에서만 가능합니다."
+            : "렌탈 자산은 업체·지점 공유 조회 대상입니다. 현재 계정은 조회 전용이며 저장·삭제할 수 없습니다.";
+    public bool CanEditOfficeSelection => !IsEditAutoSaveOwnershipActive && CanManageAll;
+    public bool CanCreateAsset =>
+        !IsEditAutoSaveOwnershipActive &&
+        _rental.CanEditAssetScope(ResolveDefaultEditOfficeCode(EditOfficeCode), _session);
+    public bool CanEditAssetDetails =>
+        !IsEditAutoSaveOwnershipActive &&
+        (SelectedRow is null
+            ? CanCreateAsset
+            : SelectedRow.HasFullDetail && CanEditAssetRow(SelectedRow));
+    public bool CanSave =>
+        !IsEditAutoSaveOwnershipActive &&
+        (SelectedRow is null
+            ? CanCreateAsset
+            : SelectedRow.HasFullDetail && CanEditCurrentSelection);
+    public bool CanDeleteSelected =>
+        !IsEditAutoSaveOwnershipActive &&
+        SelectedRow is not null &&
+        CanEditCurrentSelection;
     public int CheckedAssetCount => Rows.Count(row => row.IsSelected);
     public string DeleteCheckedButtonLabel => $"체크 {CheckedAssetCount:N0}건 일괄삭제";
-    public bool CanDeleteChecked => Rows.Any(row => row.IsSelected && CanEditAssetRow(row));
-    public bool CanReplaceSelected => SelectedRow is not null &&
+    public bool CanDeleteChecked =>
+        !IsEditAutoSaveOwnershipActive &&
+        Rows.Any(row => row.IsSelected && CanEditAssetRow(row));
+    public bool CanReplaceSelected => !IsEditAutoSaveOwnershipActive &&
+                                      SelectedRow is not null &&
                                       SelectedRow.HasFullDetail &&
                                       CanEditCurrentSelection &&
                                       HasReplaceableRentalAssignment(SelectedRow.Source);
-    public bool CanAddAssignmentHistory => SelectedRow is not null &&
+    public bool CanAddAssignmentHistory => !IsEditAutoSaveOwnershipActive &&
+                                           SelectedRow is not null &&
                                            SelectedRow.HasFullDetail &&
                                            CanEditCurrentSelection;
     public bool CanEditAssignmentHistory => CanAddAssignmentHistory && SelectedAssignmentHistory is not null;
@@ -151,6 +190,10 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     public string SelectedOfficeFilterSummary => BuildFilterSummary(OfficeFilterOptions, "담당지점");
     public string SelectedItemCategoryFilterSummary => BuildFilterSummary(ItemCategoryFilterOptions, "품목분류");
     public string SelectedStatusFilterSummary => BuildFilterSummary(StatusFilterOptions, "상태");
+    internal long EditExpectedRevision => Volatile.Read(ref _editRevision);
+    internal bool SuppressExplicitSaveConflictDialog { get; set; }
+    private bool IsSelectionAutoSaveSuppressed =>
+        Volatile.Read(ref _selectionAutoSaveSuppressionCount) > 0;
     public string AssignmentFieldsNotice => IsNonOperatingAssetStatus
         ? $"'{EditAssetStatus}' 상태에서는 거래처/설치/청구 연결이 필요하지 않습니다. 저장 시 관련 정보가 정리됩니다."
         : string.Empty;
@@ -168,12 +211,21 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         IPrintService printService,
         SessionState session)
     {
-        _rental = rental;
+        _rental = rental ?? null!;
         _local = local;
         _documents = documents;
         _printService = printService;
         _session = session;
+        _externalStateRefresh = new UiAsyncRefreshCoalescer(
+            () => _backgroundWork.TryStart(RefreshAfterRentalStateChangedAsync) ?? Task.CompletedTask,
+            task => UiTaskHelper.Forget(
+                task,
+                "RENTAL",
+                "열린 렌탈 자산 설치현황 화면 동기화",
+                ex => StatusMessage = $"다른 화면의 렌탈 변경 내용을 다시 불러오지 못했습니다. {ex.Message}"));
         _local.InventoryStateChanged += HandleInventoryStateChanged;
+        if (rental is not null)
+            rental.StateChanged += HandleRentalStateChanged;
 
         AssetStatusOptions.Add(AllOption);
         AssetStatusOptions.Add("임대진행중");
@@ -228,19 +280,71 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     public void CancelPendingBackgroundWork()
     {
-        if (_isDisposed)
+        if (!BeginCancelPendingBackgroundWork())
             return;
 
-        _isDisposed = true;
-        CancelPendingFilterReload();
-        CancelAssignmentHistoryLoad();
-        CancelSelectedAssetDetailLoad();
         _searchDebouncer.Dispose();
         _editAutoSaveDebouncer.Dispose();
     }
 
+    public async Task CancelPendingBackgroundWorkAsync()
+    {
+        BeginCancelPendingBackgroundWork();
+
+        await _searchDebouncer.DisposeAsync();
+        await _editAutoSaveDebouncer.DisposeAsync();
+        await _editAutoSaveOwnerGate.WaitAsync();
+        _editAutoSaveOwnerGate.Release();
+        await _backgroundWork.DrainAsync();
+    }
+
+    private bool BeginCancelPendingBackgroundWork()
+    {
+        if (_isDisposed)
+            return false;
+
+        _isDisposed = true;
+        _backgroundWork.BeginShutdown();
+        Interlocked.Exchange(ref _editAutoSaveDebounceScheduled, 0);
+        if (_rental is not null)
+            _rental.StateChanged -= HandleRentalStateChanged;
+        _local.InventoryStateChanged -= HandleInventoryStateChanged;
+        _externalStateRefresh.Dispose();
+        CancelPendingFilterReload();
+        CancelAssignmentHistoryLoad();
+        CancelSelectedAssetDetailLoad();
+        return true;
+    }
+
+    private void HandleRentalStateChanged(object? sender, RentalStateChangedEventArgs e)
+    {
+        if (_isDisposed || ReferenceEquals(e.Origin, this))
+            return;
+
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null)
+            return;
+
+        _ = dispatcher.InvokeAsync(() =>
+        {
+            if (_isDisposed)
+                return;
+
+            _externalStateRefresh.Request();
+        });
+    }
+
+    private async Task RefreshAfterRentalStateChangedAsync()
+    {
+        await ReloadAsync();
+        if (!_isDisposed && !HasPendingChanges)
+            StatusMessage = "다른 화면에서 변경된 렌탈 자산과 청구 정보를 반영했습니다.";
+    }
+
     public async Task LoadAndSelectAssetAsync(Guid assetId)
     {
+        using var ownership = await AcquireEditAutoSaveOwnershipAsync();
+        using var selectionAutoSaveSuppression = SuppressSelectionAutoSave();
         var totalStopwatch = Stopwatch.StartNew();
         var stepStopwatch = Stopwatch.StartNew();
 
@@ -259,9 +363,15 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         SelectRowWithoutAutoSave(assetId);
         LogRentalAssetViewModelLoadStep("Rental asset selected row restore", stepStopwatch);
 
-        StatusMessage = SelectedRow is null
-            ? "점검 항목의 렌탈 자산을 목록에서 찾지 못했습니다. 필터, 권한, 삭제 상태를 확인하세요."
-            : "운영 점검 항목의 렌탈 자산을 선택했습니다. 월요금, 청구대상 여부, 청구 프로필 연결을 확인한 뒤 저장하세요.";
+        if (SelectedRow is null)
+        {
+            ResetForNewAsset(
+                "점검 항목의 렌탈 자산을 목록에서 찾지 못해 이전 편집 내용을 안전하게 초기화했습니다. 필터, 권한, 삭제 상태를 확인하세요.");
+        }
+        else
+        {
+            StatusMessage = "운영 점검 항목의 렌탈 자산을 선택했습니다. 월요금, 청구대상 여부, 청구 프로필 연결을 확인한 뒤 저장하세요.";
+        }
 
         OperationTiming.LogIfSlow(
             "UI",
@@ -374,14 +484,22 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     partial void OnSelectedRowChanging(RentalAssetViewRow? oldValue, RentalAssetViewRow? newValue)
     {
-        if (_suppressSelectionAutoSave || ReferenceEquals(oldValue, newValue))
+        if (IsSelectionAutoSaveSuppressed || ReferenceEquals(oldValue, newValue))
             return;
 
-        if (!TryCaptureAutoSaveSnapshot(out var snapshot))
-            return;
+        TryStartBackgroundWork(
+            () =>
+            {
+                var ownershipTask = AcquireEditAutoSaveOwnershipAsync();
+                if (!TryCaptureAutoSaveSnapshot(out var snapshot))
+                    return DrainSelectionAutoSaveOwnershipAsync(ownershipTask);
 
-        UiTaskHelper.Forget(
-            HandleSelectionAutoSaveAsync(snapshot, oldValue, newValue),
+                return HandleSelectionAutoSaveAsync(
+                    ownershipTask,
+                    snapshot,
+                    oldValue,
+                    newValue);
+            },
             "RENTAL",
             "렌탈 자산 선택 변경 자동저장",
             ex => StatusMessage = $"렌탈 자산 자동저장 중 오류가 발생했습니다. {ex.Message}");
@@ -412,33 +530,84 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
         RefreshRentalAssetMutationCommandStates();
         OnPropertyChanged(nameof(HasPendingChanges));
+        ScheduleEditAutoSave();
+    }
 
-        if (SelectedRow is not { HasFullDetail: true } || IsNewAsset || !CanSave)
+    private void ScheduleEditAutoSave()
+    {
+        if (_isDisposed)
             return;
 
+        if (SelectedRow is not { HasFullDetail: true } || IsNewAsset)
+            return;
+
+        if (!HasPendingChanges)
+            return;
+
+        if (Volatile.Read(ref _editAutoSaveOwnerCount) > 0)
+        {
+            var pendingSnapshot = CaptureEditSnapshot();
+            if (CanSaveSnapshot(pendingSnapshot, out _))
+                Interlocked.Exchange(ref _editAutoSaveRescheduleRequested, 1);
+            return;
+        }
+
+        if (!CanSave)
+            return;
+
+        Interlocked.Exchange(ref _editAutoSaveDebounceScheduled, 1);
         _editAutoSaveDebouncer.DebounceAsync(
             TimeSpan.FromMilliseconds(EditAutoSaveDebounceMilliseconds),
             async () =>
             {
+                Interlocked.Exchange(ref _editAutoSaveDebounceScheduled, 0);
                 if (_isDisposed || _suppressEditAutoSave)
                     return;
 
                 if (!TryCaptureAutoSaveSnapshot(out var snapshot))
                     return;
 
-                await SaveSnapshotAsync(
+                Volatile.Write(ref _lastCompletedEditAutoSave, null);
+                var saved = await SaveSnapshotAsync(
                     snapshot,
                     preserveSelectionRowId: snapshot.EditId,
                     refreshAfterSave: false,
                     successMessage: "렌탈 자산 상세 변경 내용을 자동 저장했습니다.",
                     permissionDeniedMessage: "현재 선택한 렌탈 자산을 자동 저장할 권한이 없습니다.",
                     showConflictDialog: false);
+                if (!saved || _isDisposed)
+                    return;
+
+                Volatile.Write(
+                    ref _lastCompletedEditAutoSave,
+                    new RentalAssetAutoSaveReceipt(
+                        snapshot.EditId,
+                        snapshot.EditRevision,
+                        BuildEditStateSignature(snapshot)));
             },
             ex => StatusMessage = $"렌탈 자산 상세 자동저장 중 오류가 발생했습니다. {ex.Message}");
     }
 
     [RelayCommand]
     private async Task ReloadAsync()
+    {
+        if (_isDisposed)
+            return;
+
+        if (IsEditAutoSaveOwnershipActive)
+        {
+            Interlocked.Exchange(ref _reloadAfterEditAutoSaveOwnershipRequested, 1);
+            return;
+        }
+
+        using var ownership = await AcquireEditAutoSaveOwnershipAsync();
+        if (_isDisposed)
+            return;
+
+        await ReloadForEditAutoSaveOwnerAsync();
+    }
+
+    private async Task ReloadForEditAutoSaveOwnerAsync()
     {
         if (_isDisposed)
             return;
@@ -489,7 +658,6 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             var selectedRowBeforeReload = SelectedRow;
             var selectedRowId = selectedRowBeforeReload?.Source.Id;
             var checkedAssetIds = GetCheckedAssetIds();
-            var preserveSelectedEditor = ShouldPreserveSelectedEditorDuringReload();
             IsBusy = true;
             try
             {
@@ -515,37 +683,75 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 if (requestVersion != Volatile.Read(ref _filterReloadVersion))
                     return;
 
-                ApplyCheckedAssetSelection(rows, checkedAssetIds);
-                ReplaceRows(rows);
-                RefreshRentalAssetMutationCommandStates();
-
-                if (selectedRowId.HasValue)
+                var selectedRowBeforeApply = SelectedRow;
+                var selectedRowIdBeforeApply = selectedRowBeforeApply?.Source.Id;
+                var selectedAssetUnavailable = false;
+                if (selectedRowIdBeforeApply.HasValue &&
+                    rows.All(row => row.Source.Id != selectedRowIdBeforeApply.Value))
                 {
-                    var reloadedSelection = Rows.FirstOrDefault(row => row.Source.Id == selectedRowId.Value);
-                    if (reloadedSelection is not null)
+                    var deletionState = await _rental.GetAssetDeletionStateAsync(
+                        selectedRowIdBeforeApply.Value,
+                        _session,
+                        ct);
+                    ct.ThrowIfCancellationRequested();
+                    if (requestVersion != Volatile.Read(ref _filterReloadVersion))
+                        return;
+
+                    selectedAssetUnavailable =
+                        SelectedRow?.Source.Id == selectedRowIdBeforeApply.Value &&
+                        (deletionState is null || deletionState.Value);
+                }
+
+                selectedRowBeforeApply = SelectedRow;
+                selectedRowIdBeforeApply = selectedRowBeforeApply?.Source.Id;
+                var preserveSelectedEditor =
+                    !selectedAssetUnavailable &&
+                    ShouldPreserveSelectedEditorDuringReload();
+                using (SuppressSelectionAutoSave())
+                {
+                    ApplyCheckedAssetSelection(rows, checkedAssetIds);
+                    ReplaceRows(rows);
+                    RefreshRentalAssetMutationCommandStates();
+
+                    if (selectedRowIdBeforeApply.HasValue)
                     {
-                        if (preserveSelectedEditor)
-                            PreserveEditorAfterReload(selectedRowBeforeReload);
+                        var reloadedSelection = Rows.FirstOrDefault(
+                            row => row.Source.Id == selectedRowIdBeforeApply.Value);
+                        if (reloadedSelection is not null)
+                        {
+                            if (preserveSelectedEditor)
+                                PreserveEditorAfterReload(selectedRowBeforeApply);
+                            else
+                                SelectedRow = reloadedSelection;
+                        }
+                        else if (preserveSelectedEditor)
+                        {
+                            PreserveEditorAfterReload(selectedRowBeforeApply);
+                        }
                         else
-                            SelectedRow = reloadedSelection;
-                    }
-                    else if (preserveSelectedEditor)
-                    {
-                        PreserveEditorAfterReload(selectedRowBeforeReload);
-                    }
-                    else
-                    {
-                        ResetForNewAsset();
+                        {
+                            ResetForNewAsset();
+                        }
                     }
                 }
 
-                StatusMessage = rows.Count == 0
-                    ? "조건에 맞는 렌탈 자산이 없습니다."
-                    : rows.Count >= resultLimit
-                        ? $"렌탈 자산을 최대 {resultLimit:N0}건까지 표시했습니다. 결과가 많아 일부만 표시될 수 있으니 검색어 또는 필터를 좁혀주세요."
-                        : $"렌탈 자산 {rows.Count:N0}건을 조회했습니다.";
-                if (preserveSelectedEditor)
+                if (selectedAssetUnavailable)
+                {
+                    StatusMessage =
+                        "선택한 렌탈 자산이 다른 PC에서 삭제되었거나 현재 조회 권한에서 제외되어 편집 선택을 안전하게 해제했습니다.";
+                }
+                else if (preserveSelectedEditor)
+                {
                     StatusMessage = "목록은 새로고침했지만 저장하지 않은 렌탈 자산 편집 내용은 보존했습니다. 저장하거나 취소한 뒤 다른 항목을 선택하세요.";
+                }
+                else
+                {
+                    StatusMessage = rows.Count == 0
+                        ? "조건에 맞는 렌탈 자산이 없습니다."
+                        : rows.Count >= resultLimit
+                            ? $"렌탈 자산을 최대 {resultLimit:N0}건까지 표시했습니다. 결과가 많아 일부만 표시될 수 있으니 검색어 또는 필터를 좁혀주세요."
+                            : $"렌탈 자산 {rows.Count:N0}건을 조회했습니다.";
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -597,14 +803,23 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanSave))]
     private async Task SaveAsync()
     {
+        var hadPendingChanges = HasPendingChanges;
+        using var ownership = await AcquireEditAutoSaveOwnershipAsync();
+        if (hadPendingChanges && !HasPendingChanges)
+        {
+            StatusMessage = "렌탈 자산을 저장했습니다.";
+            return;
+        }
+
         var snapshot = CaptureEditSnapshot();
+        Volatile.Write(ref _lastCompletedEditAutoSave, null);
         await SaveSnapshotAsync(
             snapshot,
             preserveSelectionRowId: snapshot.EditId,
             refreshAfterSave: true,
             successMessage: "렌탈 자산을 저장했습니다.",
             permissionDeniedMessage: "현재 선택한 렌탈 자산을 저장할 권한이 없습니다.",
-            showConflictDialog: true);
+            showConflictDialog: !SuppressExplicitSaveConflictDialog);
     }
 
     [RelayCommand(CanExecute = nameof(CanDeleteSelected))]
@@ -623,13 +838,30 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         }
 
         var targetAssetId = SelectedRow.Source.Id;
-        var result = await _rental.DeleteAssetAsync(targetAssetId, _session, SelectedRow.Source.Revision);
+        using var ownership = await AcquireEditAutoSaveOwnershipAsync();
+        var targetRow = Rows.FirstOrDefault(row => row.Source.Id == targetAssetId);
+        if (targetRow is null)
+        {
+            StatusMessage = "삭제할 렌탈 자산이 최신 목록에 없습니다. 목록을 다시 확인하세요.";
+            return;
+        }
+
+        if (!CanEditAssetRow(targetRow))
+        {
+            StatusMessage = "권한이 없어 해당 렌탈 자산을 삭제할 수 없습니다.";
+            return;
+        }
+
+        var result = await _rental.DeleteAssetAsync(targetAssetId, _session, targetRow.Source.Revision);
+        if (_isDisposed)
+            return;
+
         if (!result.Success)
         {
             StatusMessage = result.Message;
             if (result.ConcurrencyConflict)
             {
-                await ReloadAsync();
+                await ReloadForEditAutoSaveOwnerAsync();
                 SelectRowWithoutAutoSave(targetAssetId);
                 MessageBox.Show(
                     result.Message,
@@ -641,19 +873,21 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             return;
         }
 
-        await ReloadAsync();
+        await ReloadForEditAutoSaveOwnerAsync();
         ResetForNewAsset();
     }
 
     [RelayCommand(CanExecute = nameof(CanDeleteChecked))]
     private async Task DeleteCheckedAsync()
     {
+        using var ownership = await AcquireEditAutoSaveOwnershipAsync();
         var targets = Rows
             .Where(row => row.IsSelected)
             .ToList();
         if (targets.Count == 0)
         {
             StatusMessage = "삭제할 렌탈 자산을 먼저 선택하세요.";
+            RequestEditAutoSaveReschedule();
             return;
         }
 
@@ -663,23 +897,81 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         if (deniedTargets.Count > 0)
         {
             StatusMessage = $"권한이 없어 선택한 렌탈 자산 {deniedTargets.Count:N0}건을 삭제할 수 없습니다.";
+            RequestEditAutoSaveReschedule();
             return;
         }
 
+        var targetIds = targets
+            .Select(row => row.Source.Id)
+            .Distinct()
+            .ToList();
         var confirmation = MessageBox.Show(
             $"선택한 {targets.Count:N0}건을 삭제하시겠습니까?",
             "렌탈 자산 선택삭제",
             MessageBoxButton.OKCancel,
             MessageBoxImage.Warning);
         if (confirmation != MessageBoxResult.OK)
+        {
+            RequestEditAutoSaveReschedule();
             return;
+        }
+
+        var confirmedTargets = targetIds
+            .Select(targetId => Rows.FirstOrDefault(row => row.Source.Id == targetId))
+            .Where(row => row is not null)
+            .Cast<RentalAssetViewRow>()
+            .ToList();
+        if (confirmedTargets.Count != targetIds.Count)
+        {
+            StatusMessage = "선택한 렌탈 자산 중 최신 목록에서 사라진 항목이 있어 삭제를 중단했습니다.";
+            RequestEditAutoSaveReschedule();
+            return;
+        }
+
+        deniedTargets = confirmedTargets
+            .Where(row => !CanEditAssetRow(row))
+            .ToList();
+        if (deniedTargets.Count > 0)
+        {
+            StatusMessage = $"권한이 변경되어 선택한 렌탈 자산 {deniedTargets.Count:N0}건의 삭제를 중단했습니다.";
+            RequestEditAutoSaveReschedule();
+            return;
+        }
+
+        if (TryCaptureAutoSaveSnapshot(out var pendingSnapshot) &&
+            !targetIds.Contains(pendingSnapshot.EditId))
+        {
+            var saved = await SaveSnapshotAsync(
+                pendingSnapshot,
+                preserveSelectionRowId: SelectedRow?.Source.Id,
+                refreshAfterSave: false,
+                successMessage: "삭제 대상이 아닌 현재 편집 내용을 먼저 자동 저장했습니다.",
+                permissionDeniedMessage: "현재 편집 중인 렌탈 자산을 저장할 권한이 없어 선택삭제를 중단했습니다.",
+                showConflictDialog: false);
+            if (!saved)
+                return;
+
+            confirmedTargets = targetIds
+                .Select(targetId => Rows.FirstOrDefault(row => row.Source.Id == targetId))
+                .Where(row => row is not null)
+                .Cast<RentalAssetViewRow>()
+                .ToList();
+            if (confirmedTargets.Count != targetIds.Count)
+            {
+                StatusMessage = "편집 내용 저장 후 삭제 대상이 변경되어 선택삭제를 중단했습니다.";
+                return;
+            }
+        }
 
         var successCount = 0;
         var conflictCount = 0;
         var failureMessages = new List<string>();
-        foreach (var row in targets)
+        foreach (var row in confirmedTargets)
         {
             var result = await _rental.DeleteAssetAsync(row.Source.Id, _session, row.Source.Revision);
+            if (_isDisposed)
+                return;
+
             if (result.Success)
             {
                 successCount++;
@@ -691,7 +983,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             failureMessages.Add($"{row.Source.CustomerName}: {result.Message}");
         }
 
-        await ReloadAsync();
+        await ReloadForEditAutoSaveOwnerAsync();
         ResetForNewAsset();
 
         StatusMessage = failureMessages.Count == 0
@@ -756,7 +1048,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         {
             Owner = GetActiveWindow()
         };
-        if (lookup.ShowDialog() != true || lookup.SelectedRow?.Tag is not LocalRentalAsset replacement)
+        if (DialogWindowCloseHelper.ShowDialog(lookup) != true || lookup.SelectedRow?.Tag is not LocalRentalAsset replacement)
         {
             StatusMessage = "렌탈 장비 교체를 취소했습니다.";
             return;
@@ -777,7 +1069,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         {
             Owner = GetActiveWindow()
         };
-        if (confirmWindow.ShowDialog() != true)
+        if (DialogWindowCloseHelper.ShowDialog(confirmWindow) != true)
         {
             StatusMessage = "렌탈 장비 교체를 취소했습니다.";
             return;
@@ -824,7 +1116,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         {
             Owner = GetActiveWindow()
         };
-        if (inputWindow.ShowDialog() != true)
+        if (DialogWindowCloseHelper.ShowDialog(inputWindow) != true)
         {
             StatusMessage = "회수장비내역서 작성을 취소했습니다.";
             return;
@@ -986,7 +1278,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             Owner = GetActiveWindow(),
             Title = title
         };
-        return dialog.ShowDialog() == true;
+        return DialogWindowCloseHelper.ShowDialog(dialog) == true;
     }
 
     private async Task SaveAssignmentHistoryRequestAsync(RentalAssetAssignmentHistoryEditRequest request)
@@ -1103,16 +1395,16 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             SelectedAssignmentHistory = null;
             AssignmentHistories.ReplaceWith(Array.Empty<RentalAssetAssignmentHistoryViewItem>());
             StatusMessage = "선택한 렌탈 자산 상세 정보를 불러오는 중입니다.";
-            UiTaskHelper.Forget(
-                LoadSelectedAssetDetailAsync(source.Id),
+            TryStartBackgroundWork(
+                () => LoadSelectedAssetDetailAsync(source.Id),
                 "RENTAL",
                 "렌탈 자산 상세 정보 조회",
                 ex => StatusMessage = $"렌탈 자산 상세 정보를 불러오지 못했습니다. {ex.Message}");
             return;
         }
 
-        UiTaskHelper.Forget(
-            LoadAssignmentHistoriesAsync(source.Id),
+        TryStartBackgroundWork(
+            () => LoadAssignmentHistoriesAsync(source.Id),
             "RENTAL",
             "렌탈 자산 임대 이력 조회",
             ex => StatusMessage = $"임대 이력을 불러오지 못했습니다. {ex.Message}");
@@ -1160,15 +1452,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             if (ReferenceEquals(_selectedAssetDetailLoadCts, cts))
                 _selectedAssetDetailLoadCts = null;
 
-            _suppressSelectionAutoSave = true;
-            try
-            {
+            using (SuppressSelectionAutoSave())
                 SelectedRow = fullRow;
-            }
-            finally
-            {
-                _suppressSelectionAutoSave = false;
-            }
 
             StatusMessage = "선택한 렌탈 자산 상세 정보를 불러왔습니다.";
         }
@@ -1807,7 +2092,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private void RefreshRentalAssetMutationCommandStates()
     {
+        OnPropertyChanged(nameof(CanSelectAssetsForMutation));
         OnPropertyChanged(nameof(CanCreateAsset));
+        OnPropertyChanged(nameof(CanEditAssetDetails));
         OnPropertyChanged(nameof(CanSave));
         OnPropertyChanged(nameof(CanDeleteSelected));
         OnPropertyChanged(nameof(CheckedAssetCount));
@@ -1831,8 +2118,29 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private void HandleInventoryStateChanged(object? sender, EventArgs e)
     {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null)
+            return;
+
+        if (!dispatcher.CheckAccess())
+        {
+            _ = dispatcher.InvokeAsync(QueueInventoryStateRefreshOnDispatcher);
+            return;
+        }
+
+        QueueInventoryStateRefreshOnDispatcher();
+    }
+
+    private void QueueInventoryStateRefreshOnDispatcher()
+    {
+        if (_isDisposed)
+            return;
+
         _itemCategoryOptionsCache = null;
-        UiTaskHelper.Forget(ReloadItemCategoryOptionsAsync(), "UI", "렌탈 자산 품목분류 목록 새로고침");
+        TryStartBackgroundWork(
+            ReloadItemCategoryOptionsAsync,
+            "UI",
+            "렌탈 자산 품목분류 목록 새로고침");
     }
 
     private async Task ReloadItemCategoryOptionsAsync()
@@ -2026,6 +2334,12 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         if (_isDisposed || _suppressFilterReload)
             return;
 
+        if (IsEditAutoSaveOwnershipActive)
+        {
+            Interlocked.Exchange(ref _filterReloadAfterEditAutoSaveOwnershipRequested, 1);
+            return;
+        }
+
         if (!CanReloadForSearchText())
         {
             CancelPendingFilterReload();
@@ -2133,14 +2447,199 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     public async Task<bool> TryAutoSaveOnCloseAsync()
         => await TryAutoSaveCurrentEditAsync(refreshAfterSave: false);
 
+    internal void CancelPendingEditAutoSave()
+    {
+        Interlocked.Exchange(ref _editAutoSaveDebounceScheduled, 0);
+        Interlocked.Exchange(ref _editAutoSaveRescheduleRequested, 0);
+        _editAutoSaveDebouncer.Cancel();
+    }
+
+    internal async Task WaitForEditAutoSaveQuiescenceAsync()
+    {
+        for (var pass = 0; pass < 3; pass++)
+        {
+            var dispatcher = Application.Current?.Dispatcher;
+            if (dispatcher is not null)
+            {
+                await dispatcher.InvokeAsync(
+                    static () => { },
+                    System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            }
+
+            await _editAutoSaveDebouncer.WaitForIdleAsync();
+            await _editAutoSaveOwnerGate.WaitAsync();
+            _editAutoSaveOwnerGate.Release();
+            await _autoSaveGate.WaitAsync();
+            _autoSaveGate.Release();
+
+            if (!IsEditAutoSaveOwnershipActive)
+                await Task.Delay(TimeSpan.FromMilliseconds(50));
+        }
+    }
+
+    private async Task<EditAutoSaveOwnership> AcquireEditAutoSaveOwnershipAsync()
+    {
+        if (Interlocked.Increment(ref _editAutoSaveOwnerCount) == 1)
+            NotifyEditAutoSaveOwnershipStateChanged();
+        try
+        {
+            await _editAutoSaveOwnerGate.WaitAsync();
+        }
+        catch
+        {
+            ReleaseEditAutoSaveWaiter();
+            throw;
+        }
+
+        try
+        {
+            if (_filterReloadCts is not null)
+                Interlocked.Exchange(ref _reloadAfterEditAutoSaveOwnershipRequested, 1);
+            CancelPendingFilterReload();
+            await _searchDebouncer.CancelAndDrainAsync();
+            await _filterReloadGate.WaitAsync();
+            _filterReloadGate.Release();
+            if (Volatile.Read(ref _editAutoSaveDebounceScheduled) != 0 &&
+                !_editAutoSaveDebouncer.IsIdle)
+            {
+                RequestEditAutoSaveReschedule();
+            }
+            Interlocked.Exchange(ref _editAutoSaveDebounceScheduled, 0);
+            await _editAutoSaveDebouncer.CancelAndDrainAsync();
+            return new EditAutoSaveOwnership(this);
+        }
+        catch
+        {
+            ReleaseEditAutoSaveOwnership();
+            throw;
+        }
+    }
+
+    private async Task DrainSelectionAutoSaveOwnershipAsync(
+        Task<EditAutoSaveOwnership> ownershipTask)
+    {
+        using var ownership = await ownershipTask;
+    }
+
+    private void ReleaseEditAutoSaveOwnership()
+    {
+        var remainingOwners = Interlocked.Decrement(ref _editAutoSaveOwnerCount);
+        _editAutoSaveOwnerGate.Release();
+        CompleteEditAutoSaveOwnershipRelease(remainingOwners);
+    }
+
+    private void ReleaseEditAutoSaveWaiter()
+    {
+        var remainingOwners = Interlocked.Decrement(ref _editAutoSaveOwnerCount);
+        CompleteEditAutoSaveOwnershipRelease(remainingOwners);
+    }
+
+    private void CompleteEditAutoSaveOwnershipRelease(int remainingOwners)
+    {
+        if (remainingOwners != 0)
+            return;
+
+        if (!_isDisposed)
+            NotifyEditAutoSaveOwnershipStateChanged();
+
+        var rescheduleEditAutoSave =
+            Interlocked.Exchange(ref _editAutoSaveRescheduleRequested, 0) == 1;
+        var reloadAssets =
+            Interlocked.Exchange(ref _reloadAfterEditAutoSaveOwnershipRequested, 0) == 1;
+        var reloadFilters =
+            Interlocked.Exchange(ref _filterReloadAfterEditAutoSaveOwnershipRequested, 0) == 1;
+        if (_isDisposed)
+            return;
+
+        if (reloadAssets)
+        {
+            TryStartBackgroundWork(
+                () => ReloadAfterEditAutoSaveOwnershipAsync(rescheduleEditAutoSave),
+                "RENTAL",
+                "렌탈 자산 저장 후 지연된 목록 새로고침",
+                ex => StatusMessage = $"렌탈 자산 목록을 다시 불러오지 못했습니다. {ex.Message}");
+        }
+        else
+        {
+            if (rescheduleEditAutoSave)
+                ScheduleEditAutoSave();
+            if (reloadFilters)
+                RequestFilterReload();
+        }
+    }
+
+    private async Task ReloadAfterEditAutoSaveOwnershipAsync(
+        bool rescheduleEditAutoSave)
+    {
+        try
+        {
+            await ReloadAsync();
+        }
+        finally
+        {
+            if (rescheduleEditAutoSave && !_isDisposed)
+                ScheduleEditAutoSave();
+        }
+    }
+
+    private Task? TryStartBackgroundWork(
+        Func<Task> operation,
+        string category,
+        string description,
+        Action<Exception>? onError = null)
+    {
+        if (_isDisposed)
+            return null;
+
+        var task = _backgroundWork.TryStart(operation);
+        if (task is null)
+            return null;
+
+        UiTaskHelper.Forget(task, category, description, onError);
+        return task;
+    }
+
+    private void NotifyEditAutoSaveOwnershipStateChanged()
+    {
+        OnPropertyChanged(nameof(IsEditAutoSaveOwnershipActive));
+        OnPropertyChanged(nameof(CanQueryAssets));
+        OnPropertyChanged(nameof(CanEditOfficeSelection));
+        OnPropertyChanged(nameof(CanAddAssignmentHistory));
+        OnPropertyChanged(nameof(CanEditAssignmentHistory));
+        OnPropertyChanged(nameof(CanDeleteAssignmentHistory));
+        RefreshRentalAssetMutationCommandStates();
+        AddAssignmentHistoryCommand.NotifyCanExecuteChanged();
+        EditAssignmentHistoryCommand.NotifyCanExecuteChanged();
+        DeleteAssignmentHistoryCommand.NotifyCanExecuteChanged();
+    }
+
+    private void RequestEditAutoSaveReschedule()
+    {
+        if (!_isDisposed &&
+            TryCaptureAutoSaveSnapshot(out _))
+        {
+            Interlocked.Exchange(ref _editAutoSaveRescheduleRequested, 1);
+        }
+    }
+
     private async Task<bool> HandleSelectionAutoSaveAsync(
+        Task<EditAutoSaveOwnership> ownershipTask,
         RentalAssetEditSnapshot snapshot,
         RentalAssetViewRow? previousSelection,
         RentalAssetViewRow? requestedSelection)
     {
+        using var ownership = await ownershipTask;
+        if (_isDisposed)
+            return true;
+
+        var completedAutoSave = Volatile.Read(ref _lastCompletedEditAutoSave);
+        if (completedAutoSave?.Matches(snapshot) == true)
+            return true;
+
+        Volatile.Write(ref _lastCompletedEditAutoSave, null);
         var saved = await SaveSnapshotAsync(
             snapshot,
-            preserveSelectionRowId: requestedSelection?.Source.Id,
+            preserveSelectionRowId: requestedSelection?.Source.Id ?? Guid.Empty,
             refreshAfterSave: false,
             successMessage: "렌탈 자산을 자동 저장했습니다.",
             permissionDeniedMessage: "현재 선택한 렌탈 자산을 자동 저장할 권한이 없습니다.",
@@ -2158,9 +2657,14 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private async Task<bool> TryAutoSaveCurrentEditAsync(bool refreshAfterSave)
     {
+        using var ownership = await AcquireEditAutoSaveOwnershipAsync();
+        if (_isDisposed)
+            return true;
+
         if (!TryCaptureAutoSaveSnapshot(out var snapshot))
             return true;
 
+        Volatile.Write(ref _lastCompletedEditAutoSave, null);
         return await SaveSnapshotAsync(
             snapshot,
             preserveSelectionRowId: SelectedRow?.Source.Id,
@@ -2175,7 +2679,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         snapshot = CaptureEditSnapshot();
         return HasPendingChanges
                && HasMeaningfulDraftContent(snapshot)
-               && CanSave;
+               && CanSaveSnapshot(snapshot, out _);
     }
 
     private async Task<bool> SaveSnapshotAsync(
@@ -2189,19 +2693,21 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         await _autoSaveGate.WaitAsync();
         try
         {
-            if (SelectedRow is not null && !SelectedRow.HasFullDetail)
+            if (_isDisposed)
+                return false;
+
+            if (!CanSaveSnapshot(snapshot, out var isDetailLoading))
             {
-                StatusMessage = "선택한 렌탈 자산 상세 정보를 불러오는 중입니다. 잠시 후 다시 저장하세요.";
+                StatusMessage = isDetailLoading
+                    ? "선택한 렌탈 자산 상세 정보를 불러오는 중입니다. 잠시 후 다시 저장하세요."
+                    : permissionDeniedMessage;
                 return false;
             }
 
-            if (!CanSave)
-            {
-                StatusMessage = permissionDeniedMessage;
-                return false;
-            }
-
-            var result = await _rental.SaveAssetAsync(BuildAsset(snapshot), _session);
+            var result = await _rental.SaveAssetAsync(
+                BuildAsset(snapshot),
+                _session,
+                changeOrigin: this);
             if (!result.Success)
             {
                 StatusMessage = result.Message;
@@ -2217,32 +2723,55 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 return false;
             }
 
+            if (_isDisposed)
+                return true;
+
             var savedAssetId = result.EntityId == Guid.Empty ? snapshot.EditId : result.EntityId;
-            if (refreshAfterSave)
+            var currentEditorSnapshot = CaptureEditSnapshot();
+            var currentEditorTargetsSavedAsset =
+                SelectedRow?.Source.Id == savedAssetId ||
+                (SelectedRow is null &&
+                 snapshot.IsNewAsset &&
+                 currentEditorSnapshot.EditId == snapshot.EditId);
+            var hasNewerDraftForSavedAsset =
+                currentEditorTargetsSavedAsset &&
+                !string.Equals(
+                    BuildEditStateSignature(currentEditorSnapshot),
+                    BuildEditStateSignature(snapshot),
+                    StringComparison.Ordinal);
+            if (refreshAfterSave &&
+                currentEditorTargetsSavedAsset &&
+                !hasNewerDraftForSavedAsset)
             {
                 var selectionIdBeforeRefresh = preserveSelectionRowId ?? SelectedRow?.Source.Id;
-                _suppressSelectionAutoSave = true;
-                try
+                using (SuppressSelectionAutoSave())
                 {
-                    await ReloadAsync();
+                    await ReloadForEditAutoSaveOwnerAsync();
                     if (selectionIdBeforeRefresh.HasValue)
                         SelectedRow = Rows.FirstOrDefault(row => row.Source.Id == selectionIdBeforeRefresh.Value);
-                }
-                finally
-                {
-                    _suppressSelectionAutoSave = false;
                 }
             }
             else if (savedAssetId != Guid.Empty)
             {
-                await RefreshSavedAssetRowInPlaceAsync(savedAssetId, preserveSelectionRowId);
+                await RefreshSavedAssetRowInPlaceAsync(
+                    savedAssetId,
+                    preserveSelectionRowId,
+                    snapshot);
             }
             else
             {
                 ResetEditBaseline();
             }
 
-            StatusMessage = successMessage;
+            StatusMessage = hasNewerDraftForSavedAsset
+                ? $"{successMessage} 저장 중 추가로 입력한 변경 내용은 자동저장 대기 중입니다."
+                : successMessage;
+            Volatile.Write(
+                ref _lastCompletedEditAutoSave,
+                new RentalAssetAutoSaveReceipt(
+                    snapshot.EditId,
+                    snapshot.EditRevision,
+                    BuildEditStateSignature(snapshot)));
             return true;
         }
         finally
@@ -2251,14 +2780,38 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         }
     }
 
-    private async Task RefreshSavedAssetRowInPlaceAsync(Guid assetId, Guid? preserveSelectionRowId)
+    private bool CanSaveSnapshot(
+        RentalAssetEditSnapshot snapshot,
+        out bool isDetailLoading)
+    {
+        isDetailLoading = false;
+        if (!snapshot.IsNewAsset)
+        {
+            if (!snapshot.HadFullDetailAtCapture)
+            {
+                isDetailLoading = true;
+                return false;
+            }
+
+            var snapshotRow = Rows.FirstOrDefault(row => row.Source.Id == snapshot.EditId);
+            if (snapshotRow?.HasFullDetail == true)
+                return CanEditAssetRow(snapshotRow);
+        }
+
+        var snapshotOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+            snapshot.EditOfficeCode,
+            _session.OfficeCode);
+        return _rental.CanEditAssetScope(snapshotOfficeCode, _session);
+    }
+
+    private async Task RefreshSavedAssetRowInPlaceAsync(
+        Guid assetId,
+        Guid? preserveSelectionRowId,
+        RentalAssetEditSnapshot savedSnapshot)
     {
         var refreshedRow = await _rental.GetAssetRowAsync(assetId, _session);
         if (refreshedRow is null)
-        {
-            ResetEditBaseline();
             return;
-        }
 
         var currentRow = Rows.FirstOrDefault(row => row.Source.Id == assetId);
         var index = currentRow is null ? -1 : Rows.IndexOf(currentRow);
@@ -2270,24 +2823,42 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             Rows[index] = refreshedRow;
         }
 
-        var shouldKeepEditorOnSavedRow = !preserveSelectionRowId.HasValue ||
-                                         preserveSelectionRowId.Value == assetId ||
-                                         SelectedRow?.Source.Id == assetId;
+        var selectedAssetId = SelectedRow?.Source.Id;
+        var currentEditorSnapshot = CaptureEditSnapshot();
+        var currentEditorTargetsSavedAsset =
+            selectedAssetId == assetId ||
+            (SelectedRow is null &&
+             currentEditorSnapshot.EditId == savedSnapshot.EditId);
+        var hasNewerDraftForSavedAsset =
+            currentEditorTargetsSavedAsset &&
+            !string.Equals(
+                BuildEditStateSignature(currentEditorSnapshot),
+                BuildEditStateSignature(savedSnapshot),
+                StringComparison.Ordinal);
+        var shouldKeepEditorOnSavedRow = selectedAssetId == assetId ||
+                                         (!selectedAssetId.HasValue &&
+                                          currentEditorSnapshot.EditId == savedSnapshot.EditId &&
+                                          (!preserveSelectionRowId.HasValue ||
+                                           preserveSelectionRowId.Value == assetId));
         if (shouldKeepEditorOnSavedRow)
         {
-            _suppressSelectionAutoSave = true;
-            try
+            using (SuppressSelectionAutoSave())
             {
                 SelectedRow = refreshedRow;
+                if (hasNewerDraftForSavedAsset)
+                {
+                    // Keep the draft's captured expected revision. A refreshed row can already
+                    // contain another PC's mutation, which must be validated by the service
+                    // concurrency guard instead of being adopted here.
+                    ApplySnapshot(
+                        currentEditorSnapshot with
+                        {
+                            IsNewAsset = false
+                        },
+                        resetBaseline: false);
+                    OnPropertyChanged(nameof(HasPendingChanges));
+                }
             }
-            finally
-            {
-                _suppressSelectionAutoSave = false;
-            }
-        }
-        else
-        {
-            ResetEditBaseline();
         }
     }
 
@@ -2301,16 +2872,27 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private void SelectRowWithoutAutoSave(Guid? rowId)
     {
-        _suppressSelectionAutoSave = true;
-        try
+        using var selectionAutoSaveSuppression = SuppressSelectionAutoSave();
+        SelectedRow = rowId.HasValue
+            ? Rows.FirstOrDefault(row => row.Source.Id == rowId.Value)
+            : null;
+    }
+
+    private SelectionAutoSaveSuppression SuppressSelectionAutoSave()
+    {
+        Interlocked.Increment(ref _selectionAutoSaveSuppressionCount);
+        return new SelectionAutoSaveSuppression(this);
+    }
+
+    private void ReleaseSelectionAutoSaveSuppression()
+    {
+        var remaining = Interlocked.Decrement(
+            ref _selectionAutoSaveSuppressionCount);
+        if (remaining < 0)
         {
-            SelectedRow = rowId.HasValue
-                ? Rows.FirstOrDefault(row => row.Source.Id == rowId.Value)
-                : null;
-        }
-        finally
-        {
-            _suppressSelectionAutoSave = false;
+            Interlocked.Exchange(ref _selectionAutoSaveSuppressionCount, 0);
+            throw new InvalidOperationException(
+                "렌탈 자산 선택 자동저장 억제 범위가 올바르게 해제되지 않았습니다.");
         }
     }
 
@@ -2359,7 +2941,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             EditInstallDate,
             EditContractStartDate,
             EditRentalEndDate,
-            IsNewAsset);
+            IsNewAsset,
+            IsNewAsset ||
+            (SelectedRow?.Source.Id == EditId && SelectedRow.HasFullDetail));
 
     private void ApplySnapshot(RentalAssetEditSnapshot snapshot, bool resetBaseline)
     {
@@ -2462,7 +3046,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             EditInstallDate: null,
             EditContractStartDate: null,
             EditRentalEndDate: null,
-            IsNewAsset: true);
+            IsNewAsset: true,
+            HadFullDetailAtCapture: true);
 
     private LocalRentalAsset BuildAsset(RentalAssetEditSnapshot snapshot)
     {
@@ -2514,7 +3099,10 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     }
 
     private void ResetEditBaseline()
-        => _baselineStateSignature = BuildEditStateSignature(CaptureEditSnapshot());
+    {
+        _baselineStateSignature = BuildEditStateSignature(CaptureEditSnapshot());
+        Volatile.Write(ref _lastCompletedEditAutoSave, null);
+    }
 
     private static bool HasMeaningfulDraftContent(RentalAssetEditSnapshot snapshot)
         => !string.IsNullOrWhiteSpace(snapshot.EditCustomerName)
@@ -2584,6 +3172,43 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         return builder.ToString();
     }
 
+    private sealed class EditAutoSaveOwnership : IDisposable
+    {
+        private RentalAssetViewModel? _owner;
+
+        public EditAutoSaveOwnership(RentalAssetViewModel owner)
+            => _owner = owner;
+
+        public void Dispose()
+            => Interlocked.Exchange(ref _owner, null)?.ReleaseEditAutoSaveOwnership();
+    }
+
+    private sealed class SelectionAutoSaveSuppression : IDisposable
+    {
+        private RentalAssetViewModel? _owner;
+
+        public SelectionAutoSaveSuppression(RentalAssetViewModel owner)
+            => _owner = owner;
+
+        public void Dispose()
+            => Interlocked.Exchange(ref _owner, null)?
+                .ReleaseSelectionAutoSaveSuppression();
+    }
+
+    private sealed record RentalAssetAutoSaveReceipt(
+        Guid AssetId,
+        long ExpectedRevision,
+        string StateSignature)
+    {
+        public bool Matches(RentalAssetEditSnapshot snapshot)
+            => AssetId == snapshot.EditId &&
+               ExpectedRevision == snapshot.EditRevision &&
+               string.Equals(
+                   StateSignature,
+                   BuildEditStateSignature(snapshot),
+                   StringComparison.Ordinal);
+    }
+
     private sealed record RentalAssetEditSnapshot(
         Guid EditId,
         long EditRevision,
@@ -2622,5 +3247,6 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         DateTime? EditInstallDate,
         DateTime? EditContractStartDate,
         DateTime? EditRentalEndDate,
-        bool IsNewAsset);
+        bool IsNewAsset,
+        bool HadFullDetailAtCapture);
 }

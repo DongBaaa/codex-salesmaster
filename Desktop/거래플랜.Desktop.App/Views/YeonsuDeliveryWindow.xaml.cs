@@ -28,7 +28,11 @@ public partial class YeonsuDeliveryWindow : Window
         _invoicePrintService = invoicePrintService;
         _session = session;
         DataContext = viewModel;
-        Closed += (_, _) => _viewModel.Dispose();
+        Closed += (_, _) => UiTaskHelper.Forget(
+            () => _viewModel.DisposeAsync().AsTask(),
+            "UI",
+            "매입/매출 장부 백그라운드 작업 종료",
+            ex => AppLogger.Warn("UI", $"매입/매출 장부 백그라운드 작업 종료 실패: {ex.Message}"));
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)

@@ -1002,6 +1002,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         if (IsBusy)
             return;
 
+        var owner = _sessionStore.CaptureOwner();
         if (!CanCreateInvoices)
         {
             StatusMessage = "권한이 없어 전표를 저장할 수 없습니다.";
@@ -1029,7 +1030,11 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         {
             IsBusy = true;
             StatusMessage = $"{DocumentKindText} 전표를 {(isEditMode ? "수정 저장" : "저장")}하고 있습니다.";
-            var state = await _syncCoordinator.SaveInvoiceImmediatelyAsync(invoice);
+            _sessionStore.ThrowIfOwnerChanged(owner);
+            var state = await _syncCoordinator.SaveInvoiceImmediatelyAsync(
+                invoice,
+                owner);
+            _sessionStore.ThrowIfOwnerChanged(owner);
 
             if (SyncCoordinator.IsConcurrencyConflictState(state))
             {
@@ -1059,6 +1064,10 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             {
                 StatusMessage = $"{DocumentKindText} 전표 저장 완료(오프라인/재시도 대기): {state.LastError}";
             }
+        }
+        catch (StaleMobileSessionOwnerException)
+        {
+            return;
         }
         catch (Exception ex)
         {
@@ -1419,7 +1428,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     {
         var scopeType = TenantScopeCatalog.NormalizeScopeTypeOrDefault(
             snapshot.ScopeType,
-            snapshot.IsAdmin ? TenantScopeCatalog.ScopeAdmin : TenantScopeCatalog.ScopeOfficeOnly);
+            TenantScopeCatalog.ScopeOfficeOnly);
 
         if (snapshot.IsAdmin && string.Equals(scopeType, TenantScopeCatalog.ScopeAdmin, StringComparison.OrdinalIgnoreCase))
             return OfficeCodeCatalog.All;

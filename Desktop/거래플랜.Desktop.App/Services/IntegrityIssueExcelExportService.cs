@@ -8,6 +8,19 @@ namespace 거래플랜.Desktop.App.Services;
 
 public sealed class IntegrityIssueExcelExportService
 {
+    private readonly Action<string> _opener;
+
+    public IntegrityIssueExcelExportService()
+        : this(OpenWithShell)
+    {
+    }
+
+    internal IntegrityIssueExcelExportService(Action<string> opener)
+    {
+        ArgumentNullException.ThrowIfNull(opener);
+        _opener = opener;
+    }
+
     public async Task<string> ExportAsync(IntegrityIssueDetailResultDto detail, string filePath, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(detail);
@@ -25,7 +38,7 @@ public sealed class IntegrityIssueExcelExportService
             Directory.CreateDirectory(directory);
 
         await Task.Run(() => workbook.SaveAs(filePath), ct);
-        OpenWithShell(filePath);
+        TryOpenExportedFile(filePath);
         return filePath;
     }
 
@@ -110,6 +123,18 @@ public sealed class IntegrityIssueExcelExportService
         sheet.Columns(3, 7).Style.Alignment.WrapText = true;
         sheet.SheetView.FreezeRows(1);
         sheet.Range(1, 1, Math.Max(rows.Count + 1, 1), headers.Length).SetAutoFilter();
+    }
+
+    private void TryOpenExportedFile(string path)
+    {
+        try
+        {
+            _opener(path);
+        }
+        catch
+        {
+            // 파일 저장은 완료되었으므로, 기본 연결 프로그램 실행 실패는 무결성 내보내기 실패로 처리하지 않습니다.
+        }
     }
 
     private static void OpenWithShell(string path)

@@ -393,6 +393,8 @@ public static class DtoMappings
             ItemKind = ItemOperationalPolicy.NormalizeItemKind(entity.ItemKind, entity.TrackingType, entity.CategoryName, entity.IsRental),
             TrackingType = ItemOperationalPolicy.NormalizeTrackingType(entity.TrackingType, entity.ItemKind, entity.CategoryName, entity.IsRental),
             Unit = UnitCatalogNormalizer.Normalize(entity.Unit),
+            BoxQuantity = entity.BoxQuantity,
+            StorageLocation = entity.StorageLocation,
             CurrentStock = entity.CurrentStock,
             SafetyStock = entity.SafetyStock,
             PurchasePrice = entity.PurchasePrice,
@@ -401,6 +403,10 @@ public static class DtoMappings
             PriceGradeA = entity.PriceGradeA,
             PriceGradeB = entity.PriceGradeB,
             PriceGradeC = entity.PriceGradeC,
+            LastPurchaseDate = entity.LastPurchaseDate,
+            LastPurchaseDateSpecified = true,
+            LastSaleDate = entity.LastSaleDate,
+            LastSaleDateSpecified = true,
             SimpleMemo = entity.SimpleMemo,
             IsRental = entity.IsRental, IsSale = entity.IsSale,
             SerialNumber = entity.SerialNumber, MaterialNumber = entity.MaterialNumber,
@@ -420,6 +426,10 @@ public static class DtoMappings
         var supportsInventory = ItemOperationalPolicy.SupportsInventory(entity.TrackingType);
         var isAssetItem = ItemOperationalPolicy.IsAsset(entity.TrackingType);
         entity.Unit = UnitCatalogNormalizer.Normalize(dto.Unit);
+        if (dto.BoxQuantity.HasValue)
+            entity.BoxQuantity = dto.BoxQuantity.Value;
+        if (dto.StorageLocation is not null)
+            entity.StorageLocation = dto.StorageLocation;
         entity.CurrentStock = supportsInventory ? dto.CurrentStock : 0m;
         entity.SafetyStock = supportsInventory ? dto.SafetyStock : 0m;
         entity.PurchasePrice = dto.PurchasePrice;
@@ -428,6 +438,10 @@ public static class DtoMappings
         entity.PriceGradeA = dto.PriceGradeA;
         entity.PriceGradeB = dto.PriceGradeB;
         entity.PriceGradeC = dto.PriceGradeC;
+        if (dto.LastPurchaseDateSpecified == true || dto.LastPurchaseDate.HasValue)
+            entity.LastPurchaseDate = dto.LastPurchaseDate;
+        if (dto.LastSaleDateSpecified == true || dto.LastSaleDate.HasValue)
+            entity.LastSaleDate = dto.LastSaleDate;
         entity.SimpleMemo = dto.SimpleMemo;
         entity.IsRental = isAssetItem || dto.IsRental;
         entity.IsSale = isAssetItem ? false : dto.IsSale;

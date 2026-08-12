@@ -1705,6 +1705,143 @@ public sealed class IntegrityControllerTests : IDisposable
         Assert.Contains("거래내역 합계 60,000", row.DetailText, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(false, 10_000)]
+    [InlineData(true, 0)]
+    public async Task GetReport_SameIdTransactionOnlySuppressesMatchingPositiveDirectPayment(
+        bool transactionUsesPaymentRun,
+        int transactionAmount)
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var transactionRunId = Guid.NewGuid();
+        var paymentRunId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var sharedPaymentId = Guid.NewGuid();
+        dbContext.Customers.Add(new Customer
+        {
+            Id = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Cross-run integrity customer",
+            NameMatchKey = "CROSSRUNINTEGRITYCUSTOMER",
+            TradeType = "Sales"
+        });
+        dbContext.RentalBillingProfiles.Add(new RentalBillingProfile
+        {
+            Id = profileId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet,
+            ProfileKey = $"cross-run-integrity-{profileId:N}",
+            CustomerId = customerId,
+            CustomerName = "Cross-run integrity customer",
+            MonthlyAmount = 100_000m,
+            SettledAmount = 0m,
+            OutstandingAmount = 100_000m,
+            BillingRunsJson = JsonSerializer.Serialize(new[]
+            {
+                new ServerRentalBillingRunSnapshot
+                {
+                    RunId = transactionRunId,
+                    RunKey = "2026-06",
+                    ScheduledDate = new DateOnly(2026, 6, 25),
+                    PeriodStartDate = new DateOnly(2026, 6, 1),
+                    PeriodEndDate = new DateOnly(2026, 6, 30),
+                    PeriodLabel = "2026-06",
+                    BilledAmount = 50_000m,
+                    SettledAmount = transactionUsesPaymentRun ? 0m : transactionAmount
+                },
+                new ServerRentalBillingRunSnapshot
+                {
+                    RunId = paymentRunId,
+                    RunKey = "2026-07",
+                    ScheduledDate = new DateOnly(2026, 7, 25),
+                    PeriodStartDate = new DateOnly(2026, 7, 1),
+                    PeriodEndDate = new DateOnly(2026, 7, 31),
+                    PeriodLabel = "2026-07",
+                    BilledAmount = 100_000m,
+                    SettledAmount = 0m
+                }
+            })
+        });
+        dbContext.Invoices.Add(new Invoice
+        {
+            Id = invoiceId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            InvoiceNumber = "CROSS-RUN-PAYMENT-001",
+            VersionGroupId = invoiceId,
+            VersionNumber = 1,
+            IsLatestVersion = true,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = new DateOnly(2026, 7, 25),
+            TotalAmount = 100_000m,
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = paymentRunId
+        });
+        dbContext.Payments.Add(new Payment
+        {
+            Id = sharedPaymentId,
+            InvoiceId = invoiceId,
+            PaymentDate = new DateOnly(2026, 7, 26),
+            Amount = 40_000m
+        });
+        dbContext.Transactions.Add(new TransactionRecord
+        {
+            Id = sharedPaymentId,
+            CustomerId = customerId,
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionDate = new DateOnly(2026, 6, 26),
+            TransactionKind = "legacy cross-run settlement",
+            LinkedRentalBillingProfileId = profileId,
+            LinkedRentalBillingRunId = transactionUsesPaymentRun ? paymentRunId : transactionRunId,
+            SettlementAmount = transactionAmount
+        });
+        await dbContext.SaveChangesAsync();
+
+        var controller = CreateController(dbContext, currentUser);
+        var response = await controller.GetReport(CancellationToken.None);
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+        var issue = Assert.Single(
+            payload.Issues,
+            current => current.Code == "rental_billing_run_settlement_mismatch");
+        Assert.Equal(1, issue.Count);
+        var summaryIssue = Assert.Single(
+            payload.Issues,
+            current => current.Code == "rental_billing_profile_summary_mismatch");
+        Assert.Equal(1, summaryIssue.Count);
+
+        var detailsResponse = await controller.GetReportDetails(
+            "rental_billing_run_settlement_mismatch",
+            CancellationToken.None);
+        var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+        var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+        var row = Assert.Single(details.Rows);
+        Assert.Contains(FormatGuidForTest(paymentRunId), row.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains("40,000", row.SecondaryText, StringComparison.Ordinal);
+        Assert.Contains("40,000", row.DetailText, StringComparison.Ordinal);
+
+        var summaryDetailsResponse = await controller.GetReportDetails(
+            "rental_billing_profile_summary_mismatch",
+            CancellationToken.None);
+        var summaryDetailsOk = Assert.IsType<OkObjectResult>(summaryDetailsResponse.Result);
+        var summaryDetails = Assert.IsType<IntegrityIssueDetailResultDto>(summaryDetailsOk.Value);
+        var summaryRow = Assert.Single(summaryDetails.Rows);
+        Assert.Contains(FormatGuidForTest(paymentRunId), summaryRow.ReferenceText, StringComparison.Ordinal);
+        Assert.Contains("40,000", summaryRow.SecondaryText, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task GetReport_FlagsRentalBillingProfileSummaryMismatch()
     {
@@ -3103,6 +3240,64 @@ public sealed class IntegrityControllerTests : IDisposable
         Assert.Contains(orphanPath, row.DetailText, StringComparison.Ordinal);
         Assert.DoesNotContain("referenced-contract.pdf", row.DetailText, StringComparison.Ordinal);
         Assert.DoesNotContain("deleted-referenced.pdf", row.DetailText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetReport_DoesNotTraverseReparsePointOutsideCentralStorage()
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        var fileStorage = CreateFileStorage();
+        var linkedArea = Path.Combine(_fileStorageRoot, "customer-contracts");
+        var outsideDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "georaeplan-integrity-file-storage-outside-tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDirectory);
+
+        try
+        {
+            try
+            {
+                Directory.CreateSymbolicLink(linkedArea, outsideDirectory);
+            }
+            catch (Exception ex) when (
+                ex is UnauthorizedAccessException or
+                    PlatformNotSupportedException or
+                    IOException)
+            {
+                return;
+            }
+
+            var outsideFile = Path.Combine(outsideDirectory, "must-not-be-scanned.pdf");
+            await File.WriteAllTextAsync(outsideFile, "outside");
+            var controller = new IntegrityController(
+                dbContext,
+                new OfficeScopeService(currentUser, dbContext),
+                fileStorage);
+
+            var response = await controller.GetReport(CancellationToken.None);
+            var ok = Assert.IsType<OkObjectResult>(response.Result);
+            var payload = Assert.IsType<IntegrityReportDto>(ok.Value);
+            Assert.DoesNotContain(
+                payload.Issues,
+                issue => issue.Code == "file_storage_unreferenced");
+
+            var detailsResponse = await controller.GetReportDetails(
+                "file_storage_unreferenced",
+                CancellationToken.None);
+            var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
+            var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
+            Assert.Empty(details.Rows);
+            Assert.True(File.Exists(outsideFile));
+        }
+        finally
+        {
+            if (Directory.Exists(linkedArea))
+                Directory.Delete(linkedArea);
+            if (Directory.Exists(outsideDirectory))
+                Directory.Delete(outsideDirectory, recursive: true);
+        }
     }
 
     [Fact]

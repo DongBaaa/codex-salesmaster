@@ -1,8 +1,8 @@
 using System.Collections.ObjectModel;
-using System.Net;
-using System.Net.Http;
+using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.ViewModels;
@@ -70,40 +70,60 @@ public sealed partial class EnvironmentSettingsViewModel
     ];
 
     [RelayCommand]
-    private async Task ReloadTenantConfigurationAsync()
+    private Task ReloadTenantConfigurationAsync()
+        => ReloadTenantConfigurationCoreAsync(includeInactive: false);
+
+    private async Task ReloadTenantConfigurationCoreAsync(
+        bool includeInactive,
+        string? preferredTenantCode = null,
+        string? preferredOfficeCode = null,
+        Guid? preferredSharingPolicyId = null,
+        bool reloadScopeMatrix = true)
+    {
+        if (_session.IsOfflineMode)
+            throw new InvalidOperationException("오프라인 모드에서는 업체/데이터 권한 서버 스냅샷을 새로고침할 수 없습니다.");
+        if (!CanManageTenantConfiguration)
+            throw new UnauthorizedAccessException("업체/데이터 권한 설정을 조회할 시스템 관리 권한이 없습니다.");
+
+        await FetchAndApplyTenantConfigurationSnapshotAsync(
+            () => _api.GetTenantConfigurationAsync(includeInactive),
+            snapshot => ApplyTenantConfigurationSnapshot(
+                snapshot,
+                preferredTenantCode,
+                preferredOfficeCode,
+                preferredSharingPolicyId));
+
+        if (reloadScopeMatrix)
+            await ReloadCurrentScopeMatrixAsync();
+    }
+
+    internal static async Task FetchAndApplyTenantConfigurationSnapshotAsync(
+        Func<Task<TenantConfigurationSnapshotDto?>> fetchAsync,
+        Action<TenantConfigurationSnapshotDto> applySnapshot)
+    {
+        var snapshot = await fetchAsync();
+        if (snapshot is null ||
+            snapshot.Tenants is null ||
+            snapshot.Offices is null ||
+            snapshot.SharingPolicies is null)
+        {
+            throw new InvalidDataException("업체/데이터 권한 서버 응답이 비어 있거나 완전하지 않습니다.");
+        }
+
+        applySnapshot(snapshot);
+    }
+
+    private void ApplyTenantConfigurationSnapshot(
+        TenantConfigurationSnapshotDto snapshot,
+        string? preferredTenantCode,
+        string? preferredOfficeCode,
+        Guid? preferredSharingPolicyId)
     {
         TenantDefinitions.Clear();
         TenantOfficeDefinitions.Clear();
         SharingPolicies.Clear();
         SharingSourceTenantOptions.Clear();
         SharingTargetTenantOptions.Clear();
-        CurrentScopeMatrixAreas.Clear();
-
-        await ReloadCurrentScopeMatrixAsync();
-
-        if (!CanManageTenantConfiguration || _session.IsOfflineMode)
-        {
-            NewSharingPolicy();
-            return;
-        }
-
-        TenantConfigurationSnapshotDto? snapshot;
-        try
-        {
-            snapshot = await _api.GetTenantConfigurationAsync();
-        }
-        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Forbidden || ex.Message.Contains("403", StringComparison.Ordinal))
-        {
-            StatusMessage = "업체 / 데이터 권한 화면은 관리자 계정만 조회하거나 변경할 수 있습니다.";
-            NewSharingPolicy();
-            return;
-        }
-
-        if (snapshot is null)
-        {
-            StatusMessage = "업체/데이터 권한 설정을 불러오지 못했습니다.";
-            return;
-        }
 
         foreach (var tenant in snapshot.Tenants.OrderBy(current => current.TenantCode, StringComparer.OrdinalIgnoreCase))
         {
@@ -144,15 +164,84 @@ public sealed partial class EnvironmentSettingsViewModel
         RefreshUserOfficeOptions();
         RefreshBusinessDatabaseOptions();
         SelectedTenantDefinition = TenantDefinitions.FirstOrDefault(current =>
-            string.Equals(current.TenantCode, EditingTenantCode, StringComparison.OrdinalIgnoreCase))
+            string.Equals(
+                current.TenantCode,
+                preferredTenantCode ?? EditingTenantCode,
+                StringComparison.OrdinalIgnoreCase))
             ?? TenantDefinitions.FirstOrDefault();
         SelectedTenantOfficeDefinition = TenantOfficeDefinitions.FirstOrDefault(current =>
-            string.Equals(current.OfficeCode, EditingOfficeCode, StringComparison.OrdinalIgnoreCase))
+            string.Equals(
+                current.OfficeCode,
+                preferredOfficeCode ?? EditingOfficeCode,
+                StringComparison.OrdinalIgnoreCase))
             ?? TenantOfficeDefinitions.FirstOrDefault();
         RefreshSharingOfficeOptions();
-        SelectedSharingPolicy = SharingPolicies.FirstOrDefault();
+        SelectedSharingPolicy = preferredSharingPolicyId is { } policyId && policyId != Guid.Empty
+            ? SharingPolicies.FirstOrDefault(current => current.Id == policyId)
+              ?? SharingPolicies.FirstOrDefault()
+            : SharingPolicies.FirstOrDefault();
         if (SelectedSharingPolicy is null)
             NewSharingPolicy();
+    }
+
+    internal sealed record TenantMutationExecutionResult(
+        bool IsAmbiguous,
+        bool CurrentStateMatchesRequest,
+        string StatusMessage);
+
+    internal sealed record TenantConfirmedRefreshResult(
+        bool RefreshSucceeded,
+        string StatusMessage);
+
+    internal static async Task<TenantConfirmedRefreshResult> ReloadAfterConfirmedTenantMutationAsync(
+        Func<Task> reloadAsync,
+        string successMessage)
+    {
+        try
+        {
+            await reloadAsync();
+            return new TenantConfirmedRefreshResult(true, successMessage);
+        }
+        catch (Exception ex)
+        {
+            return new TenantConfirmedRefreshResult(
+                false,
+                $"서버 저장은 확정되었지만 화면 새로고침 실패로 최신 상태를 표시하지 못했습니다. 상태를 검토하기 전까지 같은 작업을 반복하지 마세요. 새로고침 오류: {ex.Message}");
+        }
+    }
+
+    internal static async Task<TenantMutationExecutionResult> ExecuteTenantMutationWithRecoveryAsync(
+        Func<Task> sendMutationAsync,
+        Func<Task> authoritativeReloadAsync,
+        Func<bool> currentStateMatchesRequest)
+    {
+        try
+        {
+            await sendMutationAsync();
+            return new TenantMutationExecutionResult(false, false, string.Empty);
+        }
+        catch (AmbiguousMutationOutcomeException ambiguousException)
+        {
+            try
+            {
+                await authoritativeReloadAsync();
+                var matches = currentStateMatchesRequest();
+                var confirmation = matches
+                    ? "현재 서버 상태가 요청 내용과 일치하지만, 이 요청으로 반영된 것인지는 식별할 수 없습니다."
+                    : "현재 서버 상태가 요청 내용과 일치하는지 확인되지 않았습니다.";
+                return new TenantMutationExecutionResult(
+                    true,
+                    matches,
+                    $"서버 결과가 불확실하여 비활성/삭제 항목을 포함한 전체 상태를 다시 불러왔습니다. {confirmation} 검토하기 전까지 같은 작업을 반복하지 마세요.");
+            }
+            catch (Exception reloadException)
+            {
+                return new TenantMutationExecutionResult(
+                    true,
+                    false,
+                    $"서버 결과가 불확실하고 최신 상태를 다시 불러오지도 못했습니다. 검토하기 전까지 같은 작업을 반복하지 마세요. 전송 오류: {ambiguousException.Message} / 재조회 오류: {reloadException.Message}");
+            }
+        }
     }
 
     private async Task ReloadCurrentScopeMatrixAsync()
@@ -211,18 +300,36 @@ public sealed partial class EnvironmentSettingsViewModel
         try
         {
             IsBusy = true;
-            await _api.UpdateTenantDefinitionAsync(
-                EditingTenantCode,
-                new UpdateTenantDefinitionRequest
-                {
-                    ExpectedRevision = SelectedTenantDefinition?.Revision ?? 0,
-                    DisplayName = EditingTenantDisplayName,
-                    StorageMode = EditingTenantStorageMode,
-                    Description = EditingTenantDescription,
-                    IsActive = EditingTenantIsActive
-                });
-            await ReloadTenantConfigurationAsync();
-            StatusMessage = "업체 권역 설정을 저장했습니다.";
+            var tenantCode = EditingTenantCode;
+            var request = new UpdateTenantDefinitionRequest
+            {
+                ExpectedRevision = SelectedTenantDefinition?.Revision ?? 0,
+                DisplayName = EditingTenantDisplayName,
+                StorageMode = TenantScopeCatalog.NormalizeStorageModeOrDefault(
+                             SelectedTenantDefinition?.StorageMode,
+                             EditingTenantStorageMode),
+                Description = EditingTenantDescription,
+                IsActive = EditingTenantIsActive
+            };
+            var outcome = await ExecuteTenantMutationWithRecoveryAsync(
+                async () => { await _api.UpdateTenantDefinitionAsync(tenantCode, request); },
+                () => ReloadTenantConfigurationCoreAsync(
+                    includeInactive: true,
+                    preferredTenantCode: tenantCode,
+                    preferredOfficeCode: SelectedTenantOfficeDefinition?.OfficeCode,
+                    preferredSharingPolicyId: SelectedSharingPolicy?.Id,
+                    reloadScopeMatrix: false),
+                () => TenantDefinitions.Any(current => TenantMatchesRequest(current, tenantCode, request)));
+            if (outcome.IsAmbiguous)
+            {
+                StatusMessage = outcome.StatusMessage;
+                return;
+            }
+
+            var refresh = await ReloadAfterConfirmedTenantMutationAsync(
+                ReloadTenantConfigurationAsync,
+                "업체 권역 설정을 저장했습니다.");
+            StatusMessage = refresh.StatusMessage;
         }
         catch (Exception ex)
         {
@@ -252,17 +359,33 @@ public sealed partial class EnvironmentSettingsViewModel
         try
         {
             IsBusy = true;
-            await _api.UpdateTenantOfficeDefinitionAsync(
-                EditingOfficeCode,
-                new UpdateTenantOfficeDefinitionRequest
-                {
-                    ExpectedRevision = SelectedTenantOfficeDefinition?.Revision ?? 0,
-                    DisplayName = EditingOfficeDisplayName,
-                    IsHeadOffice = EditingOfficeIsHeadOffice,
-                    IsActive = EditingOfficeIsActive
-                });
-            await ReloadTenantConfigurationAsync();
-            StatusMessage = "지점 구성을 저장했습니다.";
+            var officeCode = EditingOfficeCode;
+            var request = new UpdateTenantOfficeDefinitionRequest
+            {
+                ExpectedRevision = SelectedTenantOfficeDefinition?.Revision ?? 0,
+                DisplayName = EditingOfficeDisplayName,
+                IsHeadOffice = EditingOfficeIsHeadOffice,
+                IsActive = EditingOfficeIsActive
+            };
+            var outcome = await ExecuteTenantMutationWithRecoveryAsync(
+                async () => { await _api.UpdateTenantOfficeDefinitionAsync(officeCode, request); },
+                () => ReloadTenantConfigurationCoreAsync(
+                    includeInactive: true,
+                    preferredTenantCode: SelectedTenantDefinition?.TenantCode,
+                    preferredOfficeCode: officeCode,
+                    preferredSharingPolicyId: SelectedSharingPolicy?.Id,
+                    reloadScopeMatrix: false),
+                () => TenantOfficeDefinitions.Any(current => OfficeMatchesRequest(current, officeCode, request)));
+            if (outcome.IsAmbiguous)
+            {
+                StatusMessage = outcome.StatusMessage;
+                return;
+            }
+
+            var refresh = await ReloadAfterConfirmedTenantMutationAsync(
+                ReloadTenantConfigurationAsync,
+                "지점 구성을 저장했습니다.");
+            StatusMessage = refresh.StatusMessage;
         }
         catch (Exception ex)
         {
@@ -337,18 +460,47 @@ public sealed partial class EnvironmentSettingsViewModel
         try
         {
             IsBusy = true;
-            if (EditingSharingPolicyId == Guid.Empty)
+            var isCreate = EditingSharingPolicyId == Guid.Empty;
+            TenantMutationExecutionResult outcome;
+            if (isCreate)
             {
-                await _api.CreateSharingPolicyAsync(request);
-                StatusMessage = "연동 정책을 추가했습니다.";
+                outcome = await ExecuteTenantMutationWithRecoveryAsync(
+                    async () => { await _api.CreateSharingPolicyAsync(request); },
+                    () => ReloadTenantConfigurationCoreAsync(
+                        includeInactive: true,
+                        preferredTenantCode: SelectedTenantDefinition?.TenantCode,
+                        preferredOfficeCode: SelectedTenantOfficeDefinition?.OfficeCode,
+                        reloadScopeMatrix: false),
+                    () => SharingPolicies.Any(current => SharingPolicyMatchesRequest(current, request)));
             }
             else
             {
-                await _api.UpdateSharingPolicyAsync(EditingSharingPolicyId, request);
-                StatusMessage = "연동 정책을 저장했습니다.";
+                var policyId = EditingSharingPolicyId;
+                outcome = await ExecuteTenantMutationWithRecoveryAsync(
+                    async () => { await _api.UpdateSharingPolicyAsync(policyId, request); },
+                    () => ReloadTenantConfigurationCoreAsync(
+                        includeInactive: true,
+                        preferredTenantCode: SelectedTenantDefinition?.TenantCode,
+                        preferredOfficeCode: SelectedTenantOfficeDefinition?.OfficeCode,
+                        preferredSharingPolicyId: policyId,
+                        reloadScopeMatrix: false),
+                    () => SharingPolicies.Any(current =>
+                        current.Id == policyId && SharingPolicyMatchesRequest(current, request)));
             }
 
-            await ReloadTenantConfigurationAsync();
+            if (outcome.IsAmbiguous)
+            {
+                StatusMessage = outcome.StatusMessage;
+                return;
+            }
+
+            var successMessage = isCreate
+                ? "연동 정책을 추가했습니다."
+                : "연동 정책을 저장했습니다.";
+            var refresh = await ReloadAfterConfirmedTenantMutationAsync(
+                ReloadTenantConfigurationAsync,
+                successMessage);
+            StatusMessage = refresh.StatusMessage;
         }
         catch (Exception ex)
         {
@@ -378,10 +530,33 @@ public sealed partial class EnvironmentSettingsViewModel
         try
         {
             IsBusy = true;
-            await _api.DeleteSharingPolicyAsync(SelectedSharingPolicy.Id, SelectedSharingPolicy.Revision);
-            StatusMessage = "연동 정책을 삭제했습니다.";
-            await ReloadTenantConfigurationAsync();
-            NewSharingPolicy();
+            var policyId = SelectedSharingPolicy.Id;
+            var expectedRevision = SelectedSharingPolicy.Revision;
+            var outcome = await ExecuteTenantMutationWithRecoveryAsync(
+                async () => { await _api.DeleteSharingPolicyAsync(policyId, expectedRevision); },
+                () => ReloadTenantConfigurationCoreAsync(
+                    includeInactive: true,
+                    preferredTenantCode: SelectedTenantDefinition?.TenantCode,
+                    preferredOfficeCode: SelectedTenantOfficeDefinition?.OfficeCode,
+                    preferredSharingPolicyId: policyId,
+                    reloadScopeMatrix: false),
+                () => SharingPolicies.Any(current =>
+                    current.Id == policyId &&
+                    current.IsDeleted &&
+                    !current.IsActive &&
+                    current.Revision > expectedRevision));
+            if (outcome.IsAmbiguous)
+            {
+                StatusMessage = outcome.StatusMessage;
+                return;
+            }
+
+            var refresh = await ReloadAfterConfirmedTenantMutationAsync(
+                ReloadTenantConfigurationAsync,
+                "연동 정책을 삭제했습니다.");
+            if (refresh.RefreshSucceeded)
+                NewSharingPolicy();
+            StatusMessage = refresh.StatusMessage;
         }
         catch (Exception ex)
         {
@@ -391,6 +566,79 @@ public sealed partial class EnvironmentSettingsViewModel
         {
             IsBusy = false;
         }
+    }
+
+    private static bool TenantMatchesRequest(
+        TenantDefinitionDto current,
+        string tenantCode,
+        UpdateTenantDefinitionRequest request)
+    {
+        var canonicalTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(tenantCode);
+        var expectedDisplayName = string.IsNullOrWhiteSpace(request.DisplayName)
+            ? TenantScopeCatalog.GetTenantDisplayName(canonicalTenantCode)
+            : request.DisplayName.Trim();
+        return string.Equals(current.TenantCode, canonicalTenantCode, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(current.DisplayName, expectedDisplayName, StringComparison.Ordinal) &&
+               string.Equals(
+                   TenantScopeCatalog.NormalizeStorageModeOrDefault(current.StorageMode),
+                   TenantScopeCatalog.NormalizeStorageModeOrDefault(request.StorageMode),
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(current.Description, request.Description?.Trim() ?? string.Empty, StringComparison.Ordinal) &&
+               current.IsActive == request.IsActive &&
+               current.IsDeleted != request.IsActive &&
+               current.Revision > Math.Max(0, request.ExpectedRevision);
+    }
+
+    private static bool OfficeMatchesRequest(
+        TenantOfficeDefinitionDto current,
+        string officeCode,
+        UpdateTenantOfficeDefinitionRequest request)
+    {
+        var canonicalOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode);
+        var expectedDisplayName = string.IsNullOrWhiteSpace(request.DisplayName)
+            ? OfficeCodeCatalog.GetOfficeDisplayName(canonicalOfficeCode)
+            : request.DisplayName.Trim();
+        return string.Equals(current.OfficeCode, canonicalOfficeCode, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(
+                   current.TenantCode,
+                   TenantScopeCatalog.GetTenantCodeForOffice(canonicalOfficeCode),
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(current.DisplayName, expectedDisplayName, StringComparison.Ordinal) &&
+               current.IsHeadOffice == request.IsHeadOffice &&
+               current.IsActive == request.IsActive &&
+               current.IsDeleted != request.IsActive &&
+               current.Revision > Math.Max(0, request.ExpectedRevision);
+    }
+
+    private static bool SharingPolicyMatchesRequest(
+        DataSharingPolicyDto current,
+        UpsertDataSharingPolicyRequest request)
+    {
+        var sourceOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(request.SourceOfficeCode);
+        var targetOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(request.TargetOfficeCode);
+        return string.Equals(
+                   current.SourceTenantCode,
+                   TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(request.SourceTenantCode, sourceOfficeCode),
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(current.SourceOfficeCode, sourceOfficeCode, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(
+                   current.TargetTenantCode,
+                   TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(request.TargetTenantCode, targetOfficeCode),
+                   StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(current.TargetOfficeCode, targetOfficeCode, StringComparison.OrdinalIgnoreCase) &&
+               current.ShareCustomers == request.ShareCustomers &&
+               current.ShareItems == request.ShareItems &&
+               current.ShareInvoices == request.ShareInvoices &&
+               current.SharePayments == request.SharePayments &&
+               current.ShareContracts == request.ShareContracts &&
+               current.ShareReports == request.ShareReports &&
+               current.ShareRentals == request.ShareRentals &&
+               current.ShareDeliveries == request.ShareDeliveries &&
+               current.AllowTargetWrite == request.AllowTargetWrite &&
+               current.IsActive == request.IsActive &&
+               current.IsDeleted != request.IsActive &&
+               string.Equals(current.Note, request.Note?.Trim() ?? string.Empty, StringComparison.Ordinal) &&
+               current.Revision > Math.Max(0, request.ExpectedRevision);
     }
 
     partial void OnSelectedTenantDefinitionChanged(TenantDefinitionDto? value)

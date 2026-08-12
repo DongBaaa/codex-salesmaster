@@ -1,11 +1,13 @@
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.DependencyInjection;
 using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Services;
@@ -37,8 +39,20 @@ public partial class MainWindow : Window
     private readonly RuntimeSafetyMonitorService _runtimeSafety;
     private readonly DispatcherTimer _centralRevisionPollTimer;
     private readonly DispatcherTimer _runtimeSafetyTimer;
+    private readonly BackgroundTaskTracker _windowBackgroundWork = new();
+    private readonly SemaphoreSlim _passiveSyncTransitionGate = new(1, 1);
+    private readonly object _mainScopeSyncStopGate = new();
+    private CancellationTokenSource _windowBackgroundWorkCts = new();
     private CancellationTokenSource? _realtimeRevisionCts;
     private Task? _realtimeRevisionTask;
+    private Task _realtimeRevisionDrainTask = Task.CompletedTask;
+    private Task _runtimeSyncDrainTask = Task.CompletedTask;
+    private Task _windowCommandDrainTask = Task.CompletedTask;
+    private Task _mainScopeSyncDrainTask = Task.CompletedTask;
+    private bool _windowDrainWaitsWithoutDeadline;
+    private bool _businessDatabaseTransitionInProgress;
+    private Dictionary<Window, bool>? _shutdownWindowEnabledStates;
+    private bool _mainScopeSyncStopRequested;
     private bool _isInitialized;
     private bool _runtimeServicesStarted;
     private DateTime _lastCentralRefreshUtc = DateTime.MinValue;
@@ -52,6 +66,8 @@ public partial class MainWindow : Window
     private bool _isClosingOrClosed;
     private bool _runtimeSafetyCheckInProgress;
     private bool _dataIntegrityPromptInProgress;
+    private bool _isCompactResponsiveLayout;
+    private bool _compactDashboardExpanded;
     private string _lastDataIntegrityIssueSignature = string.Empty;
     private string? _deferredStartupDashboardMessage;
     private string? _deferredStartupClockWarningMessage;
@@ -72,6 +88,7 @@ public partial class MainWindow : Window
                       IServiceScopeFactory serviceScopeFactory)
     {
         InitializeComponent();
+        MainWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(this);
         Title = AppRuntimeInfo.WithTestLabel(Title);
         _vm = vm;
         _local = local;
@@ -89,6 +106,7 @@ public partial class MainWindow : Window
         _updateService = new DesktopAppUpdateService(api);
         _runtimeSafety = new RuntimeSafetyMonitorService(local, sync, backup, session, api, diagnostics, serviceScopeFactory);
         DataContext = vm;
+        Loaded += MainWindow_Loaded;
         Activated += MainWindow_Activated;
         Deactivated += MainWindow_Deactivated;
         Closed += (_, _) => BeginShutdownProtection();
@@ -104,17 +122,273 @@ public partial class MainWindow : Window
         _runtimeSafetyTimer.Tick += RuntimeSafetyTimer_Tick;
     }
 
-    public void BeginShutdownProtection()
+    private void MainWindow_Loaded(
+        object sender,
+        RoutedEventArgs e) =>
+        ApplyResponsiveLayout(
+            new Size(
+                MainRootScrollViewer.ActualWidth,
+                MainRootScrollViewer.ActualHeight));
+
+    private void MainRootScrollViewer_SizeChanged(
+        object sender,
+        SizeChangedEventArgs e) =>
+        ApplyResponsiveLayout(e.NewSize);
+
+    internal void ApplyResponsiveLayoutForAudit(Size clientSize) =>
+        ApplyResponsiveLayout(clientSize);
+
+    private void ApplyResponsiveLayout(Size clientSize)
     {
-        if (_isClosingOrClosed)
+        var useContentScrollFallback =
+            MainWindowResponsiveLayoutPolicy
+                .ShouldUseContentScrollFallback(clientSize);
+        var rootScrollBarVisibility =
+            useContentScrollFallback
+                ? ScrollBarVisibility.Auto
+                : ScrollBarVisibility.Disabled;
+        MainRootScrollViewer.HorizontalScrollBarVisibility =
+            rootScrollBarVisibility;
+        MainRootScrollViewer.VerticalScrollBarVisibility =
+            rootScrollBarVisibility;
+        MainRootPanel.Width =
+            useContentScrollFallback
+                ? Math.Max(
+                    clientSize.Width,
+                    MainWindowResponsiveLayoutPolicy
+                        .MinimumContentWidthDip)
+                : double.NaN;
+        MainRootPanel.Height =
+            useContentScrollFallback
+                ? Math.Max(
+                    clientSize.Height,
+                    MainWindowResponsiveLayoutPolicy
+                        .MinimumContentHeightDip)
+                : double.NaN;
+
+        var useCompactLayout =
+            MainWindowResponsiveLayoutPolicy.ShouldUseCompactLayout(
+                clientSize);
+
+        if (_isCompactResponsiveLayout != useCompactLayout)
+        {
+            _isCompactResponsiveLayout = useCompactLayout;
+            _compactDashboardExpanded = false;
+        }
+
+        MainWindowTitlePanel.Visibility =
+            useCompactLayout
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+        CompactDashboardToggleButton.Visibility =
+            useCompactLayout
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        CompactDesktopUpdateHost.Visibility =
+            useCompactLayout
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        DesktopUpdateBannerResponsiveHost.Visibility =
+            useCompactLayout
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+        CurrentUserDisplayText.Visibility =
+            useCompactLayout
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+        CurrentUserSeparator.Visibility =
+            useCompactLayout
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+
+        var showDashboardPanels = !useCompactLayout;
+        DashboardSummaryPanel.Visibility =
+            showDashboardPanels
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        DashboardContractAlertsPanel.Visibility =
+            showDashboardPanels
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        CompactDashboardToggleButton.Content =
+            _compactDashboardExpanded
+                ? "요약 닫기"
+                : "요약 펼치기";
+        CompactDashboardPopup.IsOpen =
+            useCompactLayout &&
+            _compactDashboardExpanded;
+
+        MainHeaderPanel.Padding =
+            useCompactLayout
+                ? new Thickness(12, 4, 12, 4)
+                : new Thickness(16, 10, 16, 10);
+        MainContentPanel.Margin =
+            useCompactLayout
+                ? new Thickness(10, 4, 10, 4)
+                : new Thickness(10);
+        InvoiceToolbarPanel.Padding =
+            useCompactLayout
+                ? new Thickness(10, 6, 10, 6)
+                : new Thickness(10);
+        InvoiceToolbarPanel.Margin =
+            useCompactLayout
+                ? new Thickness(0, 0, 0, 4)
+                : new Thickness(0, 0, 0, 8);
+        CurrentUserDisplayText.MaxWidth =
+            useCompactLayout
+                ? 160d
+                : double.PositiveInfinity;
+    }
+
+    private void CompactDashboardToggleButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (!_isCompactResponsiveLayout)
             return;
 
+        _compactDashboardExpanded = !_compactDashboardExpanded;
+        var currentSize = new Size(
+            Math.Max(MainRootScrollViewer.ActualWidth, MinWidth),
+            Math.Max(MainRootScrollViewer.ActualHeight, MinHeight));
+        ApplyResponsiveLayout(currentSize);
+    }
+
+    private void CompactDashboardPopup_Closed(
+        object? sender,
+        EventArgs e)
+    {
+        _compactDashboardExpanded = false;
+        CompactDashboardToggleButton.Content = "요약 펼치기";
+        if (IsActive &&
+            _isCompactResponsiveLayout &&
+            CompactDashboardToggleButton.IsVisible)
+        {
+            _ = CompactDashboardToggleButton.Focus();
+        }
+    }
+
+    private void CompactDashboardPopup_Opened(
+        object? sender,
+        EventArgs e) =>
+        _ = Dispatcher.BeginInvoke(
+            DispatcherPriority.Input,
+            new Action(
+                () =>
+                {
+                    _ = CompactDashboardPopupCloseButton.Focus();
+                    _ = Keyboard.Focus(
+                        CompactDashboardPopupCloseButton);
+                }));
+
+    private void CompactDashboardPopupPanel_PreviewKeyDown(
+        object sender,
+        KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape)
+            return;
+
+        e.Handled = true;
+        CompactDashboardPopup.IsOpen = false;
+    }
+
+    private void CompactDashboardPopupCloseButton_Click(
+        object sender,
+        RoutedEventArgs e) =>
+        CompactDashboardPopup.IsOpen = false;
+
+    private void CompactDesktopUpdateMenuButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (sender is not Button button ||
+            button.ContextMenu is null)
+        {
+            return;
+        }
+
+        button.ContextMenu.PlacementTarget = button;
+        button.ContextMenu.IsOpen = true;
+    }
+
+    public void BeginShutdownProtection(
+        bool waitForCompletionWithoutDeadline = false)
+    {
+        if (_isClosingOrClosed)
+        {
+            if (waitForCompletionWithoutDeadline &&
+                !_windowDrainWaitsWithoutDeadline)
+            {
+                _windowDrainWaitsWithoutDeadline = true;
+                _windowCommandDrainTask = UpgradeWindowDrainToNoDeadlineAsync(
+                    _windowCommandDrainTask);
+            }
+
+            return;
+        }
+
         _isClosingOrClosed = true;
-        _vm.CancelPendingBackgroundWorkForShutdown();
-        StopRealtimeRevisionMonitor();
-        StopRuntimeSyncService();
-        _centralRevisionPollTimer?.Stop();
-        _runtimeSafetyTimer?.Stop();
+        _windowDrainWaitsWithoutDeadline = waitForCompletionWithoutDeadline;
+        TryRunShutdownStep(
+            DisableApplicationWindowsForShutdown,
+            "disable application windows");
+        TryRunShutdownStep(
+            _windowBackgroundWork.BeginShutdown,
+            "seal new window work");
+        TryRunShutdownStep(
+            _windowBackgroundWorkCts.Cancel,
+            "cancel window lifetime token");
+        TryRunShutdownStep(
+            () => _centralRevisionPollTimer?.Stop(),
+            "stop central revision timer");
+        TryRunShutdownStep(
+            () => _runtimeSafetyTimer?.Stop(),
+            "stop runtime safety timer");
+        TryRunShutdownStep(
+            StopRealtimeRevisionMonitor,
+            "stop realtime revision monitor");
+        TryRunShutdownStep(
+            StopRuntimeSyncService,
+            "stop runtime sync service");
+        TryRunShutdownStep(
+            _vm.CancelPendingBackgroundWorkForShutdown,
+            "cancel main view-model background work");
+        _windowCommandDrainTask = DrainWindowCommandsAndSecondaryWindowsAsync(
+            waitForCompletionWithoutDeadline);
+    }
+
+    private static void TryRunShutdownStep(Action step, string operation)
+    {
+        try
+        {
+            step();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error(
+                "APP",
+                $"Synchronous shutdown step failed and the remaining drains will continue: {operation}",
+                ex);
+        }
+    }
+
+    private async Task UpgradeWindowDrainToNoDeadlineAsync(
+        Task previousDrain)
+    {
+        try
+        {
+            await previousDrain;
+            return;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn(
+                "UI",
+                $"안전 필수 종료가 요청되어 이전 창 종료 단계의 실패를 기록하고 제한시간 없이 다시 드레인합니다. {ex.Message}");
+        }
+
+        await DrainWindowCommandsAndSecondaryWindowsAsync(
+            waitForCompletionWithoutDeadline: true);
     }
 
     public LocalStateService LocalStateService => _local;
@@ -123,11 +397,61 @@ public partial class MainWindow : Window
     public IPrintService InvoicePrintService => _invoicePrintService;
     public SessionState SessionState => _session;
     public ErpApiClient ApiClient => _api;
+    internal bool IsShutdownProtectionActive => _isClosingOrClosed;
     public Task? InitialDashboardLoadTask { get; private set; }
+    public async Task DrainPendingBackgroundWorkForShutdownAsync()
+    {
+        await Task.WhenAll(
+            _vm.DrainPendingBackgroundWorkForShutdownAsync(),
+            _realtimeRevisionDrainTask,
+            _runtimeSyncDrainTask,
+            _windowCommandDrainTask);
+        await _windowBackgroundWork.DrainAsync();
+    }
+    public bool IsShutdownBackgroundWorkCompleted
+        => _vm.IsShutdownBackgroundWorkCompleted &&
+           _realtimeRevisionDrainTask.IsCompletedSuccessfully &&
+           _runtimeSyncDrainTask.IsCompletedSuccessfully &&
+           _windowCommandDrainTask.IsCompletedSuccessfully &&
+           _windowBackgroundWork.IsCompleted;
+
+    public bool IsMainScopeSyncDrainCompleted
+        => _mainScopeSyncStopRequested && _mainScopeSyncDrainTask.IsCompletedSuccessfully;
+
+    public Task StopAndDrainMainScopeSyncServiceAsync()
+    {
+        lock (_mainScopeSyncStopGate)
+        {
+            if (_mainScopeSyncStopRequested)
+                return _mainScopeSyncDrainTask;
+
+            // Publish a real Task before marking the stop as requested. The yield
+            // also captures any synchronous exception raised while StopAndDrainAsync
+            // invokes CancellationToken callbacks.
+            _mainScopeSyncDrainTask = StopAndDrainMainScopeSyncServiceCoreAsync();
+            _mainScopeSyncStopRequested = true;
+            return _mainScopeSyncDrainTask;
+        }
+    }
+
+    private async Task StopAndDrainMainScopeSyncServiceCoreAsync()
+    {
+        await Task.Yield();
+        await _sync.StopAndDrainAsync();
+    }
 
     public void EndShutdownProtection()
     {
         _isClosingOrClosed = false;
+        _vm.ResumePendingBackgroundWorkAfterShutdownCanceled();
+        _windowBackgroundWork.Resume();
+        _windowBackgroundWorkCts.Dispose();
+        _windowBackgroundWorkCts = new CancellationTokenSource();
+        _realtimeRevisionDrainTask = Task.CompletedTask;
+        _runtimeSyncDrainTask = Task.CompletedTask;
+        _windowCommandDrainTask = Task.CompletedTask;
+        _windowDrainWaitsWithoutDeadline = false;
+        RestoreApplicationWindowsAfterCanceledShutdown();
         if (_isInitialized && !_session.IsOfflineMode)
         {
             StartRuntimeSyncService();
@@ -138,12 +462,259 @@ public partial class MainWindow : Window
     }
 
     private void RunUiAsync(Func<Task> operation, string operationName, string? userMessage = null)
-        => UiTaskHelper.Run(
+    {
+        if (Volatile.Read(ref _businessDatabaseTransitionInProgress))
+            return;
+
+        UiTaskHelper.Run(
             this,
-            operation,
+            () => RunTrackedWindowOperationAsync(operation),
             "UI",
             operationName,
             userMessage ?? $"{operationName} 중 오류가 발생했습니다.");
+    }
+
+    internal async Task RunTrackedWindowOperationAsync(Func<Task> operation)
+    {
+        var task = _windowBackgroundWork.TryStart(operation);
+        if (task is not null)
+            await task;
+    }
+
+    internal Task? TryTrackWindowObservation(Func<Task> observationFactory)
+        => _windowBackgroundWork.TryTrack(observationFactory);
+
+    private void DisableApplicationWindowsForShutdown()
+    {
+        var windows = Application.Current?.Windows.OfType<Window>().ToArray() ?? [];
+        _shutdownWindowEnabledStates = windows.ToDictionary(
+            window => window,
+            window => window.IsEnabled);
+        foreach (var window in windows)
+            window.IsEnabled = false;
+    }
+
+    private void RestoreApplicationWindowsAfterCanceledShutdown()
+    {
+        var states = _shutdownWindowEnabledStates;
+        _shutdownWindowEnabledStates = null;
+        if (states is null)
+            return;
+
+        foreach (var (window, wasEnabled) in states)
+        {
+            if (window.IsLoaded)
+                window.IsEnabled = wasEnabled;
+        }
+    }
+
+    private async Task DrainActiveWindowCommandsAsync(
+        bool waitForCompletionWithoutDeadline)
+    {
+        while (true)
+        {
+            var activeTasks = SnapshotActiveWindowCommandTasks();
+            if (activeTasks.Length == 0)
+                return;
+
+            try
+            {
+                var completion = Task.WhenAll(activeTasks);
+                if (waitForCompletionWithoutDeadline)
+                    await completion;
+                else
+                    await completion.WaitAsync(TimeSpan.FromMinutes(2));
+            }
+            catch (TimeoutException ex)
+            {
+                throw new TimeoutException(
+                    "An active window command did not finish before the shutdown deadline.",
+                    ex);
+            }
+            catch (OperationCanceledException)
+            {
+                // A canceled UI command has still completed and no longer owns scoped services.
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Warn(
+                    "UI",
+                    $"종료 중 실행 중이던 화면 명령의 완료를 확인했습니다. {ex.Message}");
+            }
+        }
+    }
+
+    private async Task DrainWindowCommandsAndSecondaryWindowsAsync(
+        bool waitForCompletionWithoutDeadline)
+    {
+        await CloseActiveModalWindowsForShutdownAsync(
+            waitForCompletionWithoutDeadline);
+        if (DialogWindowCloseHelper.ActiveNativeDialogCount > 0)
+        {
+            if (!waitForCompletionWithoutDeadline)
+            {
+                throw new InvalidOperationException(
+                    "파일 선택/저장 창을 먼저 닫은 뒤 종료를 다시 시도해 주세요.");
+            }
+
+            await DialogWindowCloseHelper.WaitForNoActiveNativeDialogsAsync();
+        }
+
+        await DrainActiveWindowCommandsAsync(
+            waitForCompletionWithoutDeadline);
+        await CloseSecondaryWindowsForShutdownAsync(
+            waitForCompletionWithoutDeadline);
+    }
+
+    private async Task CloseActiveModalWindowsForShutdownAsync(
+        bool waitForCompletionWithoutDeadline)
+    {
+        var activeDialogs = DialogWindowCloseHelper.SnapshotActiveDialogs()
+            .Where(window => !ReferenceEquals(window, this))
+            .OrderByDescending(GetWindowOwnershipDepth)
+            .ToArray();
+
+        foreach (var dialog in activeDialogs)
+            await CloseWindowForShutdownAsync(
+                dialog,
+                waitForCompletionWithoutDeadline);
+    }
+
+    private async Task CloseSecondaryWindowsForShutdownAsync(
+        bool waitForCompletionWithoutDeadline)
+    {
+        var secondaryWindows = Application.Current?.Windows
+            .OfType<Window>()
+            .Where(window => !ReferenceEquals(window, this))
+            .OrderByDescending(GetWindowOwnershipDepth)
+            .ToArray() ?? [];
+
+        foreach (var window in secondaryWindows)
+        {
+            if (!window.IsLoaded)
+                continue;
+
+            await CloseWindowForShutdownAsync(
+                window,
+                waitForCompletionWithoutDeadline);
+        }
+    }
+
+    private static async Task CloseWindowForShutdownAsync(
+        Window window,
+        bool waitForCompletionWithoutDeadline)
+    {
+        var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        EventHandler closedHandler = (_, _) => closed.TrySetResult();
+        window.Closed += closedHandler;
+        try
+        {
+            window.Close();
+            if (!window.IsLoaded)
+                closed.TrySetResult();
+
+            if (waitForCompletionWithoutDeadline)
+                await closed.Task;
+            else
+                await closed.Task.WaitAsync(TimeSpan.FromMinutes(2));
+        }
+        catch (TimeoutException ex)
+        {
+            throw new TimeoutException(
+                $"Window did not finish its close/save workflow: {window.GetType().Name}",
+                ex);
+        }
+        finally
+        {
+            window.Closed -= closedHandler;
+        }
+    }
+
+    internal static int GetWindowOwnershipDepth(Window window)
+    {
+        ArgumentNullException.ThrowIfNull(window);
+        var visited = new HashSet<Window>(ReferenceEqualityComparer.Instance);
+        var depth = 0;
+        var owner = window.Owner;
+        while (owner is not null && visited.Add(owner))
+        {
+            depth++;
+            owner = owner.Owner;
+        }
+
+        return depth;
+    }
+
+    internal Task[] SnapshotActiveWindowCommandTasks()
+    {
+        var dataContexts = new HashSet<object>(ReferenceEqualityComparer.Instance)
+        {
+            _vm
+        };
+        var windows = Application.Current?.Windows.OfType<Window>().ToArray() ?? [];
+        foreach (var window in windows)
+        {
+            if (window.DataContext is not null)
+                dataContexts.Add(window.DataContext);
+        }
+
+        return dataContexts
+            .SelectMany(dataContext => GetActiveAsyncCommandTasks(dataContext))
+            .Distinct()
+            .ToArray();
+    }
+
+    internal static IEnumerable<Task> GetActiveAsyncCommandTasks(
+        object dataContext,
+        string? excludedCommandPropertyName = null)
+    {
+        ArgumentNullException.ThrowIfNull(dataContext);
+        foreach (var property in dataContext.GetType().GetProperties(
+                     BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+        {
+            if (property.GetIndexParameters().Length != 0 ||
+                string.Equals(
+                    property.Name,
+                    excludedCommandPropertyName,
+                    StringComparison.Ordinal) ||
+                !typeof(IAsyncRelayCommand).IsAssignableFrom(property.PropertyType))
+            {
+                continue;
+            }
+
+            IAsyncRelayCommand? command;
+            try
+            {
+                command = property.GetValue(dataContext) as IAsyncRelayCommand;
+            }
+            catch (TargetInvocationException ex)
+            {
+                AppLogger.Warn(
+                    "UI",
+                    $"종료 중 비동기 명령 상태를 읽지 못했습니다. property={property.Name}, error={ex.InnerException?.Message ?? ex.Message}");
+                continue;
+            }
+
+            var executionTask = command?.ExecutionTask;
+            if (executionTask is not null && !executionTask.IsCompleted)
+                yield return executionTask;
+        }
+    }
+
+    private Task ForgetWindowBackgroundTask(
+        Func<Task> operationFactory,
+        string category,
+        string operation,
+        Action<Exception>? onError = null,
+        Action? onCompleted = null)
+    {
+        var task = _windowBackgroundWork.TryStart(operationFactory);
+        if (task is null)
+            return Task.CompletedTask;
+
+        UiTaskHelper.Forget(task, category, operation, onError, onCompleted);
+        return task;
+    }
 
     private void ShowModelessWithDeferredLoad(
         Window window,
@@ -153,52 +724,63 @@ public partial class MainWindow : Window
         Func<Task>? closedAsync = null)
         => WindowShowHelper.ShowModelessWithDeferredLoad(window, loadAsync, windowTitle, failureMessage, this, closedAsync);
 
-    public Task InitAsync(bool deferStartupNotifications = false)
+    public Task InitAsync(
+        bool deferStartupNotifications = false,
+        CancellationToken mainScopeLifetimeToken = default)
     {
+        mainScopeLifetimeToken.ThrowIfCancellationRequested();
         if (_isClosingOrClosed)
             return Task.CompletedTask;
 
         _vm.SyncStatus = "메인 화면을 표시했습니다. 대시보드와 거래내역은 백그라운드에서 불러오는 중입니다.";
-        InitialDashboardLoadTask = RunInitialDashboardLoadAsync(deferStartupNotifications);
-        UiTaskHelper.Forget(
-            InitialDashboardLoadTask,
+        InitialDashboardLoadTask = ForgetWindowBackgroundTask(
+            () => RunInitialDashboardLoadAsync(
+                deferStartupNotifications,
+                mainScopeLifetimeToken),
             "UI",
             "메인 대시보드 백그라운드 로드",
             ex =>
             {
+                if (mainScopeLifetimeToken.IsCancellationRequested)
+                    return;
                 _vm.SyncStatus = "초기 대시보드 로드 중 오류가 발생했습니다. 메뉴는 사용할 수 있으며 필요한 화면에서 다시 조회할 수 있습니다.";
                 AppLogger.Error("UI", "Initial dashboard background load failed", ex);
             });
         return Task.CompletedTask;
     }
 
-    private async Task RunInitialDashboardLoadAsync(bool deferStartupNotifications)
+    private async Task RunInitialDashboardLoadAsync(
+        bool deferStartupNotifications,
+        CancellationToken mainScopeLifetimeToken)
     {
         ServerClockCheckResult? serverClockCheck = null;
         try
         {
             await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+            mainScopeLifetimeToken.ThrowIfCancellationRequested();
             if (_isClosingOrClosed)
                 return;
 
             await OperationTiming.MeasureAsync(
                 "APP",
                 "회사 프로필 상태 점검",
-                () => _local.EnsureCompanyProfilesHealthyAsync(),
+                () => _local.EnsureCompanyProfilesHealthyAsync(mainScopeLifetimeToken),
                 warningThreshold: TimeSpan.FromSeconds(2));
 
             serverClockCheck = await OperationTiming.MeasureAsync(
                 "APP",
                 "서버 기준 날짜 확인",
-                () => _runtimeSafety.ResolveServerTodayAsync(),
+                () => _runtimeSafety.ResolveServerTodayAsync(mainScopeLifetimeToken),
                 warningThreshold: TimeSpan.FromSeconds(2));
+            mainScopeLifetimeToken.ThrowIfCancellationRequested();
             _vm.SetInvoiceDefaultDateRange(serverClockCheck.ServerToday);
 
             await OperationTiming.MeasureAsync(
                 "UI",
                 "메인 대시보드 로드",
-                () => _vm.LoadAsync(),
+                () => _vm.LoadAsync(mainScopeLifetimeToken),
                 warningThreshold: TimeSpan.FromSeconds(3));
+            mainScopeLifetimeToken.ThrowIfCancellationRequested();
 
             var popupSections = new List<string>();
             if (!string.IsNullOrWhiteSpace(_vm.ContractAlertPopupMessage))
@@ -230,9 +812,12 @@ public partial class MainWindow : Window
         finally
         {
             _isInitialized = true;
-            StartRuntimeServicesAfterInitialDashboardLoad();
-            QueueDeferredStartupSafetyChecks();
-            _vm.QueueBackgroundDesktopUpdateCheck();
+            if (!mainScopeLifetimeToken.IsCancellationRequested)
+            {
+                StartRuntimeServicesAfterInitialDashboardLoad();
+                QueueDeferredStartupSafetyChecks();
+                _vm.QueueBackgroundDesktopUpdateCheck();
+            }
         }
     }
 
@@ -262,17 +847,42 @@ public partial class MainWindow : Window
     private void StopRuntimeSyncService()
     {
         var sync = _runtimeSyncService;
+        var scope = _runtimeSyncScope;
         _runtimeSyncService = null;
+        _runtimeSyncScope = null;
         if (sync is not null)
             sync.SyncStatusChanged -= HandleRuntimeSyncStatusChanged;
 
-        _runtimeSyncScope?.Dispose();
-        _runtimeSyncScope = null;
+        _runtimeSyncDrainTask = StopAndDisposeRuntimeSyncScopeAsync(sync, scope);
+    }
+
+    private static async Task StopAndDisposeRuntimeSyncScopeAsync(
+        SyncService? sync,
+        IServiceScope? scope)
+    {
+        if (sync is not null)
+            await sync.StopAndDrainAsync();
+
+        scope?.Dispose();
     }
 
     private void HandleRuntimeSyncStatusChanged(string status)
     {
-        if (_isClosingOrClosed || string.IsNullOrWhiteSpace(status))
+        if (string.IsNullOrWhiteSpace(status))
+            return;
+
+        if (!Dispatcher.CheckAccess())
+        {
+            if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+                return;
+
+            _ = Dispatcher.BeginInvoke(
+                DispatcherPriority.DataBind,
+                new Action(() => HandleRuntimeSyncStatusChanged(status)));
+            return;
+        }
+
+        if (_isClosingOrClosed)
             return;
 
         // 자동/실시간 동기화는 짧은 주기로 실행될 수 있으므로 진행 문구로 상태바를
@@ -283,22 +893,27 @@ public partial class MainWindow : Window
         _vm.ApplyExternalSyncStatus(status);
     }
 
-    private async Task<T> RunIsolatedSyncAsync<T>(Func<SyncService, Task<T>> operation)
+    private async Task<T> RunIsolatedSyncAsync<T>(
+        Func<SyncService, CancellationToken, Task<T>> operation,
+        CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         return await Task.Run(async () =>
         {
+            ct.ThrowIfCancellationRequested();
             using var scope = _serviceScopeFactory.CreateScope();
             var sync = scope.ServiceProvider.GetRequiredService<SyncService>();
             sync.SyncStatusChanged += HandleRuntimeSyncStatusChanged;
             try
             {
-                return await operation(sync).ConfigureAwait(false);
+                return await operation(sync, ct).ConfigureAwait(false);
             }
             finally
             {
                 sync.SyncStatusChanged -= HandleRuntimeSyncStatusChanged;
+                await sync.StopAndDrainAsync().ConfigureAwait(false);
             }
-        }).ConfigureAwait(true);
+        }, ct).ConfigureAwait(true);
     }
 
     private void StartRealtimeRevisionMonitor()
@@ -306,15 +921,17 @@ public partial class MainWindow : Window
         if (_realtimeRevisionCts is not null || _session.IsOfflineMode || !_session.IsLoggedIn || _isClosingOrClosed)
             return;
 
-        _realtimeRevisionCts = new CancellationTokenSource();
-        _realtimeRevisionTask = Task.Run(
-            () => RunRealtimeRevisionMonitorAsync(_realtimeRevisionCts.Token),
-            _realtimeRevisionCts.Token);
+        var cts = new CancellationTokenSource();
+        _realtimeRevisionCts = cts;
+        _realtimeRevisionTask = StartRealtimeRevisionMonitorTask(
+            RunRealtimeRevisionMonitorAsync,
+            cts);
     }
 
     private void StopRealtimeRevisionMonitor()
     {
         var cts = _realtimeRevisionCts;
+        var task = _realtimeRevisionTask;
         _realtimeRevisionCts = null;
         _realtimeRevisionTask = null;
         if (cts is null)
@@ -327,6 +944,42 @@ public partial class MainWindow : Window
         catch
         {
             // ignore shutdown race
+        }
+
+        if (task is null)
+        {
+            cts.Dispose();
+            return;
+        }
+
+        _realtimeRevisionDrainTask = ObserveAndDisposeRealtimeRevisionMonitorAsync(task, cts);
+        UiTaskHelper.Forget(
+            _realtimeRevisionDrainTask,
+            "SYNC",
+            "실시간 revision monitor 종료");
+    }
+
+    internal static Task StartRealtimeRevisionMonitorTask(
+        Func<CancellationToken, Task> monitor,
+        CancellationTokenSource cts)
+    {
+        ArgumentNullException.ThrowIfNull(monitor);
+        ArgumentNullException.ThrowIfNull(cts);
+
+        var token = cts.Token;
+        return Task.Run(() => monitor(token), token);
+    }
+
+    internal static async Task ObserveAndDisposeRealtimeRevisionMonitorAsync(
+        Task task,
+        CancellationTokenSource cts)
+    {
+        ArgumentNullException.ThrowIfNull(task);
+        ArgumentNullException.ThrowIfNull(cts);
+
+        try
+        {
+            await task.ConfigureAwait(false);
         }
         finally
         {
@@ -362,7 +1015,7 @@ public partial class MainWindow : Window
                 var baselineRevision = _lastPassiveServerRevisionHint;
                 if (baselineRevision <= 0)
                 {
-                    baselineRevision = await ResolveLocalLastSyncRevisionAsync();
+                    baselineRevision = await ResolveLocalLastSyncRevisionAsync(ct);
                     _lastPassiveServerRevisionHint = baselineRevision;
                 }
                 var status = await _api.WaitForSyncChangeAsync(
@@ -374,12 +1027,13 @@ public partial class MainWindow : Window
                     continue;
 
                 await Dispatcher.InvokeAsync(
-                    () => UiTaskHelper.Forget(
-                        RunPassiveSyncRefreshAsync(
+                    () => ForgetWindowBackgroundTask(
+                        () => RunPassiveSyncRefreshAsync(
                             "실시간 변경 감지",
                             RealtimeRefreshMinInterval,
                             requireServerRevisionChange: false,
-                            observedServerRevision: status.CurrentServerRevision),
+                            observedServerRevision: status.CurrentServerRevision,
+                            ct: _windowBackgroundWorkCts.Token),
                         "SYNC",
                         "실시간 변경 감지 후 재동기화",
                         ex => AppLogger.Warn("SYNC", $"실시간 변경 감지 후 재동기화 재시도: {ex.Message}")),
@@ -424,10 +1078,29 @@ public partial class MainWindow : Window
                || detail.Contains("504", StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task<long> ResolveLocalLastSyncRevisionAsync()
+    private Task<long> ResolveLocalLastSyncRevisionAsync(CancellationToken ct)
+        => ResolveLocalLastSyncRevisionAsync(_serviceScopeFactory, ct);
+
+    internal static async Task<long> ResolveLocalLastSyncRevisionAsync(
+        IServiceScopeFactory serviceScopeFactory,
+        CancellationToken ct)
     {
-        var raw = await _local.GetSettingAsync("LastSyncRevision");
+        var raw = await RunIsolatedLocalStateOperationAsync(
+            serviceScopeFactory,
+            local => local.GetSettingAsync("LastSyncRevision", ct));
         return long.TryParse(raw, out var value) ? value : 0L;
+    }
+
+    internal static async Task<T> RunIsolatedLocalStateOperationAsync<T>(
+        IServiceScopeFactory serviceScopeFactory,
+        Func<LocalStateService, Task<T>> operation)
+    {
+        ArgumentNullException.ThrowIfNull(serviceScopeFactory);
+        ArgumentNullException.ThrowIfNull(operation);
+
+        using var scope = serviceScopeFactory.CreateScope();
+        var local = scope.ServiceProvider.GetRequiredService<LocalStateService>();
+        return await operation(local).ConfigureAwait(false);
     }
 
     public void ShowDeferredStartupNotifications()
@@ -460,8 +1133,8 @@ public partial class MainWindow : Window
 
     private void QueueDeferredStartupSafetyChecks()
     {
-        UiTaskHelper.Forget(
-            RunDeferredStartupSafetyChecksAsync(),
+        ForgetWindowBackgroundTask(
+            () => RunDeferredStartupSafetyChecksAsync(),
             "APP",
             "메인 화면 후속 안전 점검",
             ex => AppLogger.Warn("APP", $"메인 화면 후속 안전 점검 실패: {ex.Message}"));
@@ -490,7 +1163,10 @@ public partial class MainWindow : Window
         await OperationTiming.MeasureAsync(
             "APP",
             "주기 안전 점검 초기 실행",
-            () => RunPeriodicRuntimeSafetyCheckAsync(force: false, showPrompt: false),
+            () => RunPeriodicRuntimeSafetyCheckAsync(
+                force: false,
+                showPrompt: false,
+                ct: _windowBackgroundWorkCts.Token),
             warningThreshold: TimeSpan.FromSeconds(2));
     }
 
@@ -549,14 +1225,21 @@ public partial class MainWindow : Window
         if (_isClosingOrClosed || !_isInitialized || _session.IsOfflineMode)
             return;
 
-        await RunPassiveSyncRefreshAsync("창 활성화", TimeSpan.FromMinutes(1), requireServerRevisionChange: true);
+        await RunPassiveSyncRefreshAsync(
+            "창 활성화",
+            TimeSpan.FromMinutes(1),
+            requireServerRevisionChange: true,
+            ct: _windowBackgroundWorkCts.Token);
     }
 
     private void MainWindow_Deactivated(object? sender, EventArgs e)
-        => RunUiAsync(
+    {
+        CompactDashboardPopup.IsOpen = false;
+        RunUiAsync(
             () => MainWindow_DeactivatedAsync(),
             "메인 창 비활성화 처리",
             "창 비활성화 처리 중 오류가 발생했습니다.");
+    }
 
     private async Task MainWindow_DeactivatedAsync()
     {
@@ -583,16 +1266,25 @@ public partial class MainWindow : Window
         if (_isClosingOrClosed || !_isInitialized || _session.IsOfflineMode)
             return;
 
-        await RunPassiveSyncRefreshAsync("중앙 revision polling", TimeSpan.FromMinutes(2), requireServerRevisionChange: true);
+        await RunPassiveSyncRefreshAsync(
+            "중앙 revision polling",
+            TimeSpan.FromMinutes(2),
+            requireServerRevisionChange: true,
+            ct: _windowBackgroundWorkCts.Token);
     }
 
     private void RuntimeSafetyTimer_Tick(object? sender, EventArgs e)
         => RunUiAsync(
-            () => RunPeriodicRuntimeSafetyCheckAsync(force: false),
+            () => RunPeriodicRuntimeSafetyCheckAsync(
+                force: false,
+                ct: _windowBackgroundWorkCts.Token),
             "주기 운영 안전 점검",
             "주기 운영 안전 점검 중 오류가 발생했습니다.");
 
-    private async Task RunPeriodicRuntimeSafetyCheckAsync(bool force, bool showPrompt = true)
+    private async Task RunPeriodicRuntimeSafetyCheckAsync(
+        bool force,
+        bool showPrompt = true,
+        CancellationToken ct = default)
     {
         if (_isClosingOrClosed || !_isInitialized || _session.IsOfflineMode || _runtimeSafetyCheckInProgress)
             return;
@@ -600,7 +1292,7 @@ public partial class MainWindow : Window
         _runtimeSafetyCheckInProgress = true;
         try
         {
-            var result = await _runtimeSafety.RunPeriodicIntegrityAsync(force);
+            var result = await _runtimeSafety.RunPeriodicIntegrityAsync(force, ct);
             if (!result.Executed)
                 return;
 
@@ -724,74 +1416,91 @@ public partial class MainWindow : Window
         string reason,
         TimeSpan minInterval,
         bool requireServerRevisionChange,
-        long? observedServerRevision = null)
+        long? observedServerRevision = null,
+        CancellationToken ct = default)
     {
-        if (_isClosingOrClosed || !_isInitialized || _session.IsOfflineMode || _centralRefreshInProgress || _vm.ForceSyncCommand.IsRunning)
-            return;
-        if (GetRemainingPassiveSyncRetryDelay() > TimeSpan.Zero)
-            return;
-
-        var startAtUtc = DateTime.UtcNow;
-        _centralRefreshInProgress = true;
+        await _passiveSyncTransitionGate.WaitAsync(ct);
         try
         {
-            var pendingServerRevision = await GetPendingPassiveServerRevisionAsync(
-                minInterval,
-                requireServerRevisionChange,
-                observedServerRevision);
-            if (!pendingServerRevision.HasValue)
+            ct.ThrowIfCancellationRequested();
+            if (_isClosingOrClosed || !_isInitialized || _session.IsOfflineMode || _centralRefreshInProgress || _vm.ForceSyncCommand.IsRunning)
+                return;
+            if (GetRemainingPassiveSyncRetryDelay() > TimeSpan.Zero)
                 return;
 
-            var syncOutcome = await RunIsolatedSyncAsync(async sync =>
+            var startAtUtc = DateTime.UtcNow;
+            _centralRefreshInProgress = true;
+            try
             {
-                var succeeded = await sync.TrySyncAsync();
-                return new PassiveSyncOutcome(succeeded, sync.LastPullChangeCount);
-            });
-            if (!syncOutcome.Succeeded)
+                var pendingServerRevision = await GetPendingPassiveServerRevisionAsync(
+                    minInterval,
+                    requireServerRevisionChange,
+                    observedServerRevision,
+                    ct);
+                if (!pendingServerRevision.HasValue)
+                    return;
+
+                var syncOutcome = await RunIsolatedSyncAsync(async (sync, token) =>
+                {
+                    var succeeded = await sync.TrySyncAsync(token);
+                    return new PassiveSyncOutcome(succeeded, sync.LastPullChangeCount);
+                }, ct);
+                if (!syncOutcome.Succeeded)
+                {
+                    RecordPassiveSyncFailure(reason);
+                    return;
+                }
+
+                ResetPassiveSyncFailureBackoff();
+
+                _lastCentralRefreshUtc = DateTime.UtcNow;
+                if (pendingServerRevision.Value > 0)
+                {
+                    var lastSyncRevisionRaw = await _local.GetSettingAsync("LastSyncRevision", ct);
+                    _ = long.TryParse(lastSyncRevisionRaw, out var lastSyncRevision);
+                    _lastPassiveServerRevisionHint = Math.Max(_lastPassiveServerRevisionHint, Math.Max(pendingServerRevision.Value, lastSyncRevision));
+                }
+
+                if (syncOutcome.PulledChangeCount > 0)
+                {
+                    await _vm.ReloadAfterPassiveSyncAsync(ct);
+                    AppLogger.Info("SYNC", $"{reason} 후 서버 변경 {syncOutcome.PulledChangeCount:N0}건을 화면에 반영했습니다.");
+                }
+                else
+                {
+                    AppLogger.Info("SYNC", $"{reason} 후 현재 업체 DB 변경이 없어 화면 전체 재조회를 생략했습니다.");
+                }
+
+                if (DateTime.UtcNow - _lastPassiveIntegrityScanUtc >= PassiveIntegrityScanMinInterval)
+                {
+                    _lastPassiveIntegrityScanUtc = DateTime.UtcNow;
+                    await RunDataIntegrityScanAndPromptAsync(
+                        $"{reason} 후 동기화",
+                        showPrompt: false,
+                        ct: ct);
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
             {
                 RecordPassiveSyncFailure(reason);
-                return;
+                AppLogger.Warn("SYNC", $"{reason} refresh failed: {ex.Message}");
             }
-
-            ResetPassiveSyncFailureBackoff();
-
-            _lastCentralRefreshUtc = DateTime.UtcNow;
-            if (pendingServerRevision.Value > 0)
+            finally
             {
-                var lastSyncRevisionRaw = await _local.GetSettingAsync("LastSyncRevision");
-                _ = long.TryParse(lastSyncRevisionRaw, out var lastSyncRevision);
-                _lastPassiveServerRevisionHint = Math.Max(_lastPassiveServerRevisionHint, Math.Max(pendingServerRevision.Value, lastSyncRevision));
+                OperationTiming.LogIfSlow(
+                    "SYNC",
+                    $"{reason} 경량 재동기화",
+                    DateTime.UtcNow - startAtUtc,
+                    detail: requireServerRevisionChange ? "revision-check" : "forced-check");
+                _centralRefreshInProgress = false;
             }
-
-            if (syncOutcome.PulledChangeCount > 0)
-            {
-                await _vm.ReloadAfterPassiveSyncAsync();
-                AppLogger.Info("SYNC", $"{reason} 후 서버 변경 {syncOutcome.PulledChangeCount:N0}건을 화면에 반영했습니다.");
-            }
-            else
-            {
-                AppLogger.Info("SYNC", $"{reason} 후 현재 업체 DB 변경이 없어 화면 전체 재조회를 생략했습니다.");
-            }
-
-            if (DateTime.UtcNow - _lastPassiveIntegrityScanUtc >= PassiveIntegrityScanMinInterval)
-            {
-                _lastPassiveIntegrityScanUtc = DateTime.UtcNow;
-                await RunDataIntegrityScanAndPromptAsync($"{reason} 후 동기화", showPrompt: false);
-            }
-        }
-        catch (Exception ex)
-        {
-            RecordPassiveSyncFailure(reason);
-            AppLogger.Warn("SYNC", $"{reason} refresh failed: {ex.Message}");
         }
         finally
         {
-            OperationTiming.LogIfSlow(
-                "SYNC",
-                $"{reason} 경량 재동기화",
-                DateTime.UtcNow - startAtUtc,
-                detail: requireServerRevisionChange ? "revision-check" : "forced-check");
-            _centralRefreshInProgress = false;
+            _passiveSyncTransitionGate.Release();
         }
     }
 
@@ -832,7 +1541,11 @@ public partial class MainWindow : Window
             _ => TimeSpan.FromMinutes(5)
         };
 
-    public async Task RunDataIntegrityScanAndPromptAsync(string reason, bool forceShow = false, bool showPrompt = true)
+    public async Task RunDataIntegrityScanAndPromptAsync(
+        string reason,
+        bool forceShow = false,
+        bool showPrompt = true,
+        CancellationToken ct = default)
     {
         if (_isClosingOrClosed || _dataIntegrityPromptInProgress)
             return;
@@ -843,7 +1556,7 @@ public partial class MainWindow : Window
             var result = await OperationTiming.MeasureAsync(
                 "INTEGRITY",
                 $"{reason} 운영 점검",
-                () => _dataIntegrity.ScanAsync(_session),
+                () => _dataIntegrity.ScanAsync(_session, ct),
                 warningThreshold: TimeSpan.FromSeconds(3));
 
             if (!result.HasIssues)
@@ -861,12 +1574,19 @@ public partial class MainWindow : Window
             _lastDataIntegrityIssueSignature = issueSignature;
             if (!showPrompt)
             {
-                _vm.SyncStatus = "운영 점검 알림: 확인할 항목이 있습니다. 목록 조회와 업무는 계속 가능하며, 상세 내용은 동기화 진단에서 확인하세요.";
-                AppLogger.Warn("INTEGRITY", $"{reason} 운영 점검 알림을 상태바로 전환했습니다. issues={result.Issues.Count:N0}");
+                _vm.SyncStatus = result.BuildPassiveStartupStatusMessage();
+                AppLogger.Warn(
+                    "INTEGRITY",
+                    $"{reason} 운영 점검 알림을 상태바로 전환했습니다. " +
+                    $"notices={result.PassiveStartupNoticeIssueCount:N0}, total={result.TotalIssueCount:N0}, " +
+                    $"errors={result.ErrorIssueCount:N0}, warnings={result.WarningIssueCount:N0}, info={result.InformationalIssueCount:N0}");
                 return;
             }
 
             await Dispatcher.InvokeAsync(() => ShowDataIntegrityAlert(result), DispatcherPriority.Background);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
@@ -891,8 +1611,8 @@ public partial class MainWindow : Window
         };
         win.NonClosingActionRequested += (_, args) =>
         {
-            UiTaskHelper.Forget(
-                HandleDataIntegrityAlertActionAsync(args.Action, args.Summary, win, result),
+            ForgetWindowBackgroundTask(
+                () => HandleDataIntegrityAlertActionAsync(args.Action, args.Summary, win, result),
                 "INTEGRITY",
                 "운영 점검 바로수정",
                 ex => MessageBox.Show(
@@ -903,11 +1623,11 @@ public partial class MainWindow : Window
                     MessageBoxImage.Warning));
         };
 
-        if (win.ShowDialog() != true)
+        if (DialogWindowCloseHelper.ShowDialog(win) != true)
             return;
 
-        UiTaskHelper.Forget(
-            HandleDataIntegrityAlertActionAsync(win.RequestedAction, win.RequestedSummary, this, result),
+        ForgetWindowBackgroundTask(
+            () => HandleDataIntegrityAlertActionAsync(win.RequestedAction, win.RequestedSummary, this, result),
             "INTEGRITY",
             "운영 점검 바로가기",
             ex => MessageBox.Show(
@@ -967,8 +1687,8 @@ public partial class MainWindow : Window
         };
         win.FixRequested += (_, args) =>
         {
-            UiTaskHelper.Forget(
-                OpenDataIntegrityFixTargetAsync(args.Issue, win),
+            ForgetWindowBackgroundTask(
+                () => OpenDataIntegrityFixTargetAsync(args.Issue, win),
                 "INTEGRITY",
                 "운영 점검 상세 바로수정",
                 ex => MessageBox.Show(
@@ -980,8 +1700,8 @@ public partial class MainWindow : Window
         };
         win.MergeRequested += (_, args) =>
         {
-            UiTaskHelper.Forget(
-                MergeDataIntegrityDuplicateAsync(args.Issue, vm, win),
+            ForgetWindowBackgroundTask(
+                () => MergeDataIntegrityDuplicateAsync(args.Issue, vm, win),
                 "INTEGRITY",
                 "운영점검 중복 병합",
                 ex => MessageBox.Show(
@@ -1004,30 +1724,94 @@ public partial class MainWindow : Window
         DataIntegrityIssueViewModel viewModel,
         Window owner)
     {
-        if (!issue.CanMergeDuplicates)
+        OfficeMutationResult result;
+        if (string.Equals(issue.Code, DataIntegrityIssueCodes.ItemDuplicateCandidate, StringComparison.OrdinalIgnoreCase))
         {
-            MessageBox.Show(
+            if (issue.ItemDuplicateComparison is null)
+            {
+                MessageBox.Show(
+                    owner,
+                    "품목 후보 비교 정보가 없습니다. 운영점검을 새로고침한 뒤 다시 시도하세요.",
+                    "운영 점검",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            viewModel.StatusMessage = "현재 후보·동기화 상태·연결 자료 권한을 읽기 전용으로 점검하는 중입니다.";
+            var review = await _dataIntegrity.PrepareItemDuplicateReviewAsync(issue, _session);
+            var comparisonWindow = new ItemDuplicateComparisonWindow(review) { Owner = owner };
+            var comparisonResult = DialogWindowCloseHelper.ShowDialog(comparisonWindow);
+            if (comparisonWindow.RequestedItemId.HasValue)
+            {
+                await OpenInventoryWindowAsync(comparisonWindow.RequestedItemId.Value, owner);
+                return;
+            }
+
+            if (comparisonResult != true || !comparisonWindow.SelectedCanonicalItemId.HasValue)
+                return;
+
+            var canonicalItemId = comparisonWindow.SelectedCanonicalItemId.Value;
+            var selectedCandidate = review.Comparison.Candidates
+                .FirstOrDefault(candidate => candidate.ItemId == canonicalItemId);
+            if (selectedCandidate is null)
+            {
+                MessageBox.Show(
+                    owner,
+                    "선택한 대표 품목을 비교 후보에서 찾지 못했습니다. 운영점검을 새로고침하세요.",
+                    "운영 점검",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            var itemResponse = MessageBox.Show(
                 owner,
-                "선택 항목은 자동 병합 대상이 아닙니다. 판단 정보를 확인한 뒤 원본 화면에서 수동 정리하세요.",
-                "운영 점검",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            return;
+                $"선택한 품목을 대표로 병합합니다.{Environment.NewLine}{Environment.NewLine}" +
+                $"대표: {selectedCandidate.NameAndSpecification} ({selectedCandidate.ItemId:N}){Environment.NewLine}" +
+                $"영향: {review.Comparison.SummaryText}{Environment.NewLine}{Environment.NewLine}" +
+                "병합 직전에 후보·revision·동기화·참조 상태를 다시 확인합니다. 검증이 통과하면 참조를 대표 품목으로 옮기고 나머지 후보를 삭제 처리합니다. 계속할까요?",
+                "운영 점검 품목 중복 병합",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (itemResponse != MessageBoxResult.Yes)
+                return;
+
+            viewModel.StatusMessage = "선택한 대표 품목과 최신 비교 스냅샷을 확인하는 중입니다.";
+            result = await _dataIntegrity.MergeDuplicateItemIssueAsync(
+                issue,
+                canonicalItemId,
+                review.Comparison.SnapshotToken,
+                _session);
+        }
+        else
+        {
+            if (!issue.CanMergeDuplicates)
+            {
+                MessageBox.Show(
+                    owner,
+                    "선택 항목은 자동 병합 대상이 아닙니다. 판단 정보를 확인한 뒤 원본 화면에서 수동 정리하세요.",
+                    "운영 점검",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            var response = MessageBox.Show(
+                owner,
+                $"선택한 중복 후보를 대표 항목 1건으로 병합합니다.{Environment.NewLine}{Environment.NewLine}" +
+                $"{issue.ReviewInfoDisplay}{Environment.NewLine}{Environment.NewLine}" +
+                "병합 후 참조 전표/렌탈/재고 내역은 대표 항목으로 이동하고 나머지 후보는 삭제 처리됩니다. 계속할까요?",
+                "운영 점검 중복 병합",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (response != MessageBoxResult.Yes)
+                return;
+
+            viewModel.StatusMessage = "중복 후보를 병합하는 중입니다.";
+            result = await _dataIntegrity.MergeDuplicateIssueAsync(issue, _session);
         }
 
-        var response = MessageBox.Show(
-            owner,
-            $"선택한 중복 후보를 대표 항목 1건으로 병합합니다.{Environment.NewLine}{Environment.NewLine}" +
-            $"{issue.ReviewInfoDisplay}{Environment.NewLine}{Environment.NewLine}" +
-            "병합 후 참조 전표/렌탈/재고 내역은 대표 항목으로 이동하고 나머지 후보는 삭제 처리됩니다. 계속할까요?",
-            "운영 점검 중복 병합",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning);
-        if (response != MessageBoxResult.Yes)
-            return;
-
-        viewModel.StatusMessage = "중복 후보를 병합하는 중입니다.";
-        var result = await _dataIntegrity.MergeDuplicateIssueAsync(issue, _session);
         if (!result.Success)
         {
             viewModel.StatusMessage = result.Message;
@@ -1100,8 +1884,10 @@ public partial class MainWindow : Window
     private async Task<long?> GetPendingPassiveServerRevisionAsync(
         TimeSpan minInterval,
         bool requireServerRevisionChange,
-        long? observedServerRevision = null)
+        long? observedServerRevision = null,
+        CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (_sync.HasActiveOrQueuedSync)
             return null;
 
@@ -1112,7 +1898,7 @@ public partial class MainWindow : Window
         if (_sync.HasRecentSuccessfulSync(minInterval))
             return null;
 
-        if (await _local.HasPendingSyncChangesAsync(_session))
+        if (await _local.HasPendingSyncChangesAsync(_session, ct))
         {
             // 실시간 감시가 이미 관측한 revision을 0으로 버리면 후속 처리에서
             // 기준 revision을 갱신하지 못해 같은 변경을 2초마다 다시 감지한다.
@@ -1126,14 +1912,14 @@ public partial class MainWindow : Window
         var currentServerRevision = observedServerRevision;
         if (!currentServerRevision.HasValue)
         {
-            var status = await _api.GetSyncStatusAsync();
+            var status = await _api.GetSyncStatusAsync(ct);
             if (status is null)
                 return null;
 
             currentServerRevision = status.CurrentServerRevision;
         }
 
-        var lastSyncRevisionRaw = await _local.GetSettingAsync("LastSyncRevision");
+        var lastSyncRevisionRaw = await _local.GetSettingAsync("LastSyncRevision", ct);
         _ = long.TryParse(lastSyncRevisionRaw, out var lastSyncRevision);
         var baselineRevision = Math.Max(lastSyncRevision, _lastPassiveServerRevisionHint);
         return currentServerRevision.Value > baselineRevision
@@ -1992,7 +2778,8 @@ public partial class MainWindow : Window
                 _print,
                 _rentalDocuments,
                 _invoicePrintService,
-                async () => await _vm.ReloadForBusinessDatabaseChangeAsync());
+                applyBusinessDatabaseChangeAsync: async () => await _vm.ReloadForBusinessDatabaseChangeAsync(),
+                runBusinessDatabaseTransitionAsync: RunBusinessDatabaseTransitionAsync);
             var win = new EnvironmentSettingsWindow(vm, initialTab)
             {
                 Owner = this
@@ -2021,6 +2808,108 @@ public partial class MainWindow : Window
                 "환경설정",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
+        }
+    }
+
+    private async Task RunBusinessDatabaseTransitionAsync(Func<Task> transitionAsync)
+    {
+        ArgumentNullException.ThrowIfNull(transitionAsync);
+
+        var wasEnabled = IsEnabled;
+        var applicationWindows = Application.Current?.Windows
+            .OfType<Window>()
+            .Where(window => window.IsLoaded)
+            .ToArray() ?? [this];
+        var initiatingSettingsWindows = applicationWindows
+            .OfType<EnvironmentSettingsWindow>()
+            .Where(window => window.DataContext is EnvironmentSettingsViewModel { IsBusy: true })
+            .ToArray();
+        if (initiatingSettingsWindows.Length != 1)
+        {
+            throw new InvalidOperationException(
+                "업체 DB 전환을 시작한 환경설정 창을 하나로 확인할 수 없습니다. 다른 환경설정 창을 닫고 다시 시도해 주세요.");
+        }
+
+        var initiatingSettingsWindow = initiatingSettingsWindows[0];
+        var blockingWindows = applicationWindows
+            .Where(window =>
+                !ReferenceEquals(window, this) &&
+                !ReferenceEquals(window, initiatingSettingsWindow))
+            .ToArray();
+        if (blockingWindows.Length > 0)
+        {
+            var blockingWindowLabels = blockingWindows
+                .Select(window => string.IsNullOrWhiteSpace(window.Title)
+                    ? window.GetType().Name
+                    : window.Title)
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(label => label, StringComparer.Ordinal)
+                .ToArray();
+            throw new InvalidOperationException(
+                $"업체 DB 전환 전에 열려 있는 업무 창을 닫아 주세요: {string.Join(", ", blockingWindowLabels)}");
+        }
+
+        var enabledStates = applicationWindows.ToDictionary(
+            window => window,
+            window => window.IsEnabled);
+        IsEnabled = false;
+        foreach (var window in applicationWindows)
+            window.IsEnabled = false;
+
+        var transitionGateEntered = false;
+        var windowWorkPaused = false;
+        try
+        {
+            Volatile.Write(ref _businessDatabaseTransitionInProgress, true);
+            _windowBackgroundWork.PauseNewWork();
+            windowWorkPaused = true;
+            EnsureBusinessDatabaseTransitionQuiescence(initiatingSettingsWindow);
+            await _passiveSyncTransitionGate.WaitAsync();
+            transitionGateEntered = true;
+            EnsureBusinessDatabaseTransitionQuiescence(initiatingSettingsWindow);
+            await _vm.RunBusinessDatabaseTransitionAsync(transitionAsync);
+        }
+        finally
+        {
+            if (transitionGateEntered)
+                _passiveSyncTransitionGate.Release();
+
+            if (!_isClosingOrClosed)
+            {
+                foreach (var (window, wasWindowEnabled) in enabledStates)
+                {
+                    if (window.IsLoaded)
+                        window.IsEnabled = wasWindowEnabled;
+                }
+
+                IsEnabled = wasEnabled;
+                if (windowWorkPaused)
+                    _windowBackgroundWork.Resume();
+            }
+
+            Volatile.Write(ref _businessDatabaseTransitionInProgress, false);
+        }
+    }
+
+    private void EnsureBusinessDatabaseTransitionQuiescence(
+        EnvironmentSettingsWindow initiatingSettingsWindow)
+    {
+        if (!_windowBackgroundWork.IsIdle)
+        {
+            throw new InvalidOperationException(
+                "진행 중인 화면 저장·조회 작업이 있습니다. 작업이 끝난 뒤 업체 DB 전환을 다시 시도해 주세요.");
+        }
+
+        var activeCommandTasks = GetActiveAsyncCommandTasks(_vm)
+            .Concat(GetActiveAsyncCommandTasks(
+                initiatingSettingsWindow.DataContext,
+                "LoadSelectedBusinessDatabaseCommand"))
+            .Distinct()
+            .ToArray();
+        if (activeCommandTasks.Length > 0)
+        {
+            throw new InvalidOperationException(
+                "진행 중인 저장 명령이 있습니다. 저장이 끝난 뒤 업체 DB 전환을 다시 시도해 주세요.");
         }
     }
 
@@ -2153,8 +3042,8 @@ public partial class MainWindow : Window
     }
 
     private void CentralRevisionPollTimer_Tick(object? sender, EventArgs e)
-        => UiTaskHelper.Forget(
-            PollCentralRevisionAsync(),
+        => ForgetWindowBackgroundTask(
+            () => PollCentralRevisionAsync(),
             "UI",
             "중앙 revision polling",
             ex => AppLogger.Warn("SYNC", $"중앙 revision polling 실패: {ex.Message}"));
@@ -2183,8 +3072,10 @@ public partial class MainWindow : Window
             if (!blockUntilServerFlush)
             {
                 _vm.SyncStatus = $"{reason} 전 변경사항을 백그라운드로 동기화합니다...";
-                UiTaskHelper.Forget(
-                    RunIsolatedSyncAsync(sync => sync.TrySyncAsync()),
+                _ = ForgetWindowBackgroundTask(
+                    () => RunIsolatedSyncAsync(
+                        (sync, token) => sync.TrySyncAsync(token),
+                        _windowBackgroundWorkCts.Token),
                     "SYNC",
                     $"{reason} 백그라운드 동기화",
                     ex => AppLogger.Warn("SYNC", $"{reason} background sync failed: {ex.Message}"));
@@ -2193,7 +3084,9 @@ public partial class MainWindow : Window
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             _vm.SyncStatus = $"{reason} 전 중앙 서버에 변경사항 저장 중...";
-            var flushed = await RunIsolatedSyncAsync(sync => sync.FlushPendingChangesAsync(cts.Token));
+            var flushed = await RunIsolatedSyncAsync(
+                (sync, _) => sync.FlushPendingChangesAsync(cts.Token),
+                cts.Token);
             var remainingDirtyCount = await _local.CountDirtyAsync(_session);
             if (!flushed || remainingDirtyCount > 0)
             {
@@ -2247,7 +3140,10 @@ public partial class MainWindow : Window
 
     private async Task CheckAndPromptForDesktopUpdateAsync(bool showPrompt = true)
     {
-        if (_isClosingOrClosed || _updatePromptInProgress || _session.IsOfflineMode)
+        if (_isClosingOrClosed ||
+            _updatePromptInProgress ||
+            _session.IsOfflineMode ||
+            AppRuntimeInfo.IsTestRuntime)
             return;
 
         _updatePromptInProgress = true;
@@ -2287,9 +3183,6 @@ public partial class MainWindow : Window
             await _local.SetSettingAsync("Update.LastPromptedDesktopVersion", result.LatestVersion, CancellationToken.None);
             await _updateService.StartUpdateAsync(result.Package);
             _vm.SyncStatus = $"업데이트 {result.LatestVersion} 설치를 시작했습니다.";
-            Application.Current?.Dispatcher.BeginInvoke(
-                new Action(App.RequestShutdownForUpdate),
-                DispatcherPriority.Send);
         }
         catch (Exception ex)
         {

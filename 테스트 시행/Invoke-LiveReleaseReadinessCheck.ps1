@@ -3,6 +3,7 @@ param(
     [string]$ProjectRoot,
     [ValidateSet('Pre','Post')][string]$Mode = 'Pre',
     [string]$Channel = 'stable',
+    [string]$BaseUrl = 'https://trade.2884.kr',
     [string]$OutputPath
 )
 
@@ -95,6 +96,52 @@ function Get-ResidueFiles {
     return Get-ChildItem -Path $RootPath -Recurse -File -Include '*.old', '*.bak', '*.deleteme', '*.rollback'
 }
 
+function Resolve-ExactLiveBaseUrl {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    $uri = $null
+    if (-not [Uri]::TryCreate($Value, [UriKind]::Absolute, [ref]$uri)) {
+        throw 'Live readiness BaseUrl must be an absolute URI.'
+    }
+    if (
+        $uri.Scheme -cne 'https' -or
+        $uri.Host -cne 'trade.2884.kr' -or
+        $uri.Port -ne 443 -or
+        $uri.AbsolutePath -cne '/' -or
+        -not [string]::IsNullOrEmpty($uri.UserInfo) -or
+        -not [string]::IsNullOrEmpty($uri.Query) -or
+        -not [string]::IsNullOrEmpty($uri.Fragment)
+    ) {
+        throw 'Live readiness BaseUrl must be exactly https://trade.2884.kr.'
+    }
+
+    return 'https://trade.2884.kr'
+}
+
+function Invoke-ExactLiveRequest {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [ValidateSet('Get', 'Head')][string]$Method = 'Get'
+    )
+
+    $response = Invoke-WebRequest `
+        -Uri $Uri `
+        -Method $Method `
+        -UseBasicParsing `
+        -MaximumRedirection 0 `
+        -TimeoutSec 30
+    $responseUri = [Uri]$response.BaseResponse.ResponseUri
+    $requestedUri = [Uri]$Uri
+    if (-not [string]::Equals(
+            $responseUri.AbsoluteUri,
+            $requestedUri.AbsoluteUri,
+            [StringComparison]::Ordinal)) {
+        throw 'Live readiness request changed origin or path.'
+    }
+
+    return $response
+}
+
 function Write-MarkdownReport {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -141,6 +188,7 @@ $Checks = New-Object System.Collections.Generic.List[object]
 $desktopProject = Join-Path $ProjectRoot 'Desktop\거래플랜.Desktop.App\거래플랜.Desktop.App.csproj'
 $updaterProject = Join-Path $ProjectRoot 'Updater\거래플랜.Updater\거래플랜.Updater.csproj'
 $manifestPath = Join-Path $ProjectRoot ("배포\업데이트\manifest\$Channel.json")
+$resolvedLiveBaseUrl = Resolve-ExactLiveBaseUrl -Value $BaseUrl
 $desktopInstallerPath = Join-Path $ProjectRoot '배포\거래플랜-PC-설치패키지.exe'
 $desktopZipCandidates = @(
     (Join-Path $ProjectRoot '배포\관리자용\거래플랜-PC-설치패키지.zip'),
@@ -194,10 +242,16 @@ if ($Mode -eq 'Pre') {
     }
 }
 else {
-    Add-Check 'manifest 파일 생성' (Test-Path -LiteralPath $manifestPath) $manifestPath
+    $liveManifestUri =
+        $resolvedLiveBaseUrl +
+        '/updates/manifest?channel=' +
+        [Uri]::EscapeDataString($Channel)
+    $liveManifestResponse =
+        Invoke-ExactLiveRequest -Uri $liveManifestUri -Method Get
+    $manifest = $liveManifestResponse.Content | ConvertFrom-Json
+    Add-Check '공개 manifest 조회' ($null -ne $manifest) $liveManifestUri
 
-    if (Test-Path -LiteralPath $manifestPath) {
-        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    if ($null -ne $manifest) {
         $manifestDesktop = $manifest.desktop
         $manifestDesktopVersion = Get-SafeString $manifestDesktop.version
         Add-Check 'manifest desktop 버전 일치' ((-not [string]::IsNullOrWhiteSpace($desktopVersion)) -and ($manifestDesktopVersion -eq $desktopVersion)) ("manifest $manifestDesktopVersion / source $desktopVersion")
@@ -206,13 +260,36 @@ else {
         $mandatoryDesktop = [bool]$manifestDesktop.mandatory
         Add-Check '필수 업데이트 minimumSupportedVersion 설정' ((-not $mandatoryDesktop) -or (-not [string]::IsNullOrWhiteSpace($minimumSupportedVersion))) $(if ($mandatoryDesktop) { "mandatory=$mandatoryDesktop / minimumSupportedVersion=$minimumSupportedVersion" } else { 'desktop mandatory 아님' })
 
-        $downloadedDesktopPackage = if ($manifestDesktop -and -not [string]::IsNullOrWhiteSpace((Get-SafeString $manifestDesktop.fileName))) {
-            Join-Path $ProjectRoot ("배포\업데이트\downloads\desktop\" + (Get-SafeString $manifestDesktop.fileName))
+        $downloadedDesktopPackage = if ($manifestDesktop) {
+            Get-SafeString $manifestDesktop.packageUrl
         }
         else {
             ''
         }
-        Add-Check 'manifest desktop 다운로드 파일 존재' ((-not [string]::IsNullOrWhiteSpace($downloadedDesktopPackage)) -and (Test-Path -LiteralPath $downloadedDesktopPackage)) $downloadedDesktopPackage
+        $downloadUri = $null
+        $downloadValid =
+            -not [string]::IsNullOrWhiteSpace($downloadedDesktopPackage) -and
+            [Uri]::TryCreate(
+                $downloadedDesktopPackage,
+                [UriKind]::Absolute,
+                [ref]$downloadUri) -and
+            $downloadUri.Scheme -ceq 'https' -and
+            $downloadUri.Host -ceq 'trade.2884.kr' -and
+            $downloadUri.Port -eq 443
+        if ($downloadValid) {
+            $downloadResponse =
+                Invoke-ExactLiveRequest `
+                    -Uri $downloadUri.AbsoluteUri `
+                    -Method Head
+            $downloadLength = [long]$downloadResponse.Headers['Content-Length']
+            $downloadValid =
+                $downloadLength -eq [long]$manifestDesktop.fileSize -and
+                $downloadLength -gt 0
+        }
+        Add-Check `
+            '공개 manifest desktop 다운로드 파일 존재' `
+            $downloadValid `
+            $downloadedDesktopPackage
     }
 
     $desktopZipPath = $desktopZipCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1

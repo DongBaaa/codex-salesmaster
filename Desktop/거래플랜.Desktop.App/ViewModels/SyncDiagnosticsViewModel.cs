@@ -48,6 +48,16 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
     [ObservableProperty] private string _selectedRecoveryActionTitle = "선택 오류 복구";
     [ObservableProperty] private string _selectedRecoveryActionDetail = "선택한 오류 유형에 맞는 복구 경로를 제안합니다.";
 
+    public bool CanManageSyncMaintenance =>
+        _session.IsLoggedIn &&
+        !_session.IsOfflineMode &&
+        _session.HasGlobalDataScope;
+    public string SyncMaintenancePermissionHint => CanManageSyncMaintenance
+        ? "공유 캐시 재구성과 데이터 자동 복구를 실행할 수 있습니다."
+        : _session.IsOfflineMode
+            ? "오프라인 모드에서는 동기화 유지보수를 실행할 수 없습니다."
+            : "공유 캐시 재구성과 데이터 자동 복구는 전체 데이터 조회 범위가 있는 계정만 실행할 수 있습니다.";
+
     public SyncDiagnosticsViewModel(
         SyncDiagnosticsService diagnostics,
         SyncService sync,
@@ -85,7 +95,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
     private void RequestReload()
     {
         var version = Interlocked.Increment(ref _reloadVersion);
-        UiTaskHelper.Forget(ReloadAsync(version), "SYNC-DIAG", "동기화 진단 새로고침", ex =>
+        UiTaskHelper.Forget(() => ReloadAsync(version), "SYNC-DIAG", "동기화 진단 새로고침", ex =>
         {
             SummaryStatusText = $"진단 새로고침 실패: {ex.Message}";
         });
@@ -181,8 +191,6 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
             SummaryStatusText = "동기화를 다시 시도하는 중...";
             var syncOk = await _sync.TrySyncAsync();
             var dirtyCount = await _local.CountDirtyAsync(_session);
-            if (syncOk && dirtyCount == 0)
-                await _sync.RefreshSharedMirrorFromServerAsync();
 
             await RefreshAllPanelsAsync(refreshServerIntegrity: true);
             SummaryStatusText = dirtyCount > 0
@@ -202,6 +210,9 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
     private async Task RebuildSharedCacheAsync()
     {
         if (IsBusy)
+            return;
+
+        if (!EnsureCanManageSyncMaintenance())
             return;
 
         IsBusy = true;
@@ -224,6 +235,9 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
         if (IsBusy || SelectedEvent is null)
             return;
 
+        if (!EnsureCanManageSyncMaintenance())
+            return;
+
         await ExecuteRepairPlanAsync([SelectedEvent], selectedOnly: true);
     }
 
@@ -231,6 +245,9 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
     private async Task RunAutoRepairAsync()
     {
         if (IsBusy)
+            return;
+
+        if (!EnsureCanManageSyncMaintenance())
             return;
 
         var openEvents = await _diagnostics.GetEventsAsync(new SyncDiagnosticFilter(
@@ -245,6 +262,9 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
 
     private async Task ExecuteRepairPlanAsync(IReadOnlyCollection<SyncDiagnosticListItem> events, bool selectedOnly)
     {
+        if (!EnsureCanManageSyncMaintenance())
+            return;
+
         if (events.Count == 0)
         {
             SummaryStatusText = selectedOnly ? "선택한 확인 항목이 없습니다." : "복구할 미해결 확인 항목이 없습니다.";
@@ -492,7 +512,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
             InitialDirectory = AppPaths.DiagnosticsDir
         };
 
-        if (dialog.ShowDialog() != true)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) != true)
             return;
 
         IsBusy = true;
@@ -534,7 +554,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
             InitialDirectory = AppPaths.DiagnosticsDir
         };
 
-        if (dialog.ShowDialog() != true)
+        if (DialogWindowCloseHelper.ShowDialog(dialog) != true)
             return;
 
         IsBusy = true;
@@ -570,6 +590,9 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
         if (IsBusy)
             return;
 
+        if (!EnsureCanManageSyncMaintenance())
+            return;
+
         if (MessageBox.Show(
                 "해결 완료/복구 완료된 진단 이력을 정리하시겠습니까?",
                 "동기화 진단",
@@ -590,5 +613,14 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
         {
             IsBusy = false;
         }
+    }
+
+    private bool EnsureCanManageSyncMaintenance()
+    {
+        if (CanManageSyncMaintenance)
+            return true;
+
+        SummaryStatusText = SyncMaintenancePermissionHint;
+        return false;
     }
 }

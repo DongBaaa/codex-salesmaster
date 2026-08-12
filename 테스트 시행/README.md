@@ -16,7 +16,8 @@
 3. 복사된 테스트 앱 데이터를 이용해 **분리된 테스트 서버 DB**를 다시 시드
 4. 생성된 `D:\거래플랜\테스트 시행\최근 수정 파일.md` 확인
 5. 생성된 `D:\거래플랜\테스트 시행\검증 체크리스트.md` 기준으로 점검
-6. `D:\거래플랜\테스트 시행\실행환경\Run-All.cmd` 로 테스트 서버+앱 실행
+6. 일반 수동 확인은 `D:\거래플랜\테스트 시행\실행환경\Launch-Test-App.vbs`를 더블클릭해 CMD 창 없이 테스트 서버+앱 실행
+   - 자동화·진단·종료 코드 증거가 필요할 때만 `Run-All.cmd`를 동기 실행하며, 이 경우 호출한 터미널 창은 유지됩니다.
 7. 수정사항 확인 완료 후 `D:\거래플랜\테스트 시행\검증완료-반영.cmd` 또는 `D:\거래플랜\테스트 시행\검증완료-반영.ps1` 로 **현재 소스 기준 메인(live) 버전**을 Linux PC/Git 반영
 
 ## 생성되는 항목
@@ -49,6 +50,8 @@
 powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\테스트 시행\테스트-환경-준비.ps1"
 ```
 
+준비가 끝난 뒤 일반 수동 확인은 `실행환경\Launch-Test-App.vbs`를 더블클릭합니다. `Run-App.cmd`는 호환 wrapper이고 `Run-All.cmd`와 `Run-Server.cmd`는 자동화·진단용입니다.
+
 ### 준비 후 바로 실행까지 하고 싶으면
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\테스트 시행\테스트-환경-준비.ps1" -Launch
@@ -56,8 +59,41 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\테스트 �
 
 ### 데이터 복사만 건너뛰고 기존 테스트 스냅샷을 유지하고 싶으면
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\테스트 시행\테스트-환경-준비.ps1" -SkipDataCopy
+$snapshotPath = 'D:\DevCaches\georaeplan-v1-user-snapshots\source-users-<내보내기 시각>.json'
+$snapshotSha256 = '<내보내기 기록에 남은 64자리 SHA-256>'
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File "D:\거래플랜\테스트 시행\테스트-환경-준비.ps1" `
+  -SkipDataCopy `
+  -SourceUsersSnapshotPath $snapshotPath `
+  -SourceUsersSnapshotSha256 $snapshotSha256
 ```
+- bare `-SkipDataCopy`는 원격 Source API 사용을 암묵적으로 허용하지 않습니다.
+  사용자 스냅샷 없이 설정된 Source API가 원격이면 출력 변경 전에 실패하며,
+  원격 조회가 꼭 필요한 별도 작업에서만 `-AllowRemoteSourceApi`를 명시합니다.
+- `-SkipDataCopy`는 기존 격리 `실행환경\AppData`를 삭제하거나 원본
+  `%LOCALAPPDATA%\거래플랜`에서 다시 복사하지 않습니다. 기존
+  `AppData\data\거래플랜.db`와 `.georaeplan-isolated-seed-root`가 모두
+  정상이어야 하며, 없거나 경로가 일치하지 않거나 SQLite sidecar가 남아
+  있으면 App/Server 교체 전에 실패합니다.
+- 이 옵션도 App/Server 실행 파일과 격리 서버 DB는 새로 만들고, 보존한
+  AppData를 다시 동기화·시드합니다. 보존 데이터에 dirty/충돌 문제가 있으면
+  완성된 실행환경으로 인증하지 않습니다.
+- `SkipDataCopy`의 보존 계약은 **복사 단계가 AppData를 삭제·대체하지
+  않는다**는 뜻입니다. 서버 시드가 시작된 뒤에는 동기화 리비전, outbox,
+  테스트 전용 비밀번호 상태 같은 격리 로컬 메타데이터가 정상적으로 갱신될
+  수 있으므로 시드 이후 파일의 바이트 불변을 의미하지 않습니다. 출력 교체가
+  시작된 뒤 시드/인증이 실패하면 `.georaeplan-runtime-invalid` 차단 마커를
+  남깁니다. 기존 준비완료 마커가 다른 프로세스에 잠겨 삭제되지 않아도 모든
+  launcher가 차단 마커를 먼저 거부하며, 새 인증이 완전히 성공한 경우에만
+  차단 마커를 제거합니다.
+- 보호된 사용자 스냅샷 파일을 함께 사용할 때 비밀번호 재설정을 지정하지
+  않으면, 저장 로그인 사전검사는 원본 AppData가 아닌 보존된 격리 AppData에서만
+  수행됩니다. 저장 로그인이 부족하면 출력 교체 전에 실패합니다.
+- 원격 Source API를 사용하지 않으려면 검증된
+  `-SourceUsersSnapshotPath`와 `-SourceUsersSnapshotSha256`을 함께
+  지정합니다. 해결할 수 없는 사용자의 비밀번호를 테스트 서버에서만
+  재설정할 때는 `-ResetUnresolvedUserPasswordsForIsolatedTest`를 명시해야
+  합니다.
 
 ### 같은 서버를 두 개의 독립 PC 캐시로 검증하고 싶으면
 ```powershell
@@ -65,10 +101,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\테스트 �
 ```
 - 실행 후 `D:\거래플랜\테스트 시행\실행환경\MultiPC\Run-All-MultiPC.cmd` 를 사용합니다.
 - 세부 시나리오는 `D:\거래플랜\테스트 시행\다중PC-검증 시나리오.md` 를 따릅니다.
-- 거래처/품목/렌탈 청구/렌탈 자산/재고이동의 stale 저장·삭제뿐 아니라 렌탈 청구 시작, 재고이동 수령확정, 품목·재고이동 자동저장 충돌도 아래 자동 점검으로 함께 검증합니다.
+- 기본 `Contract` 모드는 xUnit 계약 회귀만 실행합니다. 실제 PC-A/PC-B Desktop 프로세스나 분리 AppData 실행을 뜻하지 않습니다.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\테스트 시행\Invoke-MultiPcConflictCheck.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\테스트 시행\Invoke-MultiPcConflictCheck.ps1" -Mode Contract
+```
+
+- 실제 두 Desktop 프로세스 대표 거래처 경로는 새롭거나 빈 증거 폴더를 지정해 별도로 실행합니다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\테스트 시행\Invoke-MultiPcConflictCheck.ps1" -Mode DesktopE2E -DesktopE2EEvidenceDirectory "D:\거래플랜\테스트 시행\기록\<새-실행-ID>"
 ```
 
 ## 검증 완료 후 반영 실행
@@ -117,8 +159,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\테스트 �
 powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\테스트 시행\검증완료-반영.ps1" -CommitMessage "테스트 확인 후 반영" -IncludeUntrackedPaths "테스트 시행"
 ```
 
+## MainWindow DPI·저해상도 런타임 감사
+
+실제 Desktop `MainWindow` BAML 트리를 100%·125%·150%·175%·200%, 실제 최소 창, 업데이트 표시 조합으로 렌더링하고 버튼 겹침·본문 최소 높이·스크롤 도달성을 확인할 때 사용합니다.
+
+```powershell
+dotnet run --project "D:\거래플랜\tasks\MainWindowDpiRuntimeAudit\MainWindowDpiRuntimeAudit.csproj" -- --output "D:\거래플랜\테스트 시행\기록\<새 증거 폴더>\runtime-audit"
+```
+
+- `--output`은 반드시 새 폴더 또는 빈 폴더여야 합니다. 기존 증거가 있는 폴더는 실패 처리됩니다.
+- 결과 JSON/Markdown에는 제품 DLL·EXE·레이아웃 소스와 감사 Program/csproj/DLL/EXE의 SHA-256, MVID, freshness, Git HEAD/dirty 상태가 기록됩니다.
+- 스크롤 폴백 프로필은 원점 PNG와 최대 가로·세로 offset의 `scroll-end` PNG를 함께 만들고, 필수 업무 버튼을 실제 `BringIntoView`한 뒤 viewport 진입과 원점 복귀를 검사합니다.
+- 이 도구는 결정적 offscreen BAML 감사입니다. 실제 물리 모니터의 `SourceInitialized`/HWND 배치, `WM_DPICHANGED`, Popup·ContextMenu 입력을 대신하지 않습니다.
+
 ## 주의사항
-- 테스트 앱은 **반드시** `Run-All.cmd` 또는 `Run-App.cmd` 로 실행하세요.
+- 일반 수동 실행은 CMD 창을 남기지 않는 `Launch-Test-App.vbs`를 사용하세요. `Run-All.cmd`는 자동화·진단·종료 코드 증거가 필요한 경우의 진입점이며 호출한 CMD/터미널 창은 유지됩니다. `Run-App.cmd`는 기존 호출 호환용이고 `Run-Server.cmd`는 구성요소 진단용입니다.
 - `실행환경\App\거래플랜.Desktop.App.exe` 를 직접 실행하면 운영 로컬 데이터 경로를 사용할 수 있습니다.
 - 테스트 준비를 다시 실행하면 테스트 앱 데이터와 테스트 서버 데이터는 최신 운영 로컬 스냅샷 기준으로 다시 만들어집니다.
 
@@ -136,8 +191,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\테스트 �
 - `D:\\거래플랜\\테스트 시행\\Invoke-MultiPcReadinessCheck.ps1`
   - `준비-다중PC-검증.ps1` 실행 후 생성물, AppData 분리 경로, 상대경로 기반 실행 스크립트 구성이 정상인지 빠르게 확인합니다.
 - `D:\\거래플랜\\테스트 시행\\Invoke-MultiPcConflictCheck.ps1`
-  - PC-A / PC-B 분리 AppData 기준으로 아래 9개 충돌 경로를 자동 점검하고 JSON/Markdown 리포트를 남깁니다.
-    - 거래처 stale 저장/삭제
+  - `-Mode Contract`: 서버·Desktop xUnit 계약 회귀입니다. 9개 충돌 범주의 revision·삭제·자동저장 계약을 검사하지만 실제 두 Desktop 프로세스 증거는 아닙니다.
+  - `-Mode DesktopE2E`: 같은 Windows PC 안에서 물리적으로 복제한 App, 분리 AppData/temp/download/Sync.DeviceId, 서로 다른 PID 두 개를 실행합니다.
+  - 현재 실제 DesktopE2E는 거래처 생성 → PC-B 최신 저장 → PC-A 실제 stale push 거절 → PC-A draft·선택 보존 → 삭제 전파 → 서버 purge → 양쪽 dirty/outbox 0인 대표 경로 1개입니다.
+  - 아래 8개 업무 경로의 실제 두 DesktopE2E는 아직 `BLOCKED (미실행)`입니다. `Contract` PASS를 이 경로들의 실제 프로세스 PASS로 해석하지 않습니다.
     - 품목 stale 저장/삭제
     - 렌탈 청구 stale 저장/삭제
     - 렌탈 자산 stale 저장/삭제
@@ -149,7 +206,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\테스트 �
   - 예시:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "D:\\거래플랜\\테스트 시행\\Invoke-MultiPcConflictCheck.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "D:\\거래플랜\\테스트 시행\\Invoke-MultiPcConflictCheck.ps1" -Mode Contract
+powershell -NoProfile -ExecutionPolicy Bypass -File "D:\\거래플랜\\테스트 시행\\Invoke-MultiPcConflictCheck.ps1" -Mode DesktopE2E -DesktopE2EEvidenceDirectory "D:\\거래플랜\\테스트 시행\\기록\\<새-실행-ID>"
+powershell -NoProfile -ExecutionPolicy Bypass -File "D:\\거래플랜\\테스트 시행\\Invoke-MultiPcConflictCheck.ps1" -Mode All -DesktopE2EEvidenceDirectory "D:\\거래플랜\\테스트 시행\\기록\\<새-실행-ID>"
 ```
 
 - `D:\\거래플랜\\테스트 시행\\Invoke-SyncRecoveryCheck.ps1`

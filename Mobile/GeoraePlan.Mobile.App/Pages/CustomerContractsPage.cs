@@ -1,5 +1,6 @@
 using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
+using GeoraePlan.Mobile.App.Services;
 using Microsoft.Maui.Controls.Shapes;
 using 거래플랜.Shared.Contracts;
 
@@ -8,6 +9,7 @@ namespace GeoraePlan.Mobile.App.Pages;
 public sealed class CustomerContractsPage : ContentPage
 {
     private readonly CustomerContractsViewModel _viewModel;
+    private readonly MobileSessionOwner _pageOwner;
     private readonly Guid _customerId;
     private readonly string _customerName;
     private bool _initialized;
@@ -18,6 +20,9 @@ public sealed class CustomerContractsPage : ContentPage
 
         _customerId = customerId;
         _customerName = customerName;
+        _pageOwner = ServiceHelper
+            .GetRequiredService<SessionStore>()
+            .CaptureOwner();
         _viewModel = ServiceHelper.GetRequiredService<CustomerContractsViewModel>();
         BindingContext = _viewModel;
 
@@ -143,12 +148,17 @@ public sealed class CustomerContractsPage : ContentPage
             async () =>
             {
 if (_initialized)
+        {
+            _viewModel.EnsureContextOwnerCurrent();
             return;
+        }
 
         _initialized = true;
-        await _viewModel.InitializeAsync(_customerId, _customerName);
+        await _viewModel.InitializeAsync(
+            _customerId,
+            _customerName,
+            _pageOwner);
             },
             "거래처 계약서 화면 초기화");
     }
 }
-

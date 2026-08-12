@@ -9,7 +9,7 @@ using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.ViewModels;
 
-public sealed partial class YeonsuDeliveryViewModel : ObservableObject, IDisposable
+public sealed partial class YeonsuDeliveryViewModel : ObservableObject, IDisposable, IAsyncDisposable
 {
     private const string FeeRateSettingKey = "YeonsuDelivery.FeeRatePercent";
     private readonly LocalStateService _local;
@@ -89,6 +89,12 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject, IDisposa
 
         _isDisposed = true;
         _filterDebouncer.Dispose();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _isDisposed = true;
+        await _filterDebouncer.DisposeAsync();
     }
 
     public async Task InitializeAsync()
@@ -412,7 +418,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject, IDisposa
         if (persist)
         {
             UiTaskHelper.Forget(
-                _local.SetSettingAsync(BuildAccountScopedFeeRateSettingKey(), value.ToString(CultureInfo.InvariantCulture)),
+                () => _local.SetSettingAsync(BuildAccountScopedFeeRateSettingKey(), value.ToString(CultureInfo.InvariantCulture)),
                 "LEDGER",
                 "매입/매출 장부 수수료율 저장",
                 ex => AppLogger.Warn("LEDGER", $"수수료율 저장 실패: {ex.Message}"));

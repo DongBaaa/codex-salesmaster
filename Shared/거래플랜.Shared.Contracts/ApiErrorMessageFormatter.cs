@@ -204,6 +204,8 @@ public static class ApiErrorMessageFormatter
     private static string? MapKnownError(string? errorCode)
         => errorCode switch
         {
+            "expected_revision_required" =>
+                "최신 데이터를 다시 불러온 뒤 리비전을 포함해 다시 시도하세요.",
             "contract_content_unavailable" =>
                 "계약서 파일 내용을 찾을 수 없습니다. 서버에는 계약서 정보가 있으나 실제 파일이 없거나 손상되었습니다. 운영 점검의 파일 저장소 무결성 결과를 확인한 뒤 다시 시도하세요.",
             "attachment_content_unavailable" =>

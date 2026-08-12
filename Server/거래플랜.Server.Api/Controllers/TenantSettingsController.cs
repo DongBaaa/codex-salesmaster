@@ -27,24 +27,36 @@ public sealed class TenantSettingsController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<ActionResult<TenantConfigurationSnapshotDto>> Get(CancellationToken cancellationToken)
+    public async Task<ActionResult<TenantConfigurationSnapshotDto>> Get(
+        CancellationToken cancellationToken,
+        [FromQuery] bool includeInactive = false)
     {
         if (RequireSystemConfigurationScope() is { } forbidden)
             return forbidden;
 
+        var tenantQuery = _dbContext.TenantDefinitions.AsNoTracking();
+        var officeQuery = _dbContext.TenantOfficeDefinitions.AsNoTracking();
+        var sharingPolicyQuery = _dbContext.DataSharingPolicies.AsNoTracking();
+        if (includeInactive)
+        {
+            tenantQuery = tenantQuery.IgnoreQueryFilters();
+            officeQuery = officeQuery.IgnoreQueryFilters();
+            sharingPolicyQuery = sharingPolicyQuery.IgnoreQueryFilters();
+        }
+
         var snapshot = new TenantConfigurationSnapshotDto
         {
-            Tenants = await _dbContext.TenantDefinitions.AsNoTracking()
+            Tenants = await tenantQuery
                 .OrderBy(entity => entity.TenantCode)
                 .Select(entity => entity.ToDto())
                 .ToListAsync(cancellationToken),
-            Offices = await _dbContext.TenantOfficeDefinitions.AsNoTracking()
+            Offices = await officeQuery
                 .OrderBy(entity => entity.TenantCode)
                 .ThenByDescending(entity => entity.IsHeadOffice)
                 .ThenBy(entity => entity.OfficeCode)
                 .Select(entity => entity.ToDto())
                 .ToListAsync(cancellationToken),
-            SharingPolicies = await _dbContext.DataSharingPolicies.AsNoTracking()
+            SharingPolicies = await sharingPolicyQuery
                 .OrderBy(entity => entity.TargetTenantCode)
                 .ThenBy(entity => entity.TargetOfficeCode)
                 .ThenBy(entity => entity.SourceTenantCode)
@@ -73,15 +85,30 @@ public sealed class TenantSettingsController : ControllerBase
         if (OptimisticConcurrencyGuard.Check(this, entity, request.ExpectedRevision, nameof(TenantDefinition)) is { } conflict)
             return conflict;
 
+        var currentStorageMode = TenantScopeCatalog.NormalizeStorageModeOrDefault(
+            entity.StorageMode);
+        var requestedStorageMode = TenantScopeCatalog.NormalizeStorageModeOrDefault(
+            request.StorageMode,
+            currentStorageMode);
+        if (!string.Equals(
+                currentStorageMode,
+                requestedStorageMode,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return BadRequest(
+                "업무 DB 저장 방식 변경은 데이터 이관과 서버 라우팅 변경이 필요한 운영 작업이므로 일반 설정 저장에서 변경할 수 없습니다.");
+        }
+
         entity.TenantCode = normalizedTenantCode;
         entity.DisplayName = string.IsNullOrWhiteSpace(request.DisplayName)
             ? TenantScopeCatalog.GetTenantDisplayName(normalizedTenantCode)
             : request.DisplayName.Trim();
-        entity.StorageMode = TenantScopeCatalog.NormalizeStorageModeOrDefault(request.StorageMode, entity.StorageMode);
+        entity.StorageMode = currentStorageMode;
         entity.Description = request.Description?.Trim() ?? string.Empty;
         entity.IsActive = request.IsActive;
         entity.IsDeleted = !request.IsActive;
 
+        MarkAcceptedMutationModified(entity);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
@@ -110,6 +137,7 @@ public sealed class TenantSettingsController : ControllerBase
         entity.IsActive = request.IsActive;
         entity.IsDeleted = !request.IsActive;
 
+        MarkAcceptedMutationModified(entity);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
@@ -126,20 +154,22 @@ public sealed class TenantSettingsController : ControllerBase
         if (!normalized.Success)
             return BadRequest(normalized.ErrorMessage);
 
-        var duplicate = await _dbContext.DataSharingPolicies.IgnoreQueryFilters().AnyAsync(current =>
-            !current.IsDeleted &&
+        var matchingPolicy = await _dbContext.DataSharingPolicies.IgnoreQueryFilters().FirstOrDefaultAsync(current =>
             current.SourceTenantCode == normalized.SourceTenantCode &&
             current.SourceOfficeCode == normalized.SourceOfficeCode &&
             current.TargetTenantCode == normalized.TargetTenantCode &&
             current.TargetOfficeCode == normalized.TargetOfficeCode &&
             current.Id != normalized.Id,
             cancellationToken);
-        if (duplicate)
+        if (matchingPolicy is { IsDeleted: false })
             return Conflict("같은 업체/지점 연동 정책이 이미 존재합니다.");
 
-        var entity = new DataSharingPolicy();
+        var entity = matchingPolicy ?? new DataSharingPolicy();
         ApplyPolicy(entity, normalized);
-        _dbContext.DataSharingPolicies.Add(entity);
+        if (matchingPolicy is null)
+            _dbContext.DataSharingPolicies.Add(entity);
+        else
+            MarkAcceptedMutationModified(entity);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(entity.ToDto());
     }
@@ -164,19 +194,41 @@ public sealed class TenantSettingsController : ControllerBase
         if (!normalized.Success)
             return BadRequest(normalized.ErrorMessage);
 
-        var duplicate = await _dbContext.DataSharingPolicies.IgnoreQueryFilters().AnyAsync(current =>
-            !current.IsDeleted &&
+        var duplicate = await _dbContext.DataSharingPolicies.IgnoreQueryFilters().FirstOrDefaultAsync(current =>
             current.Id != id &&
             current.SourceTenantCode == normalized.SourceTenantCode &&
             current.SourceOfficeCode == normalized.SourceOfficeCode &&
             current.TargetTenantCode == normalized.TargetTenantCode &&
             current.TargetOfficeCode == normalized.TargetOfficeCode,
             cancellationToken);
-        if (duplicate)
+        if (duplicate is { IsDeleted: false })
             return Conflict("같은 업체/지점 연동 정책이 이미 존재합니다.");
 
-        ApplyPolicy(entity, normalized);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        if (duplicate is not null)
+        {
+            await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+            try
+            {
+                _dbContext.DataSharingPolicies.Remove(duplicate);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                ApplyPolicy(entity, normalized);
+                MarkAcceptedMutationModified(entity);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+            }
+            catch
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                throw;
+            }
+        }
+        else
+        {
+            ApplyPolicy(entity, normalized);
+            MarkAcceptedMutationModified(entity);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+
         return Ok(entity.ToDto());
     }
 
@@ -195,12 +247,21 @@ public sealed class TenantSettingsController : ControllerBase
 
         entity.IsDeleted = true;
         entity.IsActive = false;
+        MarkAcceptedMutationModified(entity);
         await _dbContext.SaveChangesAsync(cancellationToken);
-        return NoContent();
+        return Ok(entity.ToDto());
     }
 
     private ActionResult? RequireSystemConfigurationScope()
         => _officeScopeService.HasSystemConfigurationScope ? null : Forbid();
+
+    private void MarkAcceptedMutationModified<TEntity>(TEntity entity)
+        where TEntity : TrackedEntity
+    {
+        var entry = _dbContext.Entry(entity);
+        if (entry.State == EntityState.Unchanged)
+            entry.Property(current => current.UpdatedAtUtc).IsModified = true;
+    }
 
     private async Task<(bool Success, string ErrorMessage, Guid Id, string SourceTenantCode, string SourceOfficeCode, string TargetTenantCode, string TargetOfficeCode, bool ShareCustomers, bool ShareItems, bool ShareInvoices, bool SharePayments, bool ShareContracts, bool ShareReports, bool ShareRentals, bool ShareDeliveries, bool AllowTargetWrite, bool IsActive, string Note)> NormalizePolicyRequestAsync(
         UpsertDataSharingPolicyRequest request,

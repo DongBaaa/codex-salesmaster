@@ -1,6 +1,7 @@
 using System.IO;
 using Microsoft.EntityFrameworkCore;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
@@ -705,6 +706,30 @@ public sealed partial class LocalStateService
             missingAttachmentFileCount,
             "로컬 증빙 파일이 없어 다시 동기화하거나 첨부 복구가 필요합니다.",
             directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
+
+        var conflictBusinessDatabaseName =
+            ResolveInventoryTransferConflictBusinessDatabaseName(session);
+        var conflictEvidencePaths = await _db
+            .InventoryTransferTombstoneConflicts
+            .AsNoTracking()
+            .Where(conflict =>
+                conflict.BusinessDatabaseName ==
+                    conflictBusinessDatabaseName &&
+                conflict.ArchivedReceiveEvidencePath != string.Empty)
+            .Select(conflict => conflict.ArchivedReceiveEvidencePath)
+            .ToListAsync(ct);
+        var missingConflictEvidenceFileCount = conflictEvidencePaths.Count(
+            path =>
+                !AppPaths.IsTransactionAttachmentPath(path) ||
+                !File.Exists(path));
+        AddIssueIfNeeded(
+            issues,
+            "missing_inventory_transfer_conflict_evidence_files",
+            missingConflictEvidenceFileCount,
+            "재고이동 영구삭제 충돌 초안의 보관 증빙 파일이 없거나 안전한 관리 경로를 벗어났습니다.",
+            severity: "Error",
+            directActionKind:
+                DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         return new LocalIntegrityReport(createdAtUtc, officeCode, tenantCode, dirtyCount, pendingServerMirrorRefresh, issues);
     }

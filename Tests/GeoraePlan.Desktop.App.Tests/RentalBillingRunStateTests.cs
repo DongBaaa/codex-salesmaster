@@ -11,6 +11,91 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class RentalBillingRunStateTests
 {
     [Fact]
+    public async Task SaveBillingProfile_PreservesExistingOperationalStateWhileUpdatingSettings()
+    {
+        PrepareAppRoot("georaeplan-rental-profile-settings-preserve-operational-state");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Profile settings save customer";
+            var runId = Guid.NewGuid();
+            var expectedRunsJson = JsonSerializer.Serialize(new List<RentalBillingRunModel>
+            {
+                new()
+                {
+                    RunId = runId,
+                    RunKey = "20260501-20260531",
+                    ScheduledDate = new DateOnly(2026, 5, 25),
+                    PeriodStartDate = new DateOnly(2026, 5, 1),
+                    PeriodEndDate = new DateOnly(2026, 5, 31),
+                    PeriodLabel = "2026-05",
+                    Status = PaymentFlowConstants.BillingStatusInProgress,
+                    BilledAmount = 100_000m,
+                    SettledAmount = 90_000m,
+                    SettlementStatus = PaymentFlowConstants.SettlementStatusPending
+                }
+            });
+            var lastBilledDate = new DateOnly(2026, 5, 25);
+            var lastSettledDate = new DateOnly(2026, 5, 27);
+
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
+            var storedProfile = CreateBillingProfile(profileId, assetId, customerName, customerId);
+            storedProfile.BillingRunsJson = expectedRunsJson;
+            storedProfile.LastBilledDate = lastBilledDate;
+            storedProfile.LastSettledDate = lastSettledDate;
+            storedProfile.SettledAmount = 90_000m;
+            storedProfile.OutstandingAmount = 10_000m;
+            storedProfile.SettlementStatus = PaymentFlowConstants.SettlementStatusPending;
+            storedProfile.CompletionStatus = PaymentFlowConstants.CompletionPending;
+            storedProfile.RequiresFollowUp = true;
+            storedProfile.BillingStatus = PaymentFlowConstants.BillingStatusInProgress;
+            db.RentalBillingProfiles.Add(storedProfile);
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            var settingsEdit = CreateBillingProfile(profileId, assetId, customerName, customerId);
+            settingsEdit.Revision = storedProfile.Revision;
+            settingsEdit.Notes = "Updated settings note";
+            settingsEdit.BillingMethod = "Email";
+            settingsEdit.MonthlyAmount = 123_000m;
+            var templateItem = Assert.Single(DeserializeTemplateItems(settingsEdit.BillingTemplateJson));
+            templateItem.UnitPrice = 123_000m;
+            templateItem.Amount = 123_000m;
+            settingsEdit.BillingTemplateJson = JsonSerializer.Serialize(new[] { templateItem });
+
+            var service = new RentalStateService(db);
+            var result = await service.SaveBillingProfileAsync(settingsEdit, CreateAdminSession());
+
+            Assert.True(result.Success, result.Message);
+            var persisted = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(current => current.Id == profileId);
+            Assert.Equal("Updated settings note", persisted.Notes);
+            Assert.Equal("Email", persisted.BillingMethod);
+            Assert.Equal(123_000m, persisted.MonthlyAmount);
+            Assert.Equal(expectedRunsJson, persisted.BillingRunsJson);
+            Assert.Equal(lastBilledDate, persisted.LastBilledDate);
+            Assert.Equal(lastSettledDate, persisted.LastSettledDate);
+            Assert.Equal(90_000m, persisted.SettledAmount);
+            Assert.Equal(10_000m, persisted.OutstandingAmount);
+            Assert.Equal(PaymentFlowConstants.SettlementStatusPending, persisted.SettlementStatus);
+            Assert.Equal(PaymentFlowConstants.CompletionPending, persisted.CompletionStatus);
+            Assert.True(persisted.RequiresFollowUp);
+            Assert.Equal(PaymentFlowConstants.BillingStatusInProgress, persisted.BillingStatus);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task HoldBilling_UsesSelectedReferenceDateForNextUnbilledRun()
     {
         PrepareAppRoot("georaeplan-rental-hold-selected-reference");
@@ -47,6 +132,133 @@ public sealed class RentalBillingRunStateTests
             var heldRun = Assert.Single(runs);
             Assert.Equal(new DateOnly(2026, 10, 25), heldRun.ScheduledDate);
             Assert.Equal(PaymentFlowConstants.BillingStatusOnHold, heldRun.Status);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task CancelBilling_UpdatesProfileAndCurrentRunWhilePreservingExistingNote()
+    {
+        PrepareAppRoot("georaeplan-rental-cancel-preserve-note");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Cancel billing customer";
+            var referenceDate = new DateOnly(2026, 5, 10);
+            var service = new RentalStateService(db);
+            var profile = CreateBillingProfile(profileId, assetId, customerName, customerId);
+            profile.Revision = 7;
+            profile.BillingStatus = PaymentFlowConstants.BillingStatusInProgress;
+            profile.CompletionStatus = PaymentFlowConstants.CompletionDone;
+            profile.RequiresFollowUp = true;
+            var currentRun = Assert.IsType<RentalBillingRunModel>(
+                service.GetOrCreateBillingRun(profile, referenceDate, persistChanges: true));
+            currentRun.Status = PaymentFlowConstants.BillingStatusInProgress;
+            currentRun.Note = "기존 청구 메모";
+            profile.BillingRunsJson = JsonSerializer.Serialize(new[] { currentRun });
+
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
+            db.RentalBillingProfiles.Add(profile);
+            await db.SaveChangesAsync();
+
+            var result = await service.CancelBillingAsync(
+                profileId,
+                referenceDate,
+                string.Empty,
+                CreateAdminSession(),
+                expectedRevision: 7);
+
+            Assert.True(result.Success, result.Message);
+            var persisted = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(current => current.Id == profileId);
+            Assert.Equal(PaymentFlowConstants.BillingStatusCancelled, persisted.BillingStatus);
+            Assert.Equal(PaymentFlowConstants.CompletionPending, persisted.CompletionStatus);
+            Assert.True(persisted.RequiresFollowUp);
+            Assert.True(persisted.IsDirty);
+            var cancelledRun = Assert.Single(DeserializeRuns(persisted.BillingRunsJson));
+            Assert.Equal(currentRun.RunId, cancelledRun.RunId);
+            Assert.Equal(PaymentFlowConstants.BillingStatusCancelled, cancelledRun.Status);
+            Assert.Equal("기존 청구 메모", cancelledRun.Note);
+            var row = await service.GetBillingRowAsync(profileId, CreateAdminSession(), referenceDate);
+            Assert.NotNull(row);
+            Assert.Equal(PaymentFlowConstants.BillingStatusCancelled, row.DisplayStatus);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task CancelBilling_SetsProvidedNoteAndRejectsStaleRevision()
+    {
+        PrepareAppRoot("georaeplan-rental-cancel-note-concurrency");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Cancel billing concurrency customer";
+            var referenceDate = new DateOnly(2026, 6, 10);
+            var service = new RentalStateService(db);
+            var profile = CreateBillingProfile(profileId, assetId, customerName, customerId);
+            profile.Revision = 9;
+            profile.BillingStatus = PaymentFlowConstants.BillingStatusInProgress;
+            profile.RequiresFollowUp = false;
+            var currentRun = Assert.IsType<RentalBillingRunModel>(
+                service.GetOrCreateBillingRun(profile, referenceDate, persistChanges: true));
+            currentRun.Status = PaymentFlowConstants.BillingStatusInProgress;
+            currentRun.Note = "이전 메모";
+            profile.BillingRunsJson = JsonSerializer.Serialize(new[] { currentRun });
+
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
+            db.RentalBillingProfiles.Add(profile);
+            await db.SaveChangesAsync();
+
+            var stale = await service.CancelBillingAsync(
+                profileId,
+                referenceDate,
+                "고객 요청",
+                CreateAdminSession(),
+                expectedRevision: 8);
+
+            Assert.False(stale.Success);
+            Assert.True(stale.ConcurrencyConflict);
+            var unchanged = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(current => current.Id == profileId);
+            Assert.Equal(PaymentFlowConstants.BillingStatusInProgress, unchanged.BillingStatus);
+            Assert.False(unchanged.RequiresFollowUp);
+            Assert.Equal("이전 메모", Assert.Single(DeserializeRuns(unchanged.BillingRunsJson)).Note);
+
+            var result = await service.CancelBillingAsync(
+                profileId,
+                referenceDate,
+                "고객 요청",
+                CreateAdminSession(),
+                expectedRevision: 9);
+
+            Assert.True(result.Success, result.Message);
+            var persisted = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(current => current.Id == profileId);
+            Assert.Equal(PaymentFlowConstants.BillingStatusCancelled, persisted.BillingStatus);
+            Assert.False(persisted.RequiresFollowUp);
+            var cancelledRun = Assert.Single(DeserializeRuns(persisted.BillingRunsJson));
+            Assert.Equal(PaymentFlowConstants.BillingStatusCancelled, cancelledRun.Status);
+            Assert.Equal("고객 요청", cancelledRun.Note);
         }
         finally
         {

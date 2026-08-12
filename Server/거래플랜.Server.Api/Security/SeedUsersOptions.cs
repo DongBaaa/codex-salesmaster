@@ -9,6 +9,8 @@ public sealed class SeedUsersOptions
 
     public bool EnableSeedUsers { get; set; } = true;
     public bool WarnOnDefaultPasswords { get; set; } = true;
+    public bool AdminOnlyBootstrap { get; set; }
+    public bool UpdateExistingAdminPassword { get; set; }
     public bool UpdateExistingItwPassword { get; set; } = true;
     public bool UpdateExistingUsenetPassword { get; set; }
     public string? AdminPassword { get; set; }

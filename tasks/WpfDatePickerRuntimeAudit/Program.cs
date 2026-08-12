@@ -24,7 +24,7 @@ internal static class Program
         ["inventory-transfer"] = 1,
         ["period-ledger"] = 2,
         ["print-edit"] = 1,
-        ["rental-asset-link"] = 1,
+        ["rental-asset-link"] = 3,
         ["rental-asset"] = 5,
         ["rental-assignment-history-edit"] = 2,
         ["rental-billing"] = 2,

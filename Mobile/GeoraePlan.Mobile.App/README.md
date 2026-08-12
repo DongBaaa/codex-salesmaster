@@ -1,13 +1,19 @@
 # 거래플랜 안드로이드 MAUI 앱
-- 작성일: 2026-03-19
+- 문서 기준: 2026-07-28
 - 프로젝트 파일: `D:\거래플랜\Mobile\GeoraePlan.Mobile.App\GeoraePlan.Mobile.App.csproj`
 - 앱 ID: `kr.georaeplan.mobile`
+- Android 현재 소스: `0.2.82`, versionCode `193`
+- 공개 stable 표시 버전: `0.2.82`; 실제 APK versionCode는 게시 연속성 게이트에서 `193`으로 확인
+- 연동 Windows 기준: 현재 소스 및 공개 stable `1.1.691` / FileVersion `1.1.691.0`
+
+Android 현재 소스 versionCode는 `193`입니다.
+공개 APK의 내부 versionCode는 게시 연속성 게이트에서 검사하며, 새 후보는 그 값보다 큰 versionCode, Release signing, 기존 stable과 서명 연속성, emulator/실기기 `adb install -r` 검증이 필요합니다.
 
 ## 현재 포함 기능
 - 로그인
 - 홈
-- 거래처 조회
-- 품목 조회
+- 거래처 조회 / 입력
+- 품목 조회 / 입력
 - 전표 조회
 - 판매 전표 작성
 - 구매 전표 작성
@@ -17,6 +23,7 @@
 - 동기화 상태 조회
 - 거래처 계약서 조회 / PDF 열기
 - 휴지통 조회 / 복원 / 영구삭제
+- 무결성 상태 조회
 
 ## 현재 운영 방향
 - 모바일 앱은 **거래플랜 Linux PC 서버(`trade.2884.kr`, 실제 서버 본체: `itw@192.168.0.199:2222`의 `/srv/georaeplan`)에 고정 연결**됩니다.
@@ -25,14 +32,22 @@
 - 모바일 입력 가능 범위는 거래처/품목/판매·구매 전표/수금·지급입니다.
 - 재고이동과 렌탈은 모바일에서 조회 전용으로 제공하며, 실제 생성·확정·수정 업무는 PC에서 처리합니다.
 
-## 최신 Android 산출물
-- 최신 테스트 서명 APK:
-  - `D:\거래플랜\Mobile\artifacts\android\publish_20260516_040127\kr.georaeplan.mobile-Signed.apk`
-  - SHA256: `D:\거래플랜\Mobile\artifacts\android\publish_20260516_040127\kr.georaeplan.mobile-Signed.apk.sha256.txt`
-  - 배포 폴더 복사본: `D:\거래플랜\배포\거래플랜-안드로이드-v0.2.12-signed.apk`
-- 최신 서명 AAB 예:
-  - `D:\거래플랜\Mobile\artifacts\android\aab_20260320_141421\kr.georaeplan.mobile-Signed.aab`
-  - SHA256: `D:\거래플랜\Mobile\artifacts\android\aab_20260320_141421\kr.georaeplan.mobile-Signed.aab.sha256.txt`
+## PC에서 해야 하는 기능
+- 사용자·역할·권한 관리
+- 회사 설정과 업체 / 데이터 권한 관리
+- 일반 백업 / 복원
+- Excel 내보내기와 자료 기간별 집계
+- 재고이동 생성 / 수령 / 반려
+- 렌탈 청구 생성 / 입금 등록 / 청구 프로필·자산 수정
+
+모바일에서 메뉴가 보이지 않는 위 기능을 누락이나 권한 오류로 오해하지 마세요. 현장 조회·입력에 필요한 범위만 제공하고, 관리·대량 처리·복구 기능은 PC에서 수행합니다.
+
+## Android 산출물 기준
+- 저장소에서 재현 가능한 공개 버전·파일명·SHA-256 기준: `D:\거래플랜\배포\stable.json`의 `android` 노드
+- 게시 과정에서 생성되는 `D:\거래플랜\배포\업데이트\manifest\stable.json`과 live manifest는 별도 운영 산출물로 확인
+- 2026-07-28 공개 stable 표시 버전: `0.2.81`; 실제 APK 내부 versionCode는 게시 연속성 게이트에서 확인
+- Android 현재 소스 및 공개 stable: `0.2.82`, versionCode `193`; 다음 정식 배포는 표시 버전과 versionCode를 함께 증가시켜야 합니다.
+- 서명 키·keystore 비밀번호·토큰은 README, 로그, Git에 기록하지 않습니다.
 
 ## 관련 문서
 - 빌드/서명/직접설치 가이드: `D:\거래플랜\Mobile\안드로이드_빌드_서명_설치_가이드_2026-03-19.md`
@@ -44,6 +59,8 @@
 - keystore 생성: `D:\거래플랜\tools\mobile\New-GeoraePlanAndroidKeystore.ps1`
 - 서명 APK 빌드: `D:\거래플랜\tools\mobile\Build-GeoraePlanAndroidApk.ps1`
 - 서명 AAB 빌드: `D:\거래플랜\tools\mobile\Build-GeoraePlanAndroidBundle.ps1`
+- 서명 연속성 검증: `D:\거래플랜\tools\mobile\Test-GeoraePlanAndroidSigningContinuity.ps1`
+- 기존 설치본 제자리 업데이트 smoke: `D:\거래플랜\tools\mobile\Invoke-GeoraePlanAndroidSmoke.ps1`
 - Android Studio 직접 테스트 실행: `D:\거래플랜\tools\mobile\Start-GeoraePlanAndroidStudioTest.ps1`
 
 ## 빌드 명령 예시
@@ -98,3 +115,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\mobil
 - Windows PC + Android 앱 공용 사용
 - 스토어 미등록
 - 서명된 APK 직접 전달 / 직접 설치
+- 새 APK는 공개 stable보다 큰 versionCode, 동일 applicationId, 동일 signing certificate, 실제 파일 SHA-256과 manifest 일치를 모두 통과해야 합니다.
+- update-in-place는 기존 앱을 삭제하거나 데이터를 지우지 않고 정확히 한 번의 `adb install -r`로 검증합니다.
+- `adb install -d`, uninstall, clear, device-wide cache 정리로 실패를 우회하지 않습니다.
+- 테스트판은 `D:\거래플랜\테스트 시행`의 분리 환경에서 먼저 검증합니다.
+- 사용자 테스트판 승인 전에는 Android live 버전 공개, stable manifest 변경, Git commit/push를 수행하지 않습니다.

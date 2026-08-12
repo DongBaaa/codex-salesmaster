@@ -22,8 +22,11 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(reportPath))
             return;
 
+        if (QueueMultiPcDesktopE2EIfRequested(reportPath))
+            return;
+
         UiTaskHelper.Forget(
-            RunDesktopUiSmokeSelfTestAsync(reportPath),
+            () => RunDesktopUiSmokeSelfTestAsync(reportPath),
             "UI-SMOKE",
             "데스크톱 UI 자체 검증",
             ex => AppLogger.Error("UI-SMOKE", "데스크톱 UI 자체 검증 실패", ex));
@@ -60,7 +63,7 @@ public partial class MainWindow
             },
             "신규 품목",
             "품목 저장",
-            "재고 초기화",
+            "선택 재고 초기화",
             "닫기 (F12)");
 
         await VerifySmokeWindowAsync(

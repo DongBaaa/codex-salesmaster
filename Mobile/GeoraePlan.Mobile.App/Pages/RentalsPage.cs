@@ -144,9 +144,24 @@ public sealed class RentalsPage : ContentPage
         await MobileErrorHandler.RunGuardedAsync(
             async () =>
             {
-if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
-            await _viewModel.RefreshAsync();
-        _seenRentalsVersion = _refreshCoordinator.RentalsVersion;
+                var owner = _viewModel.EnsureCurrentOwner();
+                if (_viewModel.NeedsRefresh(
+                        TimeSpan.FromSeconds(15)))
+                {
+                    await _viewModel.RefreshAsync();
+                }
+
+                if (!_viewModel.IsCurrentOwner(owner))
+                {
+                    owner = _viewModel.EnsureCurrentOwner();
+                    await _viewModel.RefreshAsync();
+                }
+
+                if (_viewModel.IsCurrentOwner(owner))
+                {
+                    _seenRentalsVersion =
+                        _refreshCoordinator.RentalsVersion;
+                }
             },
             "렌탈 화면 초기화");
     }
@@ -159,8 +174,14 @@ if (_viewModel.NeedsRefresh(TimeSpan.FromSeconds(15)))
                 {
                     if (Shell.Current?.CurrentPage == this && _seenRentalsVersion != _refreshCoordinator.RentalsVersion)
                     {
+                        var owner =
+                            _viewModel.EnsureCurrentOwner();
                         await _viewModel.RefreshAsync();
-                        _seenRentalsVersion = _refreshCoordinator.RentalsVersion;
+                        if (_viewModel.IsCurrentOwner(owner))
+                        {
+                            _seenRentalsVersion =
+                                _refreshCoordinator.RentalsVersion;
+                        }
                     }
                 },
                 "렌탈 실시간 갱신"));

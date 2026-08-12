@@ -1,13 +1,145 @@
 ﻿using System.IO;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
 
 public sealed partial class LocalStateService
 {
+    private sealed record RecycleBinRestoreReceiptEntry(
+        Type EntityType,
+        Guid EntityId,
+        long Revision,
+        DateTime UpdatedAtUtc,
+        bool IsDeleted);
+
+    private sealed record RecycleBinTrackedEntrySnapshot(
+        object Entity,
+        EntityState State,
+        PropertyValues CurrentValues,
+        PropertyValues OriginalValues,
+        IReadOnlySet<string> ModifiedPropertyNames);
+
+    private readonly object _recycleBinRestoreReceiptGate = new();
+    private readonly Dictionary<
+        (RecycleBinEntityKind Kind, Guid EntityId),
+        IReadOnlyList<RecycleBinRestoreReceiptEntry>>
+        _pendingRecycleBinRestoreReceipts = new();
+
+    internal Func<CancellationToken, Task>?
+        AfterInvoiceGroupRestoreSavedAsyncForTesting { get; set; }
+    internal Func<CancellationToken, Task>?
+        AfterAtomicRecycleBinRestoreCommitAsyncForTesting { get; set; }
+
+    private List<RecycleBinTrackedEntrySnapshot> CaptureRecycleBinTrackedEntrySnapshot()
+    {
+        _db.ChangeTracker.DetectChanges();
+        return _db.ChangeTracker.Entries()
+            .Select(entry => new RecycleBinTrackedEntrySnapshot(
+                entry.Entity,
+                entry.State,
+                entry.CurrentValues.Clone(),
+                entry.OriginalValues.Clone(),
+                entry.Properties
+                    .Where(property => property.IsModified)
+                    .Select(property => property.Metadata.Name)
+                    .ToHashSet(StringComparer.Ordinal)))
+            .ToList();
+    }
+
+    private void SuspendRecycleBinTrackedEntries(
+        IReadOnlyCollection<RecycleBinTrackedEntrySnapshot> snapshots)
+    {
+        foreach (var snapshot in snapshots)
+            _db.Entry(snapshot.Entity).State = EntityState.Detached;
+    }
+
+    private void RestoreRecycleBinTrackedEntrySnapshot(
+        IReadOnlyCollection<RecycleBinTrackedEntrySnapshot> snapshots,
+        bool detachEntriesNotInSnapshots)
+    {
+        var originalEntities = snapshots
+            .Select(snapshot => snapshot.Entity)
+            .ToHashSet(ReferenceEqualityComparer.Instance);
+        if (detachEntriesNotInSnapshots)
+        {
+            foreach (var entry in _db.ChangeTracker.Entries().ToList())
+            {
+                if (!originalEntities.Contains(entry.Entity))
+                    entry.State = EntityState.Detached;
+            }
+        }
+
+        foreach (var snapshot in snapshots)
+        {
+            var entry = _db.Entry(snapshot.Entity);
+            if (entry.State == EntityState.Detached)
+            {
+                DetachRecycleBinTrackedEntryWithSameKey(entry, snapshot);
+                entry.State = snapshot.State == EntityState.Added
+                    ? EntityState.Added
+                    : EntityState.Unchanged;
+            }
+            else if (snapshot.State is EntityState.Unchanged or EntityState.Modified)
+            {
+                entry.State = EntityState.Unchanged;
+            }
+
+            entry.CurrentValues.SetValues(snapshot.CurrentValues);
+            entry.OriginalValues.SetValues(snapshot.OriginalValues);
+            switch (snapshot.State)
+            {
+                case EntityState.Modified:
+                    foreach (var property in entry.Properties)
+                    {
+                        property.IsModified =
+                            snapshot.ModifiedPropertyNames.Contains(
+                                property.Metadata.Name);
+                    }
+                    break;
+                case EntityState.Added:
+                    entry.State = EntityState.Added;
+                    break;
+                case EntityState.Deleted:
+                    entry.State = EntityState.Deleted;
+                    break;
+                default:
+                    entry.State = snapshot.State;
+                    break;
+            }
+        }
+    }
+
+    private void DetachRecycleBinTrackedEntryWithSameKey(
+        EntityEntry snapshotEntry,
+        RecycleBinTrackedEntrySnapshot snapshot)
+    {
+        var primaryKey = snapshotEntry.Metadata.FindPrimaryKey();
+        if (primaryKey is null)
+            return;
+
+        foreach (var trackedEntry in _db.ChangeTracker.Entries().ToList())
+        {
+            if (ReferenceEquals(trackedEntry.Entity, snapshot.Entity) ||
+                trackedEntry.Metadata != snapshotEntry.Metadata)
+            {
+                continue;
+            }
+
+            if (primaryKey.Properties.All(property =>
+                    Equals(
+                        trackedEntry.Property(property.Name).CurrentValue,
+                        snapshot.CurrentValues[property.Name])))
+            {
+                trackedEntry.State = EntityState.Detached;
+            }
+        }
+    }
+
     public async Task<List<RecycleBinEntry>> GetRecycleBinEntriesAsync(
         SessionState session,
         CancellationToken ct = default)
@@ -162,25 +294,31 @@ public sealed partial class LocalStateService
             }));
         }
 
-        var deletedInvoices = await ApplyInvoiceScope(
-                _db.Invoices
-                    .IgnoreQueryFilters()
-                    .AsNoTracking()
-                    .Where(invoice => invoice.IsDeleted),
-                session)
+        var deletedInvoiceCandidates = await _db.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(invoice => invoice.IsDeleted)
             .OrderByDescending(invoice => invoice.UpdatedAtUtc)
             .ToListAsync(ct);
+        var deletedInvoiceCustomers = await LoadInvoiceVersionCustomersAsync(
+            deletedInvoiceCandidates,
+            ct);
+        var deletedInvoices = deletedInvoiceCandidates
+            .Where(invoice => CanAccessInvoiceVersionScope(
+                BuildInvoiceVersionScopeKey(invoice, deletedInvoiceCustomers),
+                session))
+            .ToList();
 
         var invoiceCustomerNames = await GetCustomerNameMapAsync(
             deletedInvoices.Select(invoice => invoice.CustomerId),
             ct);
 
         foreach (var group in deletedInvoices
-                     .GroupBy(invoice => invoice.VersionGroupId == Guid.Empty ? invoice.Id : invoice.VersionGroupId))
+                     .GroupBy(invoice => BuildInvoiceVersionScopeKey(invoice, deletedInvoiceCustomers)))
         {
             var invoice = group
-                .OrderByDescending(current => current.VersionNumber)
-                .ThenByDescending(current => current.UpdatedAtUtc)
+                .OrderByDescending(current => Math.Max(1, current.VersionNumber))
+                .ThenByDescending(current => current.Id)
                 .First();
 
             var customerName = invoiceCustomerNames.TryGetValue(invoice.CustomerId, out var resolvedName)
@@ -194,13 +332,13 @@ public sealed partial class LocalStateService
             {
                 EntityId = invoice.Id,
                 Kind = RecycleBinEntityKind.Invoice,
-                TenantCode = invoice.TenantCode,
-                OfficeCode = invoice.OfficeCode,
-                ResponsibleOfficeCode = invoice.ResponsibleOfficeCode,
+                TenantCode = group.Key.TenantCode,
+                OfficeCode = group.Key.OwningOfficeCode,
+                ResponsibleOfficeCode = group.Key.ResponsibleOfficeCode,
                 BusinessDatabaseName = ResolveRecycleBinBusinessDatabaseName(
-                    invoice.TenantCode,
-                    invoice.OfficeCode,
-                    invoice.ResponsibleOfficeCode),
+                    group.Key.TenantCode,
+                    group.Key.OwningOfficeCode,
+                    group.Key.ResponsibleOfficeCode),
                 Title = $"{customerName} · {invoice.InvoiceDate:yyyy-MM-dd}",
                 Subtitle = JoinSegments(GetVoucherTypeLabel(invoice.VoucherType), displayNumber),
                 Detail = JoinSegments(
@@ -556,32 +694,198 @@ public sealed partial class LocalStateService
             .ToList();
     }
 
-    public Task<OfficeMutationResult> RestoreRecycleBinEntryAsync(
+    public async Task<OfficeMutationResult> RestoreRecycleBinEntryAsync(
         RecycleBinEntityKind kind,
         Guid entityId,
         SessionState session,
         CancellationToken ct = default)
     {
-        return kind switch
+        var receiptKey = (kind, entityId);
+        lock (_recycleBinRestoreReceiptGate)
+            _pendingRecycleBinRestoreReceipts.Remove(receiptKey);
+
+        var requiresAtomicCascadeRestore =
+            kind is RecycleBinEntityKind.Invoice or
+                RecycleBinEntityKind.Payment or
+                RecycleBinEntityKind.Transaction;
+        if (requiresAtomicCascadeRestore &&
+            _db.Database.CurrentTransaction is not null)
         {
-            RecycleBinEntityKind.Customer => RestoreCustomerAsync(entityId, session, ct),
-            RecycleBinEntityKind.CustomerContract => RestoreCustomerContractAsync(entityId, session, ct),
-            RecycleBinEntityKind.Item => RestoreItemAsync(entityId, session, ct),
-            RecycleBinEntityKind.CompanyProfile => RestoreCompanyProfileAsync(entityId, session, ct),
-            RecycleBinEntityKind.CustomerCategory => RestoreCustomerCategoryAsync(entityId, session, ct),
-            RecycleBinEntityKind.PriceGradeOption => RestorePriceGradeOptionAsync(entityId, session, ct),
-            RecycleBinEntityKind.TradeTypeOption => RestoreTradeTypeOptionAsync(entityId, session, ct),
-            RecycleBinEntityKind.ItemCategoryOption => RestoreItemCategoryOptionAsync(entityId, session, ct),
-            RecycleBinEntityKind.Invoice => RestoreInvoiceAsync(entityId, session, ct),
-            RecycleBinEntityKind.Payment => RestoreDeletedPaymentAsync(entityId, session, ct),
-            RecycleBinEntityKind.Transaction => RestoreTransactionAsync(entityId, session, ct),
-            RecycleBinEntityKind.InventoryTransfer => RestoreInventoryTransferAsync(entityId, session, ct),
-            RecycleBinEntityKind.RentalManagementCompany => RestoreRentalManagementCompanyAsync(entityId, session, ct),
-            RecycleBinEntityKind.RentalBillingProfile => RestoreRentalBillingProfileAsync(entityId, session, ct),
-            RecycleBinEntityKind.RentalAsset => RestoreRentalAssetAsync(entityId, session, ct),
-            RecycleBinEntityKind.RentalBillingLog => RestoreRentalBillingLogAsync(entityId, session, ct),
-            _ => Task.FromResult(OfficeMutationResult.Denied("복원할 수 없는 휴지통 항목입니다."))
-        };
+            throw new InvalidOperationException(
+                "Recycle-bin invoice/payment/transaction restore must own its runtime mutation transaction.");
+        }
+
+        var trackerSnapshot = CaptureRecycleBinTrackedEntrySnapshot();
+        var pendingTrackerSnapshot = trackerSnapshot
+            .Where(snapshot => snapshot.State is
+                EntityState.Added or
+                EntityState.Modified or
+                EntityState.Deleted)
+            .ToList();
+        var preexistingTrackedChanges = trackerSnapshot
+            .Where(snapshot => snapshot.State is not EntityState.Unchanged and not EntityState.Detached)
+            .Select(snapshot => snapshot.Entity)
+            .OfType<LocalSyncEntity>()
+            .Select(entity => (entity.GetType(), entity.Id))
+            .ToHashSet();
+        var preexistingDirty = trackerSnapshot
+            .Select(snapshot => snapshot.Entity)
+            .OfType<LocalSyncEntity>()
+            .Where(entity => entity.IsDirty)
+            .Select(entity => (entity.GetType(), entity.Id))
+            .ToHashSet();
+        var receiptEntityKeys = new HashSet<(Type EntityType, Guid EntityId)>();
+        var capturedReceiptEntries = new Dictionary<
+            (Type EntityType, Guid EntityId),
+            RecycleBinRestoreReceiptEntry>();
+
+        void CaptureRestoreReceipt(object? sender, SavingChangesEventArgs args)
+        {
+            foreach (var entry in _db.ChangeTracker.Entries<LocalSyncEntity>()
+                         .Where(current => current.State is EntityState.Modified or EntityState.Added))
+            {
+                var key = (entry.Entity.GetType(), entry.Entity.Id);
+                if (preexistingTrackedChanges.Contains(key) ||
+                    preexistingDirty.Contains(key) ||
+                    !entry.Entity.IsDirty)
+                {
+                    continue;
+                }
+
+                var wasDirtyBefore =
+                    entry.State == EntityState.Modified &&
+                    entry.OriginalValues[nameof(LocalSyncEntity.IsDirty)] is true;
+                if (!wasDirtyBefore)
+                    receiptEntityKeys.Add(key);
+            }
+        }
+
+        void CaptureSavedRestoreReceipt(object? sender, SavedChangesEventArgs args)
+        {
+            foreach (var entry in _db.ChangeTracker.Entries<LocalSyncEntity>())
+            {
+                var key = (entry.Entity.GetType(), entry.Entity.Id);
+                if (!receiptEntityKeys.Contains(key))
+                    continue;
+
+                capturedReceiptEntries[key] = new RecycleBinRestoreReceiptEntry(
+                    key.Item1,
+                    key.Item2,
+                    entry.Entity.Revision,
+                    entry.Entity.UpdatedAtUtc,
+                    entry.Entity.IsDeleted);
+            }
+        }
+
+        _db.SavingChanges += CaptureRestoreReceipt;
+        _db.SavedChanges += CaptureSavedRestoreReceipt;
+        OfficeMutationResult result;
+        List<RecycleBinRestoreReceiptEntry>? atomicReceiptEntries = null;
+        try
+        {
+            async Task<OfficeMutationResult> RestoreCoreAsync()
+                => await (kind switch
+                {
+                    RecycleBinEntityKind.Customer => RestoreCustomerAsync(entityId, session, ct),
+                    RecycleBinEntityKind.CustomerContract => RestoreCustomerContractAsync(entityId, session, ct),
+                    RecycleBinEntityKind.Item => RestoreItemAsync(entityId, session, ct),
+                    RecycleBinEntityKind.CompanyProfile => RestoreCompanyProfileAsync(entityId, session, ct),
+                    RecycleBinEntityKind.CustomerCategory => RestoreCustomerCategoryAsync(entityId, session, ct),
+                    RecycleBinEntityKind.PriceGradeOption => RestorePriceGradeOptionAsync(entityId, session, ct),
+                    RecycleBinEntityKind.TradeTypeOption => RestoreTradeTypeOptionAsync(entityId, session, ct),
+                    RecycleBinEntityKind.ItemCategoryOption => RestoreItemCategoryOptionAsync(entityId, session, ct),
+                    RecycleBinEntityKind.Invoice => RestoreInvoiceAsync(entityId, session, ct),
+                    RecycleBinEntityKind.Payment => RestoreDeletedPaymentAsync(entityId, session, ct),
+                    RecycleBinEntityKind.Transaction => RestoreTransactionAsync(entityId, session, ct),
+                    RecycleBinEntityKind.InventoryTransfer => RestoreInventoryTransferAsync(entityId, session, ct),
+                    RecycleBinEntityKind.RentalManagementCompany => RestoreRentalManagementCompanyAsync(entityId, session, ct),
+                    RecycleBinEntityKind.RentalBillingProfile => RestoreRentalBillingProfileAsync(entityId, session, ct),
+                    RecycleBinEntityKind.RentalAsset => RestoreRentalAssetAsync(entityId, session, ct),
+                    RecycleBinEntityKind.RentalBillingLog => RestoreRentalBillingLogAsync(entityId, session, ct),
+                    _ => Task.FromResult(OfficeMutationResult.Denied("복원할 수 없는 휴지통 항목입니다."))
+                });
+
+            if (requiresAtomicCascadeRestore)
+            {
+                await using var transaction =
+                    await _db.BeginRuntimeMutationTransactionAsync(ct);
+                try
+                {
+                    SuspendRecycleBinTrackedEntries(pendingTrackerSnapshot);
+                    result = await RestoreCoreAsync();
+                    if (!result.Success)
+                    {
+                        await transaction.RollbackAsync(CancellationToken.None);
+                        _db.ChangeTracker.Clear();
+                        RestoreRecycleBinTrackedEntrySnapshot(
+                            trackerSnapshot,
+                            detachEntriesNotInSnapshots: true);
+                    }
+                    else
+                    {
+                        atomicReceiptEntries = capturedReceiptEntries.Values.ToList();
+                        await transaction.CommitAsync(ct);
+                    }
+                }
+                catch
+                {
+                    try
+                    {
+                        await transaction.RollbackAsync(CancellationToken.None);
+                    }
+                    finally
+                    {
+                        _db.ChangeTracker.Clear();
+                        RestoreRecycleBinTrackedEntrySnapshot(
+                            trackerSnapshot,
+                            detachEntriesNotInSnapshots: true);
+                    }
+
+                    throw;
+                }
+            }
+            else
+            {
+                result = await RestoreCoreAsync();
+            }
+        }
+        finally
+        {
+            _db.SavingChanges -= CaptureRestoreReceipt;
+            _db.SavedChanges -= CaptureSavedRestoreReceipt;
+        }
+
+        try
+        {
+            if (requiresAtomicCascadeRestore &&
+                result.Success &&
+                AfterAtomicRecycleBinRestoreCommitAsyncForTesting is { } afterCommit)
+            {
+                await afterCommit(ct);
+            }
+
+            if (result.Success)
+            {
+                var receiptEntries = requiresAtomicCascadeRestore
+                    ? atomicReceiptEntries ?? []
+                    : capturedReceiptEntries.Values.ToList();
+                lock (_recycleBinRestoreReceiptGate)
+                    _pendingRecycleBinRestoreReceipts[receiptKey] = receiptEntries;
+            }
+
+            return result;
+        }
+        finally
+        {
+            if (requiresAtomicCascadeRestore &&
+                result.Success &&
+                pendingTrackerSnapshot.Count > 0)
+            {
+                RestoreRecycleBinTrackedEntrySnapshot(
+                    pendingTrackerSnapshot,
+                    detachEntriesNotInSnapshots: false);
+            }
+        }
     }
 
     public Task<OfficeMutationResult> PermanentlyDeleteRecycleBinEntryAsync(
@@ -616,8 +920,615 @@ public sealed partial class LocalStateService
         RecycleBinEntityKind kind,
         Guid entityId,
         CancellationToken ct = default)
+        => ApplyServerPurgeRecycleBinEntryWithRevisionAsync(
+            kind,
+            entityId,
+            purgeRevision: null,
+            confirmedBusinessDatabaseName: null,
+            expectedBusinessDatabaseName: null,
+            confirmationFence: null,
+            ct);
+
+    public Task<OfficeMutationResult> ApplyServerPurgeRecycleBinEntryAsync(
+        RecycleBinEntityKind kind,
+        Guid entityId,
+        long purgeRevision,
+        CancellationToken ct = default)
+        => ApplyServerPurgeRecycleBinEntryWithRevisionAsync(
+            kind,
+            entityId,
+            purgeRevision,
+            confirmedBusinessDatabaseName: null,
+            expectedBusinessDatabaseName: null,
+            confirmationFence: null,
+            ct);
+
+    public Task<OfficeMutationResult> ApplyServerPurgeRecycleBinEntryAsync(
+        RecycleBinEntityKind kind,
+        Guid entityId,
+        long purgeRevision,
+        string businessDatabaseName,
+        CancellationToken ct = default)
     {
-        return kind switch
+        if (string.IsNullOrWhiteSpace(businessDatabaseName))
+        {
+            return Task.FromResult(
+                OfficeMutationResult.Denied(
+                    "서버 영구삭제 업무 DB 범위가 비어 있습니다."));
+        }
+
+        return ApplyServerPurgeRecycleBinEntryWithRevisionAsync(
+            kind,
+            entityId,
+            purgeRevision,
+            confirmedBusinessDatabaseName: null,
+            expectedBusinessDatabaseName:
+                TenantScopeCatalog.GetDatabaseName(
+                    businessDatabaseName),
+            confirmationFence: null,
+            ct);
+    }
+
+    public Task<OfficeMutationResult> ApplyConfirmedServerPurgeRecycleBinEntryAsync(
+        RecycleBinEntityKind kind,
+        Guid entityId,
+        long acceptedRevision,
+        string businessDatabaseName,
+        CancellationToken ct = default)
+    {
+        if (kind != RecycleBinEntityKind.Invoice)
+        {
+            return Task.FromResult(
+                OfficeMutationResult.Denied(
+                    "서버 확인 영수증을 사용한 로컬 영구삭제는 전표에만 지원됩니다."));
+        }
+        if (acceptedRevision < 0)
+            return Task.FromResult(OfficeMutationResult.Denied("서버 영구삭제 확인 리비전이 올바르지 않습니다."));
+        if (string.IsNullOrWhiteSpace(businessDatabaseName))
+            return Task.FromResult(OfficeMutationResult.Denied("서버 영구삭제 확인 업무 DB 범위가 비어 있습니다."));
+
+        return ApplyServerPurgeRecycleBinEntryWithRevisionAsync(
+            kind,
+            entityId,
+            acceptedRevision,
+            TenantScopeCatalog.GetDatabaseName(businessDatabaseName),
+            TenantScopeCatalog.GetDatabaseName(businessDatabaseName),
+            confirmationFence: null,
+            ct);
+    }
+
+    public Task<OfficeMutationResult> ApplyConfirmedServerPurgeRecycleBinEntryAsync(
+        RecycleBinEntityKind kind,
+        Guid entityId,
+        long acceptedRevision,
+        string businessDatabaseName,
+        ServerPurgeConfirmationFence confirmationFence,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(confirmationFence);
+        if (kind != RecycleBinEntityKind.Invoice)
+        {
+            return Task.FromResult(
+                OfficeMutationResult.Denied(
+                    "서버 확인 영수증을 사용한 로컬 영구삭제는 전표에만 지원됩니다."));
+        }
+        if (acceptedRevision < 0)
+            return Task.FromResult(OfficeMutationResult.Denied("서버 영구삭제 확인 리비전이 올바르지 않습니다."));
+        if (string.IsNullOrWhiteSpace(businessDatabaseName))
+            return Task.FromResult(OfficeMutationResult.Denied("서버 영구삭제 확인 업무 DB 범위가 비어 있습니다."));
+
+        return ApplyServerPurgeRecycleBinEntryWithRevisionAsync(
+            kind,
+            entityId,
+            acceptedRevision,
+            TenantScopeCatalog.GetDatabaseName(businessDatabaseName),
+            TenantScopeCatalog.GetDatabaseName(businessDatabaseName),
+            confirmationFence,
+            ct);
+    }
+
+    public async Task<ServerPurgeConfirmationFence?>
+        CaptureServerPurgeConfirmationFenceAsync(
+            RecycleBinEntityKind kind,
+            Guid entityId,
+            string businessDatabaseName,
+            CancellationToken ct = default)
+    {
+        if (kind != RecycleBinEntityKind.Invoice ||
+            entityId == Guid.Empty ||
+            string.IsNullOrWhiteSpace(businessDatabaseName))
+        {
+            return null;
+        }
+
+        var normalizedBusinessDatabaseName =
+            TenantScopeCatalog.GetDatabaseName(
+                businessDatabaseName);
+        var target = await _db.Invoices
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(
+                current => current.Id == entityId,
+                ct);
+        if (target is null ||
+            !string.Equals(
+                ResolveRecycleBinBusinessDatabaseName(
+                    target.TenantCode,
+                    target.OfficeCode,
+                    target.ResponsibleOfficeCode),
+                normalizedBusinessDatabaseName,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var groupInvoices =
+            await LoadExactInvoiceVersionChainAsync(
+                target,
+                asNoTracking: false,
+                ct);
+        var invoiceIds = groupInvoices
+            .Select(current => current.Id)
+            .Distinct()
+            .ToList();
+        var plannedRows =
+            await LoadInvoicePurgeFenceRowsAsync(
+                invoiceIds,
+                ct);
+        var linkedPayments = await _db.Payments
+            .IgnoreQueryFilters()
+            .Where(current =>
+                invoiceIds.Contains(current.InvoiceId))
+            .ToListAsync(ct);
+        var linkedTransactions = await _db.Transactions
+            .IgnoreQueryFilters()
+            .Where(current =>
+                current.LinkedInvoiceId.HasValue &&
+                invoiceIds.Contains(
+                    current.LinkedInvoiceId.Value))
+            .ToListAsync(ct);
+        if (linkedTransactions.Any(current =>
+                !current.IsDeleted))
+        {
+            return null;
+        }
+
+        var deletedLinkedTransactions =
+            linkedTransactions
+                .Where(current => current.IsDeleted)
+                .ToList();
+        if (deletedLinkedTransactions.Any(current =>
+                !string.Equals(
+                    ResolveRecycleBinBusinessDatabaseName(
+                        current.TenantCode,
+                        current.OfficeCode,
+                        current.ResponsibleOfficeCode),
+                    normalizedBusinessDatabaseName,
+                    StringComparison.OrdinalIgnoreCase)))
+        {
+            return null;
+        }
+
+        var deletedLinkedTransactionIds =
+            deletedLinkedTransactions
+                .Select(current => current.Id)
+                .Distinct()
+                .ToList();
+        var deletedLinkedAttachments =
+            deletedLinkedTransactionIds.Count == 0
+                ? new List<LocalTransactionAttachment>()
+                : await _db.TransactionAttachments
+                    .IgnoreQueryFilters()
+                    .Where(current =>
+                        deletedLinkedTransactionIds.Contains(
+                            current.TransactionId))
+                    .ToListAsync(ct);
+
+        var plannedEntities =
+            new List<ConfirmedPurgeEntity>();
+        AddConfirmedPurgeEntities(
+            plannedEntities,
+            groupInvoices,
+            nameof(LocalInvoice),
+            "Invoice");
+        AddConfirmedPurgeEntities(
+            plannedEntities,
+            linkedPayments,
+            nameof(LocalPayment),
+            "Payment");
+        AddConfirmedPurgeEntities(
+            plannedEntities,
+            deletedLinkedTransactions,
+            nameof(LocalTransaction),
+            "TransactionRecord",
+            "Transaction");
+        AddConfirmedPurgeEntities(
+            plannedEntities,
+            deletedLinkedAttachments,
+            nameof(LocalTransactionAttachment),
+            "TransactionAttachment");
+        if (plannedEntities.Any(current =>
+                !current.Entity.IsDeleted))
+        {
+            return null;
+        }
+
+        var allowedEntityNamesById =
+            BuildConfirmedPurgeAllowedEntityNames(
+                plannedEntities);
+        var plannedEntityIds =
+            allowedEntityNamesById.Keys.ToList();
+        var matchingOutbox =
+            plannedEntityIds.Count == 0
+                ? new List<LocalSyncOutboxEntry>()
+                : (await _db.SyncOutboxEntries
+                        .AsNoTracking()
+                        .Where(current =>
+                            plannedEntityIds.Contains(
+                                current.EntityId))
+                        .ToListAsync(ct))
+                    .Where(current =>
+                        allowedEntityNamesById[
+                                current.EntityId]
+                            .Contains(current.EntityName) &&
+                        string.Equals(
+                            ResolveOutboxBusinessDatabaseName(
+                                current),
+                            normalizedBusinessDatabaseName,
+                            StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+        return CreateServerPurgeConfirmationFence(
+            kind,
+            entityId,
+            normalizedBusinessDatabaseName,
+            plannedEntities,
+            plannedRows,
+            matchingOutbox);
+    }
+
+    private async Task<OfficeMutationResult> ApplyServerPurgeRecycleBinEntryWithRevisionAsync(
+        RecycleBinEntityKind kind,
+        Guid entityId,
+        long? purgeRevision,
+        string? confirmedBusinessDatabaseName,
+        string? expectedBusinessDatabaseName,
+        ServerPurgeConfirmationFence? confirmationFence,
+        CancellationToken ct)
+    {
+        if (_db.Database.CurrentTransaction is not null)
+        {
+            throw new InvalidOperationException(
+                "외부 DB 트랜잭션에서 서버 purge를 반영하려면 동일 범위의 첨부파일 저널을 전달해야 합니다.");
+        }
+
+        await AttachmentFileJournal.RecoverIncompleteJournalsAsync(
+            _db,
+            AppPaths.AttachmentFileJournalDir,
+            AppPaths.AttachmentsDir,
+            ct);
+        await using var transaction = await _db.BeginRuntimeMutationTransactionAsync(ct);
+        using var attachmentFiles = new AttachmentFileJournal(
+            AppPaths.AttachmentFileJournalDir,
+            AppPaths.AttachmentsDir);
+        using var inventoryStateChangeCapture =
+            CaptureInventoryStateChanges();
+        var commitAttempted = false;
+        var committed = false;
+        OfficeMutationResult? result = null;
+
+        try
+        {
+            if (confirmedBusinessDatabaseName is not null)
+            {
+                result = await PrepareConfirmedServerPurgeAsync(
+                    kind,
+                    entityId,
+                    purgeRevision ?? 0,
+                    confirmedBusinessDatabaseName,
+                    confirmationFence,
+                    ct);
+                if (!result.Success)
+                {
+                    await attachmentFiles.StageCommitEvidenceAsync(_db, ct);
+                    attachmentFiles.Promote();
+                    commitAttempted = true;
+                    await transaction.CommitAsync(ct);
+                    await transaction.DisposeAsync().ConfigureAwait(false);
+                    await attachmentFiles.CompleteAfterDatabaseCommitAsync(
+                        _db,
+                        CancellationToken.None);
+                    committed = true;
+                }
+            }
+
+            if (!committed)
+            {
+                result = await ApplyServerPurgeRecycleBinEntryCoreAsync(
+                    kind,
+                    entityId,
+                    purgeRevision,
+                    attachmentFiles,
+                    confirmedBusinessDatabaseName is not null,
+                    expectedBusinessDatabaseName,
+                    ct);
+                await _db.SaveChangesAsync(ct);
+                await attachmentFiles.StageCommitEvidenceAsync(_db, ct);
+                attachmentFiles.Promote();
+                commitAttempted = true;
+                await transaction.CommitAsync(ct);
+                await transaction.DisposeAsync().ConfigureAwait(false);
+                await attachmentFiles.CompleteAfterDatabaseCommitAsync(
+                    _db,
+                    CancellationToken.None);
+                committed = true;
+            }
+        }
+        catch
+        {
+            var commitResolution = AttachmentCommitResolution.RolledBack;
+            try
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+            }
+            catch (Exception rollbackException)
+            {
+                AppLogger.Error(
+                    "ATTACHMENT",
+                    "서버 영구삭제 커밋 실패 후 DB 롤백 결과를 확정하지 못했습니다.",
+                    rollbackException);
+            }
+            finally
+            {
+                if (!commitAttempted)
+                {
+                    attachmentFiles.Rollback();
+                }
+                else
+                {
+                    commitResolution = await attachmentFiles.ResolveCommitAmbiguityAsync(
+                        _db,
+                        CancellationToken.None);
+                }
+
+                _db.ChangeTracker.Clear();
+            }
+
+            if (commitResolution == AttachmentCommitResolution.Committed &&
+                result is not null)
+            {
+                committed = true;
+            }
+            else
+            {
+                throw;
+            }
+        }
+
+        inventoryStateChangeCapture.Dispose();
+        PublishCommittedServerPurgeEvents(
+            result!,
+            kind,
+            inventoryStateChangeCapture.HasChanges);
+        return result!;
+    }
+
+    private void PublishCommittedServerPurgeEvents(
+        OfficeMutationResult result,
+        RecycleBinEntityKind kind,
+        bool hasInventoryChanges)
+    {
+        if (result.Success &&
+            kind == RecycleBinEntityKind.Invoice)
+        {
+            try
+            {
+                TryPublishItemInvoiceHistoryChanged();
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Error(
+                    "RECYCLE_BIN",
+                    "커밋된 전표 영구삭제의 품목별 전표이력 변경 알림 중 오류가 발생했습니다.",
+                    ex);
+            }
+        }
+
+        if (!hasInventoryChanges)
+            return;
+
+        try
+        {
+            TryPublishInventoryStateChanged();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error(
+                "RECYCLE_BIN",
+                "커밋된 서버 영구삭제의 재고 변경 알림 중 오류가 발생했습니다.",
+                ex);
+        }
+    }
+
+    private async Task<OfficeMutationResult> ExecuteLocalAttachmentPurgeAsync(
+        Func<AttachmentFileJournal, CancellationToken, Task<OfficeMutationResult>> purgeAsync,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(purgeAsync);
+        if (_db.Database.CurrentTransaction is not null)
+        {
+            throw new InvalidOperationException(
+                "외부 DB 트랜잭션에서 로컬 영구삭제를 수행하려면 동일 범위의 첨부파일 저널을 전달해야 합니다.");
+        }
+
+        await AttachmentFileJournal.RecoverIncompleteJournalsAsync(
+            _db,
+            AppPaths.AttachmentFileJournalDir,
+            AppPaths.AttachmentsDir,
+            ct);
+        await using var transaction = await _db.BeginRuntimeMutationTransactionAsync(ct);
+        using var attachmentFiles = new AttachmentFileJournal(
+            AppPaths.AttachmentFileJournalDir,
+            AppPaths.AttachmentsDir);
+        var commitAttempted = false;
+        OfficeMutationResult? result = null;
+
+        try
+        {
+            result = await purgeAsync(attachmentFiles, ct);
+            await attachmentFiles.StageCommitEvidenceAsync(_db, ct);
+            attachmentFiles.Promote();
+            commitAttempted = true;
+            await transaction.CommitAsync(ct);
+            await transaction.DisposeAsync().ConfigureAwait(false);
+            await attachmentFiles.CompleteAfterDatabaseCommitAsync(
+                _db,
+                CancellationToken.None);
+            return result;
+        }
+        catch
+        {
+            var commitResolution = AttachmentCommitResolution.RolledBack;
+            try
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+            }
+            catch (Exception rollbackException)
+            {
+                AppLogger.Error(
+                    "ATTACHMENT",
+                    "로컬 영구삭제 커밋 실패 후 DB 롤백 결과를 확정하지 못했습니다.",
+                    rollbackException);
+            }
+            finally
+            {
+                if (!commitAttempted)
+                {
+                    attachmentFiles.Rollback();
+                }
+                else
+                {
+                    commitResolution = await attachmentFiles.ResolveCommitAmbiguityAsync(
+                        _db,
+                        CancellationToken.None);
+                }
+
+                _db.ChangeTracker.Clear();
+            }
+
+            if (commitResolution == AttachmentCommitResolution.Committed &&
+                result is not null)
+            {
+                return result;
+            }
+
+            throw;
+        }
+    }
+
+    internal Task<OfficeMutationResult> ApplyServerPurgeRecycleBinEntryAsync(
+        RecycleBinEntityKind kind,
+        Guid entityId,
+        AttachmentFileJournal attachmentFileJournal,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(attachmentFileJournal);
+        if (_db.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException(
+                "서버 영구삭제의 외부 첨부파일 저널은 동일 범위의 DB 트랜잭션과 함께 사용해야 합니다.");
+        }
+
+        return ApplyServerPurgeRecycleBinEntryCoreAsync(
+            kind,
+            entityId,
+            null,
+            attachmentFileJournal,
+            confirmedServerAcceptance: false,
+            expectedBusinessDatabaseName: null,
+            ct);
+    }
+
+    internal Task<OfficeMutationResult> ApplyServerPurgeRecycleBinEntryAsync(
+        RecycleBinEntityKind kind,
+        Guid entityId,
+        long purgeRevision,
+        AttachmentFileJournal attachmentFileJournal,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(attachmentFileJournal);
+        if (_db.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException(
+                "서버 영구삭제의 외부 첨부파일 저널은 동일 범위의 DB 트랜잭션과 함께 사용해야 합니다.");
+        }
+
+        return ApplyServerPurgeRecycleBinEntryCoreAsync(
+            kind,
+            entityId,
+            purgeRevision,
+            attachmentFileJournal,
+            confirmedServerAcceptance: false,
+            expectedBusinessDatabaseName: null,
+            ct);
+    }
+
+    internal Task<OfficeMutationResult> ApplyServerPurgeRecycleBinEntryAsync(
+        RecycleBinEntityKind kind,
+        Guid entityId,
+        long purgeRevision,
+        string businessDatabaseName,
+        AttachmentFileJournal attachmentFileJournal,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(attachmentFileJournal);
+        if (_db.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException(
+                "서버 영구삭제의 외부 첨부파일 저널은 동일 범위의 DB 트랜잭션과 함께 사용해야 합니다.");
+        }
+        if (string.IsNullOrWhiteSpace(businessDatabaseName))
+        {
+            return Task.FromResult(
+                OfficeMutationResult.Denied(
+                    "서버 영구삭제 업무 DB 범위가 비어 있습니다."));
+        }
+
+        return ApplyServerPurgeRecycleBinEntryCoreAsync(
+            kind,
+            entityId,
+            purgeRevision,
+            attachmentFileJournal,
+            confirmedServerAcceptance: false,
+            expectedBusinessDatabaseName:
+                TenantScopeCatalog.GetDatabaseName(
+                    businessDatabaseName),
+            ct);
+    }
+
+    private async Task<OfficeMutationResult> ApplyServerPurgeRecycleBinEntryCoreAsync(
+        RecycleBinEntityKind kind,
+        Guid entityId,
+        long? purgeRevision,
+        AttachmentFileJournal attachmentFileJournal,
+        bool confirmedServerAcceptance,
+        string? expectedBusinessDatabaseName,
+        CancellationToken ct)
+    {
+        if (!confirmedServerAcceptance &&
+            kind != RecycleBinEntityKind.Invoice)
+        {
+            var blockReason =
+                await BuildServerPurgeTargetBlockReasonAsync(
+                    kind,
+                    entityId,
+                    purgeRevision,
+                    expectedBusinessDatabaseName,
+                    ct);
+            if (blockReason is not null)
+                return OfficeMutationResult.Denied(blockReason);
+        }
+
+        return await (kind switch
         {
             RecycleBinEntityKind.Customer => ApplyServerPurgedCustomerAsync(entityId, ct),
             RecycleBinEntityKind.CustomerContract => ApplyServerPurgedCustomerContractAsync(entityId, ct),
@@ -627,162 +1538,132 @@ public sealed partial class LocalStateService
             RecycleBinEntityKind.PriceGradeOption => ApplyServerPurgedPriceGradeOptionAsync(entityId, ct),
             RecycleBinEntityKind.TradeTypeOption => ApplyServerPurgedTradeTypeOptionAsync(entityId, ct),
             RecycleBinEntityKind.ItemCategoryOption => ApplyServerPurgedItemCategoryOptionAsync(entityId, ct),
-            RecycleBinEntityKind.Invoice => ApplyServerPurgedInvoiceAsync(entityId, ct),
-            RecycleBinEntityKind.Payment => ApplyServerPurgedPaymentAsync(entityId, ct),
-            RecycleBinEntityKind.Transaction => ApplyServerPurgedTransactionAsync(entityId, ct),
-            RecycleBinEntityKind.InventoryTransfer => ApplyServerPurgedInventoryTransferAsync(entityId, ct),
+            RecycleBinEntityKind.Invoice =>
+                ApplyServerPurgedInvoiceAsync(
+                    entityId,
+                    purgeRevision,
+                    confirmedServerAcceptance,
+                    ct,
+                    attachmentFileJournal),
+            RecycleBinEntityKind.Payment =>
+                ApplyServerPurgedPaymentAsync(
+                    entityId,
+                    ct,
+                    attachmentFileJournal),
+            RecycleBinEntityKind.Transaction =>
+                ApplyServerPurgedTransactionAsync(
+                    entityId,
+                    ct,
+                    attachmentFileJournal),
+            RecycleBinEntityKind.InventoryTransfer =>
+                ApplyServerPurgedInventoryTransferAsync(
+                    entityId,
+                    ct,
+                    attachmentFileJournal),
             RecycleBinEntityKind.RentalManagementCompany => ApplyServerPurgedRentalManagementCompanyAsync(entityId, ct),
             RecycleBinEntityKind.RentalBillingProfile => ApplyServerPurgedRentalBillingProfileAsync(entityId, ct),
             RecycleBinEntityKind.RentalAsset => ApplyServerPurgedRentalAssetAsync(entityId, ct),
             RecycleBinEntityKind.RentalBillingLog => ApplyServerPurgedRentalBillingLogAsync(entityId, ct),
             _ => Task.FromResult(OfficeMutationResult.Denied("서버 영구삭제 반영을 지원하지 않는 휴지통 항목입니다."))
-        };
+        });
     }
 
-    public async Task MarkRecycleBinServerMutationCleanAsync(
+    public Task MarkRecycleBinServerMutationCleanAsync(
         RecycleBinEntityKind kind,
         Guid entityId,
         CancellationToken ct = default)
-    {
-        var customerIds = new HashSet<Guid>();
-        var invoiceIds = new HashSet<Guid>();
-        var rentalProfileIds = new HashSet<Guid>();
+        => _db.ExecuteRuntimeMutationOperationAsync(
+            () => MarkRecycleBinServerMutationCleanCoreAsync(kind, entityId, ct),
+            ct);
 
-        switch (kind)
-        {
-            case RecycleBinEntityKind.Customer:
-                MarkServerMirroredClean(await FindSyncEntityAsync(_db.Customers, entityId, ct));
-                break;
-            case RecycleBinEntityKind.CustomerContract:
-            {
-                var contract = await FindSyncEntityAsync(_db.CustomerContracts, entityId, ct);
-                MarkServerMirroredClean(contract);
-                if (contract is not null)
-                    customerIds.Add(contract.CustomerId);
-                break;
-            }
-            case RecycleBinEntityKind.Item:
-                MarkServerMirroredClean(await FindSyncEntityAsync(_db.Items, entityId, ct));
-                break;
-            case RecycleBinEntityKind.CompanyProfile:
-                MarkServerMirroredClean(await FindSyncEntityAsync(_db.CompanyProfiles, entityId, ct));
-                break;
-            case RecycleBinEntityKind.CustomerCategory:
-                MarkServerMirroredClean(await FindSyncEntityAsync(_db.CustomerCategories, entityId, ct));
-                break;
-            case RecycleBinEntityKind.PriceGradeOption:
-                MarkServerMirroredClean(await FindSyncEntityAsync(_db.PriceGradeOptions, entityId, ct));
-                break;
-            case RecycleBinEntityKind.TradeTypeOption:
-                MarkServerMirroredClean(await FindSyncEntityAsync(_db.TradeTypeOptions, entityId, ct));
-                break;
-            case RecycleBinEntityKind.ItemCategoryOption:
-                MarkServerMirroredClean(await FindSyncEntityAsync(_db.ItemCategoryOptions, entityId, ct));
-                break;
-            case RecycleBinEntityKind.Invoice:
-                await MarkInvoiceGroupServerMirroredCleanAsync(entityId, customerIds, ct);
-                break;
-            case RecycleBinEntityKind.Payment:
-            {
-                var payment = await FindSyncEntityAsync(_db.Payments, entityId, ct);
-                MarkServerMirroredClean(payment);
-                if (payment is not null)
-                    invoiceIds.Add(payment.InvoiceId);
-                break;
-            }
-            case RecycleBinEntityKind.Transaction:
-            {
-                var transaction = await FindSyncEntityAsync(_db.Transactions, entityId, ct);
-                MarkServerMirroredClean(transaction);
-                if (transaction is not null)
-                {
-                    customerIds.Add(transaction.CustomerId);
-                    if (transaction.LinkedInvoiceId.HasValue && transaction.LinkedInvoiceId.Value != Guid.Empty)
-                        invoiceIds.Add(transaction.LinkedInvoiceId.Value);
-                    if (transaction.LinkedRentalBillingProfileId.HasValue && transaction.LinkedRentalBillingProfileId.Value != Guid.Empty)
-                        rentalProfileIds.Add(transaction.LinkedRentalBillingProfileId.Value);
-                }
-                break;
-            }
-            case RecycleBinEntityKind.InventoryTransfer:
-                MarkServerMirroredClean(await FindSyncEntityAsync(_db.InventoryTransfers, entityId, ct));
-                break;
-            case RecycleBinEntityKind.RentalManagementCompany:
-                MarkServerMirroredClean(await FindSyncEntityAsync(_db.RentalManagementCompanies, entityId, ct));
-                break;
-            case RecycleBinEntityKind.RentalBillingProfile:
-            {
-                var profile = await FindSyncEntityAsync(_db.RentalBillingProfiles, entityId, ct);
-                MarkServerMirroredClean(profile);
-                if (profile?.CustomerId is Guid customerId && customerId != Guid.Empty)
-                    customerIds.Add(customerId);
-                break;
-            }
-            case RecycleBinEntityKind.RentalAsset:
-            {
-                var asset = await FindSyncEntityAsync(_db.RentalAssets, entityId, ct);
-                MarkServerMirroredClean(asset);
-                if (asset?.CustomerId is Guid customerId && customerId != Guid.Empty)
-                    customerIds.Add(customerId);
-                if (asset?.BillingProfileId is Guid profileId && profileId != Guid.Empty)
-                    rentalProfileIds.Add(profileId);
-                break;
-            }
-            case RecycleBinEntityKind.RentalBillingLog:
-            {
-                var log = await FindSyncEntityAsync(_db.RentalBillingLogs, entityId, ct);
-                MarkServerMirroredClean(log);
-                if (log is not null && log.BillingProfileId != Guid.Empty)
-                    rentalProfileIds.Add(log.BillingProfileId);
-                break;
-            }
-        }
-
-        foreach (var invoiceId in invoiceIds)
-            await MarkInvoiceGroupServerMirroredCleanAsync(invoiceId, customerIds, ct);
-
-        if (rentalProfileIds.Count > 0)
-        {
-            var profiles = await _db.RentalBillingProfiles.IgnoreQueryFilters()
-                .Where(profile => rentalProfileIds.Contains(profile.Id))
-                .ToListAsync(ct);
-            foreach (var profile in profiles)
-            {
-                MarkServerMirroredClean(profile);
-                if (profile.CustomerId is Guid customerId && customerId != Guid.Empty)
-                    customerIds.Add(customerId);
-            }
-        }
-
-        if (customerIds.Count > 0)
-        {
-            var customers = await _db.Customers.IgnoreQueryFilters()
-                .Where(customer => customerIds.Contains(customer.Id))
-                .ToListAsync(ct);
-            foreach (var customer in customers)
-                MarkServerMirroredClean(customer);
-        }
-
-        await _db.SaveChangesAsync(ct);
-    }
-
-    private async Task MarkInvoiceGroupServerMirroredCleanAsync(
-        Guid invoiceId,
-        HashSet<Guid> customerIds,
+    private async Task MarkRecycleBinServerMutationCleanCoreAsync(
+        RecycleBinEntityKind kind,
+        Guid entityId,
         CancellationToken ct)
     {
-        var target = await FindSyncEntityAsync(_db.Invoices, invoiceId, ct);
-        if (target is null)
-            return;
+        var receiptKey = (kind, entityId);
+        IReadOnlyList<RecycleBinRestoreReceiptEntry>? receipt;
+        lock (_recycleBinRestoreReceiptGate)
+            _pendingRecycleBinRestoreReceipts.TryGetValue(receiptKey, out receipt);
 
-        var versionGroupId = target.VersionGroupId == Guid.Empty ? target.Id : target.VersionGroupId;
-        var groupInvoices = await _db.Invoices.IgnoreQueryFilters()
-            .Where(invoice => invoice.Id == target.Id || invoice.VersionGroupId == versionGroupId)
-            .ToListAsync(ct);
-        foreach (var invoice in groupInvoices)
+        if (receipt is null || receipt.Count == 0)
         {
-            MarkServerMirroredClean(invoice);
-            customerIds.Add(invoice.CustomerId);
+            lock (_recycleBinRestoreReceiptGate)
+                _pendingRecycleBinRestoreReceipts.Remove(receiptKey);
+            return;
+        }
+
+        var trackerSnapshot = CaptureRecycleBinTrackedEntrySnapshot();
+        var pendingTrackerSnapshot = trackerSnapshot
+            .Where(snapshot => snapshot.State is
+                EntityState.Added or
+                EntityState.Modified or
+                EntityState.Deleted)
+            .ToList();
+        var pendingEntityKeys = pendingTrackerSnapshot
+            .Select(snapshot => snapshot.Entity)
+            .OfType<LocalSyncEntity>()
+            .Select(entity => (entity.GetType(), entity.Id))
+            .ToHashSet();
+        SuspendRecycleBinTrackedEntries(pendingTrackerSnapshot);
+
+        try
+        {
+            _db.ChangeTracker.DetectChanges();
+            var entities = new List<LocalSyncEntity>();
+            foreach (var receiptEntry in receipt)
+            {
+                if (pendingEntityKeys.Contains((receiptEntry.EntityType, receiptEntry.EntityId)) ||
+                    await _db.FindAsync(
+                        receiptEntry.EntityType,
+                        [receiptEntry.EntityId],
+                        ct) is not LocalSyncEntity entity)
+                {
+                    continue;
+                }
+
+                var entityEntry = _db.Entry(entity);
+                if (entityEntry.State != EntityState.Unchanged)
+                    continue;
+
+                await entityEntry.ReloadAsync(ct);
+                if (entityEntry.State == EntityState.Unchanged &&
+                    entity.IsDirty &&
+                    !entity.IsDeleted &&
+                    !receiptEntry.IsDeleted &&
+                    entity.Revision == receiptEntry.Revision &&
+                    entity.UpdatedAtUtc == receiptEntry.UpdatedAtUtc)
+                {
+                    MarkServerMirroredClean(entity);
+                    entities.Add(entity);
+                }
+            }
+
+            if (entities.Count == 0)
+            {
+                lock (_recycleBinRestoreReceiptGate)
+                    _pendingRecycleBinRestoreReceipts.Remove(receiptKey);
+                return;
+            }
+
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+                lock (_recycleBinRestoreReceiptGate)
+                    _pendingRecycleBinRestoreReceipts.Remove(receiptKey);
+            }
+            catch
+            {
+                foreach (var entity in entities)
+                    entity.IsDirty = true;
+                throw;
+            }
+        }
+        finally
+        {
+            RestoreRecycleBinTrackedEntrySnapshot(
+                pendingTrackerSnapshot,
+                detachEntriesNotInSnapshots: false);
         }
     }
 
@@ -792,6 +1673,19 @@ public sealed partial class LocalStateService
         CancellationToken ct)
         where T : LocalSyncEntity
         => await set.IgnoreQueryFilters().FirstOrDefaultAsync(entity => entity.Id == entityId, ct);
+
+    private async Task<string?> BuildServerPurgeTargetBlockReasonAsync(
+        RecycleBinEntityKind kind,
+        Guid entityId,
+        long? purgeRevision,
+        string? expectedBusinessDatabaseName,
+        CancellationToken ct)
+        => await BuildServerPurgePlanBlockReasonAsync(
+            kind,
+            entityId,
+            purgeRevision,
+            expectedBusinessDatabaseName,
+            ct);
 
     private static void MarkServerMirroredClean(LocalSyncEntity? entity)
     {
@@ -1064,9 +1958,182 @@ public sealed partial class LocalStateService
         return OfficeMutationResult.Ok(optionId, "품목분류 서버 영구삭제를 로컬에 반영했습니다.");
     }
 
+    internal async Task<OfficeMutationResult>
+        ApplyConfirmedInventoryTransferPurgeAsync(
+            RecycleBinPurgeRecordDto verifiedReceipt,
+            string verifiedBusinessDatabaseName,
+            AttachmentFileJournal attachmentFileJournal,
+            CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(verifiedReceipt);
+        ArgumentNullException.ThrowIfNull(attachmentFileJournal);
+        if (_db.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException(
+                "A confirmed inventory-transfer purge requires the caller's active database transaction and attachment journal.");
+        }
+        if (string.IsNullOrWhiteSpace(verifiedBusinessDatabaseName))
+        {
+            return OfficeMutationResult.Denied(
+                "The verified inventory-transfer purge business database is empty.");
+        }
+
+        var normalizedKind = (verifiedReceipt.Kind ?? string.Empty)
+            .Trim()
+            .Replace("-", string.Empty, StringComparison.Ordinal)
+            .Replace("_", string.Empty, StringComparison.Ordinal)
+            .Replace(" ", string.Empty, StringComparison.Ordinal);
+        if (!string.Equals(
+                normalizedKind,
+                "inventorytransfer",
+                StringComparison.OrdinalIgnoreCase) ||
+            verifiedReceipt.Id == Guid.Empty ||
+            verifiedReceipt.EntityId == Guid.Empty ||
+            verifiedReceipt.Revision <= 0 ||
+            verifiedReceipt.PurgedAtUtc == default)
+        {
+            return OfficeMutationResult.Denied(
+                "The verified inventory-transfer purge receipt is incomplete.");
+        }
+
+        var businessDatabaseName = TenantScopeCatalog.GetDatabaseName(
+            verifiedBusinessDatabaseName);
+        if (!OfficeCodeCatalog.TryNormalizeOfficeCode(
+                verifiedReceipt.SourceOfficeCode,
+                out var receiptSourceOffice) ||
+            !OfficeCodeCatalog.TryNormalizeOfficeCode(
+                verifiedReceipt.TargetOfficeCode,
+                out var receiptTargetOffice) ||
+            !OfficeCodeCatalog.TryNormalizeScope(
+                verifiedReceipt.OfficeCode,
+                out var receiptOffice) ||
+            !TenantScopeCatalog.TryNormalizeTenantCode(
+                verifiedReceipt.TenantCode,
+                out var receiptTenant) ||
+            !string.Equals(
+                receiptOffice,
+                OfficeCodeCatalog.Shared,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                TenantScopeCatalog.GetDatabaseName(receiptTenant),
+                businessDatabaseName,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return OfficeMutationResult.Denied(
+                "The verified inventory-transfer purge receipt scope is invalid.");
+        }
+
+        var transfer = await _db.InventoryTransfers
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(
+                current => current.Id == verifiedReceipt.EntityId,
+                ct);
+        if (transfer is null)
+        {
+            return OfficeMutationResult.Ok(
+                verifiedReceipt.EntityId,
+                "The confirmed inventory-transfer purge is already reflected locally.");
+        }
+
+        var localSourceOffice = ResolveOfficeCodeFromWarehouseCode(
+            transfer.FromWarehouseCode);
+        var localTargetOffice = ResolveOfficeCodeFromWarehouseCode(
+            transfer.ToWarehouseCode);
+        var localTenant =
+            TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                string.Empty,
+                localSourceOffice);
+        if (!string.Equals(
+                localTenant,
+                receiptTenant,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                localSourceOffice,
+                receiptSourceOffice,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                localTargetOffice,
+                receiptTargetOffice,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return OfficeMutationResult.Denied(
+                "The verified purge receipt route does not match the active local inventory transfer.");
+        }
+
+        if (transfer.IsDeleted)
+        {
+            return await ApplyServerPurgedInventoryTransferAsync(
+                verifiedReceipt.EntityId,
+                ct,
+                attachmentFileJournal);
+        }
+
+        var conflict = await _db.InventoryTransferTombstoneConflicts
+            .FirstOrDefaultAsync(
+                current =>
+                    current.TransferId == verifiedReceipt.EntityId &&
+                    current.BusinessDatabaseName == businessDatabaseName,
+                ct);
+        var conflictTenant = conflict is null
+            ? string.Empty
+            : TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                conflict.TenantCode,
+                conflict.SourceOfficeCode);
+        if (conflict is null ||
+            !string.Equals(
+                conflict.Status,
+                InventoryTransferTombstoneConflictPolicy.UnresolvedStatus,
+                StringComparison.OrdinalIgnoreCase) ||
+            conflict.ServerRevision != verifiedReceipt.Revision ||
+            !string.Equals(
+                receiptTenant,
+                conflictTenant,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                receiptSourceOffice,
+                conflict.SourceOfficeCode,
+                StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                receiptTargetOffice,
+                conflict.TargetOfficeCode,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return OfficeMutationResult.Denied(
+                "The verified purge receipt does not match an unresolved local inventory-transfer conflict.");
+        }
+
+        var archivedEvidencePath = conflict.ArchivedReceiveEvidencePath;
+        if (!string.IsNullOrWhiteSpace(archivedEvidencePath) &&
+            (!AppPaths.IsTransactionAttachmentPath(archivedEvidencePath) ||
+             !File.Exists(archivedEvidencePath)))
+        {
+            return OfficeMutationResult.Denied(
+                "The conflict-owned receive evidence file is missing or outside the transaction attachment root.");
+        }
+        if (!string.IsNullOrWhiteSpace(transfer.ReceiveEvidencePath) &&
+            (string.IsNullOrWhiteSpace(archivedEvidencePath) ||
+             !string.Equals(
+                 Path.GetFullPath(transfer.ReceiveEvidencePath),
+                 Path.GetFullPath(archivedEvidencePath),
+                 StringComparison.OrdinalIgnoreCase)))
+        {
+            return OfficeMutationResult.Denied(
+                "The active transfer receive evidence has not been transferred to conflict ownership.");
+        }
+
+        return await ApplyServerPurgedInventoryTransferAsync(
+            verifiedReceipt.EntityId,
+            ct,
+            attachmentFileJournal,
+            archivedEvidencePath);
+    }
+
     private async Task<OfficeMutationResult> ApplyServerPurgedInventoryTransferAsync(
         Guid transferId,
-        CancellationToken ct)
+        CancellationToken ct,
+        AttachmentFileJournal attachmentFileJournal,
+        string? preservedEvidencePath = null)
     {
         var transfer = await _db.InventoryTransfers
             .IgnoreQueryFilters()
@@ -1075,8 +2142,17 @@ public sealed partial class LocalStateService
         if (transfer is null)
             return OfficeMutationResult.Ok(transferId, "재고이동 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
 
-        if (!string.IsNullOrWhiteSpace(transfer.ReceiveEvidencePath))
-            TryDeleteLocalFile(transfer.ReceiveEvidencePath);
+        if (!string.IsNullOrWhiteSpace(transfer.ReceiveEvidencePath) &&
+            (string.IsNullOrWhiteSpace(preservedEvidencePath) ||
+             !string.Equals(
+                 Path.GetFullPath(transfer.ReceiveEvidencePath),
+                 Path.GetFullPath(preservedEvidencePath),
+                 StringComparison.OrdinalIgnoreCase)))
+        {
+            StageOrDeleteServerPurgeFile(
+                attachmentFileJournal,
+                transfer.ReceiveEvidencePath);
+        }
 
         _db.InventoryTransferLines.RemoveRange(transfer.Lines);
         _db.InventoryTransfers.Remove(transfer);
@@ -1193,6 +2269,36 @@ public sealed partial class LocalStateService
         return OfficeMutationResult.Ok(contractId, "계약서 서버 영구삭제를 로컬에 반영했습니다.");
     }
 
+    internal async Task<(
+        int ItemCount,
+        int ItemPriceGradeCount,
+        int WarehouseStockCount,
+        int MovementCount,
+        int StockLayerCount)> GetItemPurgeResidueCountsAsync(
+        Guid itemId,
+        CancellationToken ct = default)
+    {
+        var itemCount = await _db.Items
+            .IgnoreQueryFilters()
+            .CountAsync(current => current.Id == itemId, ct);
+        var itemPriceGradeCount = await _db.ItemPriceGrades
+            .IgnoreQueryFilters()
+            .CountAsync(current => current.ItemId == itemId, ct);
+        var warehouseStockCount = await _db.ItemWarehouseStocks
+            .CountAsync(current => current.ItemId == itemId, ct);
+        var movementCount = await _db.InventoryMovements
+            .CountAsync(current => current.ItemId == itemId, ct);
+        var stockLayerCount = await _db.StockLayers
+            .CountAsync(current => current.ItemId == itemId, ct);
+
+        return (
+            itemCount,
+            itemPriceGradeCount,
+            warehouseStockCount,
+            movementCount,
+            stockLayerCount);
+    }
+
     private async Task<OfficeMutationResult> ApplyServerPurgedItemAsync(
         Guid itemId,
         CancellationToken ct)
@@ -1230,6 +2336,10 @@ public sealed partial class LocalStateService
         var movements = await _db.InventoryMovements.Where(current => current.ItemId == itemId).ToListAsync(ct);
         var stockLayers = await _db.StockLayers.Where(current => current.ItemId == itemId).ToListAsync(ct);
         var warehouseStocks = await _db.ItemWarehouseStocks.Where(current => current.ItemId == itemId).ToListAsync(ct);
+        var itemPriceGrades = await _db.ItemPriceGrades
+            .IgnoreQueryFilters()
+            .Where(current => current.ItemId == itemId)
+            .ToListAsync(ct);
         var rentalAssets = await _db.RentalAssets
             .IgnoreQueryFilters()
             .Where(current => current.ItemId == itemId)
@@ -1243,6 +2353,7 @@ public sealed partial class LocalStateService
             movements.Count == 0 &&
             stockLayers.Count == 0 &&
             warehouseStocks.Count == 0 &&
+            itemPriceGrades.Count == 0 &&
             rentalAssets.Count == 0 &&
             rentalBillingProfiles.Count == 0)
         {
@@ -1271,6 +2382,7 @@ public sealed partial class LocalStateService
         _db.InventoryMovements.RemoveRange(movements);
         _db.StockLayers.RemoveRange(stockLayers);
         _db.ItemWarehouseStocks.RemoveRange(warehouseStocks);
+        _db.ItemPriceGrades.RemoveRange(itemPriceGrades);
         if (item is not null)
             _db.Items.Remove(item);
         await _db.SaveChangesAsync(ct);
@@ -1280,25 +2392,836 @@ public sealed partial class LocalStateService
         return OfficeMutationResult.Ok(itemId, "품목 서버 영구삭제를 로컬에 반영했습니다.");
     }
 
+    internal async Task<bool> ShouldPreserveInvoiceVersionChainFromServerPurgeAsync(
+        Guid invoiceId,
+        long purgeRevision,
+        CancellationToken ct = default)
+    {
+        var target = await _db.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(current => current.Id == invoiceId, ct);
+        if (target is null)
+            return false;
+
+        var groupInvoices = await LoadExactInvoiceVersionChainAsync(
+            target,
+            asNoTracking: true,
+            ct);
+        return await BuildInvoiceServerPurgeBlockReasonAsync(
+            invoiceId,
+            groupInvoices,
+            purgeRevision,
+            ct) is not null;
+    }
+
+    private async Task<OfficeMutationResult> PrepareConfirmedServerPurgeAsync(
+        RecycleBinEntityKind kind,
+        Guid entityId,
+        long acceptedRevision,
+        string businessDatabaseName,
+        ServerPurgeConfirmationFence? confirmationFence,
+        CancellationToken ct)
+    {
+        var normalizedBusinessDatabaseName =
+            TenantScopeCatalog.GetDatabaseName(businessDatabaseName);
+        if (confirmationFence is not null)
+        {
+            _db.ChangeTracker.DetectChanges();
+            if (_db.ChangeTracker.HasChanges())
+            {
+                return OfficeMutationResult.Denied(
+                    "서버 영구삭제 요청 이후 저장되지 않은 로컬 변경이 있어 반영을 보류했습니다.");
+            }
+
+            // 동기화는 별도 DbContext에서 실행될 수 있으므로, 서버 왕복 전
+            // identity map에 남은 값이 아니라 현재 SQLite 값을 다시 읽는다.
+            _db.ChangeTracker.Clear();
+        }
+
+        var plannedEntities = new List<ConfirmedPurgeEntity>();
+        var plannedRows = new List<ConfirmedPurgeRow>();
+        var allowedEntityNamesById =
+            new Dictionary<Guid, HashSet<string>>();
+
+        if (kind == RecycleBinEntityKind.Invoice)
+        {
+            var target = await _db.Invoices
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(current => current.Id == entityId, ct);
+            if (target is not null)
+            {
+                var targetBusinessDatabaseName =
+                    ResolveRecycleBinBusinessDatabaseName(
+                        target.TenantCode,
+                        target.OfficeCode,
+                        target.ResponsibleOfficeCode);
+                if (!string.Equals(
+                        targetBusinessDatabaseName,
+                        normalizedBusinessDatabaseName,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return OfficeMutationResult.Denied(
+                        "서버 영구삭제 확인 업무 DB와 로컬 전표 범위가 달라 반영하지 않았습니다.");
+                }
+
+                var groupInvoices = await LoadExactInvoiceVersionChainAsync(
+                    target,
+                    asNoTracking: false,
+                    ct);
+                var invoiceIds = groupInvoices
+                    .Select(current => current.Id)
+                    .Distinct()
+                    .ToList();
+                plannedRows.AddRange(
+                    await LoadInvoicePurgeFenceRowsAsync(
+                        invoiceIds,
+                        ct));
+                var linkedPayments = await _db.Payments
+                    .IgnoreQueryFilters()
+                    .Where(current => invoiceIds.Contains(current.InvoiceId))
+                    .ToListAsync(ct);
+                var linkedTransactions = await _db.Transactions
+                    .IgnoreQueryFilters()
+                    .Where(current =>
+                        current.LinkedInvoiceId.HasValue &&
+                        invoiceIds.Contains(current.LinkedInvoiceId.Value))
+                    .ToListAsync(ct);
+                if (linkedTransactions.Any(current => !current.IsDeleted))
+                {
+                    return OfficeMutationResult.Denied(
+                        "서버 영구삭제 확인 뒤 활성 연결 거래내역이 생겨 로컬 반영을 보류했습니다.");
+                }
+
+                var deletedLinkedTransactions = linkedTransactions
+                    .Where(current => current.IsDeleted)
+                    .ToList();
+                if (deletedLinkedTransactions.Any(current =>
+                        !string.Equals(
+                            ResolveRecycleBinBusinessDatabaseName(
+                                current.TenantCode,
+                                current.OfficeCode,
+                                current.ResponsibleOfficeCode),
+                            normalizedBusinessDatabaseName,
+                            StringComparison.OrdinalIgnoreCase)))
+                {
+                    return OfficeMutationResult.Denied(
+                        "연결된 삭제 거래내역의 업무 DB 범위가 전표와 달라 서버 영구삭제 반영을 보류했습니다.");
+                }
+
+                var deletedLinkedTransactionIds = deletedLinkedTransactions
+                    .Select(current => current.Id)
+                    .Distinct()
+                    .ToList();
+                var deletedLinkedAttachments =
+                    deletedLinkedTransactionIds.Count == 0
+                        ? new List<LocalTransactionAttachment>()
+                        : await _db.TransactionAttachments
+                            .IgnoreQueryFilters()
+                            .Where(current =>
+                                deletedLinkedTransactionIds.Contains(
+                                    current.TransactionId))
+                            .ToListAsync(ct);
+
+                AddConfirmedPurgeEntities(
+                    plannedEntities,
+                    groupInvoices,
+                    nameof(LocalInvoice),
+                    "Invoice");
+                AddConfirmedPurgeEntities(
+                    plannedEntities,
+                    linkedPayments,
+                    nameof(LocalPayment),
+                    "Payment");
+                AddConfirmedPurgeEntities(
+                    plannedEntities,
+                    deletedLinkedTransactions,
+                    nameof(LocalTransaction),
+                    "TransactionRecord",
+                    "Transaction");
+                AddConfirmedPurgeEntities(
+                    plannedEntities,
+                    deletedLinkedAttachments,
+                    nameof(LocalTransactionAttachment),
+                    "TransactionAttachment");
+
+                if (plannedEntities.Any(current => !current.Entity.IsDeleted))
+                {
+                    return OfficeMutationResult.Denied(
+                        "서버 영구삭제 확인 뒤 활성 전표 또는 연결 데이터가 생겨 로컬 반영을 보류했습니다.");
+                }
+
+            }
+        }
+
+        if (plannedEntities.Count == 0)
+        {
+            var fallbackNames = GetRecycleBinOutboxEntityNames(kind);
+            if (fallbackNames.Count > 0)
+            {
+                allowedEntityNamesById[entityId] =
+                    new HashSet<string>(
+                        fallbackNames,
+                        StringComparer.OrdinalIgnoreCase);
+            }
+        }
+        else
+        {
+            foreach (var planned in plannedEntities)
+            {
+                if (!allowedEntityNamesById.TryGetValue(
+                        planned.Entity.Id,
+                        out var allowedNames))
+                {
+                    allowedNames =
+                        new HashSet<string>(
+                            StringComparer.OrdinalIgnoreCase);
+                    allowedEntityNamesById.Add(
+                        planned.Entity.Id,
+                        allowedNames);
+                }
+
+                allowedNames.UnionWith(planned.OutboxEntityNames);
+            }
+        }
+
+        var plannedEntityIds = allowedEntityNamesById.Keys.ToList();
+        var matchingOutbox = plannedEntityIds.Count == 0
+            ? new List<LocalSyncOutboxEntry>()
+            : (await _db.SyncOutboxEntries
+                    .Where(current =>
+                        plannedEntityIds.Contains(current.EntityId))
+                    .ToListAsync(ct))
+                .Where(current =>
+                    allowedEntityNamesById[current.EntityId]
+                        .Contains(current.EntityName) &&
+                    string.Equals(
+                        ResolveOutboxBusinessDatabaseName(current),
+                        normalizedBusinessDatabaseName,
+                        StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+        if (confirmationFence is not null &&
+            !ServerPurgeConfirmationFenceMatches(
+                confirmationFence,
+                kind,
+                entityId,
+                normalizedBusinessDatabaseName,
+                plannedEntities,
+                plannedRows,
+                matchingOutbox,
+                out var fenceMismatchReason))
+        {
+            return OfficeMutationResult.Denied(
+                "서버 영구삭제 요청 이후 로컬 전표, 연결 데이터 또는 동기화 작업이 변경되어 반영을 보류했습니다. " +
+                fenceMismatchReason);
+        }
+
+        foreach (var planned in plannedEntities)
+            planned.Entity.IsDirty = false;
+
+        var now = DateTime.UtcNow;
+        foreach (var entry in matchingOutbox.Where(current =>
+                     current.Status != "Acknowledged"))
+        {
+            entry.Status = "Acknowledged";
+            entry.ErrorMessage = string.Empty;
+            entry.AcknowledgedAtUtc = now;
+            entry.AcceptedRevision =
+                Math.Max(
+                    Math.Max(
+                        entry.AcceptedRevision,
+                        acceptedRevision),
+                    entry.ExpectedRevision);
+            entry.AcceptedUpdatedAtUtc = now;
+        }
+
+        return OfficeMutationResult.Ok(
+            entityId,
+            "서버 영구삭제 확인 범위의 로컬 동기화 상태를 정리했습니다.");
+    }
+
+    private static void AddConfirmedPurgeEntities<T>(
+        ICollection<ConfirmedPurgeEntity> destination,
+        IEnumerable<T> entities,
+        params string[] outboxEntityNames)
+        where T : LocalSyncEntity
+    {
+        foreach (var entity in entities)
+        {
+            destination.Add(
+                new ConfirmedPurgeEntity(
+                    entity,
+                    outboxEntityNames));
+        }
+    }
+
+    private async Task<List<ConfirmedPurgeRow>>
+        LoadInvoicePurgeFenceRowsAsync(
+            IReadOnlyCollection<Guid> invoiceIds,
+            CancellationToken ct)
+    {
+        var rows = new List<ConfirmedPurgeRow>();
+        if (invoiceIds.Count == 0)
+            return rows;
+
+        AddConfirmedPurgeRows(
+            rows,
+            await _db.InvoiceLines
+                .IgnoreQueryFilters()
+                .Where(current =>
+                    invoiceIds.Contains(
+                        current.InvoiceId))
+                .ToListAsync(ct),
+            current => current.Id);
+        AddConfirmedPurgeRows(
+            rows,
+            await _db.InvoiceLineSerials
+                .Where(current =>
+                    invoiceIds.Contains(
+                        current.InvoiceId))
+                .ToListAsync(ct),
+            current => current.Id);
+        AddConfirmedPurgeRows(
+            rows,
+            await _db.InventoryMovements
+                .Where(current =>
+                    current.InvoiceId.HasValue &&
+                    invoiceIds.Contains(
+                        current.InvoiceId.Value))
+                .ToListAsync(ct),
+            current => current.Id);
+        AddConfirmedPurgeRows(
+            rows,
+            await _db.StockLayers
+                .Where(current =>
+                    current.SourceInvoiceId.HasValue &&
+                    invoiceIds.Contains(
+                        current.SourceInvoiceId.Value))
+                .ToListAsync(ct),
+            current => current.Id);
+        AddConfirmedPurgeRows(
+            rows,
+            await _db.CostAllocations
+                .Where(current =>
+                    invoiceIds.Contains(
+                        current.SalesInvoiceId) ||
+                    (current.PurchaseInvoiceId.HasValue &&
+                     invoiceIds.Contains(
+                         current.PurchaseInvoiceId.Value)))
+                .ToListAsync(ct),
+            current => current.Id);
+        AddConfirmedPurgeRows(
+            rows,
+            await _db.SerialLedgers
+                .Where(current =>
+                    (current.SourcePurchaseInvoiceId.HasValue &&
+                     invoiceIds.Contains(
+                         current.SourcePurchaseInvoiceId.Value)) ||
+                    (current.SourceSalesInvoiceId.HasValue &&
+                     invoiceIds.Contains(
+                         current.SourceSalesInvoiceId.Value)) ||
+                    (current.LastInvoiceId.HasValue &&
+                     invoiceIds.Contains(
+                         current.LastInvoiceId.Value)))
+                .ToListAsync(ct),
+            current => current.Id);
+        return rows;
+    }
+
+    private static void AddConfirmedPurgeRows<T>(
+        ICollection<ConfirmedPurgeRow> destination,
+        IEnumerable<T> rows,
+        Func<T, Guid> resolveId)
+        where T : class
+    {
+        foreach (var row in rows)
+        {
+            destination.Add(
+                new ConfirmedPurgeRow(
+                    row,
+                    resolveId(row)));
+        }
+    }
+
+    private static Dictionary<Guid, HashSet<string>>
+        BuildConfirmedPurgeAllowedEntityNames(
+            IEnumerable<ConfirmedPurgeEntity> plannedEntities)
+    {
+        var allowedEntityNamesById =
+            new Dictionary<Guid, HashSet<string>>();
+        foreach (var planned in plannedEntities)
+        {
+            if (!allowedEntityNamesById.TryGetValue(
+                    planned.Entity.Id,
+                    out var allowedNames))
+            {
+                allowedNames =
+                    new HashSet<string>(
+                        StringComparer.OrdinalIgnoreCase);
+                allowedEntityNamesById.Add(
+                    planned.Entity.Id,
+                    allowedNames);
+            }
+
+            allowedNames.UnionWith(
+                planned.OutboxEntityNames);
+        }
+
+        return allowedEntityNamesById;
+    }
+
+    private ServerPurgeConfirmationFence
+        CreateServerPurgeConfirmationFence(
+            RecycleBinEntityKind kind,
+            Guid entityId,
+            string businessDatabaseName,
+            IEnumerable<ConfirmedPurgeEntity> plannedEntities,
+            IEnumerable<ConfirmedPurgeRow> plannedRows,
+            IEnumerable<LocalSyncOutboxEntry> matchingOutbox)
+        => new(
+            kind,
+            entityId,
+            TenantScopeCatalog.GetDatabaseName(
+                businessDatabaseName),
+            plannedEntities
+                .Select(current =>
+                    new ServerPurgeEntityFence(
+                        current.Entity.GetType().Name,
+                        current.Entity.Id,
+                        BuildServerPurgeEntityState(
+                            current.Entity)))
+                .OrderBy(current =>
+                    current.EntityType,
+                    StringComparer.Ordinal)
+                .ThenBy(current => current.EntityId)
+                .ToList(),
+            plannedRows
+                .Select(current =>
+                    new ServerPurgeRowFence(
+                        current.Row.GetType().Name,
+                        current.RowId,
+                        BuildServerPurgeRowState(
+                            current.Row)))
+                .OrderBy(current =>
+                    current.RowType,
+                    StringComparer.Ordinal)
+                .ThenBy(current => current.RowId)
+                .ToList(),
+            matchingOutbox
+                .Select(current =>
+                    new ServerPurgeOutboxFence(
+                        current.Id,
+                        BuildServerPurgeOutboxState(
+                            current)))
+                .OrderBy(current => current.OutboxId)
+                .ToList());
+
+    private bool ServerPurgeConfirmationFenceMatches(
+        ServerPurgeConfirmationFence confirmationFence,
+        RecycleBinEntityKind kind,
+        Guid entityId,
+        string businessDatabaseName,
+        IEnumerable<ConfirmedPurgeEntity> plannedEntities,
+        IEnumerable<ConfirmedPurgeRow> plannedRows,
+        IEnumerable<LocalSyncOutboxEntry> matchingOutbox,
+        out string mismatchReason)
+    {
+        mismatchReason = string.Empty;
+        if (confirmationFence.Kind != kind ||
+            confirmationFence.EntityId != entityId ||
+            !string.Equals(
+                confirmationFence.BusinessDatabaseName,
+                TenantScopeCatalog.GetDatabaseName(
+                    businessDatabaseName),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            mismatchReason = "(확인 범위 불일치)";
+            return false;
+        }
+
+        var currentFence =
+            CreateServerPurgeConfirmationFence(
+                kind,
+                entityId,
+                businessDatabaseName,
+                plannedEntities,
+                plannedRows,
+                matchingOutbox);
+        if (!confirmationFence.Entities.SequenceEqual(
+                currentFence.Entities))
+        {
+            var expectedByKey = confirmationFence.Entities
+                .ToDictionary(current =>
+                    (current.EntityType,
+                        current.EntityId));
+            var currentByKey = currentFence.Entities
+                .ToDictionary(current =>
+                    (current.EntityType,
+                        current.EntityId));
+            var changedKey = expectedByKey.Keys
+                .Union(currentByKey.Keys)
+                .FirstOrDefault(key =>
+                    !expectedByKey.TryGetValue(
+                        key,
+                        out var expected) ||
+                    !currentByKey.TryGetValue(
+                        key,
+                        out var actual) ||
+                    !string.Equals(
+                        expected.State,
+                        actual.State,
+                        StringComparison.Ordinal));
+            var changedProperty = string.Empty;
+            if (expectedByKey.TryGetValue(
+                    changedKey,
+                    out var expectedChanged) &&
+                currentByKey.TryGetValue(
+                    changedKey,
+                    out var actualChanged))
+            {
+                var expectedParts =
+                    expectedChanged.State.Split('\u001f');
+                var actualParts =
+                    actualChanged.State.Split('\u001f');
+                changedProperty = expectedParts
+                    .Zip(
+                        actualParts,
+                        (expectedPart, actualPart) =>
+                            (expectedPart, actualPart))
+                    .Where(current =>
+                        !string.Equals(
+                            current.expectedPart,
+                            current.actualPart,
+                            StringComparison.Ordinal))
+                    .Select(current =>
+                        current.expectedPart.Split('=')[0])
+                    .FirstOrDefault() ??
+                    "(구성)";
+            }
+            mismatchReason =
+                $"(엔터티 스냅샷 {confirmationFence.Entities.Count:N0}→{currentFence.Entities.Count:N0}건, {changedKey.EntityType}/{changedKey.EntityId:D}/{changedProperty})";
+            return false;
+        }
+        if (!confirmationFence.OutboxEntries.SequenceEqual(
+                currentFence.OutboxEntries))
+        {
+            mismatchReason =
+                $"(동기화 작업 스냅샷 {confirmationFence.OutboxEntries.Count:N0}→{currentFence.OutboxEntries.Count:N0}건)";
+            return false;
+        }
+        if (!confirmationFence.Rows.SequenceEqual(
+                currentFence.Rows))
+        {
+            mismatchReason =
+                $"(전표 하위/재고 행 스냅샷 {confirmationFence.Rows.Count:N0}→{currentFence.Rows.Count:N0}건)";
+            return false;
+        }
+
+        return true;
+    }
+
+    private string BuildServerPurgeEntityState(
+        LocalSyncEntity entity)
+        => BuildServerPurgeRowState(entity);
+
+    private string BuildServerPurgeRowState(
+        object row)
+        => string.Join(
+            "\u001f",
+            _db.Entry(row)
+                .Properties
+                .OrderBy(current =>
+                    current.Metadata.Name,
+                    StringComparer.Ordinal)
+                .Select(current =>
+                    $"{current.Metadata.Name}=" +
+                    FormatServerPurgeFenceValue(
+                        current.CurrentValue)));
+
+    private static string FormatServerPurgeFenceValue(
+        object? value)
+        => value switch
+        {
+            null => "<null>",
+            DateTime dateTime =>
+                dateTime.Ticks.ToString(
+                    System.Globalization.CultureInfo.InvariantCulture),
+            DateOnly dateOnly =>
+                dateOnly.DayNumber.ToString(
+                    System.Globalization.CultureInfo.InvariantCulture),
+            TimeOnly timeOnly =>
+                timeOnly.Ticks.ToString(
+                    System.Globalization.CultureInfo.InvariantCulture),
+            Guid guid => guid.ToString("N"),
+            byte[] bytes => Convert.ToBase64String(bytes),
+            decimal number =>
+                number.ToString(
+                    "G29",
+                    System.Globalization.CultureInfo.InvariantCulture),
+            double number =>
+                number.ToString(
+                    "R",
+                    System.Globalization.CultureInfo.InvariantCulture),
+            float number =>
+                number.ToString(
+                    "R",
+                    System.Globalization.CultureInfo.InvariantCulture),
+            IFormattable formattable =>
+                formattable.ToString(
+                    null,
+                    System.Globalization.CultureInfo.InvariantCulture) ??
+                string.Empty,
+            _ => value.ToString() ?? string.Empty
+        };
+
+    private static string BuildServerPurgeOutboxState(
+        LocalSyncOutboxEntry entry)
+        => JsonSerializer.Serialize(
+            new
+            {
+                entry.MutationId,
+                entry.EntityName,
+                entry.EntityId,
+                entry.ExpectedRevision,
+                entry.BusinessDatabaseName,
+                entry.TenantCode,
+                entry.OfficeCode,
+                entry.ResponsibleOfficeCode,
+                entry.Status,
+                PreparedAtUtcTicks =
+                    entry.PreparedAtUtc.Ticks,
+                SentAtUtcTicks =
+                    entry.SentAtUtc?.Ticks,
+                AcknowledgedAtUtcTicks =
+                    entry.AcknowledgedAtUtc?.Ticks,
+                entry.AcceptedRevision,
+                AcceptedUpdatedAtUtcTicks =
+                    entry.AcceptedUpdatedAtUtc?.Ticks
+            });
+
+    private static IReadOnlyList<string> GetRecycleBinOutboxEntityNames(
+        RecycleBinEntityKind kind)
+        => kind switch
+        {
+            RecycleBinEntityKind.Customer =>
+                [nameof(LocalCustomer), "Customer"],
+            RecycleBinEntityKind.CustomerContract =>
+                [nameof(LocalCustomerContract), "CustomerContract"],
+            RecycleBinEntityKind.Item =>
+                [nameof(LocalItem), "Item"],
+            RecycleBinEntityKind.CompanyProfile =>
+                [nameof(LocalCompanyProfile), "CompanyProfile"],
+            RecycleBinEntityKind.CustomerCategory =>
+                [nameof(LocalCustomerCategory), "CustomerCategory"],
+            RecycleBinEntityKind.PriceGradeOption =>
+                [nameof(LocalPriceGradeOption), "PriceGradeOption"],
+            RecycleBinEntityKind.TradeTypeOption =>
+                [nameof(LocalTradeTypeOption), "TradeTypeOption"],
+            RecycleBinEntityKind.ItemCategoryOption =>
+                [nameof(LocalItemCategoryOption), "ItemCategoryOption"],
+            RecycleBinEntityKind.Invoice =>
+                [nameof(LocalInvoice), "Invoice"],
+            RecycleBinEntityKind.Payment =>
+                [nameof(LocalPayment), "Payment"],
+            RecycleBinEntityKind.Transaction =>
+                [nameof(LocalTransaction), "TransactionRecord", "Transaction"],
+            RecycleBinEntityKind.InventoryTransfer =>
+                [nameof(LocalInventoryTransfer), "InventoryTransfer"],
+            RecycleBinEntityKind.RentalManagementCompany =>
+                [nameof(LocalRentalManagementCompany), "RentalManagementCompany"],
+            RecycleBinEntityKind.RentalBillingProfile =>
+                [nameof(LocalRentalBillingProfile), "RentalBillingProfile"],
+            RecycleBinEntityKind.RentalAsset =>
+                [nameof(LocalRentalAsset), "RentalAsset"],
+            RecycleBinEntityKind.RentalBillingLog =>
+                [nameof(LocalRentalBillingLog), "RentalBillingLog"],
+            _ => []
+        };
+
+    private static string ResolveOutboxBusinessDatabaseName(
+        LocalSyncOutboxEntry entry)
+        => !string.IsNullOrWhiteSpace(entry.BusinessDatabaseName)
+            ? TenantScopeCatalog.GetDatabaseName(
+                entry.BusinessDatabaseName)
+            : ResolveRecycleBinBusinessDatabaseName(
+                entry.TenantCode,
+                entry.OfficeCode,
+                entry.ResponsibleOfficeCode);
+
+    private async Task<string?> BuildInvoiceServerPurgeBlockReasonAsync(
+        Guid purgeTargetInvoiceId,
+        IReadOnlyCollection<LocalInvoice> groupInvoices,
+        long? purgeRevision,
+        CancellationToken ct)
+    {
+        if (groupInvoices.Count == 0)
+            return null;
+
+        var invoiceIds = groupInvoices
+            .Select(current => current.Id)
+            .Distinct()
+            .ToList();
+        var linkedPayments = await _db.Payments
+            .IgnoreQueryFilters()
+            .Where(current => invoiceIds.Contains(current.InvoiceId))
+            .ToListAsync(ct);
+        var linkedTransactions = await _db.Transactions
+            .IgnoreQueryFilters()
+            .Where(current =>
+                current.LinkedInvoiceId.HasValue &&
+                invoiceIds.Contains(current.LinkedInvoiceId.Value))
+            .ToListAsync(ct);
+        var deletedLinkedTransactions = linkedTransactions
+            .Where(current => current.IsDeleted)
+            .ToList();
+        var deletedLinkedTransactionIds = deletedLinkedTransactions
+            .Select(current => current.Id)
+            .Distinct()
+            .ToList();
+        var deletedLinkedAttachments =
+            deletedLinkedTransactionIds.Count == 0
+                ? new List<LocalTransactionAttachment>()
+                : await _db.TransactionAttachments
+                    .IgnoreQueryFilters()
+                    .Where(current =>
+                        deletedLinkedTransactionIds.Contains(
+                            current.TransactionId))
+                    .ToListAsync(ct);
+
+        var plannedEntities = new List<ConfirmedPurgeEntity>();
+        AddConfirmedPurgeEntities(
+            plannedEntities,
+            groupInvoices,
+            nameof(LocalInvoice),
+            "Invoice");
+        AddConfirmedPurgeEntities(
+            plannedEntities,
+            linkedPayments,
+            nameof(LocalPayment),
+            "Payment");
+        AddConfirmedPurgeEntities(
+            plannedEntities,
+            deletedLinkedTransactions,
+            nameof(LocalTransaction),
+            "TransactionRecord",
+            "Transaction");
+        AddConfirmedPurgeEntities(
+            plannedEntities,
+            deletedLinkedAttachments,
+            nameof(LocalTransactionAttachment),
+            "TransactionAttachment");
+
+        var hasDirtyPlannedEntity =
+            plannedEntities.Any(current => current.Entity.IsDirty);
+        var hasNewerRevision = purgeRevision.HasValue &&
+                               plannedEntities.Any(current =>
+                                   current.Entity.Revision >
+                                   purgeRevision.Value);
+        var targetScopeInvoice =
+            groupInvoices.FirstOrDefault(current =>
+                current.Id == purgeTargetInvoiceId) ??
+            groupInvoices.First();
+        var targetBusinessDatabaseName =
+            ResolveRecycleBinBusinessDatabaseName(
+                targetScopeInvoice.TenantCode,
+                targetScopeInvoice.OfficeCode,
+                targetScopeInvoice.ResponsibleOfficeCode);
+        if (linkedTransactions.Any(current =>
+                !current.IsDeleted))
+        {
+            return "동일 전표 버전 묶음에 활성 연결 거래내역이 있어 서버 영구삭제 반영을 보류했습니다.";
+        }
+        if (deletedLinkedTransactions.Any(current =>
+                !string.Equals(
+                    ResolveRecycleBinBusinessDatabaseName(
+                        current.TenantCode,
+                        current.OfficeCode,
+                        current.ResponsibleOfficeCode),
+                    targetBusinessDatabaseName,
+                    StringComparison.OrdinalIgnoreCase)))
+        {
+            return "연결된 삭제 거래내역의 업무 DB 범위가 전표와 달라 서버 영구삭제 반영을 보류했습니다.";
+        }
+
+        var allowedEntityNamesById =
+            new Dictionary<Guid, HashSet<string>>();
+        foreach (var planned in plannedEntities)
+        {
+            if (!allowedEntityNamesById.TryGetValue(
+                    planned.Entity.Id,
+                    out var allowedNames))
+            {
+                allowedNames = new HashSet<string>(
+                    StringComparer.OrdinalIgnoreCase);
+                allowedEntityNamesById.Add(
+                    planned.Entity.Id,
+                    allowedNames);
+            }
+
+            allowedNames.UnionWith(planned.OutboxEntityNames);
+        }
+
+        var plannedEntityIds =
+            allowedEntityNamesById.Keys.ToList();
+        var pendingOutboxCandidates =
+            plannedEntityIds.Count == 0
+                ? new List<LocalSyncOutboxEntry>()
+                : await _db.SyncOutboxEntries
+                    .AsNoTracking()
+                    .Where(current =>
+                        plannedEntityIds.Contains(
+                            current.EntityId) &&
+                        current.Status != "Acknowledged")
+                    .ToListAsync(ct);
+        var hasPendingOutbox =
+            pendingOutboxCandidates.Any(current =>
+                allowedEntityNamesById.TryGetValue(
+                    current.EntityId,
+                    out var allowedNames) &&
+                allowedNames.Contains(current.EntityName) &&
+                string.Equals(
+                    ResolveOutboxBusinessDatabaseName(current),
+                    targetBusinessDatabaseName,
+                    StringComparison.OrdinalIgnoreCase));
+        if (hasDirtyPlannedEntity)
+            return "동일 전표 버전 묶음 또는 실제 삭제 대상 연결 데이터에 아직 서버로 전송되지 않은 로컬 변경이 있어 서버 영구삭제 반영을 보류했습니다.";
+        if (hasNewerRevision)
+            return "동일 전표 버전 묶음 또는 실제 삭제 대상 연결 데이터에 서버 영구삭제 기록보다 최신인 로컬 데이터가 있어 반영을 보류했습니다.";
+        if (hasPendingOutbox)
+            return "동일 전표 버전 묶음 또는 실제 삭제 대상 연결 데이터에 처리 중인 동기화 작업이 있어 서버 영구삭제 반영을 보류했습니다.";
+        return null;
+    }
+
     private async Task<OfficeMutationResult> ApplyServerPurgedInvoiceAsync(
         Guid invoiceId,
-        CancellationToken ct)
+        long? purgeRevision,
+        bool confirmedServerAcceptance,
+        CancellationToken ct,
+        AttachmentFileJournal attachmentFileJournal)
     {
         var target = await _db.Invoices
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == invoiceId, ct);
 
         var groupInvoices = target is null
-            ? await _db.Invoices
-                .IgnoreQueryFilters()
-                .Where(current => current.Id == invoiceId || current.VersionGroupId == invoiceId)
-                .ToListAsync(ct)
-            : await _db.Invoices
-                .IgnoreQueryFilters()
-                .Where(current =>
-                    current.Id == target.Id ||
-                    current.VersionGroupId == (target.VersionGroupId == Guid.Empty ? target.Id : target.VersionGroupId))
-                .ToListAsync(ct);
+            ? new List<LocalInvoice>()
+            : await LoadExactInvoiceVersionChainAsync(
+                target,
+                asNoTracking: false,
+                ct);
+        if (!confirmedServerAcceptance)
+        {
+            var purgeBlockReason =
+                await BuildInvoiceServerPurgeBlockReasonAsync(
+                    invoiceId,
+                    groupInvoices,
+                    purgeRevision,
+                    ct);
+            if (purgeBlockReason is not null)
+                return OfficeMutationResult.Denied(purgeBlockReason);
+        }
+
         var invoiceIds = groupInvoices
             .Select(current => current.Id)
             .Append(invoiceId)
@@ -1357,14 +3280,20 @@ public sealed partial class LocalStateService
 
         await RebuildInventorySnapshotsAsync(CreateServerPurgeInvoiceSaveContext(), ct);
         foreach (var attachment in staleLinkedTransactionAttachments)
-            TryDeleteAttachmentFile(attachment);
+        {
+            StageOrDeleteServerPurgeFile(
+                attachmentFileJournal,
+                attachment.StoredPath,
+                deleteEmptyDirectory: true);
+        }
 
         return OfficeMutationResult.Ok(invoiceId, "전표 서버 영구삭제를 로컬에 반영했습니다.");
     }
 
     private async Task<OfficeMutationResult> ApplyServerPurgedPaymentAsync(
         Guid paymentId,
-        CancellationToken ct)
+        CancellationToken ct,
+        AttachmentFileJournal attachmentFileJournal)
     {
         var payment = await _db.Payments
             .IgnoreQueryFilters()
@@ -1372,8 +3301,6 @@ public sealed partial class LocalStateService
         var sameIdTransaction = await _db.Transactions
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == paymentId, ct);
-        if (sameIdTransaction is { IsDeleted: false })
-            return OfficeMutationResult.Ok(paymentId, "활성 거래내역에서 생성된 전표 수금/지급 기록이어서 서버 영구삭제 반영을 보류했습니다.");
 
         var transactionAttachments = await _db.TransactionAttachments
             .IgnoreQueryFilters()
@@ -1406,14 +3333,20 @@ public sealed partial class LocalStateService
             await RecalculateRentalSettlementAsync(rentalBillingProfileId.Value, rentalBillingRunId, ct);
 
         foreach (var attachment in transactionAttachments)
-            TryDeleteAttachmentFile(attachment);
+        {
+            StageOrDeleteServerPurgeFile(
+                attachmentFileJournal,
+                attachment.StoredPath,
+                deleteEmptyDirectory: true);
+        }
 
         return OfficeMutationResult.Ok(paymentId, "수금/지급 서버 영구삭제를 로컬에 반영했습니다.");
     }
 
     private async Task<OfficeMutationResult> ApplyServerPurgedTransactionAsync(
         Guid transactionId,
-        CancellationToken ct)
+        CancellationToken ct,
+        AttachmentFileJournal attachmentFileJournal)
     {
         var transaction = await _db.Transactions
             .IgnoreQueryFilters()
@@ -1455,7 +3388,12 @@ public sealed partial class LocalStateService
             await RecalculateRentalSettlementAsync(rentalBillingProfileId.Value, rentalBillingRunId, ct);
 
         foreach (var attachment in attachments)
-            TryDeleteAttachmentFile(attachment);
+        {
+            StageOrDeleteServerPurgeFile(
+                attachmentFileJournal,
+                attachment.StoredPath,
+                deleteEmptyDirectory: true);
+        }
 
         return OfficeMutationResult.Ok(transactionId, "거래내역 서버 영구삭제를 로컬에 반영했습니다.");
     }
@@ -1733,11 +3671,16 @@ public sealed partial class LocalStateService
         var warehouseStocks = await _db.ItemWarehouseStocks
             .Where(current => current.ItemId == itemId)
             .ToListAsync(ct);
+        var itemPriceGrades = await _db.ItemPriceGrades
+            .IgnoreQueryFilters()
+            .Where(current => current.ItemId == itemId)
+            .ToListAsync(ct);
 
         var now = DateTime.UtcNow;
         _db.InventoryMovements.RemoveRange(movements);
         _db.StockLayers.RemoveRange(stockLayers);
         _db.ItemWarehouseStocks.RemoveRange(warehouseStocks);
+        _db.ItemPriceGrades.RemoveRange(itemPriceGrades);
         _db.Items.Remove(item);
         AddPurgeAudit(nameof(LocalItem), item.Id, new
         {
@@ -1770,7 +3713,8 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == invoiceId, ct);
         if (target is null)
             return OfficeMutationResult.Missing("복원할 전표를 찾을 수 없습니다.");
-        if (!CanWriteOfficeScope(session, target.ResponsibleOfficeCode, target.OfficeCode))
+        var targetScope = await ResolveInvoiceVersionScopeKeyAsync(target, ct);
+        if (!CanWriteInvoiceVersionScope(targetScope, session))
             return OfficeMutationResult.Denied("권한이 없어 해당 전표를 복원할 수 없습니다.");
         if (!target.IsDeleted)
             return OfficeMutationResult.Ok(invoiceId, "이미 활성 상태인 전표입니다.");
@@ -1802,15 +3746,15 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == invoiceId, ct);
         if (target is null)
             return OfficeMutationResult.Missing("영구삭제할 전표를 찾을 수 없습니다.");
-        if (!CanWriteOfficeScope(session, target.ResponsibleOfficeCode, target.OfficeCode))
+        var targetScope = await ResolveInvoiceVersionScopeKeyAsync(target, ct);
+        if (!CanWriteInvoiceVersionScope(targetScope, session))
             return OfficeMutationResult.Denied("권한이 없어 해당 전표를 영구삭제할 수 없습니다.");
 
         var groupInvoices = await LoadInvoiceGroupForRecycleBinAsync(target, ct);
-        var groupScopeFailure = EnsureCanWriteInvoiceGroupForRecycleBin(groupInvoices, session, "영구삭제");
-        if (groupScopeFailure is not null)
-            return groupScopeFailure;
         if (!target.IsDeleted)
             return OfficeMutationResult.Denied("활성 상태 전표는 휴지통에서 영구삭제할 수 없습니다.");
+        if (groupInvoices.Any(current => !current.IsDeleted))
+            return OfficeMutationResult.Denied("활성 상태 전표 버전이 남아 있어 전표 묶음을 영구삭제할 수 없습니다.");
 
         var invoiceIds = groupInvoices.Select(current => current.Id).Distinct().ToList();
 
@@ -1884,7 +3828,8 @@ public sealed partial class LocalStateService
             .FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, ct);
         if (invoice is null)
             return OfficeMutationResult.Missing("연결된 전표를 찾을 수 없습니다.");
-        if (!CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode, invoice.OfficeCode))
+        var invoiceScope = await ResolveInvoiceVersionScopeKeyAsync(invoice, ct);
+        if (!CanWriteInvoiceVersionScope(invoiceScope, session))
             return OfficeMutationResult.Denied("권한이 없어 해당 수금/지급 기록을 복원할 수 없습니다.");
         if (!payment.IsDeleted)
             return OfficeMutationResult.Ok(paymentId, "이미 활성 상태인 수금/지급 기록입니다.");
@@ -1936,7 +3881,10 @@ public sealed partial class LocalStateService
         var invoice = await _db.Invoices
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(current => current.Id == payment.InvoiceId, ct);
-        if (invoice is null || !CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode, invoice.OfficeCode))
+        if (invoice is null)
+            return OfficeMutationResult.Denied("권한이 없어 해당 수금/지급 기록을 영구삭제할 수 없습니다.");
+        var invoiceScope = await ResolveInvoiceVersionScopeKeyAsync(invoice, ct);
+        if (!CanWriteInvoiceVersionScope(invoiceScope, session))
             return OfficeMutationResult.Denied("권한이 없어 해당 수금/지급 기록을 영구삭제할 수 없습니다.");
         if (!payment.IsDeleted)
             return OfficeMutationResult.Denied("활성 상태 수금/지급 기록은 휴지통에서 영구삭제할 수 없습니다.");
@@ -1999,7 +3947,8 @@ public sealed partial class LocalStateService
                 .FirstOrDefaultAsync(current => current.Id == transaction.LinkedInvoiceId.Value, ct);
             if (linkedInvoice is null)
                 return OfficeMutationResult.Missing("연결된 전표를 찾을 수 없습니다.");
-            if (!CanWriteOfficeScope(session, linkedInvoice.ResponsibleOfficeCode, linkedInvoice.OfficeCode))
+            var linkedInvoiceScope = await ResolveInvoiceVersionScopeKeyAsync(linkedInvoice, ct);
+            if (!CanWriteInvoiceVersionScope(linkedInvoiceScope, session))
                 return OfficeMutationResult.Denied("권한이 없어 연결 전표를 복원하거나 수금/지급과 동기화할 수 없습니다.");
 
             if (linkedInvoice is not null && linkedInvoice.IsDeleted)
@@ -2072,10 +4021,24 @@ public sealed partial class LocalStateService
                 : "거래내역을 휴지통에서 복원했습니다.");
     }
 
-    public async Task<OfficeMutationResult> PermanentlyDeleteTransactionAsync(
+    public Task<OfficeMutationResult> PermanentlyDeleteTransactionAsync(
         Guid transactionId,
         SessionState session,
         CancellationToken ct = default)
+        => ExecuteLocalAttachmentPurgeAsync(
+            (attachmentFiles, operationCt) =>
+                PermanentlyDeleteTransactionCoreAsync(
+                    transactionId,
+                    session,
+                    attachmentFiles,
+                    operationCt),
+            ct);
+
+    private async Task<OfficeMutationResult> PermanentlyDeleteTransactionCoreAsync(
+        Guid transactionId,
+        SessionState session,
+        AttachmentFileJournal attachmentFiles,
+        CancellationToken ct)
     {
         var transaction = await _db.Transactions
             .IgnoreQueryFilters()
@@ -2106,6 +4069,9 @@ public sealed partial class LocalStateService
                 return OfficeMutationResult.Denied("활성 연동 수금/지급 기록이 남아 있어 거래내역을 영구삭제할 수 없습니다.");
         }
 
+        foreach (var attachment in attachments)
+            StageLocalPurgeFile(attachmentFiles, attachment.StoredPath);
+
         var now = DateTime.UtcNow;
         if (linkedPayment is not null)
         {
@@ -2133,9 +4099,6 @@ public sealed partial class LocalStateService
         if (transaction.LinkedRentalBillingProfileId.HasValue && transaction.LinkedRentalBillingProfileId.Value != Guid.Empty)
             await RecalculateRentalSettlementAsync(transaction.LinkedRentalBillingProfileId.Value, transaction.LinkedRentalBillingRunId, ct);
 
-        foreach (var attachment in attachments)
-            TryDeleteAttachmentFile(attachment);
-
         return OfficeMutationResult.Ok(transaction.Id, "거래내역을 휴지통에서 영구삭제했습니다.");
     }
 
@@ -2145,9 +4108,9 @@ public sealed partial class LocalStateService
         CancellationToken ct)
     {
         var groupInvoices = await LoadInvoiceGroupForRecycleBinAsync(target, ct);
-        var groupScopeFailure = EnsureCanWriteInvoiceGroupForRecycleBin(groupInvoices, session, "복원");
-        if (groupScopeFailure is not null)
-            return (false, false, groupScopeFailure.Message);
+        var targetScope = await ResolveInvoiceVersionScopeKeyAsync(target, ct);
+        if (!CanWriteInvoiceVersionScope(targetScope, session))
+            return (false, false, "권한이 없어 전표 묶음의 모든 버전을 복원할 수 없습니다.");
 
         var now = DateTime.UtcNow;
         var customer = await _db.Customers
@@ -2172,8 +4135,8 @@ public sealed partial class LocalStateService
         }
 
         var latestVersionId = groupInvoices
-            .OrderByDescending(current => current.VersionNumber)
-            .ThenByDescending(current => current.UpdatedAtUtc)
+            .OrderByDescending(current => Math.Max(1, current.VersionNumber))
+            .ThenByDescending(current => current.Id)
             .Select(current => current.Id)
             .FirstOrDefault();
 
@@ -2204,6 +4167,9 @@ public sealed partial class LocalStateService
             ForceOverride = false
         }, ct);
 
+        if (AfterInvoiceGroupRestoreSavedAsyncForTesting is { } afterSave)
+            await afterSave(ct);
+
         return (true, customerRestored, string.Empty);
     }
 
@@ -2214,11 +4180,21 @@ public sealed partial class LocalStateService
         Guid? onlyPaymentId = null)
     {
         var groupInvoices = await LoadInvoiceGroupForRecycleBinAsync(target, ct);
+        var targetScope = await ResolveInvoiceVersionScopeKeyAsync(target, ct);
         var invoiceIds = groupInvoices.Select(current => current.Id).Distinct().ToList();
         if (invoiceIds.Count == 0)
             return (true, false, string.Empty);
 
         var invoiceMap = groupInvoices.ToDictionary(current => current.Id);
+        var rentalSettlementTargets = groupInvoices
+            .Where(current =>
+                current.LinkedRentalBillingProfileId.HasValue &&
+                current.LinkedRentalBillingProfileId.Value != Guid.Empty)
+            .Select(current => (
+                ProfileId: current.LinkedRentalBillingProfileId!.Value,
+                RunId: current.LinkedRentalBillingRunId))
+            .Distinct()
+            .ToList();
         var deletedPayments = await _db.Payments
             .IgnoreQueryFilters()
             .Where(current =>
@@ -2227,22 +4203,20 @@ public sealed partial class LocalStateService
                 (!onlyPaymentId.HasValue || current.Id == onlyPaymentId.Value))
             .ToListAsync(ct);
         if (deletedPayments.Count == 0)
+        {
+            foreach (var targetKey in rentalSettlementTargets)
+                await RecalculateRentalSettlementAsync(targetKey.ProfileId, targetKey.RunId, ct);
             return (true, false, string.Empty);
+        }
 
         var now = DateTime.UtcNow;
         var restoredOrRelinked = false;
-        var rentalSettlementTargets = new List<(Guid ProfileId, Guid? RunId)>();
-        foreach (var invoice in groupInvoices)
-        {
-            if (invoice.LinkedRentalBillingProfileId is Guid profileId && profileId != Guid.Empty)
-                rentalSettlementTargets.Add((profileId, invoice.LinkedRentalBillingRunId));
-        }
 
         foreach (var payment in deletedPayments)
         {
             if (!invoiceMap.TryGetValue(payment.InvoiceId, out var invoice))
                 continue;
-            if (!CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode, invoice.OfficeCode))
+            if (!CanWriteInvoiceVersionScope(targetScope, session))
                 return (false, false, "권한이 없어 연결 수금/지급 기록을 복원할 수 없습니다.");
 
             var linkedTransaction = await _db.Transactions
@@ -2368,30 +4342,10 @@ public sealed partial class LocalStateService
     }
 
     private Task<List<LocalInvoice>> LoadInvoiceGroupForRecycleBinAsync(LocalInvoice target, CancellationToken ct)
-    {
-        var versionGroupId = target.VersionGroupId == Guid.Empty ? target.Id : target.VersionGroupId;
-        return _db.Invoices
-            .IgnoreQueryFilters()
-            .Where(current =>
-                current.Id == target.Id ||
-                current.Id == versionGroupId ||
-                current.VersionGroupId == versionGroupId)
-            .ToListAsync(ct);
-    }
-
-    private static OfficeMutationResult? EnsureCanWriteInvoiceGroupForRecycleBin(
-        IEnumerable<LocalInvoice> invoiceGroup,
-        SessionState session,
-        string actionText)
-    {
-        foreach (var invoice in invoiceGroup)
-        {
-            if (!CanWriteOfficeScope(session, invoice.ResponsibleOfficeCode, invoice.OfficeCode))
-                return OfficeMutationResult.Denied($"권한이 없어 전표 묶음의 모든 버전을 {actionText}할 수 없습니다.");
-        }
-
-        return null;
-    }
+        => LoadExactInvoiceVersionChainAsync(
+            target,
+            asNoTracking: false,
+            ct);
 
     private static InvoiceSaveContext CreateServerPurgeInvoiceSaveContext() => new()
     {
@@ -3244,9 +5198,23 @@ public sealed partial class LocalStateService
         });
     }
 
-    private async Task<OfficeMutationResult> PermanentlyDeleteInventoryTransferAsync(
+    private Task<OfficeMutationResult> PermanentlyDeleteInventoryTransferAsync(
         Guid transferId,
         SessionState session,
+        CancellationToken ct)
+        => ExecuteLocalAttachmentPurgeAsync(
+            (attachmentFiles, operationCt) =>
+                PermanentlyDeleteInventoryTransferCoreAsync(
+                    transferId,
+                    session,
+                    attachmentFiles,
+                    operationCt),
+            ct);
+
+    private async Task<OfficeMutationResult> PermanentlyDeleteInventoryTransferCoreAsync(
+        Guid transferId,
+        SessionState session,
+        AttachmentFileJournal attachmentFiles,
         CancellationToken ct)
     {
         var transfer = await _db.InventoryTransfers
@@ -3261,8 +5229,9 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Denied("활성 상태 재고이동은 휴지통에서 영구삭제할 수 없습니다.");
 
         var now = DateTime.UtcNow;
-        if (!string.IsNullOrWhiteSpace(transfer.ReceiveEvidencePath))
-            TryDeleteLocalFile(transfer.ReceiveEvidencePath);
+        StageLocalPurgeFile(
+            attachmentFiles,
+            transfer.ReceiveEvidencePath);
 
         _db.InventoryTransferLines.RemoveRange(transfer.Lines);
         _db.InventoryTransfers.Remove(transfer);
@@ -3568,37 +5537,50 @@ public sealed partial class LocalStateService
         });
     }
 
-    private static void TryDeleteAttachmentFile(LocalTransactionAttachment attachment)
+    private static void StageOrDeleteServerPurgeFile(
+        AttachmentFileJournal attachmentFileJournal,
+        string? path,
+        bool deleteEmptyDirectory = false)
     {
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
         try
         {
-            if (!string.IsNullOrWhiteSpace(attachment.StoredPath) && File.Exists(attachment.StoredPath))
-                File.Delete(attachment.StoredPath);
-
-            var directory = Path.GetDirectoryName(attachment.StoredPath);
-            if (!string.IsNullOrWhiteSpace(directory) &&
-                Directory.Exists(directory) &&
-                !Directory.EnumerateFileSystemEntries(directory).Any())
-            {
-                Directory.Delete(directory, recursive: false);
-            }
+            attachmentFileJournal.StageDelete(path);
         }
-        catch
+        catch (AttachmentFileJournalContentionException)
         {
-            // 파일 정리 실패는 영구삭제 자체를 막지 않는다.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn(
+                "ATTACHMENT",
+                $"서버 영구삭제 파일을 안전한 첨부 루트에서 확인할 수 없어 파일은 보존하고 DB purge만 반영합니다. {ex.Message}");
         }
     }
 
-    private static void TryDeleteLocalFile(string? path)
+    private static void StageLocalPurgeFile(
+        AttachmentFileJournal attachmentFileJournal,
+        string? path)
     {
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
         try
         {
-            if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
-                File.Delete(path);
+            attachmentFileJournal.StageDelete(path);
         }
-        catch
+        catch (AttachmentFileJournalContentionException)
         {
-            // 파일 정리 실패는 영구삭제 자체를 막지 않는다.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn(
+                "ATTACHMENT",
+                $"로컬 영구삭제 파일을 안전한 첨부 루트에서 확인할 수 없어 파일은 보존하고 DB purge만 반영합니다. {ex.Message}");
         }
     }
 
@@ -3643,5 +5625,53 @@ public sealed partial class LocalStateService
             var kind when string.Equals(kind, PaymentFlowConstants.TransactionKindRentalReceipt, StringComparison.OrdinalIgnoreCase) => "렌탈수금",
             _ => trimmed
         };
+    }
+
+    private sealed record ConfirmedPurgeEntity(
+        LocalSyncEntity Entity,
+        IReadOnlyList<string> OutboxEntityNames);
+
+    private sealed record ConfirmedPurgeRow(
+        object Row,
+        Guid RowId);
+
+    internal sealed record ServerPurgeEntityFence(
+        string EntityType,
+        Guid EntityId,
+        string State);
+
+    internal sealed record ServerPurgeRowFence(
+        string RowType,
+        Guid RowId,
+        string State);
+
+    internal sealed record ServerPurgeOutboxFence(
+        Guid OutboxId,
+        string State);
+
+    public sealed class ServerPurgeConfirmationFence
+    {
+        internal ServerPurgeConfirmationFence(
+            RecycleBinEntityKind kind,
+            Guid entityId,
+            string businessDatabaseName,
+            IReadOnlyList<ServerPurgeEntityFence> entities,
+            IReadOnlyList<ServerPurgeRowFence> rows,
+            IReadOnlyList<ServerPurgeOutboxFence> outboxEntries)
+        {
+            Kind = kind;
+            EntityId = entityId;
+            BusinessDatabaseName = businessDatabaseName;
+            Entities = entities;
+            Rows = rows;
+            OutboxEntries = outboxEntries;
+        }
+
+        internal RecycleBinEntityKind Kind { get; }
+        internal Guid EntityId { get; }
+        internal string BusinessDatabaseName { get; }
+        internal IReadOnlyList<ServerPurgeEntityFence> Entities { get; }
+        internal IReadOnlyList<ServerPurgeRowFence> Rows { get; }
+        internal IReadOnlyList<ServerPurgeOutboxFence> OutboxEntries { get; }
     }
 }

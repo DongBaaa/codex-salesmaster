@@ -2,6 +2,7 @@
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
+using 거래플랜.Desktop.App.Infrastructure;
 
 namespace 거래플랜.Desktop.App.Services;
 
@@ -159,7 +160,7 @@ public static class PrintPreviewHelper
         root.Children.Add(viewer);
 
         previewWindow.Content = root;
-        previewWindow.ShowDialog();
+        DialogWindowCloseHelper.ShowDialog(previewWindow);
         return printed;
     }
 

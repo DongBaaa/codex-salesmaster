@@ -8,6 +8,8 @@ namespace GeoraePlan.Mobile.App.ViewModels;
 public sealed class InvoicesViewModel : ObservableObject
 {
     private readonly GeoraePlanApiClient _api;
+    private readonly SessionStore _sessionStore;
+    private readonly MobileOwnerOperationGate _ownerOperations;
 
     private string _searchText = string.Empty;
     private string _statusMessage = "전표를 불러오세요.";
@@ -15,9 +17,14 @@ public sealed class InvoicesViewModel : ObservableObject
     private DateTime? _lastRefreshUtc;
     private InvoiceDto? _selectedInvoice;
 
-    public InvoicesViewModel(GeoraePlanApiClient api)
+    public InvoicesViewModel(
+        GeoraePlanApiClient api,
+        SessionStore sessionStore)
     {
         _api = api;
+        _sessionStore = sessionStore;
+        _ownerOperations =
+            new MobileOwnerOperationGate(sessionStore);
         RefreshCommand = new AsyncCommand(RefreshAsync);
     }
 
@@ -30,6 +37,7 @@ public sealed class InvoicesViewModel : ObservableObject
         get => _searchText;
         set
         {
+            EnsureCurrentOwner();
             if (!SetProperty(ref _searchText, value))
                 return;
 
@@ -108,37 +116,72 @@ public sealed class InvoicesViewModel : ObservableObject
     public bool NeedsRefresh(TimeSpan maxAge)
         => !_lastRefreshUtc.HasValue || DateTime.UtcNow - _lastRefreshUtc.Value >= maxAge;
 
+    public MobileSessionOwner EnsureCurrentOwner()
+    {
+        var owner = _ownerOperations.EnsureCurrentOwner(
+            ResetForOwner);
+        IsBusy = _ownerOperations.IsBusy;
+        return owner;
+    }
+
+    public bool IsCurrentOwner(MobileSessionOwner owner)
+        => _ownerOperations.IsCurrent(owner);
+
     public async Task RefreshAsync()
     {
-        if (IsBusy)
+        var operation = _ownerOperations.TryBegin(
+            ResetForOwner,
+            deferRefreshWhenBusy: true);
+        IsBusy = _ownerOperations.IsBusy;
+        if (operation is null)
             return;
 
+        var runDeferredRefresh = false;
+        var searchTextSnapshot = SearchText;
+        var selectedInvoiceId = SelectedInvoice?.Id;
+        var sessionSnapshot = _sessionStore.GetSnapshot();
         try
         {
-            IsBusy = true;
             StatusMessage = "전표를 조회하고 있습니다.";
-            var result = await _api.GetInvoicesAsync(SearchText);
-            ReplaceInvoices(result);
+            var result = await _api.GetInvoicesAsync(
+                searchTextSnapshot);
+            if (!_ownerOperations.CanCommit(operation))
+                return;
+
+            ReplaceInvoices(result.Where(invoice =>
+                MobileSessionScopeFilter.CanAccessInvoice(
+                    sessionSnapshot,
+                    invoice)));
 
             _lastRefreshUtc = DateTime.UtcNow;
             StatusMessage = $"전표 {Invoices.Count:N0}건";
 
-            if (SelectedInvoice is not null)
+            if (selectedInvoiceId.HasValue)
             {
-                var selectedRow = Invoices.FirstOrDefault(invoice => invoice.Id == SelectedInvoice.Id);
+                var selectedRow = Invoices.FirstOrDefault(
+                    invoice => invoice.Id == selectedInvoiceId.Value);
                 if (selectedRow is not null)
-                    await SelectInvoiceAsync(selectedRow);
+                    await LoadInvoiceDetailAsync(
+                        operation,
+                        selectedRow,
+                        sessionSnapshot);
                 else
-                    ClearSelectedInvoice();
+                    ClearSelectedInvoiceCore();
             }
         }
         catch (Exception ex)
         {
-            StatusMessage = $"전표 조회 실패: {ex.Message}";
+            if (_ownerOperations.CanCommit(operation))
+                StatusMessage = $"전표 조회 실패: {ex.Message}";
         }
         finally
         {
-            IsBusy = false;
+            runDeferredRefresh = _ownerOperations.Complete(
+                operation,
+                ResetForOwner);
+            IsBusy = _ownerOperations.IsBusy;
+            if (runDeferredRefresh)
+                await RefreshAsync();
         }
     }
 
@@ -147,42 +190,58 @@ public sealed class InvoicesViewModel : ObservableObject
         if (invoice is null)
             return;
 
+        var operation = _ownerOperations.TryBegin(
+            ResetForOwner,
+            deferRefreshWhenBusy: false);
+        IsBusy = _ownerOperations.IsBusy;
+        if (operation is null)
+            return;
+
+        var currentInvoice = Invoices.FirstOrDefault(
+            candidate => candidate.Id == invoice.Id);
+        if (currentInvoice is null)
+        {
+            _ownerOperations.Complete(
+                operation,
+                ResetForOwner);
+            IsBusy = _ownerOperations.IsBusy;
+            return;
+        }
+
+        var runDeferredRefresh = false;
+        var sessionSnapshot = _sessionStore.GetSnapshot();
         try
         {
-            IsBusy = true;
-            StatusMessage = $"{invoice.CustomerDisplayName} 전표 상세를 불러오고 있습니다.";
-
-            var detail = invoice.Id != Guid.Empty
-                ? await _api.GetInvoiceByIdAsync(invoice.Id)
-                : null;
-
-            var selected = detail ?? invoice.Invoice;
-            if (string.IsNullOrWhiteSpace(selected.CustomerName))
-                selected.CustomerName = invoice.CustomerDisplayName;
-
-            SelectedInvoice = selected;
-            ReplaceSelectedInvoiceLines(selected.Lines);
-            ReplaceSelectedInvoicePayments(selected.Payments);
-            StatusMessage = $"{SelectedInvoiceCustomerName} 전표 상세를 확인하세요.";
+            await LoadInvoiceDetailAsync(
+                operation,
+                currentInvoice,
+                sessionSnapshot);
         }
         catch (Exception ex)
         {
-            var fallbackInvoice = invoice.Invoice;
-            if (string.IsNullOrWhiteSpace(fallbackInvoice.CustomerName))
-                fallbackInvoice.CustomerName = invoice.CustomerDisplayName;
-
-            SelectedInvoice = fallbackInvoice;
-            ReplaceSelectedInvoiceLines(fallbackInvoice.Lines);
-            ReplaceSelectedInvoicePayments(fallbackInvoice.Payments);
-            StatusMessage = $"전표 상세 조회 실패: {ex.Message}";
+            if (_ownerOperations.CanCommit(operation))
+                ApplyInvoiceDetailFallback(
+                    currentInvoice,
+                    ex);
         }
         finally
         {
-            IsBusy = false;
+            runDeferredRefresh = _ownerOperations.Complete(
+                operation,
+                ResetForOwner);
+            IsBusy = _ownerOperations.IsBusy;
+            if (runDeferredRefresh)
+                await RefreshAsync();
         }
     }
 
     public void ClearSelectedInvoice()
+    {
+        EnsureCurrentOwner();
+        ClearSelectedInvoiceCore();
+    }
+
+    private void ClearSelectedInvoiceCore()
     {
         SelectedInvoice = null;
         ReplaceSelectedInvoiceLines(Array.Empty<InvoiceLineDto>());
@@ -191,16 +250,81 @@ public sealed class InvoicesViewModel : ObservableObject
 
     public bool TryNavigateBackOneStep()
     {
+        EnsureCurrentOwner();
         if (!HasSelectedInvoice)
             return false;
 
-        ClearSelectedInvoice();
+        ClearSelectedInvoiceCore();
         StatusMessage = $"{Invoices.Count:N0}건 전표 목록으로 돌아왔습니다.";
         return true;
     }
 
     public void ClearSearch()
-        => SearchText = string.Empty;
+    {
+        EnsureCurrentOwner();
+        SearchText = string.Empty;
+    }
+
+    private async Task LoadInvoiceDetailAsync(
+        MobileOwnerUiOperation operation,
+        InvoiceListItem invoice,
+        SessionSnapshot sessionSnapshot)
+    {
+        if (!_ownerOperations.CanCommit(operation))
+            return;
+
+        StatusMessage =
+            $"{invoice.CustomerDisplayName} 전표 상세를 불러오고 있습니다.";
+        var detail = invoice.Id != Guid.Empty
+            ? await _api.GetInvoiceByIdAsync(invoice.Id)
+            : null;
+        if (!_ownerOperations.CanCommit(operation))
+            return;
+
+        var selected = detail ?? invoice.Invoice;
+        if (!MobileSessionScopeFilter.CanAccessInvoice(
+                sessionSnapshot,
+                selected))
+        {
+            ClearSelectedInvoiceCore();
+            StatusMessage =
+                "현재 계정의 사업장 범위 밖 전표는 표시할 수 없습니다.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(selected.CustomerName))
+            selected.CustomerName = invoice.CustomerDisplayName;
+
+        SelectedInvoice = selected;
+        ReplaceSelectedInvoiceLines(selected.Lines);
+        ReplaceSelectedInvoicePayments(selected.Payments);
+        StatusMessage =
+            $"{SelectedInvoiceCustomerName} 전표 상세를 확인하세요.";
+    }
+
+    private void ApplyInvoiceDetailFallback(
+        InvoiceListItem invoice,
+        Exception exception)
+    {
+        var fallbackInvoice = invoice.Invoice;
+        if (string.IsNullOrWhiteSpace(fallbackInvoice.CustomerName))
+            fallbackInvoice.CustomerName = invoice.CustomerDisplayName;
+
+        SelectedInvoice = fallbackInvoice;
+        ReplaceSelectedInvoiceLines(fallbackInvoice.Lines);
+        ReplaceSelectedInvoicePayments(fallbackInvoice.Payments);
+        StatusMessage =
+            $"전표 상세 조회 실패: {exception.Message}";
+    }
+
+    private void ResetForOwner()
+    {
+        _lastRefreshUtc = null;
+        SearchText = string.Empty;
+        Invoices.Clear();
+        ClearSelectedInvoiceCore();
+        StatusMessage = "전표를 불러오세요.";
+    }
 
     private void ReplaceInvoices(IEnumerable<InvoiceDto> invoices)
     {

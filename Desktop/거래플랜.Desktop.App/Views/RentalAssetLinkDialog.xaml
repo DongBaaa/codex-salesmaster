@@ -175,6 +175,7 @@
                         <DataGridTextColumn Header="현재 거래처" Binding="{Binding CurrentCustomerName}" Width="170"/>
                         <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocation}" Width="180"/>
                         <DataGridTextColumn Header="상태" Binding="{Binding AssetStatus}" Width="84"/>
+                        <DataGridTextColumn Header="연결방식" Binding="{Binding LinkModeDisplay}" Width="135"/>
                         <DataGridTextColumn Header="현재 청구프로필" Binding="{Binding CurrentBillingProfileDisplay}" Width="220"/>
                         <DataGridTextColumn Header="담당지점" Binding="{Binding ResponsibleOfficeName}" Width="110"/>
                         <DataGridTextColumn Header="관리회사" Binding="{Binding ManagementCompanyName}" Width="110"/>
@@ -188,7 +189,7 @@
                     <StackPanel>
                         <TextBlock Text="선택 자산 상세정보" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,10"/>
 
-                        <Grid>
+                        <Grid IsEnabled="{Binding SelectedAsset.CanEditInLinkDialog}">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="120"/>
                                 <ColumnDefinition Width="*"/>
@@ -276,9 +277,10 @@
                         <Border Background="#223754" CornerRadius="6" Padding="10" Margin="0,10,0,0">
                             <StackPanel>
                                 <TextBlock Text="안내" Foreground="#4FC3F7" FontWeight="Bold"/>
-                                <TextBlock Text="선택한 장비를 추가하면 현재 거래처에 연결되고, 설치현황 거래처명도 메인 거래처명 기준으로 함께 정리됩니다." Margin="0,6,0,0" TextWrapping="Wrap"/>
+                                <TextBlock Text="같은 업체 장비는 적용 즉시 현재 거래처에 연결되고, 이 창에서 수정한 상세정보도 렌탈 자산/설치현황 원장에 함께 저장됩니다." Margin="0,6,0,0" TextWrapping="Wrap"/>
                                 <TextBlock Text="{Binding SelectionSummary}" Foreground="#81D4FA" FontWeight="Bold" Margin="0,6,0,0" TextWrapping="Wrap"/>
                                 <TextBlock Text="다른 담당지점 자산을 선택하면 청구 담당지점만 현재 프로필로 변경하고, 관리회사/기관 소속은 유지합니다." Foreground="#C5E1A5" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                                <TextBlock Text="'참조 전용' 자산은 업체 간 원장 혼합을 막기 위해 청구 표시품목에만 포함되며, 상세정보와 원래 연결은 변경하지 않습니다." Foreground="#FFCC80" Margin="0,6,0,0" TextWrapping="Wrap"/>
                                 <TextBlock Text="다른 청구프로필에 연결된 장비를 선택하면 저장 전에 재연결 여부를 다시 확인합니다." Foreground="#FFCC80" Margin="0,6,0,0" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
@@ -290,7 +292,7 @@
         <Border Grid.Row="3" Margin="0,10,0,0" Background="#122038" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="10">
             <DockPanel>
                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
-                    <Button Content="{Binding ConfirmButtonLabel}" Style="{StaticResource TradePlanPrimaryButtonStyle}" Margin="0,0,8,0" Click="ConfirmButton_Click" IsEnabled="{Binding CanConfirm}" IsDefault="True" ToolTip="선택한 장비를 현재 청구에 추가합니다."/>
+                    <Button Content="{Binding ConfirmButtonLabel}" Style="{StaticResource TradePlanPrimaryButtonStyle}" Margin="0,0,8,0" Click="ConfirmButton_Click" IsEnabled="{Binding CanConfirm}" IsDefault="True" ToolTip="선택한 장비를 현재 청구에 적용하고 청구 프로필과 자산 원장에 저장합니다."/>
                     <Button Content="취소" Style="{StaticResource TradePlanSecondaryButtonStyle}" Click="CancelButton_Click" IsCancel="True"/>
                 </StackPanel>
                 <ProgressBar Width="220" Height="12" IsIndeterminate="{Binding IsBusy}" Margin="0,0,12,0"/>

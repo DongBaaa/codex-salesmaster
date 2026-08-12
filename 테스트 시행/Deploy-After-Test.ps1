@@ -21,6 +21,11 @@ param(
     [string]$PlatformStateRoot = '',
     [switch]$SkipPreDeployOperationalGate,
     [switch]$SkipPostDeployOperationalGate,
+    [switch]$AllowLegacyPreDeployCompatibilitySummary,
+    [ValidateSet('AuditOnly', 'StrictBlock')]
+    [string]$ExpectedClientCompatibilityMode = 'AuditOnly',
+    [ValidateRange(0, 2)]
+    [int]$ExpectedClientCompatibilityEnabledPolicyCount = 0,
     [switch]$FailOnOperationalWarnings,
     [switch]$AcceptRentalTemplateItemReferenceRisk,
     [switch]$SkipAndroidSigningContinuityCheck,
@@ -133,6 +138,51 @@ function Get-FirstConfiguredValue {
     return ''
 }
 
+function New-ClientCompatibilityGateArguments {
+    param(
+        [ValidateSet('AuditOnly', 'StrictBlock')]
+        [string]$ExpectedClientCompatibilityMode = 'AuditOnly',
+        [ValidateRange(0, 2)]
+        [int]$ExpectedClientCompatibilityEnabledPolicyCount = 0,
+        [switch]$AllowMissingClientCompatibilitySummary
+    )
+
+    $arguments = @(
+        '-ExpectedClientCompatibilityMode',
+        $ExpectedClientCompatibilityMode,
+        '-ExpectedClientCompatibilityEnabledPolicyCount',
+        $ExpectedClientCompatibilityEnabledPolicyCount.ToString(
+            [System.Globalization.CultureInfo]::InvariantCulture))
+    if ($AllowMissingClientCompatibilitySummary) {
+        $arguments += '-AllowMissingClientCompatibilitySummary'
+    }
+
+    return $arguments
+}
+
+function New-LinuxPublisherCompatibilityArguments {
+    param(
+        [ValidateSet('AuditOnly', 'StrictBlock')]
+        [string]$ExpectedClientCompatibilityMode = 'AuditOnly',
+        [ValidateRange(0, 2)]
+        [int]$ExpectedClientCompatibilityEnabledPolicyCount = 0,
+        [switch]$AllowLegacyPreDeployCompatibilitySummary
+    )
+
+    $arguments =
+        New-ClientCompatibilityGateArguments `
+            -ExpectedClientCompatibilityMode `
+                $ExpectedClientCompatibilityMode `
+            -ExpectedClientCompatibilityEnabledPolicyCount `
+                $ExpectedClientCompatibilityEnabledPolicyCount
+    if ($AllowLegacyPreDeployCompatibilitySummary) {
+        $arguments +=
+            '-AllowLegacyPreDeployCompatibilitySummary'
+    }
+
+    return $arguments
+}
+
 function Invoke-PreDeployOperationalGate {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
@@ -141,6 +191,11 @@ function Invoke-PreDeployOperationalGate {
         [Parameter(Mandatory = $true)][string]$OutputDirectory,
         [string]$SecretPath = '',
         [string]$PlatformStateRoot = '',
+        [bool]$AllowMissingClientCompatibilitySummary = $false,
+        [ValidateSet('AuditOnly', 'StrictBlock')]
+        [string]$ExpectedClientCompatibilityMode = 'AuditOnly',
+        [ValidateRange(0, 2)]
+        [int]$ExpectedClientCompatibilityEnabledPolicyCount = 0,
         [string[]]$AllowedIntegrityWarningCodes = @()
     )
 
@@ -158,6 +213,13 @@ function Invoke-PreDeployOperationalGate {
         '-FailOnIntegrityWarnings',
         '-SkipWriteSafetyChecks'
     )
+    $arguments +=
+        New-ClientCompatibilityGateArguments `
+            -ExpectedClientCompatibilityMode `
+                $ExpectedClientCompatibilityMode `
+            -ExpectedClientCompatibilityEnabledPolicyCount `
+                $ExpectedClientCompatibilityEnabledPolicyCount `
+            -AllowMissingClientCompatibilitySummary:$AllowMissingClientCompatibilitySummary
     if (-not [string]::IsNullOrWhiteSpace($PlatformStateRoot)) {
         $arguments += @('-PlatformStateRoot', $PlatformStateRoot)
     }
@@ -463,6 +525,9 @@ if (-not $SkipLinuxPc) {
             -OutputDirectory $preDeployOperationalGateDirectory `
             -SecretPath $PreDeploySecretPath `
             -PlatformStateRoot $PlatformStateRoot `
+            -AllowMissingClientCompatibilitySummary ([bool]$AllowLegacyPreDeployCompatibilitySummary) `
+            -ExpectedClientCompatibilityMode $ExpectedClientCompatibilityMode `
+            -ExpectedClientCompatibilityEnabledPolicyCount $ExpectedClientCompatibilityEnabledPolicyCount `
             -AllowedIntegrityWarningCodes $PreDeployAllowedIntegrityWarningCodes
     }
     else {
@@ -541,10 +606,14 @@ if (-not $SkipLinuxPc) {
     Write-Info '데스크톱 설치 패키지를 생성합니다.'
     Invoke-PowerShellFile -FilePath $buildInstallerScript -Arguments @('-ProjectRoot', $ProjectRoot)
 
-    Write-Info '메인(live) 업데이트 자산(stable 채널)을 생성합니다.'
-    Invoke-PowerShellFile -FilePath $updateAssetsScript -Arguments @('-ProjectRoot', $ProjectRoot, '-Channel', 'stable')
-
     $linuxArgs = @('-ProjectRoot', $ProjectRoot, '-MirrorToLive')
+    $linuxArgs +=
+        New-LinuxPublisherCompatibilityArguments `
+            -ExpectedClientCompatibilityMode `
+                $ExpectedClientCompatibilityMode `
+            -ExpectedClientCompatibilityEnabledPolicyCount `
+                $ExpectedClientCompatibilityEnabledPolicyCount `
+            -AllowLegacyPreDeployCompatibilitySummary:$AllowLegacyPreDeployCompatibilitySummary
     if ($AllowLegacyLiveMirror) {
         $linuxArgs += '-AllowLegacyLiveMirror'
     }

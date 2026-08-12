@@ -127,12 +127,25 @@ public sealed class SyncDiagnosticsService
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     private readonly SessionState _session;
+    private readonly Func<LocalDbContext> _dbContextFactory;
 
     public event Action? DiagnosticsChanged;
 
     public SyncDiagnosticsService(SessionState session)
+        : this(
+            session,
+            static () => new LocalDbContext())
+    {
+    }
+
+    internal SyncDiagnosticsService(
+        SessionState session,
+        Func<LocalDbContext> dbContextFactory)
     {
         _session = session;
+        _dbContextFactory = dbContextFactory ??
+            throw new ArgumentNullException(
+                nameof(dbContextFactory));
     }
 
     public async Task RecordIssueAsync(
@@ -479,7 +492,8 @@ public sealed class SyncDiagnosticsService
         return setting?.Value;
     }
 
-    private static LocalDbContext CreateDbContext() => new();
+    private LocalDbContext CreateDbContext() =>
+        _dbContextFactory();
 
     private async Task<int> CountScopedDirtyTransactionAttachmentsAsync(LocalDbContext db, CancellationToken ct)
     {
