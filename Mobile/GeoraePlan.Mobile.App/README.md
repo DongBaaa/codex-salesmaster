@@ -3,8 +3,8 @@
 - 프로젝트 파일: `D:\거래플랜\Mobile\GeoraePlan.Mobile.App\GeoraePlan.Mobile.App.csproj`
 - 앱 ID: `kr.georaeplan.mobile`
 - Android 현재 소스: `0.2.82`, versionCode `193`
-- 공개 stable 표시 버전: `0.2.82`; 실제 APK versionCode는 게시 연속성 게이트에서 `193`으로 확인
-- 연동 Windows 기준: 현재 소스 및 공개 stable `1.1.691` / FileVersion `1.1.691.0`
+- 공개 stable 표시 버전: `0.2.82`; APK 내부 versionCode는 매니페스트에 없으며 게시 연속성 게이트 증거로 별도 확인
+- 연동 Windows 기준: 현재 소스 `1.1.692` / FileVersion `1.1.692.0` / 공개 stable `1.1.691`
 
 Android 현재 소스 versionCode는 `193`입니다.
 공개 APK의 내부 versionCode는 게시 연속성 게이트에서 검사하며, 새 후보는 그 값보다 큰 versionCode, Release signing, 기존 stable과 서명 연속성, emulator/실기기 `adb install -r` 검증이 필요합니다.
@@ -45,8 +45,9 @@ Android 현재 소스 versionCode는 `193`입니다.
 ## Android 산출물 기준
 - 저장소에서 재현 가능한 공개 버전·파일명·SHA-256 기준: `D:\거래플랜\배포\stable.json`의 `android` 노드
 - 게시 과정에서 생성되는 `D:\거래플랜\배포\업데이트\manifest\stable.json`과 live manifest는 별도 운영 산출물로 확인
-- 2026-07-28 공개 stable 표시 버전: `0.2.81`; 실제 APK 내부 versionCode는 게시 연속성 게이트에서 확인
-- Android 현재 소스 및 공개 stable: `0.2.82`, versionCode `193`; 다음 정식 배포는 표시 버전과 versionCode를 함께 증가시켜야 합니다.
+- 2026-07-28 당시 배포 기록의 Android 표시 버전: `0.2.81`; 실제 APK 내부 versionCode는 게시 연속성 게이트에서 확인
+- Android 공개 stable 표시 버전: `0.2.82`
+- Android 현재 소스: `0.2.82`, versionCode `193`; 다음 정식 배포는 표시 버전과 versionCode를 함께 증가시켜야 합니다.
 - 서명 키·keystore 비밀번호·토큰은 README, 로그, Git에 기록하지 않습니다.
 
 ## 관련 문서

@@ -13,12 +13,12 @@
 ## 현재 버전 상태
 ### 공개 stable
 - `[공개]` Windows PC `1.1.691`
-- `[공개]` Android 표시 버전은 `0.2.82`, 실제 APK versionCode는 `193`입니다.
+- `[공개]` Android 표시 버전은 `0.2.82`입니다. APK 내부 versionCode는 공개 매니페스트에 없으므로 공개값으로 단정하지 않습니다.
 - `[공개]` 2026-08-12 확인에서 `trade.2884.kr/healthz`와 `/readyz`는 HTTP 200이며 `fileDeletionLeaseProtocol=shared-flock-v1`입니다.
 - 저장소에서 재현 가능한 공개 버전·파일명·SHA-256 기준은 `D:\거래플랜\배포\stable.json`입니다. `배포\업데이트\manifest\stable.json`은 게시 과정의 로컬 산출물이며 live manifest와는 별도로 확인합니다.
 
 ### 현재 소스·테스트판
-- `[로컬검증]` Windows PC 소스 `1.1.691`, FileVersion `1.1.691.0`
+- `[로컬검증]` Windows PC 소스 `1.1.692`, FileVersion `1.1.692.0` (공개 stable `1.1.691`보다 높은 다음 업데이트 후보)
 - `[로컬검증]` Android 소스 `0.2.82`, versionCode `193`
 - `[로컬검증]` 서버 전체 850건 중 840건 통과, PostgreSQL 환경 의존 10건 건너뜀, 실패 0
 - `[로컬검증]` 별도 ephemeral PostgreSQL 전체 12/12, 데스크톱 전체 1,462/1,462 통과
