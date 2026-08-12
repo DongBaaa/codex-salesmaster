@@ -10,6 +10,7 @@ public sealed class LoginPage : ContentPage
     public LoginPage()
     {
         GeoraePlanTheme.ApplyPage(this, "로그인");
+        NavigationPage.SetHasNavigationBar(this, false);
 
         _viewModel = ServiceHelper.GetRequiredService<LoginViewModel>();
         _viewModel.LoginSucceeded -= HandleLoginSucceeded;
@@ -39,28 +40,20 @@ public sealed class LoginPage : ContentPage
         var rememberUsernameLabel = GeoraePlanTheme.CreateBodyText("아이디 저장", muted: false);
         var rememberPasswordLabel = GeoraePlanTheme.CreateBodyText("비밀번호 저장", muted: false);
 
-        var rememberGrid = new Grid
+        var rememberUsernameRow = new HorizontalStackLayout
         {
-            ColumnDefinitions =
-            {
-                new ColumnDefinition(GridLength.Auto),
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(new GridLength(12)),
-                new ColumnDefinition(GridLength.Auto),
-                new ColumnDefinition(GridLength.Star)
-            },
-            ColumnSpacing = 0,
-            Margin = new Thickness(0, 4, 0, 0)
+            Spacing = 4,
+            Children = { rememberUsernameCheck, rememberUsernameLabel }
         };
-
-        rememberGrid.Add(rememberUsernameCheck);
-        Grid.SetColumn(rememberUsernameCheck, 0);
-        rememberGrid.Add(rememberUsernameLabel);
-        Grid.SetColumn(rememberUsernameLabel, 1);
-        rememberGrid.Add(rememberPasswordCheck);
-        Grid.SetColumn(rememberPasswordCheck, 3);
-        rememberGrid.Add(rememberPasswordLabel);
-        Grid.SetColumn(rememberPasswordLabel, 4);
+        var rememberPasswordRow = new HorizontalStackLayout
+        {
+            Spacing = 4,
+            Children = { rememberPasswordCheck, rememberPasswordLabel }
+        };
+        var rememberGrid = GeoraePlanTheme.CreateWrappingActions(
+            rememberUsernameRow,
+            rememberPasswordRow);
+        rememberGrid.Margin = new Thickness(0, 4, 0, 0);
 
         var loginButton = GeoraePlanTheme.CreateButton("로그인", GeoraePlanTheme.Accent);
         loginButton.SetBinding(Button.CommandProperty, nameof(LoginViewModel.LoginCommand));

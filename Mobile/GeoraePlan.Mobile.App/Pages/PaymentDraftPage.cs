@@ -78,7 +78,7 @@ public sealed class PaymentDraftPage : ContentPage
         var attachmentsView = new CollectionView
         {
             SelectionMode = SelectionMode.None,
-            HeightRequest = 180,
+            MinimumHeightRequest = 180,
             BackgroundColor = Colors.Transparent,
             EmptyView = GeoraePlanTheme.CreateBodyText("첨부된 파일이 없습니다."),
             ItemTemplate = new DataTemplate(() =>
@@ -91,7 +91,7 @@ public sealed class PaymentDraftPage : ContentPage
                 metaLabel.SetBinding(Label.TextProperty, new Binding(path: ".", converter: new AttachmentSummaryConverter()));
 
                 var openButton = GeoraePlanTheme.CreateButton("열기", GeoraePlanTheme.SecondaryButton);
-                openButton.HeightRequest = 38;
+                openButton.MinimumHeightRequest = 38;
                 openButton.Clicked += (sender, _) =>
                     MobileErrorHandler.FireAndForget(
                         async () =>
@@ -102,7 +102,7 @@ public sealed class PaymentDraftPage : ContentPage
                         "수금/지급 입력 작업");
 
                 var deleteButton = GeoraePlanTheme.CreateButton("삭제", GeoraePlanTheme.Danger);
-                deleteButton.HeightRequest = 38;
+                deleteButton.MinimumHeightRequest = 38;
                 deleteButton.Clicked += (sender, _) =>
                     MobileErrorHandler.FireAndForget(
                         async () =>

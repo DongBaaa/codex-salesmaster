@@ -35,7 +35,7 @@ public sealed class CustomersPage : ContentPage
         var canCreateInvoices = session.CanCreateInvoices;
 
         var searchEntry = GeoraePlanTheme.CreateCompactEntry("거래처명 / 전화 / 사업자번호");
-        searchEntry.HeightRequest = 42;
+        searchEntry.MinimumHeightRequest = 42;
         searchEntry.ReturnType = ReturnType.Search;
         searchEntry.SetBinding(Entry.TextProperty, nameof(CustomersViewModel.SearchText));
         searchEntry.Completed += (_, _) =>
@@ -52,7 +52,7 @@ public sealed class CustomersPage : ContentPage
                 "거래처 작업");
 
         var clearSearchButton = GeoraePlanTheme.CreateCompactButton("초기화", GeoraePlanTheme.SecondaryButton);
-        clearSearchButton.WidthRequest = 78;
+        clearSearchButton.MinimumWidthRequest = 78;
         clearSearchButton.SetBinding(VisualElement.IsVisibleProperty, nameof(CustomersViewModel.HasSearchText));
         clearSearchButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
@@ -64,42 +64,21 @@ public sealed class CustomersPage : ContentPage
                 "거래처 작업");
 
         var refreshButton = GeoraePlanTheme.CreateCompactButton("조회", GeoraePlanTheme.SecondaryButton);
-        refreshButton.WidthRequest = 86;
+        refreshButton.MinimumWidthRequest = 86;
         refreshButton.SetBinding(Button.CommandProperty, nameof(CustomersViewModel.RefreshCommand));
 
         var newCustomerButton = GeoraePlanTheme.CreateCompactButton("신규", GeoraePlanTheme.Success);
-        newCustomerButton.WidthRequest = 76;
+        newCustomerButton.MinimumWidthRequest = 76;
         newCustomerButton.IsVisible = canEditCustomers;
         newCustomerButton.IsEnabled = canEditCustomers;
         newCustomerButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(OpenNewCustomerAsync, "거래처 신규등록");
 
-        var searchActions = new HorizontalStackLayout
-        {
-            Spacing = 8,
-            HorizontalOptions = LayoutOptions.End,
-            VerticalOptions = LayoutOptions.Center,
-            Children =
-            {
-                newCustomerButton,
-                clearSearchButton,
-                refreshButton
-            }
-        };
-
-        var searchGrid = new Grid
-        {
-            HorizontalOptions = LayoutOptions.Fill,
-            ColumnSpacing = 8,
-            ColumnDefinitions =
-            {
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Auto)
-            }
-        };
-        searchEntry.HorizontalOptions = LayoutOptions.Fill;
-        searchGrid.Add(searchEntry);
-        searchGrid.Add(searchActions, 1, 0);
+        var searchGrid = GeoraePlanTheme.CreateStackedActionLayout(
+            searchEntry,
+            newCustomerButton,
+            clearSearchButton,
+            refreshButton);
 
         var activity = new ActivityIndicator { Color = GeoraePlanTheme.Accent, HeightRequest = 18 };
         activity.SetBinding(ActivityIndicator.IsRunningProperty, nameof(CustomersViewModel.IsBusy));
@@ -134,24 +113,15 @@ public sealed class CustomersPage : ContentPage
         var closeDetailButton = GeoraePlanTheme.CreateCompactButton("닫기", GeoraePlanTheme.SecondaryButton);
         closeDetailButton.Clicked += (_, _) => _viewModel.ClearSelectedCustomer();
 
-        var detailActions = new HorizontalStackLayout
+        var detailActions = GeoraePlanTheme.CreateWrappingActions(
+            editCustomerButton,
+            deleteCustomerButton,
+            closeDetailButton);
+        var detailHeader = new VerticalStackLayout
         {
-            Spacing = 6,
-            HorizontalOptions = LayoutOptions.End,
-            Children = { editCustomerButton, deleteCustomerButton, closeDetailButton }
+            Spacing = 8,
+            Children = { detailHeaderTitle, detailActions }
         };
-
-        var detailHeader = new Grid
-        {
-            ColumnSpacing = 8,
-            ColumnDefinitions =
-            {
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Auto)
-            }
-        };
-        detailHeader.Add(detailHeaderTitle);
-        detailHeader.Add(detailActions, 1, 0);
 
         var detailActivity = new ActivityIndicator { Color = GeoraePlanTheme.Accent, HeightRequest = 18 };
         detailActivity.SetBinding(ActivityIndicator.IsRunningProperty, nameof(CustomersViewModel.IsDetailBusy));
@@ -353,23 +323,12 @@ public sealed class CustomersPage : ContentPage
         };
         RefreshDetailTabButtons();
 
-        var tabGrid = new Grid
-        {
-            ColumnSpacing = 8,
-            ColumnDefinitions =
-            {
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Star)
-            }
-        };
-        tabGrid.Add(summaryTabButton);
-        tabGrid.Add(contractsTabButton, 1, 0);
-        tabGrid.Add(invoicesTabButton, 2, 0);
-        tabGrid.Add(paymentsTabButton, 3, 0);
-        tabGrid.Add(rentalsTabButton, 4, 0);
+        var tabGrid = GeoraePlanTheme.CreateHorizontalActionScroller(
+            summaryTabButton,
+            contractsTabButton,
+            invoicesTabButton,
+            paymentsTabButton,
+            rentalsTabButton);
 
         var detailCard = GeoraePlanTheme.CreateCompactCard(
             detailHeader,
@@ -698,24 +657,15 @@ try
         var closeDetailButton = GeoraePlanTheme.CreateCompactButton("접기", GeoraePlanTheme.SecondaryButton);
         closeDetailButton.Clicked += (_, _) => _viewModel.ClearSelectedCustomer();
 
-        var detailActions = new HorizontalStackLayout
+        var detailActions = GeoraePlanTheme.CreateWrappingActions(
+            editCustomerButton,
+            deleteCustomerButton,
+            closeDetailButton);
+        var header = new VerticalStackLayout
         {
-            Spacing = 6,
-            HorizontalOptions = LayoutOptions.End,
-            Children = { editCustomerButton, deleteCustomerButton, closeDetailButton }
+            Spacing = 8,
+            Children = { menuTitle, detailActions }
         };
-
-        var header = new Grid
-        {
-            ColumnSpacing = 8,
-            ColumnDefinitions =
-            {
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Auto)
-            }
-        };
-        header.Add(menuTitle);
-        header.Add(detailActions, 1, 0);
 
         var summaryTabButton = CreateInlineDetailTabButton("기본", CustomerDetailSection.Summary);
         summaryTabButton.Clicked += (_, _) => _viewModel.ShowSummaryTab();
@@ -728,23 +678,12 @@ try
         var rentalsTabButton = CreateInlineDetailTabButton("렌탈", CustomerDetailSection.Rentals);
         rentalsTabButton.Clicked += (_, _) => _viewModel.ShowRentalsTab();
 
-        var tabGrid = new Grid
-        {
-            ColumnSpacing = 6,
-            ColumnDefinitions =
-            {
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Star)
-            }
-        };
-        tabGrid.Add(summaryTabButton);
-        tabGrid.Add(contractsTabButton, 1, 0);
-        tabGrid.Add(invoicesTabButton, 2, 0);
-        tabGrid.Add(paymentsTabButton, 3, 0);
-        tabGrid.Add(rentalsTabButton, 4, 0);
+        var tabGrid = GeoraePlanTheme.CreateHorizontalActionScroller(
+            summaryTabButton,
+            contractsTabButton,
+            invoicesTabButton,
+            paymentsTabButton,
+            rentalsTabButton);
 
         var summaryPhoneLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 12);
         summaryPhoneLabel.LineHeight = 1.0;

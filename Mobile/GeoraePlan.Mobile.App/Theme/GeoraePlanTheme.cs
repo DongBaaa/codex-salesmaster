@@ -33,7 +33,8 @@ public static class GeoraePlanTheme
             PlaceholderColor = Colors.Gray,
             CancelButtonColor = Accent,
             HorizontalOptions = LayoutOptions.Fill,
-            MinimumWidthRequest = 0
+            MinimumWidthRequest = 0,
+            MinimumHeightRequest = 44
         };
 
     public static Entry CreateEntry(string placeholder, bool isPassword = false)
@@ -44,13 +45,16 @@ public static class GeoraePlanTheme
             BackgroundColor = InputBackground,
             TextColor = Colors.Black,
             PlaceholderColor = Colors.Gray,
-            ClearButtonVisibility = ClearButtonVisibility.WhileEditing
+            ClearButtonVisibility = ClearButtonVisibility.WhileEditing,
+            HorizontalOptions = LayoutOptions.Fill,
+            MinimumWidthRequest = 0,
+            MinimumHeightRequest = 44
         };
 
     public static Entry CreateCompactEntry(string placeholder, bool isPassword = false)
     {
         var entry = CreateEntry(placeholder, isPassword);
-        entry.HeightRequest = 36;
+        entry.MinimumHeightRequest = 36;
         entry.Margin = Thickness.Zero;
         entry.FontSize = 14;
         return entry;
@@ -62,13 +66,16 @@ public static class GeoraePlanTheme
             Title = title,
             BackgroundColor = InputBackground,
             TextColor = Colors.Black,
-            TitleColor = Colors.Gray
+            TitleColor = Colors.Gray,
+            HorizontalOptions = LayoutOptions.Fill,
+            MinimumWidthRequest = 0,
+            MinimumHeightRequest = 44
         };
 
     public static Picker CreateCompactPicker(string title)
     {
         var picker = CreatePicker(title);
-        picker.HeightRequest = 36;
+        picker.MinimumHeightRequest = 36;
         picker.Margin = Thickness.Zero;
         picker.FontSize = 14;
         return picker;
@@ -82,13 +89,15 @@ public static class GeoraePlanTheme
             TextColor = Colors.White,
             FontAttributes = FontAttributes.Bold,
             CornerRadius = 10,
-            HeightRequest = 44
+            HorizontalOptions = LayoutOptions.Fill,
+            MinimumWidthRequest = 0,
+            MinimumHeightRequest = 44
         };
 
     public static Button CreateCompactButton(string text, Color backgroundColor)
     {
         var button = CreateButton(text, backgroundColor);
-        button.HeightRequest = 36;
+        button.MinimumHeightRequest = 36;
         button.CornerRadius = 8;
         button.Padding = new Thickness(10, 0);
         button.FontSize = 13;
@@ -101,7 +110,9 @@ public static class GeoraePlanTheme
             Text = text,
             TextColor = TextPrimary,
             FontSize = fontSize,
-            FontAttributes = FontAttributes.Bold
+            FontAttributes = FontAttributes.Bold,
+            HorizontalOptions = LayoutOptions.Fill,
+            LineBreakMode = LineBreakMode.WordWrap
         };
 
     public static Label CreateBodyText(string text, bool muted = true, double fontSize = 13)
@@ -109,7 +120,9 @@ public static class GeoraePlanTheme
         {
             Text = text,
             TextColor = muted ? TextSecondary : TextPrimary,
-            FontSize = fontSize
+            FontSize = fontSize,
+            HorizontalOptions = LayoutOptions.Fill,
+            LineBreakMode = LineBreakMode.WordWrap
         };
 
     public static Label CreateFieldLabel(string text)
@@ -119,15 +132,82 @@ public static class GeoraePlanTheme
             TextColor = TextSecondary,
             FontSize = 11,
             FontAttributes = FontAttributes.Bold,
-            Margin = Thickness.Zero
+            Margin = Thickness.Zero,
+            HorizontalOptions = LayoutOptions.Fill,
+            LineBreakMode = LineBreakMode.WordWrap
         };
 
     public static Label CreateStatusLabel()
         => new()
         {
             TextColor = TextSecondary,
-            FontSize = 12
+            FontSize = 12,
+            HorizontalOptions = LayoutOptions.Fill,
+            LineBreakMode = LineBreakMode.WordWrap
         };
+
+    public static FlexLayout CreateWrappingActions(params View[] children)
+    {
+        var layout = new FlexLayout
+        {
+            Direction = Microsoft.Maui.Layouts.FlexDirection.Row,
+            Wrap = Microsoft.Maui.Layouts.FlexWrap.Wrap,
+            JustifyContent = Microsoft.Maui.Layouts.FlexJustify.Start,
+            AlignItems = Microsoft.Maui.Layouts.FlexAlignItems.Stretch,
+            HorizontalOptions = LayoutOptions.Fill
+        };
+
+        foreach (var child in children)
+        {
+            child.MinimumWidthRequest = Math.Max(child.MinimumWidthRequest, 76);
+            child.Margin = new Thickness(0, 0, 8, 8);
+            FlexLayout.SetGrow(child, 1);
+            layout.Children.Add(child);
+        }
+
+        return layout;
+    }
+
+    public static Grid CreateStackedActionLayout(View primary, params View[] actions)
+    {
+        primary.HorizontalOptions = LayoutOptions.Fill;
+        primary.MinimumWidthRequest = 0;
+
+        var grid = new Grid
+        {
+            HorizontalOptions = LayoutOptions.Fill,
+            RowSpacing = 8,
+            RowDefinitions =
+            {
+                new RowDefinition(GridLength.Auto),
+                new RowDefinition(GridLength.Auto)
+            }
+        };
+        grid.Add(primary);
+        grid.Add(CreateWrappingActions(actions), 0, 1);
+        return grid;
+    }
+
+    public static ScrollView CreateHorizontalActionScroller(params View[] children)
+    {
+        var actions = new HorizontalStackLayout
+        {
+            Spacing = 8,
+            HorizontalOptions = LayoutOptions.Start
+        };
+        foreach (var child in children)
+        {
+            child.MinimumWidthRequest = Math.Max(child.MinimumWidthRequest, 84);
+            actions.Children.Add(child);
+        }
+
+        return new ScrollView
+        {
+            Orientation = ScrollOrientation.Horizontal,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Always,
+            Content = actions
+        };
+    }
 
     public static Editor CreateCompactEditor(string placeholder, double minHeight = 68)
         => new()
@@ -174,5 +254,3 @@ public static class GeoraePlanTheme
         };
     }
 }
-
-

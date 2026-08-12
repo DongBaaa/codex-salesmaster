@@ -65,24 +65,14 @@ public sealed class ItemsPage : ContentPage
         newItemButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(OpenNewItemAsync, "품목 신규등록");
 
-        var categoryActions = new HorizontalStackLayout
+        var categoryActions = GeoraePlanTheme.CreateWrappingActions(
+            newItemButton,
+            changeCategoryButton);
+        var selectedCategoryHeader = new VerticalStackLayout
         {
-            Spacing = 6,
-            HorizontalOptions = LayoutOptions.End,
-            Children = { newItemButton, changeCategoryButton }
+            Spacing = 8,
+            Children = { selectedCategoryLabel, categoryActions }
         };
-
-        var selectedCategoryHeader = new Grid
-        {
-            ColumnSpacing = 8,
-            ColumnDefinitions =
-            {
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Auto)
-            }
-        };
-        selectedCategoryHeader.Add(selectedCategoryLabel);
-        selectedCategoryHeader.Add(categoryActions, 1, 0);
         selectedCategoryHeader.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.HasSelectedCategory));
 
         var categorySummary = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
@@ -90,7 +80,7 @@ public sealed class ItemsPage : ContentPage
         categorySummary.SetBinding(Label.TextProperty, nameof(ItemsViewModel.SelectedCategorySummary));
 
         var searchEntry = GeoraePlanTheme.CreateCompactEntry("품명 / 규격 검색");
-        searchEntry.HeightRequest = 42;
+        searchEntry.MinimumHeightRequest = 42;
         searchEntry.ReturnType = ReturnType.Search;
         searchEntry.HorizontalOptions = LayoutOptions.Fill;
         searchEntry.SetBinding(Entry.TextProperty, nameof(ItemsViewModel.SearchText));
@@ -117,19 +107,10 @@ public sealed class ItemsPage : ContentPage
                 async () => await _viewModel.ClearSearchAsync(),
                 "품목 검색 초기화");
 
-        var searchGrid = new Grid
-        {
-            ColumnSpacing = 8,
-            ColumnDefinitions =
-            {
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(new GridLength(76)),
-                new ColumnDefinition(new GridLength(76))
-            }
-        };
-        searchGrid.Add(searchEntry);
-        searchGrid.Add(searchButton, 1, 0);
-        searchGrid.Add(clearSearchButton, 2, 0);
+        var searchGrid = GeoraePlanTheme.CreateStackedActionLayout(
+            searchEntry,
+            searchButton,
+            clearSearchButton);
 
         var searchTitle = GeoraePlanTheme.CreateSectionTitle("품목 검색", 15);
         var searchGuide = GeoraePlanTheme.CreateBodyText("분류를 고르지 않아도 전체 품목에서 품명, 규격, 자재번호를 검색합니다.", true, 12);
@@ -417,7 +398,7 @@ public sealed class ItemsPage : ContentPage
             var isSelected = _viewModel.SelectedCategory is not null &&
                              string.Equals(_viewModel.SelectedCategory.Name, category.Name, StringComparison.OrdinalIgnoreCase);
             var button = GeoraePlanTheme.CreateButton(category.Name, isSelected ? GeoraePlanTheme.Accent : GeoraePlanTheme.SecondaryButton);
-            button.HeightRequest = 48;
+            button.MinimumHeightRequest = 48;
             button.CornerRadius = 12;
             button.Padding = new Thickness(10, 4);
             button.Clicked += (_, _) =>

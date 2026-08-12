@@ -117,28 +117,19 @@ public sealed class HomePage : ContentPage
                 async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<RecycleBinPage>()),
                 "빠른 메뉴 이동");
 
-        var quickActionGrid = new Grid
+        var quickActionGrid = new VerticalStackLayout
         {
-            ColumnDefinitions =
+            Spacing = 12,
+            Children =
             {
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Star)
-            },
-            RowDefinitions =
-            {
-                new RowDefinition(GridLength.Auto),
-                new RowDefinition(GridLength.Auto),
-                new RowDefinition(GridLength.Auto)
-            },
-            ColumnSpacing = 12,
-            RowSpacing = 12
+                createSalesInvoiceButton,
+                createPurchaseInvoiceButton,
+                createPaymentButton,
+                inventoryTransferButton,
+                rentalsButton,
+                recycleBinButton
+            }
         };
-        quickActionGrid.Add(createSalesInvoiceButton, 0, 0);
-        quickActionGrid.Add(createPurchaseInvoiceButton, 1, 0);
-        quickActionGrid.Add(createPaymentButton, 0, 1);
-        quickActionGrid.Add(inventoryTransferButton, 1, 1);
-        quickActionGrid.Add(rentalsButton, 0, 2);
-        quickActionGrid.Add(recycleBinButton, 1, 2);
 
         Content = new ScrollView
         {

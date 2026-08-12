@@ -41,7 +41,7 @@ public sealed class InvoicesPage : ContentPage
                 "전표 작업");
 
         var clearSearchButton = GeoraePlanTheme.CreateCompactButton("초기화", GeoraePlanTheme.SecondaryButton);
-        clearSearchButton.WidthRequest = 78;
+        clearSearchButton.MinimumWidthRequest = 78;
         clearSearchButton.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoicesViewModel.HasSearchText));
         clearSearchButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(
@@ -53,34 +53,13 @@ public sealed class InvoicesPage : ContentPage
                 "전표 작업");
 
         var refreshButton = GeoraePlanTheme.CreateCompactButton("조회", GeoraePlanTheme.SecondaryButton);
-        refreshButton.WidthRequest = 86;
+        refreshButton.MinimumWidthRequest = 86;
         refreshButton.SetBinding(Button.CommandProperty, nameof(InvoicesViewModel.RefreshCommand));
 
-        var searchActions = new HorizontalStackLayout
-        {
-            Spacing = 8,
-            HorizontalOptions = LayoutOptions.End,
-            VerticalOptions = LayoutOptions.Center,
-            Children =
-            {
-                clearSearchButton,
-                refreshButton
-            }
-        };
-
-        var searchGrid = new Grid
-        {
-            HorizontalOptions = LayoutOptions.Fill,
-            ColumnSpacing = 8,
-            ColumnDefinitions =
-            {
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Auto)
-            }
-        };
-        searchBar.HorizontalOptions = LayoutOptions.Fill;
-        searchGrid.Add(searchBar);
-        searchGrid.Add(searchActions, 1, 0);
+        var searchGrid = GeoraePlanTheme.CreateStackedActionLayout(
+            searchBar,
+            clearSearchButton,
+            refreshButton);
 
         var canCreateInvoices = _sessionStore.GetSnapshot().CanCreateInvoices;
         var createSalesInvoiceButton = GeoraePlanTheme.CreateCompactButton("판매 작성", GeoraePlanTheme.Success);
@@ -108,19 +87,16 @@ public sealed class InvoicesPage : ContentPage
                 async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<PaymentDraftPage>()),
                 "전표 작업");
 
-        var actionGrid = new Grid
+        var actionGrid = new VerticalStackLayout
         {
-            ColumnDefinitions =
+            Spacing = 8,
+            Children =
             {
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Star)
-            },
-            ColumnSpacing = 8
+                createSalesInvoiceButton,
+                createPurchaseInvoiceButton,
+                createPaymentButton
+            }
         };
-        actionGrid.Add(createSalesInvoiceButton, 0, 0);
-        actionGrid.Add(createPurchaseInvoiceButton, 1, 0);
-        actionGrid.Add(createPaymentButton, 2, 0);
 
         var statusLabel = GeoraePlanTheme.CreateStatusLabel();
         statusLabel.SetBinding(Label.TextProperty, nameof(InvoicesViewModel.StatusMessage));
@@ -129,17 +105,11 @@ public sealed class InvoicesPage : ContentPage
         var closeDetailButton = GeoraePlanTheme.CreateCompactButton("닫기", GeoraePlanTheme.SecondaryButton);
         closeDetailButton.Clicked += (_, _) => _viewModel.ClearSelectedInvoice();
 
-        var detailHeader = new Grid
+        var detailHeader = new VerticalStackLayout
         {
-            ColumnSpacing = 8,
-            ColumnDefinitions =
-            {
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Auto)
-            }
+            Spacing = 8,
+            Children = { detailHeaderTitle, closeDetailButton }
         };
-        detailHeader.Add(detailHeaderTitle);
-        detailHeader.Add(closeDetailButton, 1, 0);
 
         var detailCustomer = GeoraePlanTheme.CreateSectionTitle(string.Empty, 14);
         detailCustomer.SetBinding(Label.TextProperty, nameof(InvoicesViewModel.SelectedInvoiceCustomerName));
