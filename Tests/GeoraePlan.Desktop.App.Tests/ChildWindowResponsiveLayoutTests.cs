@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Windows;
 using System.Xml.Linq;
 using 거래플랜.Desktop.App.Infrastructure;
+using 거래플랜.Desktop.App.Views;
 using Xunit;
 
 namespace GeoraePlan.Desktop.App.Tests;
@@ -1296,6 +1297,156 @@ public sealed class ChildWindowResponsiveLayoutTests
     }
 
     [Fact]
+    public void AllProductionWindows_UseGlobalResponsiveSizingAndExposeOverflowNavigation()
+    {
+        var desktopAppDirectory = FindDesktopAppDirectory();
+        var appXaml = File.ReadAllText(Path.Combine(desktopAppDirectory, "App.xaml"));
+        var behaviorCode = File.ReadAllText(Path.Combine(
+            desktopAppDirectory,
+            "Infrastructure",
+            "ResponsiveWindowBehavior.cs"));
+
+        Assert.Contains(
+            "<Setter Property=\"infra:ResponsiveWindowBehavior.IsEnabled\" Value=\"True\"/>",
+            appXaml,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "window is global::거래플랜.Desktop.App.MainWindow",
+            behaviorCode,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(window);",
+            behaviorCode,
+            StringComparison.Ordinal);
+        Assert.Contains("window.Initialized += OnWindowInitialized;", behaviorCode, StringComparison.Ordinal);
+
+        var appCode = File.ReadAllText(Path.Combine(desktopAppDirectory, "App.xaml.cs"));
+        Assert.Contains("var popupScrollViewer = new ScrollViewer", appCode, StringComparison.Ordinal);
+        Assert.Contains("Content = popupScrollViewer", appCode, StringComparison.Ordinal);
+        Assert.Contains("VerticalScrollBarVisibility = ScrollBarVisibility.Auto", appCode, StringComparison.Ordinal);
+        Assert.Contains("ResponsiveWindowBehavior.SetIsEnabled(popup, false);", appCode, StringComparison.Ordinal);
+
+        var viewDirectory = Path.Combine(desktopAppDirectory, "Views");
+        var windows = Directory
+            .EnumerateFiles(viewDirectory, "*.xaml", SearchOption.TopDirectoryOnly)
+            .Select(path => (Path: path, Document: XDocument.Load(path)))
+            .Where(item => item.Document.Root?.Name.LocalName == "Window")
+            .OrderBy(item => item.Path, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.True(windows.Length >= 33, $"Production window count: {windows.Length}");
+
+        foreach (var (path, document) in windows)
+        {
+            var fileName = Path.GetFileName(path);
+            var codeBehindPath = path + ".cs";
+            Assert.True(File.Exists(codeBehindPath), fileName);
+
+            var root = Assert.IsType<XElement>(document.Root);
+            var directContent = Assert.Single(
+                root.Elements(),
+                element => !element.Name.LocalName.Contains('.', StringComparison.Ordinal));
+            Assert.NotEqual("Canvas", directContent.Name.LocalName);
+
+            var hasOverflowNavigation = document
+                .Descendants()
+                .Any(element => element.Name.LocalName is
+                    "ScrollViewer" or
+                    "DataGrid" or
+                    "DocumentViewer" or
+                    "ListBox" or
+                    "ListView" or
+                    "TreeView");
+            Assert.True(hasOverflowNavigation, fileName);
+
+            var preferredWidth = ReadPositiveDimension(root, "Width", 640d);
+            var preferredHeight = ReadPositiveDimension(
+                root,
+                "Height",
+                ReadPositiveDimension(root, "MinHeight", 400d));
+            var minimumWidth = ReadPositiveDimension(
+                root,
+                "MinWidth",
+                Math.Min(preferredWidth, ChildWindowResponsiveLayoutPolicy.MinimumWidthDip));
+            var minimumHeight = ReadPositiveDimension(
+                root,
+                "MinHeight",
+                Math.Min(preferredHeight, ChildWindowResponsiveLayoutPolicy.MinimumHeightDip));
+
+            foreach (var scale in new[] { 1d, 1.25d, 1.5d, 2d })
+            {
+                var bounds = ChildWindowResponsiveLayoutPolicy.ResolvePhysicalWindowBounds(
+                    new Rect(0d, 0d, 1366d, 728d),
+                    scale,
+                    new Size(preferredWidth, preferredHeight),
+                    new Size(minimumWidth, minimumHeight));
+
+                Assert.False(bounds.IsEmpty, $"{fileName} at {scale:P0}");
+                Assert.InRange(bounds.Width, 1d, 1366d);
+                Assert.InRange(bounds.Height, 1d, 728d);
+                Assert.InRange(bounds.Left, 0d, 1366d - bounds.Width + 0.01d);
+                Assert.InRange(bounds.Top, 0d, 728d - bounds.Height + 0.01d);
+            }
+        }
+
+        var customerManagement = LoadWindow(
+            desktopAppDirectory,
+            "CustomerManagementWindow.xaml");
+        XNamespace xamlNamespace = "http://schemas.microsoft.com/winfx/2006/xaml";
+        AssertScrollViewer(
+            customerManagement,
+            xamlNamespace,
+            "CustomerManagementFilterScrollViewer",
+            horizontal: "Auto",
+            vertical: "Disabled");
+
+        var yeonsuDelivery = LoadWindow(
+            desktopAppDirectory,
+            "YeonsuDeliveryWindow.xaml");
+        AssertScrollViewer(
+            yeonsuDelivery,
+            xamlNamespace,
+            "YeonsuSummaryScrollViewer",
+            horizontal: "Auto",
+            vertical: "Disabled");
+        AssertScrollViewer(
+            yeonsuDelivery,
+            xamlNamespace,
+            "YeonsuFilterScrollViewer",
+            horizontal: "Auto",
+            vertical: "Disabled");
+    }
+
+    [Fact]
+    public void ResponsiveWindowBehavior_AppliesToCompactWindowWithoutEnlargingIt()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var window = new StartupLoadingWindow();
+                ResponsiveWindowBehavior.SetIsEnabled(window, true);
+
+                Assert.Equal(SizeToContent.Manual, window.SizeToContent);
+                Assert.Equal(440d, window.Width);
+                Assert.Equal(190d, window.Height);
+                Assert.InRange(window.MinWidth, 1d, 440d);
+                Assert.InRange(window.MinHeight, 1d, 190d);
+                window.Close();
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(15)), "STA responsive window test timed out.");
+        Assert.Null(failure);
+    }
+
+    [Fact]
     public void Policy_PrefersOwnerMonitorAndDoesNotSetPermanentMaximums()
     {
         var policyPath = Path.Combine(
@@ -1345,6 +1496,23 @@ public sealed class ChildWindowResponsiveLayoutTests
             },
             statusRow =>
                 Assert.Equal("Auto", (string?)statusRow.Attribute("Height")));
+    }
+
+    private static double ReadPositiveDimension(
+        XElement element,
+        string attributeName,
+        double fallback)
+    {
+        var value = (string?)element.Attribute(attributeName);
+        return double.TryParse(
+                   value,
+                   System.Globalization.NumberStyles.Float,
+                   System.Globalization.CultureInfo.InvariantCulture,
+                   out var parsed) &&
+               double.IsFinite(parsed) &&
+               parsed > 0d
+            ? parsed
+            : fallback;
     }
 
     private static void AssertInventoryDetailWorkspaceRows(

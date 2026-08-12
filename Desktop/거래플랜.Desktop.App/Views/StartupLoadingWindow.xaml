@@ -9,6 +9,9 @@
         WindowStyle="None"
         ShowInTaskbar="True"
         Background="#0B1F36">
+    <ScrollViewer x:Name="StartupLoadingScrollViewer"
+                  HorizontalScrollBarVisibility="Auto"
+                  VerticalScrollBarVisibility="Auto">
     <Border Margin="1"
             Padding="30,26"
             Background="#10233D"
@@ -48,4 +51,5 @@
                        Foreground="#90A4B8"/>
         </Grid>
     </Border>
+    </ScrollViewer>
 </Window>

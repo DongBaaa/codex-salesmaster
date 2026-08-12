@@ -48,6 +48,9 @@
             <Setter Property="MinHeight" Value="36"/>
         </Style>
     </Window.Resources>
+    <ScrollViewer x:Name="LoginWindowScrollViewer"
+                  HorizontalScrollBarVisibility="Auto"
+                  VerticalScrollBarVisibility="Auto">
     <Grid Margin="22">
         <Border Background="#10233D"
                 BorderBrush="#2C476A"
@@ -112,5 +115,5 @@
             </StackPanel>
         </Border>
     </Grid>
+    </ScrollViewer>
 </Window>
-

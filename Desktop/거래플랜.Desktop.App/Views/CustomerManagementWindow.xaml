@@ -134,6 +134,9 @@
                 CornerRadius="6"
                 BorderBrush="#2E4060"
                 BorderThickness="1">
+            <ScrollViewer x:Name="CustomerManagementFilterScrollViewer"
+                          HorizontalScrollBarVisibility="Auto"
+                          VerticalScrollBarVisibility="Disabled">
             <Grid Grid.IsSharedSizeScope="True">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
@@ -230,6 +233,7 @@
                             Click="CloseButton_Click"/>
                 </StackPanel>
             </Grid>
+            </ScrollViewer>
         </Border>
 
         <Border Grid.Row="2"

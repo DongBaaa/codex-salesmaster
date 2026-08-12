@@ -99,6 +99,7 @@ function Get-PrinterSnapshot {
 
     try {
         Add-Type -AssemblyName System.Printing -ErrorAction Stop | Out-Null
+        Add-Type -AssemblyName System.Drawing -ErrorAction Stop | Out-Null
         $server = [System.Printing.LocalPrintServer]::new()
         try {
             $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -163,6 +164,25 @@ function Get-PrinterSnapshot {
                 catch {
                     Add-Issue -Issues $warnings -Message "프린터 그룹 조회 실패($($group -join ', ')): $($_.Exception.Message)"
                 }
+            }
+
+            try {
+                foreach ($printerName in [System.Drawing.Printing.PrinterSettings]::InstalledPrinters) {
+                    if ([string]::IsNullOrWhiteSpace([string]$printerName) -or $seen.Contains([string]$printerName)) {
+                        continue
+                    }
+
+                    try {
+                        $queue = $server.GetPrintQueue([string]$printerName)
+                        & $addQueueSnapshot $queue
+                    }
+                    catch {
+                        Add-Issue -Issues $warnings -Message "Windows 등록 프린터 '$printerName' 열기 실패: $($_.Exception.Message)"
+                    }
+                }
+            }
+            catch {
+                Add-Issue -Issues $warnings -Message "Windows 설치 프린터 이름 목록 확인 실패: $($_.Exception.Message)"
             }
         }
         finally {

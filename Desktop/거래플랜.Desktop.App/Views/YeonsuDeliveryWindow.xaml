@@ -178,7 +178,11 @@
                 BorderBrush="#2E4060"
                 BorderThickness="1">
             <StackPanel>
-                <Grid Margin="0,0,0,10">
+                <ScrollViewer x:Name="YeonsuSummaryScrollViewer"
+                              HorizontalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Disabled"
+                              Margin="0,0,0,10">
+                <Grid MinWidth="720">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="*"/>
@@ -218,8 +222,12 @@
                         </StackPanel>
                     </Border>
                 </Grid>
+                </ScrollViewer>
 
-                <Grid>
+                <ScrollViewer x:Name="YeonsuFilterScrollViewer"
+                              HorizontalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Disabled">
+                <Grid MinWidth="1120">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
@@ -319,6 +327,7 @@
                               Margin="0,8,16,0"
                               VerticalAlignment="Center"/>
                 </Grid>
+                </ScrollViewer>
             </StackPanel>
         </Border>
 

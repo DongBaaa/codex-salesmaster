@@ -1,6 +1,7 @@
 using System.IO;
 using System.IO.Packaging;
 using System.Printing;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
@@ -23,6 +24,9 @@ public static class TradePrintExecutor
     public const double A4Height = 1122.5;
     private const double PdfPointPerDeviceIndependentPixel = 72d / 96d;
     private const double PdfRenderDpi = 144d;
+    private const uint PrinterEnumLocal = 0x00000002;
+    private const uint PrinterEnumConnections = 0x00000004;
+    private const uint PrinterInfoLevel = 4;
 
     private static readonly EnumeratedPrintQueueTypes[] InstalledPrinterQueueTypes =
     [
@@ -231,6 +235,27 @@ public static class TradePrintExecutor
             AppLogger.Warn("PRINT", $"프린터 전체 목록 확인 실패: {ex.Message}");
         }
 
+        foreach (var printerName in LoadWindowsInstalledPrinterNames())
+        {
+            if (queuesByName.ContainsKey(printerName))
+                continue;
+
+            try
+            {
+                AddQueue(printServer.GetPrintQueue(printerName));
+            }
+            catch (Exception ex) when (
+                ex is PrintQueueException or
+                    PrintSystemException or
+                    InvalidOperationException or
+                    UnauthorizedAccessException)
+            {
+                AppLogger.Warn(
+                    "PRINT",
+                    $"Windows 등록 프린터 '{printerName}' 열기 실패: {ex.Message}");
+            }
+        }
+
         try
         {
             var defaultQueue = TryGetDefaultPrintQueue(printServer);
@@ -252,10 +277,102 @@ public static class TradePrintExecutor
             if (string.IsNullOrWhiteSpace(key))
                 key = SafeRead(queue, static q => q.Name);
             if (string.IsNullOrWhiteSpace(key))
+            {
+                queue.Dispose();
                 return;
+            }
 
-            queuesByName.TryAdd(key, queue);
+            if (!queuesByName.TryAdd(key, queue))
+                queue.Dispose();
         }
+    }
+
+    private static IReadOnlyList<string> LoadWindowsInstalledPrinterNames()
+    {
+        IntPtr buffer = IntPtr.Zero;
+        try
+        {
+            var flags = PrinterEnumLocal | PrinterEnumConnections;
+            _ = EnumPrinters(
+                flags,
+                null,
+                PrinterInfoLevel,
+                IntPtr.Zero,
+                0,
+                out var requiredBytes,
+                out _);
+            if (requiredBytes == 0)
+                return Array.Empty<string>();
+
+            buffer = Marshal.AllocHGlobal(checked((int)requiredBytes));
+            if (!EnumPrinters(
+                    flags,
+                    null,
+                    PrinterInfoLevel,
+                    buffer,
+                    requiredBytes,
+                    out _,
+                    out var returnedCount))
+            {
+                throw new System.ComponentModel.Win32Exception(
+                    Marshal.GetLastWin32Error());
+            }
+
+            var entrySize = Marshal.SizeOf<PrinterInfo4>();
+            var names = new List<string>(checked((int)returnedCount));
+            for (var index = 0; index < returnedCount; index++)
+            {
+                var entry = Marshal.PtrToStructure<PrinterInfo4>(
+                    IntPtr.Add(buffer, checked((int)index * entrySize)));
+                var name = Marshal.PtrToStringUni(entry.PrinterName);
+                if (!string.IsNullOrWhiteSpace(name))
+                    names.Add(name);
+            }
+
+            return names
+                .Where(static name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(static name => name, StringComparer.CurrentCultureIgnoreCase)
+                .ToList();
+        }
+        catch (Exception ex) when (
+            ex is System.ComponentModel.Win32Exception or
+                InvalidOperationException or
+                UnauthorizedAccessException)
+        {
+            AppLogger.Warn(
+                "PRINT",
+                $"Windows 설치 프린터 이름 목록 확인 실패: {ex.Message}");
+            return Array.Empty<string>();
+        }
+        finally
+        {
+            if (buffer != IntPtr.Zero)
+                Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    [DllImport(
+        "winspool.drv",
+        EntryPoint = "EnumPrintersW",
+        CharSet = CharSet.Unicode,
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumPrinters(
+        uint flags,
+        string? name,
+        uint level,
+        IntPtr printerInfo,
+        uint bufferSize,
+        out uint requiredBytes,
+        out uint returnedCount);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private readonly struct PrinterInfo4
+    {
+        public readonly IntPtr PrinterName;
+        public readonly IntPtr ServerName;
+        public readonly uint Attributes;
     }
 
     private static PrintQueue? TryGetDefaultPrintQueue(LocalPrintServer printServer)

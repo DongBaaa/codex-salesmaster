@@ -22,14 +22,14 @@
 - `[로컬검증]` Android 소스 `0.2.82`, versionCode `193`
 - `[로컬검증]` 서버 전체 850건 중 840건 통과, PostgreSQL 환경 의존 10건 건너뜀, 실패 0
 - `[로컬검증]` 별도 ephemeral PostgreSQL 전체 12/12, 데스크톱 전체 1,462/1,462 통과
-- 현재 버전의 정식 패키지와 Linux PC live 반영은 완료됐지만, 작업트리의 후속 문서·검증 변경은 아직 Git 반영 전입니다.
+- 현재 버전의 정식 패키지와 Linux PC live 반영을 완료했고, Goal 관련 변경은 커밋 `bf3798483940315102e528d538f9e9ecb636270d`로 원격 브랜치에 반영했습니다.
 
 ### 승인·실사용 검증 대기
 - `[승인대기]` Windows Authenticode/RFC3161 정식 서명과 기존 설치본 덮어쓰기·롤백 설치
 - `[공개]` Android versionCode 증가, Release signing, emulator `adb install -r` 검증 완료
 - `[완료]` Linux PC 거래플랜 전용 자동 백업 schedule 설치·활성화 및 실제 complete set 1회 검증
-- `[검증필요]` 실제 프린터/PDF/Excel, 제한 계정, 100%·125%·150% 배율의 주요 업무 흐름
-- Git push는 현재 Goal 관련 변경만 선택 stage하고 최종 검증한 뒤 수행합니다.
+- `[자동검증완료/실사용확인대기]` PDF 생성·Excel 왕복·계정 scope·100%·125%·150% WPF 렌더링 감사와 온라인 프린터/Windows 1쪽 테스트 페이지 전송은 통과했습니다. 거래플랜 화면에서의 실제 종이 출력 결과와 운영 제한 계정 실사용은 사용자 확인이 필요합니다.
+- Goal 관련 585개 파일은 무관한 InvestorResearchWeb 삭제 등을 제외해 선택 커밋·push했고, 로컬/원격 SHA가 일치합니다.
 
 ## Windows PC와 Android 기능 경계
 
@@ -153,7 +153,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\linux
 - `[완료]` 판매(매출) 창에서 `출력물 편집` 후 데이터 저장
 - `[완료]` `인쇄하기(F9)` 클릭 시 미리보기 창 우선 표시
 - `[완료]` 미리보기에서 인쇄 클릭 시 거래플랜 전용 인쇄창 표시
-- `[완료]` 전용 인쇄창에서 프린터 선택/새로고침/프린터 관리/PDF 저장/파일 저장(XPS) 제공
+- `[완료]` 전용 인쇄창에서 Windows에 설치된 로컬·연결 프린터 전체 목록, 새로고침, 프린터 관리, PDF 저장, 파일 저장(XPS) 제공
+- `[완료]` 모든 WPF 보조 창에 작업영역 기준 반응형 크기 제한과 스크롤 도달 경로를 적용하고, 1366x728 및 100~200% 배율 회귀로 주요 조작부 잘림을 방지
 - `[완료]` 외부 PDF 자동 오픈 없이 앱 내부 미리보기 중심 동작
 - 납품 PC의 프린터/복합기 상태 증거가 필요하면 `powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\verification\Test-GeoraePlanPrintEnvironment.ps1" -ProjectRoot "D:\거래플랜" -RequirePrinter -RequireOnlinePrinter -FailOnWarnings`로 기본 프린터, 오프라인 여부, PDF/XPS fallback source guard 리포트를 남깁니다.
 

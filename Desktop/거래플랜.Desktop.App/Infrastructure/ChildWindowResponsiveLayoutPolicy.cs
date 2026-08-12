@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Threading;
@@ -15,6 +16,7 @@ internal static class ChildWindowResponsiveLayoutPolicy
     private const uint SetWindowPosNoZOrder = 0x0004;
     private const uint SetWindowPosNoActivate = 0x0010;
     private const int WindowDpiChangedMessage = 0x02E0;
+    private static readonly ConditionalWeakTable<Window, object> AppliedWindows = new();
 
     internal static Size ResolveInitialWindowSize(
         Size preferredSize,
@@ -107,12 +109,32 @@ internal static class ChildWindowResponsiveLayoutPolicy
     {
         ArgumentNullException.ThrowIfNull(window);
 
+        if (!AppliedWindows.TryAdd(window, new object()))
+            return;
+
+        var fallbackMinimumWidth = ResolveAdaptiveMinimum(
+            window.Width,
+            window.MinWidth,
+            MinimumWidthDip);
+        var fallbackMinimumHeight = ResolveAdaptiveMinimum(
+            window.Height,
+            window.MinHeight,
+            MinimumHeightDip);
+
         var preferredSize = new Size(
-            NormalizeDimension(window.Width, MinimumWidthDip),
-            NormalizeDimension(window.Height, MinimumHeightDip));
+            ResolvePreferredDimension(
+                window.Width,
+                window.MinWidth,
+                fallbackMinimumWidth),
+            ResolvePreferredDimension(
+                window.Height,
+                window.MinHeight,
+                fallbackMinimumHeight));
         var declaredMinimumSize = new Size(
-            NormalizeDimension(window.MinWidth, MinimumWidthDip),
-            NormalizeDimension(window.MinHeight, MinimumHeightDip));
+            NormalizeDimension(window.MinWidth, fallbackMinimumWidth),
+            NormalizeDimension(window.MinHeight, fallbackMinimumHeight));
+
+        window.SizeToContent = SizeToContent.Manual;
 
         ApplyLogicalWindowSize(
             window,
@@ -365,6 +387,32 @@ internal static class ChildWindowResponsiveLayoutPolicy
         double value,
         double fallback) =>
         IsFinitePositive(value) ? value : fallback;
+
+    private static double ResolveAdaptiveMinimum(
+        double preferred,
+        double declaredMinimum,
+        double defaultMinimum)
+    {
+        if (IsFinitePositive(declaredMinimum))
+            return Math.Min(declaredMinimum, defaultMinimum);
+
+        return IsFinitePositive(preferred)
+            ? Math.Min(preferred, defaultMinimum)
+            : defaultMinimum;
+    }
+
+    private static double ResolvePreferredDimension(
+        double preferred,
+        double declaredMinimum,
+        double fallback)
+    {
+        if (IsFinitePositive(preferred))
+            return preferred;
+
+        return IsFinitePositive(declaredMinimum)
+            ? declaredMinimum
+            : fallback;
+    }
 
     private static bool IsFinitePositive(double value) =>
         double.IsFinite(value) && value > 0d;

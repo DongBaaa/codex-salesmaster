@@ -343,7 +343,53 @@ public sealed class TradePrintDialogSourceGuardTests
         Assert.Contains("EnumeratedPrintQueueTypes.Queued", executor, StringComparison.Ordinal);
         Assert.Contains("EnumeratedPrintQueueTypes.PublishedInDirectoryServices", executor, StringComparison.Ordinal);
         Assert.Contains("EnumeratedPrintQueueTypes.Fax", executor, StringComparison.Ordinal);
+        Assert.Contains("EntryPoint = \"EnumPrintersW\"", executor, StringComparison.Ordinal);
+        Assert.Contains("PrinterEnumLocal | PrinterEnumConnections", executor, StringComparison.Ordinal);
+        Assert.Contains("printServer.GetPrintQueue(printerName)", executor, StringComparison.Ordinal);
+        Assert.Contains("LoadWindowsInstalledPrinterNames", executor, StringComparison.Ordinal);
         Assert.Contains("프린터 전체 목록 확인 실패", executor, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TradePrintExecutor_NativeInstalledCatalogIsMergedIntoVisibleQueues()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var catalogMethod = typeof(TradePrintExecutor).GetMethod(
+            "LoadWindowsInstalledPrinterNames",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        var queueMethod = typeof(TradePrintExecutor).GetMethod(
+            "LoadInstalledPrintQueues",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(catalogMethod);
+        Assert.NotNull(queueMethod);
+
+        var installedNames = Assert.IsAssignableFrom<IReadOnlyList<string>>(
+            catalogMethod.Invoke(null, null));
+        using var server = new LocalPrintServer();
+        var queues = Assert.IsAssignableFrom<IReadOnlyList<PrintQueue>>(
+            queueMethod.Invoke(null, [server]));
+
+        try
+        {
+            var visibleNames = queues
+                .SelectMany(queue => new[] { queue.FullName, queue.Name })
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            Assert.All(installedNames, name => Assert.Contains(name, visibleNames));
+            Assert.Equal(
+                installedNames.Count,
+                installedNames.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+            Console.WriteLine($"NativeInstalledPrinterCount={installedNames.Count}");
+            Console.WriteLine($"VisiblePrintQueueCount={queues.Count}");
+        }
+        finally
+        {
+            foreach (var queue in queues)
+                queue.Dispose();
+        }
     }
 
     [Fact]
@@ -371,6 +417,8 @@ public sealed class TradePrintDialogSourceGuardTests
         Assert.Contains("PushedMachineConnection", script, StringComparison.Ordinal);
         Assert.Contains("PushedUserConnection", script, StringComparison.Ordinal);
         Assert.Contains("WorkOffline", script, StringComparison.Ordinal);
+        Assert.Contains("System.Drawing.Printing.PrinterSettings", script, StringComparison.Ordinal);
+        Assert.Contains("GetPrintQueue([string]$printerName)", script, StringComparison.Ordinal);
         Assert.Contains("거래플랜 전용 인쇄", script, StringComparison.Ordinal);
         Assert.Contains("PDF 저장", script, StringComparison.Ordinal);
         Assert.Contains("파일 저장(XPS)", script, StringComparison.Ordinal);

@@ -3401,13 +3401,31 @@ public partial class App : Application
 
 
 
+        var popupScrollViewer = new ScrollViewer
+
+        {
+
+            Content = root,
+
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+
+            MaxWidth = Math.Max(1d, SystemParameters.WorkArea.Width - 16d),
+
+            MaxHeight = Math.Max(1d, SystemParameters.WorkArea.Height - 16d)
+
+        };
+
+
+
         var popup = new Window
 
         {
 
             Title = title,
 
-            Content = root,
+            Content = popupScrollViewer,
 
             Owner = owner,
 
@@ -3430,6 +3448,8 @@ public partial class App : Application
             ShowActivated = showActivated
 
         };
+
+        ResponsiveWindowBehavior.SetIsEnabled(popup, false);
 
 
 
