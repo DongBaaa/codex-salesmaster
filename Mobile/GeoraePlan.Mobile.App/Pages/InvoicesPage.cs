@@ -282,7 +282,12 @@ public sealed class InvoicesPage : ContentPage
             paymentSummary,
             paymentsView,
             selectedDetailActionGrid);
-        detailCard.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoicesViewModel.HasSelectedInvoice));
+        var detailScrollView = new ScrollView
+        {
+            Content = detailCard,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Default
+        };
+        detailScrollView.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoicesViewModel.HasSelectedInvoice));
 
         var collectionView = new CollectionView
         {
@@ -342,13 +347,14 @@ public sealed class InvoicesPage : ContentPage
             })
         };
         collectionView.SetBinding(ItemsView.ItemsSourceProperty, nameof(InvoicesViewModel.Invoices));
+        var inverseBooleanConverter = new InverseBooleanConverter();
+        collectionView.SetBinding(VisualElement.IsVisibleProperty, new Binding(nameof(InvoicesViewModel.HasSelectedInvoice), converter: inverseBooleanConverter));
 
         var contentGrid = new Grid
         {
             Padding = 16,
             RowDefinitions =
             {
-                new RowDefinition(GridLength.Auto),
                 new RowDefinition(GridLength.Auto),
                 new RowDefinition(GridLength.Auto),
                 new RowDefinition(GridLength.Auto),
@@ -362,10 +368,10 @@ public sealed class InvoicesPage : ContentPage
         Grid.SetRow(actionGrid, 1);
         contentGrid.Add(statusLabel);
         Grid.SetRow(statusLabel, 2);
-        contentGrid.Add(detailCard);
-        Grid.SetRow(detailCard, 3);
+        contentGrid.Add(detailScrollView);
+        Grid.SetRow(detailScrollView, 3);
         contentGrid.Add(collectionView);
-        Grid.SetRow(collectionView, 4);
+        Grid.SetRow(collectionView, 3);
 
         Content = contentGrid;
     }
@@ -452,6 +458,15 @@ public sealed class InvoicesPage : ContentPage
 
             return $"{invoice.DateDisplay} · 합계 {invoice.AmountDisplay}";
         }
+
+        public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
+            => throw new NotSupportedException();
+    }
+
+    private sealed class InverseBooleanConverter : IValueConverter
+    {
+        public object Convert(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
+            => value is bool isTrue && !isTrue;
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
             => throw new NotSupportedException();

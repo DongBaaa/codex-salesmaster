@@ -2993,6 +2993,78 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
+    public void AndroidE2E_SearchInputsAreBoundToHintAndVerifiedBeforeAction()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var writeSource = File.ReadAllText(Path.Combine(
+            repositoryRoot,
+            "tools",
+            "mobile",
+            "Invoke-GeoraePlanAndroidWriteE2E.ps1"));
+        var paymentSource = File.ReadAllText(Path.Combine(
+            repositoryRoot,
+            "tools",
+            "mobile",
+            "Invoke-GeoraePlanAndroidPaymentE2E.ps1"));
+
+        foreach (var source in new[] { writeSource, paymentSource })
+        {
+            Assert.Contains("function Get-EditTextNodeByHint", source, StringComparison.Ordinal);
+            Assert.Contains("function Set-AndroidEditTextByHint", source, StringComparison.Ordinal);
+            Assert.Contains("android\\.widget\\.(?:EditText|AutoCompleteTextView)", source, StringComparison.Ordinal);
+            Assert.Contains("-RequireFocused", source, StringComparison.Ordinal);
+            Assert.Contains("$typedNode.Text -eq $Value", source, StringComparison.Ordinal);
+            Assert.Contains("android text field value not confirmed", source, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("-Hint '거래처명 입력'", writeSource, StringComparison.Ordinal);
+        Assert.Contains("-Hint '품명 / 규격 검색'", writeSource, StringComparison.Ordinal);
+        Assert.Contains("-Hint '거래처명 / 전표번호 / 메모'", paymentSource, StringComparison.Ordinal);
+        Assert.Contains("-Hint '거래처명 / 전화 / 사업자번호'", paymentSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AndroidPaymentE2E_OpensPaymentFromTheSelectedInvoiceDetailAction()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "tools",
+            "mobile",
+            "Invoke-GeoraePlanAndroidPaymentE2E.ps1"));
+
+        var detailStart = source.IndexOf("$detailDump = Get-UiDump", StringComparison.Ordinal);
+        var paymentPageStart = source.IndexOf("$paymentDump = Get-UiDump", detailStart, StringComparison.Ordinal);
+        Assert.True(detailStart >= 0 && paymentPageStart > detailStart);
+
+        var navigation = source[detailStart..paymentPageStart];
+        Assert.Contains("'shell', 'input', 'swipe'", navigation, StringComparison.Ordinal);
+        Assert.Contains("mobile-payment-e2e-$voucherSlug-$timestamp-detail-actions", navigation, StringComparison.Ordinal);
+        Assert.Contains("-Content $detailActionDump.Content", navigation, StringComparison.Ordinal);
+        Assert.Contains("-PreferLast", navigation, StringComparison.Ordinal);
+        Assert.Contains("-StepName '선택 전표 수금/지급 열기'", navigation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AndroidInvoices_SelectedDetailUsesBoundedScrollRegionAboveTheTabBar()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "Mobile",
+            "GeoraePlan.Mobile.App",
+            "Pages",
+            "InvoicesPage.cs"));
+
+        Assert.Contains("var detailScrollView = new ScrollView", source, StringComparison.Ordinal);
+        Assert.Contains("Content = detailCard", source, StringComparison.Ordinal);
+        Assert.Contains("detailScrollView.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoicesViewModel.HasSelectedInvoice));", source, StringComparison.Ordinal);
+        Assert.Contains("collectionView.SetBinding(VisualElement.IsVisibleProperty, new Binding(nameof(InvoicesViewModel.HasSelectedInvoice), converter: inverseBooleanConverter));", source, StringComparison.Ordinal);
+        Assert.Contains("contentGrid.Add(detailScrollView);", source, StringComparison.Ordinal);
+        Assert.Contains("Grid.SetRow(detailScrollView, 3);", source, StringComparison.Ordinal);
+        Assert.Contains("Grid.SetRow(collectionView, 3);", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("contentGrid.Add(detailCard);", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void AndroidSmoke_WaitsForBackNavigationAndFailsOnTargetAppAnr()
     {
         var source = File.ReadAllText(Path.Combine(

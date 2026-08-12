@@ -643,6 +643,48 @@ function Get-LoginEditTextNode {
     return $null
 }
 
+function Get-EditTextNodeByHint {
+    param(
+        [string]$Content,
+        [string]$Hint,
+        [switch]$RequireFocused
+    )
+
+    $escapedHint = [regex]::Escape($Hint)
+    $candidates = @()
+    foreach ($match in [regex]::Matches($Content, '<node\b[^>]*>')) {
+        $node = $match.Value
+        if ($node -notmatch 'class="android\.widget\.(?:EditText|AutoCompleteTextView)"' -or
+            $node -notmatch "hint=`"$escapedHint`"") {
+            continue
+        }
+        if ($RequireFocused -and $node -notmatch 'focused="true"') {
+            continue
+        }
+        if ($node -notmatch 'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"') {
+            continue
+        }
+
+        $textMatch = [regex]::Match($node, 'text="([^"]*)"')
+        $candidates += [pscustomobject]@{
+            Point = [pscustomobject]@{
+                X = [int](([int]$Matches[1] + [int]$Matches[3]) / 2)
+                Y = [int](([int]$Matches[2] + [int]$Matches[4]) / 2)
+            }
+            Text = if ($textMatch.Success) { $textMatch.Groups[1].Value } else { '' }
+        }
+    }
+
+    if ($candidates.Count -gt 1) {
+        throw "multiple Android text fields matched hint: $Hint"
+    }
+    if ($candidates.Count -eq 1) {
+        return $candidates[0]
+    }
+
+    return $null
+}
+
 function Tap-Point {
     param(
         [string]$AdbPath,
@@ -870,6 +912,51 @@ function Set-AndroidText {
         Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'text', $safeText) | Out-Null
         Start-Sleep -Milliseconds 60
     }
+}
+
+function Set-AndroidEditTextByHint {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$EvidenceDirectory,
+        [string]$Timestamp,
+        [string]$FieldName,
+        [string]$Hint,
+        [string]$Value
+    )
+
+    $focusWasConfirmed = $false
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $beforeDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$Timestamp-$FieldName-before$attempt"
+        $fieldNode = Get-EditTextNodeByHint -Content $beforeDump.Content -Hint $Hint
+        if (-not $fieldNode) {
+            throw "android text field not found: $Hint"
+        }
+
+        Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $fieldNode.Point.X -Y $fieldNode.Point.Y
+        Start-Sleep -Milliseconds 700
+        $focusDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$Timestamp-$FieldName-focus$attempt"
+        $focusedNode = Get-EditTextNodeByHint -Content $focusDump.Content -Hint $Hint -RequireFocused
+        if (-not $focusedNode) {
+            continue
+        }
+
+        $focusWasConfirmed = $true
+        Clear-AndroidTextField -AdbPath $AdbPath -DeviceId $DeviceId
+        Set-AndroidText -AdbPath $AdbPath -DeviceId $DeviceId -Text $Value
+        Start-Sleep -Milliseconds 700
+
+        $typedDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$Timestamp-$FieldName-attempt$attempt"
+        $typedNode = Get-EditTextNodeByHint -Content $typedDump.Content -Hint $Hint
+        if ($typedNode -and $typedNode.Text -eq $Value) {
+            return $typedDump
+        }
+    }
+
+    if (-not $focusWasConfirmed) {
+        throw "android text field focus not confirmed: $Hint"
+    }
+    throw "android text field value not confirmed: $Hint"
 }
 
 function Clear-AndroidTextField {
@@ -1484,10 +1571,11 @@ try {
         throw "$voucherKorean 작성 화면을 열지 못했습니다."
     }
 
-    Tap-UiText -AdbPath $resolvedAdb -DeviceId $deviceId -Content $draftDump.Content -Text '거래처명 입력' -ClassName 'android.widget.EditText' -StepName '거래처 검색 입력'
-    Set-AndroidText -AdbPath $resolvedAdb -DeviceId $deviceId -Text $fixture.CustomerName
+    Set-AndroidEditTextByHint -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Timestamp $timestamp -FieldName 'customer-search' -Hint '거래처명 입력' -Value $fixture.CustomerName | Out-Null
     Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'input', 'keyevent', 'KEYCODE_ESCAPE') | Out-Null
-    Tap-UiText -AdbPath $resolvedAdb -DeviceId $deviceId -Content $draftDump.Content -Text '찾기' -ClassName 'android.widget.Button' -StepName '거래처 검색 실행'
+    Start-Sleep -Seconds 1
+    $customerSearchDump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$timestamp-customer-search-ready"
+    Tap-UiText -AdbPath $resolvedAdb -DeviceId $deviceId -Content $customerSearchDump.Content -Text '찾기' -ClassName 'android.widget.Button' -StepName '거래처 검색 실행'
     Start-Sleep -Seconds 5
 
     $customerResultDump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$timestamp-customer-result"
@@ -1498,10 +1586,11 @@ try {
     $customerSelectedDump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$timestamp-customer-selected"
     Assert-UiContains -Content $customerSelectedDump.Content -Needles @("선택 거래처: $($fixture.CustomerName)") -StepName '거래처 선택 반영'
 
-    Tap-UiText -AdbPath $resolvedAdb -DeviceId $deviceId -Content $customerSelectedDump.Content -Text '품명 / 규격 검색' -ClassName 'android.widget.EditText' -StepName '품목 검색 입력'
-    Set-AndroidText -AdbPath $resolvedAdb -DeviceId $deviceId -Text $fixture.ItemName
+    Set-AndroidEditTextByHint -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Timestamp $timestamp -FieldName 'item-search' -Hint '품명 / 규격 검색' -Value $fixture.ItemName | Out-Null
     Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'input', 'keyevent', 'KEYCODE_ESCAPE') | Out-Null
-    Tap-UiText -AdbPath $resolvedAdb -DeviceId $deviceId -Content $customerSelectedDump.Content -Text '검색' -ClassName 'android.widget.Button' -StepName '품목 검색 실행' -MinY 1100
+    Start-Sleep -Seconds 1
+    $itemSearchDump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$timestamp-item-search-ready"
+    Tap-UiText -AdbPath $resolvedAdb -DeviceId $deviceId -Content $itemSearchDump.Content -Text '검색' -ClassName 'android.widget.Button' -StepName '품목 검색 실행' -MinY 1100
     Start-Sleep -Seconds 5
 
     $itemResultDump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-write-e2e-$timestamp-item-result"

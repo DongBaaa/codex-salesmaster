@@ -607,11 +607,13 @@ function Get-NodeCenterByText {
         [string]$Content,
         [string]$Text,
         [string]$ClassName,
-        [int]$MinY = 0
+        [int]$MinY = 0,
+        [switch]$PreferLast
     )
 
     $escaped = [regex]::Escape($Text)
     $matches = [regex]::Matches($Content, '<node\b[^>]*>')
+    $lastPoint = $null
     foreach ($match in $matches) {
         $node = $match.Value
         if ($node -notmatch "text=`"$escaped`"" -and $node -notmatch "hint=`"$escaped`"") {
@@ -628,14 +630,18 @@ function Get-NodeCenterByText {
             if ($y1 -lt $MinY) {
                 continue
             }
-            return [pscustomobject]@{
+            $point = [pscustomobject]@{
                 X = [int](($x1 + $x2) / 2)
                 Y = [int](($y1 + $y2) / 2)
             }
+            if (-not $PreferLast) {
+                return $point
+            }
+            $lastPoint = $point
         }
     }
 
-    return $null
+    return $lastPoint
 }
 
 function Get-LoginEditTextNode {
@@ -680,6 +686,48 @@ function Get-LoginEditTextNode {
 
     if ($candidates.Count -gt 1) {
         throw "multiple login fields matched password role: $expectedPassword"
+    }
+    if ($candidates.Count -eq 1) {
+        return $candidates[0]
+    }
+
+    return $null
+}
+
+function Get-EditTextNodeByHint {
+    param(
+        [string]$Content,
+        [string]$Hint,
+        [switch]$RequireFocused
+    )
+
+    $escapedHint = [regex]::Escape($Hint)
+    $candidates = @()
+    foreach ($match in [regex]::Matches($Content, '<node\b[^>]*>')) {
+        $node = $match.Value
+        if ($node -notmatch 'class="android\.widget\.(?:EditText|AutoCompleteTextView)"' -or
+            $node -notmatch "hint=`"$escapedHint`"") {
+            continue
+        }
+        if ($RequireFocused -and $node -notmatch 'focused="true"') {
+            continue
+        }
+        if ($node -notmatch 'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"') {
+            continue
+        }
+
+        $textMatch = [regex]::Match($node, 'text="([^"]*)"')
+        $candidates += [pscustomobject]@{
+            Point = [pscustomobject]@{
+                X = [int](([int]$Matches[1] + [int]$Matches[3]) / 2)
+                Y = [int](([int]$Matches[2] + [int]$Matches[4]) / 2)
+            }
+            Text = if ($textMatch.Success) { $textMatch.Groups[1].Value } else { '' }
+        }
+    }
+
+    if ($candidates.Count -gt 1) {
+        throw "multiple Android text fields matched hint: $Hint"
     }
     if ($candidates.Count -eq 1) {
         return $candidates[0]
@@ -806,12 +854,13 @@ function Tap-UiText {
         [string]$Text,
         [string]$StepName,
         [string]$ClassName = '',
-        [int]$MinY = 0
+        [int]$MinY = 0,
+        [switch]$PreferLast
     )
 
-    $point = Get-NodeCenterByText -Content $Content -Text $Text -ClassName $ClassName -MinY $MinY
+    $point = Get-NodeCenterByText -Content $Content -Text $Text -ClassName $ClassName -MinY $MinY -PreferLast:$PreferLast
     if (-not $point -and -not [string]::IsNullOrWhiteSpace($ClassName)) {
-        $point = Get-NodeCenterByText -Content $Content -Text $Text -ClassName '' -MinY $MinY
+        $point = Get-NodeCenterByText -Content $Content -Text $Text -ClassName '' -MinY $MinY -PreferLast:$PreferLast
     }
     if (-not $point) {
         throw "$StepName 실패. '$Text' 위치를 찾지 못했습니다."
@@ -974,6 +1023,51 @@ function Set-AndroidText {
         Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'text', $safeText) | Out-Null
         Start-Sleep -Milliseconds 60
     }
+}
+
+function Set-AndroidEditTextByHint {
+    param(
+        [string]$AdbPath,
+        [string]$DeviceId,
+        [string]$EvidenceDirectory,
+        [string]$Timestamp,
+        [string]$FieldName,
+        [string]$Hint,
+        [string]$Value
+    )
+
+    $focusWasConfirmed = $false
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $beforeDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-$FieldName-before$attempt"
+        $fieldNode = Get-EditTextNodeByHint -Content $beforeDump.Content -Hint $Hint
+        if (-not $fieldNode) {
+            throw "android text field not found: $Hint"
+        }
+
+        Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $fieldNode.Point.X -Y $fieldNode.Point.Y
+        Start-Sleep -Milliseconds 700
+        $focusDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-$FieldName-focus$attempt"
+        $focusedNode = Get-EditTextNodeByHint -Content $focusDump.Content -Hint $Hint -RequireFocused
+        if (-not $focusedNode) {
+            continue
+        }
+
+        $focusWasConfirmed = $true
+        Clear-AndroidTextField -AdbPath $AdbPath -DeviceId $DeviceId
+        Set-AndroidText -AdbPath $AdbPath -DeviceId $DeviceId -Text $Value
+        Start-Sleep -Milliseconds 700
+
+        $typedDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-$FieldName-attempt$attempt"
+        $typedNode = Get-EditTextNodeByHint -Content $typedDump.Content -Hint $Hint
+        if ($typedNode -and $typedNode.Text -eq $Value) {
+            return $typedDump
+        }
+    }
+
+    if (-not $focusWasConfirmed) {
+        throw "android text field focus not confirmed: $Hint"
+    }
+    throw "android text field value not confirmed: $Hint"
 }
 
 function Clear-AndroidTextField {
@@ -2082,8 +2176,7 @@ function Invoke-TestPaymentAttachmentOpenUi {
         -Needles @('거래처', '거래처명 / 전화 / 사업자번호') `
         -Steps $Steps
 
-    Tap-UiText -AdbPath $AdbPath -DeviceId $DeviceId -Content $customersDump.Content -Text '거래처명 / 전화 / 사업자번호' -ClassName 'android.widget.EditText' -StepName '거래처 검색 입력'
-    Set-AndroidText -AdbPath $AdbPath -DeviceId $DeviceId -Text $Fixture.CustomerName
+    Set-AndroidEditTextByHint -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Timestamp "$VoucherSlug-$Timestamp" -FieldName 'attachment-customer-search' -Hint '거래처명 / 전화 / 사업자번호' -Value $Fixture.CustomerName | Out-Null
     Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'keyevent', 'KEYCODE_ESCAPE') | Out-Null
     Start-Sleep -Seconds 2
 
@@ -2427,8 +2520,7 @@ try {
     $invoicesDump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$voucherSlug-$timestamp-invoices"
     Assert-UiContains -Content $invoicesDump.Content -Needles @('전표', '수금/지급') -StepName '전표 화면'
 
-    Tap-UiText -AdbPath $resolvedAdb -DeviceId $deviceId -Content $invoicesDump.Content -Text '거래처명 / 전표번호 / 메모' -ClassName 'android.widget.EditText' -StepName '전표 검색 입력'
-    Set-AndroidText -AdbPath $resolvedAdb -DeviceId $deviceId -Text $fixture.CustomerName
+    Set-AndroidEditTextByHint -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Timestamp "$voucherSlug-$timestamp" -FieldName 'invoice-search' -Hint '거래처명 / 전표번호 / 메모' -Value $fixture.CustomerName | Out-Null
     Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'input', 'keyevent', 'KEYCODE_ESCAPE') | Out-Null
     Start-Sleep -Seconds 2
     $typedDump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$voucherSlug-$timestamp-search-typed"
@@ -2445,11 +2537,33 @@ try {
 
     $detailDump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$voucherSlug-$timestamp-detail"
     Assert-UiContains -Content $detailDump.Content -Needles @('선택 전표 상세', $fixture.ItemName, '수금/지급') -StepName '선택 전표 상세'
-    Tap-UiText -AdbPath $resolvedAdb -DeviceId $deviceId -Content $detailDump.Content -Text '수금/지급' -ClassName 'android.widget.Button' -StepName '선택 전표 수금/지급 열기' -MinY 520
-    Start-Sleep -Seconds 5
+    $detailScrollX = [int]($screen.Width * 0.5)
+    $detailScrollStartY = [int]($screen.Height * 0.82)
+    $detailScrollEndY = [int]($screen.Height * 0.42)
+    Invoke-Adb -AdbPath $resolvedAdb -Arguments @(
+        '-s', $deviceId, 'shell', 'input', 'swipe',
+        [string]$detailScrollX,
+        [string]$detailScrollStartY,
+        [string]$detailScrollX,
+        [string]$detailScrollEndY,
+        '700') | Out-Null
+    Start-Sleep -Seconds 2
+    $detailActionDump = Get-UiDump `
+        -AdbPath $resolvedAdb `
+        -DeviceId $deviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-payment-e2e-$voucherSlug-$timestamp-detail-actions"
+    Assert-UiContains -Content $detailActionDump.Content -Needles @('선택 전표 상세', '수금/지급') -StepName '선택 전표 상세 작업'
+    Tap-UiText -AdbPath $resolvedAdb -DeviceId $deviceId -Content $detailActionDump.Content -Text '수금/지급' -ClassName 'android.widget.Button' -StepName '선택 전표 수금/지급 열기' -MinY 520 -PreferLast
 
-    $paymentDump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$voucherSlug-$timestamp-payment-page"
-    Assert-UiContains -Content $paymentDump.Content -Needles @("$paymentAction 입력", $expectedMethod) -StepName '수금/지급 입력 화면'
+    $paymentDump = Wait-UiContainsAll `
+        -AdbPath $resolvedAdb `
+        -DeviceId $deviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Name "mobile-payment-e2e-$voucherSlug-$timestamp-payment-page" `
+        -Needles @("$paymentAction 입력", $expectedMethod) `
+        -StepName '수금/지급 입력 화면' `
+        -TimeoutSeconds 90
 
     if ($ExerciseAttachmentUpload) {
         $attachmentFixture = New-TestAttachmentPdf -EvidenceDirectory $EvidenceDirectory -Timestamp $timestamp
