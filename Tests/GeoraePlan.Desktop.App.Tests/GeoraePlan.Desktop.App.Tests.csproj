@@ -74,6 +74,8 @@
              Link="SyncDiag\IsolatedLegacyInvoiceSeedCanonicalizer.cs" />
     <Compile Include="..\..\tools\SyncDiag\IsolatedSeedRetryOutboxReconciler.cs"
              Link="SyncDiag\IsolatedSeedRetryOutboxReconciler.cs" />
+    <Compile Include="..\..\tools\SyncDiag\IsolatedSeedRetryInvoiceVersionMetadataReconciler.cs"
+             Link="SyncDiag\IsolatedSeedRetryInvoiceVersionMetadataReconciler.cs" />
     <Compile Include="..\..\tools\SyncDiag\IsolatedSeedRetryRentalAssetReconciler.cs"
              Link="SyncDiag\IsolatedSeedRetryRentalAssetReconciler.cs" />
     <Compile Include="..\..\tools\SyncDiag\IsolatedSeedRentalAssetBillingStatusNormalizer.cs"

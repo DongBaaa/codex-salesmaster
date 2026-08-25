@@ -31,6 +31,8 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
         "F422BC337476CE0A6A47638A1CF6D1F1CE1103ED81EF02688C8382197BBD8BA1";
     private const string SecurityResetSourceSha256 =
         "937B93127A721A16857403DE5B3B7DDD7669C1787AC0EAD9C32C83A413B37FE2";
+    private const string CurrentLiveSourceSha256 =
+        "D7D83F5970542AAADD37491E4CE79CB63C7044E776802AD52B02BC5CA27D8CAB";
     private const string GuidPattern =
         @"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b";
     private static readonly IsolatedLegacyInvoiceSeedCanonicalizationProfile
@@ -259,6 +261,54 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
     }
 
     [Fact]
+    public async Task Canonicalize_UsesStrictTerminalForLinearResponsibleScopeGroupWithMultipleLatestFlags()
+    {
+        await using var fixture = await TestDatabase.CreateInMemoryAsync();
+        var scenario = AddFiveGroupScenario(fixture.Db);
+        await fixture.Db.SaveChangesAsync();
+
+        var scopeRoot = await fixture.Db.Invoices
+            .IgnoreQueryFilters()
+            .SingleAsync(invoice => invoice.Id == scenario.ScopeRootId);
+        var protectedAmount = scopeRoot.TotalAmount;
+        var protectedMemo = scopeRoot.Memo;
+        scopeRoot.IsLatestVersion = true;
+        await fixture.Db.SaveChangesAsync();
+        fixture.Db.ChangeTracker.Clear();
+
+        var report = await IsolatedLegacyInvoiceSeedCanonicalizer
+            .CanonicalizeForTestsAsync(
+                fixture.Db,
+                SourceSha256);
+        fixture.Db.ChangeTracker.Clear();
+
+        var repairedRoot = await fixture.Db.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(invoice => invoice.Id == scenario.ScopeRootId);
+        var repairedLatest = await fixture.Db.Invoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(invoice => invoice.Id == scenario.ScopeLatestId);
+        var scopeGroup = Assert.Single(report.Groups, group =>
+            string.Equals(
+                group.Mode,
+                "historical_responsible_office_align",
+                StringComparison.Ordinal));
+
+        Assert.False(repairedRoot.IsLatestVersion);
+        Assert.True(repairedLatest.IsLatestVersion);
+        Assert.Equal(protectedAmount, repairedRoot.TotalAmount);
+        Assert.Equal(protectedMemo, repairedRoot.Memo);
+        Assert.Contains(
+            nameof(LocalInvoice.IsLatestVersion),
+            scopeGroup.ChangedMetadataFields);
+        Assert.Contains(
+            nameof(LocalInvoice.ResponsibleOfficeCode),
+            scopeGroup.ChangedMetadataFields);
+    }
+
+    [Fact]
     public async Task Canonicalize_UsesRevisionAndExistingLatestInsteadOfInputOrCreatedAtOrder()
     {
         await using var first = await TestDatabase.CreateInMemoryAsync();
@@ -347,7 +397,7 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
     }
 
     [Fact]
-    public void ApprovedProfiles_MapAllReviewedSnapshotsToTheSameExactEvidence()
+    public void ApprovedProfiles_MapEveryReviewedSnapshotToItsExactEvidence()
     {
         var original =
             IsolatedLegacyInvoiceSeedCanonicalizer.ApprovedProfileForTests;
@@ -399,6 +449,30 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
                 SourceDatabaseSha256 = SecurityResetSourceSha256
             },
             securityReset);
+
+        var currentLive = IsolatedLegacyInvoiceSeedCanonicalizer
+            .ApprovedProfileForSourceDatabaseSha256ForTests(
+                CurrentLiveSourceSha256);
+        Assert.Equal(CurrentLiveSourceSha256, currentLive.SourceDatabaseSha256);
+        Assert.Equal(0, currentLive.AuthorizedNonAcknowledgedOutboxCount);
+        Assert.Equal(
+            "40086EECD8956D1BCBA111D96183766E8E9024FDB7DF06C817DFD56CE7B0ABDF",
+            currentLive.AuthorizedNonAcknowledgedOutboxSha256);
+        Assert.Equal(
+            "470D4118ACF242C3B4C1B7C5CCC6D0FC1CC7A1E9F9D2794F08EC470630153EBA",
+            currentLive.BeforeMetadataSha256);
+        Assert.Equal(
+            "49D925656056F81EBF84A23C0ED18433E205D7FB0F87699CE75A2965BD366BF9",
+            currentLive.AfterMetadataSha256);
+        Assert.Equal(
+            securityReset.ActiveInvoiceIdsSha256,
+            currentLive.ActiveInvoiceIdsSha256);
+        Assert.Equal(
+            "CCF936EF6F144E58476DA8FBFDC2D129D86B2466A9E3549BB610F39B09AF5E43",
+            currentLive.LatestInvoiceBusinessSha256);
+        Assert.Equal(
+            "996447F6331780A5A6E15C1387979C945542E7739E49610399AC2998652EAD58",
+            currentLive.DependencyReferencesSha256);
     }
 
     [Fact]
@@ -1074,6 +1148,9 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
         IsolatedLegacyInvoiceSeedCanonicalizer
             .AssertApprovedSourceDatabaseSha256ForTests(
                 SecurityResetSourceSha256.ToLowerInvariant());
+        IsolatedLegacyInvoiceSeedCanonicalizer
+            .AssertApprovedSourceDatabaseSha256ForTests(
+                CurrentLiveSourceSha256.ToLowerInvariant());
         var error = Assert.Throws<
             IsolatedLegacyInvoiceSeedCanonicalizationException>(
             () => IsolatedLegacyInvoiceSeedCanonicalizer
@@ -1587,6 +1664,13 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
         Assert.True(
             CountOccurrences(preparation, SecurityResetSourceSha256) >= 2,
             "The security-reset snapshot must be bound in both preflight and report validation.");
+        Assert.Contains(
+            CurrentLiveSourceSha256,
+            canonicalizer,
+            StringComparison.Ordinal);
+        Assert.True(
+            CountOccurrences(preparation, CurrentLiveSourceSha256) >= 2,
+            "The current live snapshot must be bound in both preflight and report validation.");
 
         var updateSql = Between(
             canonicalizer,
@@ -1595,6 +1679,7 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
         Assert.Contains("\"VersionGroupId\"", updateSql, StringComparison.Ordinal);
         Assert.Contains("\"VersionNumber\"", updateSql, StringComparison.Ordinal);
         Assert.Contains("\"PreviousVersionId\"", updateSql, StringComparison.Ordinal);
+        Assert.Contains("\"IsLatestVersion\"", updateSql, StringComparison.Ordinal);
         Assert.Contains("\"ResponsibleOfficeCode\"", updateSql, StringComparison.Ordinal);
         Assert.DoesNotContain("\"CustomerId\"", updateSql, StringComparison.Ordinal);
         Assert.DoesNotContain("\"TenantCode\"", updateSql, StringComparison.Ordinal);

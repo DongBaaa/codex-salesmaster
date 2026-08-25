@@ -168,6 +168,8 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
         "F422BC337476CE0A6A47638A1CF6D1F1CE1103ED81EF02688C8382197BBD8BA1";
     internal const string SecurityResetApprovedSourceDatabaseSha256 =
         "937B93127A721A16857403DE5B3B7DDD7669C1787AC0EAD9C32C83A413B37FE2";
+    internal const string CurrentLiveApprovedSourceDatabaseSha256 =
+        "D7D83F5970542AAADD37491E4CE79CB63C7044E776802AD52B02BC5CA27D8CAB";
 
     internal static readonly JsonSerializerOptions ReportJsonOptions = new()
     {
@@ -265,6 +267,23 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
                             "EE5B6FC6E2C9D58B3FBC066E00C95693F8EBC63DFE1BC1FCE784EB80EDF85CE8",
                         DependencyReferencesSha256 =
                             "D5528F8C6750119E3D642C0953C8C2519CB88C1E6E37457C81868839649641F7"
+                    },
+                [CurrentLiveApprovedSourceDatabaseSha256] =
+                    ApprovedProfile with
+                    {
+                        SourceDatabaseSha256 =
+                            CurrentLiveApprovedSourceDatabaseSha256,
+                        AuthorizedNonAcknowledgedOutboxCount = 0,
+                        AuthorizedNonAcknowledgedOutboxSha256 =
+                            "40086EECD8956D1BCBA111D96183766E8E9024FDB7DF06C817DFD56CE7B0ABDF",
+                        BeforeMetadataSha256 =
+                            "470D4118ACF242C3B4C1B7C5CCC6D0FC1CC7A1E9F9D2794F08EC470630153EBA",
+                        AfterMetadataSha256 =
+                            "49D925656056F81EBF84A23C0ED18433E205D7FB0F87699CE75A2965BD366BF9",
+                        LatestInvoiceBusinessSha256 =
+                            "CCF936EF6F144E58476DA8FBFDC2D129D86B2466A9E3549BB610F39B09AF5E43",
+                        DependencyReferencesSha256 =
+                            "996447F6331780A5A6E15C1387979C945542E7739E49610399AC2998652EAD58"
                     }
             };
 
@@ -753,6 +772,7 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
                  SET "VersionGroupId" = {update.VersionGroupId},
                      "VersionNumber" = {update.VersionNumber},
                      "PreviousVersionId" = {update.PreviousVersionId},
+                     "IsLatestVersion" = {update.IsLatestVersion},
                      "ResponsibleOfficeCode" = {update.ResponsibleOfficeCode}
                  WHERE "Id" = {update.InvoiceId}
                  """,
@@ -929,10 +949,33 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
                 .ToList();
             if (latest.Count == 0)
                 throw Reject("active_latest_missing", groupId);
-            if (latest.Count > 1)
-                throw Reject("active_latest_not_unique", groupId);
 
-            var canonicalLatest = latest[0];
+            List<LocalInvoice>? precomputedScopeOrder = null;
+            LocalInvoice canonicalLatest;
+            if (latest.Count == 1)
+            {
+                canonicalLatest = latest[0];
+            }
+            else if (responsibleScopeDiffers &&
+                     !protectedScopeDiffers &&
+                     !structural.HasAnomaly &&
+                     TryBuildStrictLinearOrder(
+                         groupId,
+                         active,
+                         requireRootGroupIdentity: true,
+                         allowDeletedPredecessorRoot: false,
+                         members,
+                         out var multipleLatestScopeOrder) &&
+                     multipleLatestScopeOrder[^1].IsLatestVersion)
+            {
+                precomputedScopeOrder = multipleLatestScopeOrder;
+                canonicalLatest = multipleLatestScopeOrder[^1];
+            }
+            else
+            {
+                throw Reject("active_latest_not_unique", groupId);
+            }
+
             if (canonicalLatest.Revision <= 0)
                 throw Reject("latest_revision_not_positive", groupId);
             if (canonicalLatest.CustomerId == Guid.Empty ||
@@ -962,14 +1005,19 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
             GroupPlan groupPlan;
             if (responsibleScopeDiffers)
             {
-                if (structural.HasAnomaly ||
-                    !TryBuildStrictLinearOrder(
-                        groupId,
-                        active,
-                        requireRootGroupIdentity: true,
-                        allowDeletedPredecessorRoot: false,
-                        members,
-                        out var scopeOrder))
+                List<LocalInvoice> scopeOrder;
+                if (precomputedScopeOrder is not null)
+                {
+                    scopeOrder = precomputedScopeOrder;
+                }
+                else if (structural.HasAnomaly ||
+                         !TryBuildStrictLinearOrder(
+                             groupId,
+                             active,
+                             requireRootGroupIdentity: true,
+                             allowDeletedPredecessorRoot: false,
+                             members,
+                             out scopeOrder))
                 {
                     throw Reject(
                         "responsible_scope_shape_not_linear",
@@ -1124,12 +1172,14 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
                 invoice.VersionGroupId,
                 invoice.VersionNumber,
                 NormalizeReference(invoice.PreviousVersionId),
+                invoice.Id == latest.Id,
                 latest.ResponsibleOfficeCode,
                 ChangedFields(
                     invoice,
                     invoice.VersionGroupId,
                     invoice.VersionNumber,
                     NormalizeReference(invoice.PreviousVersionId),
+                    invoice.Id == latest.Id,
                     latest.ResponsibleOfficeCode))).ToList();
         return NewGroupPlan(
             groupId,
@@ -1188,12 +1238,14 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
                 newGroupId,
                 index + 1,
                 previousId,
+                invoice.Id == latest.Id,
                 invoice.ResponsibleOfficeCode,
                 ChangedFields(
                     invoice,
                     newGroupId,
                     index + 1,
                     previousId,
+                    invoice.Id == latest.Id,
                     invoice.ResponsibleOfficeCode));
         }).ToList();
         plan = NewGroupPlan(
@@ -1315,12 +1367,14 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
                 groupId,
                 index + 1,
                 previousId,
+                invoice.Id == latest.Id,
                 invoice.ResponsibleOfficeCode,
                 ChangedFields(
                     invoice,
                     groupId,
                     index + 1,
                     previousId,
+                    invoice.Id == latest.Id,
                     invoice.ResponsibleOfficeCode));
         }).ToList();
         plan = NewGroupPlan(
@@ -2105,6 +2159,7 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
             nameof(LocalInvoice.VersionGroupId),
             nameof(LocalInvoice.VersionNumber),
             nameof(LocalInvoice.PreviousVersionId),
+            nameof(LocalInvoice.IsLatestVersion),
             nameof(LocalInvoice.ResponsibleOfficeCode)
         };
         var groups = report.Groups;
@@ -2657,6 +2712,7 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
         Guid versionGroupId,
         int versionNumber,
         Guid? previousVersionId,
+        bool isLatestVersion,
         string responsibleOfficeCode)
     {
         var fields = new List<string>();
@@ -2669,6 +2725,8 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
         {
             fields.Add(nameof(LocalInvoice.PreviousVersionId));
         }
+        if (invoice.IsLatestVersion != isLatestVersion)
+            fields.Add(nameof(LocalInvoice.IsLatestVersion));
         if (!string.Equals(
                 invoice.ResponsibleOfficeCode,
                 responsibleOfficeCode,
@@ -2754,7 +2812,7 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
                 update is null
                     ? invoice.PreviousVersionId
                     : update.PreviousVersionId),
-            invoice.IsLatestVersion ? "1" : "0",
+            (update?.IsLatestVersion ?? invoice.IsLatestVersion) ? "1" : "0",
             invoice.IsDeleted ? "1" : "0",
             FormatId(invoice.CustomerId),
             NormalizeScope(invoice.TenantCode),
@@ -2809,7 +2867,6 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
             invoice.ParentInvoiceId,
             invoice.LinkedRentalBillingProfileId,
             invoice.LinkedRentalBillingRunId,
-            invoice.IsLatestVersion,
             invoice.IsConfirmed,
             invoice.CreatedByUsername,
             invoice.LastSavedByUsername,
@@ -3594,6 +3651,7 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
         Guid VersionGroupId,
         int VersionNumber,
         Guid? PreviousVersionId,
+        bool IsLatestVersion,
         string ResponsibleOfficeCode,
         IReadOnlyList<string> ChangedMetadataFields);
 

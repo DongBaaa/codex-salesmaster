@@ -3906,9 +3906,13 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
             "시드 동기화 재시도 전에 종료되었습니다",
             outboxCompletionIndex,
             StringComparison.Ordinal);
+        var retryBaseUrlIndex = source.IndexOf(
+            "GEORAEPLAN_SYNC_BASEURL = ($serverState.ServerUrl + '/')",
+            retryHealthCheckIndex,
+            StringComparison.Ordinal);
         var retryPreparationIndex = source.IndexOf(
             "'prepare-test-seed-retry'",
-            retryHealthCheckIndex,
+            retryBaseUrlIndex,
             StringComparison.Ordinal);
         var failedSummaryIndex = source.IndexOf(
             "'seed_sync_succeeded=False'",
@@ -3951,7 +3955,10 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
             retryHealthCheckIndex > outboxCompletionIndex,
             "The isolated server is not checked before a seed retry.");
         Assert.True(
-            retryPreparationIndex > retryHealthCheckIndex,
+            retryBaseUrlIndex > retryHealthCheckIndex,
+            "The seed retry tool is not bound to the attested loopback server URL.");
+        Assert.True(
+            retryPreparationIndex > retryBaseUrlIndex,
             "Dependent revisions are not prepared before a seed retry.");
         Assert.True(
             failedSummaryIndex > retryPreparationIndex,
@@ -7435,7 +7442,7 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
             StringComparison.Ordinal);
         var seedFunction = source[seedFunctionStart..seedFunctionEnd];
         var resetEmptyCredentials = seedFunction.IndexOf(
-            "$storedCredentials = if ($ResetAllUserPasswords)",
+            "$storedCredentials = if (",
             StringComparison.Ordinal);
         var seedCredentialRead = seedFunction.IndexOf(
             "Get-StoredSyncCredentialsFromLocalState `",
@@ -7461,6 +7468,72 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
         Assert.Contains(
             "-ResetAllPasswords:$ResetAllUserPasswords",
             seedFunction,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PreparationScript_ProtectedSnapshotResetSkipsStoredCredentialDecryption()
+    {
+        var source = File.ReadAllText(ResolvePreparationScript());
+        var seedFunctionStart = source.IndexOf(
+            "function Initialize-IsolatedServerData {",
+            StringComparison.Ordinal);
+        var seedFunctionEnd = source.IndexOf(
+            "$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path",
+            seedFunctionStart,
+            StringComparison.Ordinal);
+        var seedFunction = source[seedFunctionStart..seedFunctionEnd];
+
+        var bypassGate = seedFunction.IndexOf(
+            "$bypassStoredCredentialsForProtectedSnapshotReset =",
+            StringComparison.Ordinal);
+        var credentialRead = seedFunction.IndexOf(
+            "Get-StoredSyncCredentialsFromLocalState `",
+            StringComparison.Ordinal);
+        var passwordResolution = seedFunction.IndexOf(
+            "Resolve-IsolatedUserDefinitions `",
+            StringComparison.Ordinal);
+
+        Assert.True(
+            bypassGate >= 0 &&
+            bypassGate < credentialRead &&
+            credentialRead < passwordResolution,
+            "Protected snapshot password reset does not bypass stored credentials before user resolution.");
+        Assert.Contains(
+            "$ResetUnresolvedPasswords -and",
+            seedFunction,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "$null -ne $SourceUsersSnapshot",
+            seedFunction,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "invocationMode = 'explicit-protected-snapshot-reset'",
+            seedFunction,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "-ResetUnresolvedPasswords:$ResetUnresolvedPasswords",
+            seedFunction,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PreparationScript_RuntimeManifestDigestsUseCrossPowerShellOrdinalOrdering()
+    {
+        var source = File.ReadAllText(ResolvePreparationScript());
+
+        Assert.True(
+            CountOccurrences(
+                source,
+                "[Array]::Sort($orderedManifestLines, [StringComparer]::Ordinal)") >= 3,
+            "Runtime manifest hashes are not ordinally ordered in preparation and launch validation.");
+        Assert.Contains(
+            "[Array]::Sort($lines, [StringComparer]::Ordinal)",
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "(($manifestLines | Sort-Object) -join [Environment]::NewLine)",
+            source,
             StringComparison.Ordinal);
     }
 

@@ -352,7 +352,11 @@ try
                 return 1;
             }
         case "prepare-test-seed-retry":
+            isolatedServerTargetLease?.AssertStable();
             var retryPreparation = await PrepareTestSeedRetryAsync(db);
+            isolatedServerTargetLease?.AssertStable();
+            Console.WriteLine(
+                $"rebased_invoices={retryPreparation.RebasedInvoices}");
             Console.WriteLine($"rebased_payments={retryPreparation.RebasedPayments}");
             Console.WriteLine($"rebased_transactions={retryPreparation.RebasedTransactions}");
             Console.WriteLine(
@@ -585,6 +589,8 @@ static async Task<int> PrintReadOnlyLegacyInvoiceSeedProfileAsync(
     {
         var reasonCode = ex switch
         {
+            IsolatedLegacyInvoiceSeedCanonicalizationException canonicalizationError =>
+                canonicalizationError.ReasonCode,
             FileNotFoundException => "source_missing",
             UnauthorizedAccessException => "source_access_denied",
             InvalidOperationException => "source_not_immutable",
@@ -963,6 +969,7 @@ static async Task<int> MarkValidRentalAssetAssignmentHistoriesDirtyAsync(LocalDb
 }
 
 static async Task<(
+    int RebasedInvoices,
     int RebasedPayments,
     int RebasedTransactions,
     int UnlinkedExcludedRentalAssets,
@@ -975,10 +982,19 @@ static async Task<(
 {
     await using var dbTransaction = await db.Database.BeginTransactionAsync();
     var retryNowUtc = DateTime.UtcNow;
+    var serverDatabasePath = Path.Combine(
+        Environment.GetEnvironmentVariable(
+            "GEORAEPLAN_TEST_SERVER_ROOT") ?? string.Empty,
+        "거래플랜-local.db");
     var rentalAssetReconciliation =
         await IsolatedSeedRetryRentalAssetReconciler.ReconcileAsync(
             db,
             retryNowUtc);
+    var invoiceVersionMetadataReconciliation =
+        await IsolatedSeedRetryInvoiceVersionMetadataReconciler
+            .ReconcileAsync(
+                db,
+                serverDatabasePath);
     var invoiceRevisions = await db.Invoices
         .IgnoreQueryFilters()
         .Where(invoice => !invoice.IsDeleted)
@@ -1027,7 +1043,8 @@ static async Task<(
     }
 
     var removedStaleOutbox =
-        rentalAssetReconciliation.RemovedStaleOutbox;
+        rentalAssetReconciliation.RemovedStaleOutbox +
+        invoiceVersionMetadataReconciliation.RemovedStaleOutbox;
     if (rebasedPaymentIds.Count > 0)
     {
         removedStaleOutbox += await db.SyncOutboxEntries
@@ -1104,6 +1121,7 @@ static async Task<(
     await db.SaveChangesAsync();
     await dbTransaction.CommitAsync();
     return (
+        invoiceVersionMetadataReconciliation.RebasedInvoices,
         rebasedPaymentIds.Count,
         rebasedTransactionIds.Count,
         rentalAssetReconciliation.UnlinkedAssets,
@@ -1167,7 +1185,8 @@ static bool RequiresIsolatedTestServerTargetGuard(string? value)
     => IsTruthy(
            Environment.GetEnvironmentVariable(
                "GEORAEPLAN_TEST_SEED_MODE")) &&
-       (string.Equals(value, "preseed-sync", StringComparison.Ordinal) ||
+       (string.Equals(value, "prepare-test-seed-retry", StringComparison.Ordinal) ||
+        string.Equals(value, "preseed-sync", StringComparison.Ordinal) ||
         string.Equals(value, "sync", StringComparison.Ordinal) ||
         string.Equals(value, "maintenance-sync", StringComparison.Ordinal));
 

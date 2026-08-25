@@ -9169,9 +9169,8 @@ function Get-AppSnapshotFileManifestDigest {
         [object[]]$Manifest
     )
 
-    $lines = @(
+    [string[]]$lines = @(
         $Manifest |
-            Sort-Object RelativePath |
             ForEach-Object {
                 '{0}|{1}|{2}|{3}' -f
                     [string]$_.RelativePath,
@@ -9180,6 +9179,7 @@ function Get-AppSnapshotFileManifestDigest {
                     [string]$_.Sha256
             }
     )
+    [Array]::Sort($lines, [StringComparer]::Ordinal)
     $bytes = [Text.Encoding]::UTF8.GetBytes(
         ($lines -join [Environment]::NewLine))
     $sha256 = [Security.Cryptography.SHA256]::Create()
@@ -9369,8 +9369,10 @@ function Get-RuntimeExecutionTreeManifestDigest {
         }
     }
 
+    [string[]]$orderedManifestLines = @($manifestLines)
+    [Array]::Sort($orderedManifestLines, [StringComparer]::Ordinal)
     $bytes = [Text.Encoding]::UTF8.GetBytes(
-        (($manifestLines | Sort-Object) -join [Environment]::NewLine))
+        ($orderedManifestLines -join [Environment]::NewLine))
     $sha256 = [Security.Cryptography.SHA256]::Create()
     try {
         return (
@@ -10891,8 +10893,10 @@ function Get-RuntimeManagedFileManifestDigest {
         }
     }
 
+    [string[]]$orderedManifestLines = @($manifestLines)
+    [Array]::Sort($orderedManifestLines, [StringComparer]::Ordinal)
     $bytes = [Text.Encoding]::UTF8.GetBytes(
-        (($manifestLines | Sort-Object) -join [Environment]::NewLine))
+        ($orderedManifestLines -join [Environment]::NewLine))
     $sha256 = [Security.Cryptography.SHA256]::Create()
     try {
         return (
@@ -10973,8 +10977,10 @@ function Get-RuntimeExecutionTreeManifestDigest {
         }
     }
 
+    [string[]]$orderedManifestLines = @($manifestLines)
+    [Array]::Sort($orderedManifestLines, [StringComparer]::Ordinal)
     $bytes = [Text.Encoding]::UTF8.GetBytes(
-        (($manifestLines | Sort-Object) -join [Environment]::NewLine))
+        ($orderedManifestLines -join [Environment]::NewLine))
     $sha256 = [Security.Cryptography.SHA256]::Create()
     try {
         return (
@@ -14306,6 +14312,8 @@ function Assert-LegacyInvoiceCanonicalizationReportProfile {
         'F422BC337476CE0A6A47638A1CF6D1F1CE1103ED81EF02688C8382197BBD8BA1'
     $securityResetApprovedSourceDatabaseSha256 =
         '937B93127A721A16857403DE5B3B7DDD7669C1787AC0EAD9C32C83A413B37FE2'
+    $currentLiveApprovedSourceDatabaseSha256 =
+        'D7D83F5970542AAADD37491E4CE79CB63C7044E776802AD52B02BC5CA27D8CAB'
     if ([string]::Equals(
             $ExpectedSourceDatabaseSha256,
             $originalApprovedSourceDatabaseSha256,
@@ -14350,6 +14358,19 @@ function Assert-LegacyInvoiceCanonicalizationReportProfile {
             'EE5B6FC6E2C9D58B3FBC066E00C95693F8EBC63DFE1BC1FCE784EB80EDF85CE8'
         $expectedDependencyReferencesSha256 =
             'D5528F8C6750119E3D642C0953C8C2519CB88C1E6E37457C81868839649641F7'
+    }
+    elseif ([string]::Equals(
+            $ExpectedSourceDatabaseSha256,
+            $currentLiveApprovedSourceDatabaseSha256,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        $expectedBeforeMetadataSha256 =
+            '470D4118ACF242C3B4C1B7C5CCC6D0FC1CC7A1E9F9D2794F08EC470630153EBA'
+        $expectedAfterMetadataSha256 =
+            '49D925656056F81EBF84A23C0ED18433E205D7FB0F87699CE75A2965BD366BF9'
+        $expectedLatestInvoiceBusinessSha256 =
+            'CCF936EF6F144E58476DA8FBFDC2D129D86B2466A9E3549BB610F39B09AF5E43'
+        $expectedDependencyReferencesSha256 =
+            '996447F6331780A5A6E15C1387979C945542E7739E49610399AC2998652EAD58'
     }
     else {
         throw 'Canonicalization report source snapshot is not approved.'
@@ -14520,6 +14541,7 @@ function Initialize-IsolatedServerData {
         [switch]$CanonicalizeLegacyInvoiceSeed,
         [string]$CanonicalizeLegacyInvoiceSeedSourceDatabaseSha256,
         [AllowNull()][object]$SourceUsersSnapshot,
+        [switch]$ResetUnresolvedPasswords,
         [switch]$ResetAllUserPasswords
     )
 
@@ -14826,6 +14848,9 @@ function Initialize-IsolatedServerData {
                     GEORAEPLAN_TEST_MODE = '1'
                     GEORAEPLAN_TEST_SEED_MODE = '1'
                     GEORAEPLAN_TEST_SEED_ROOT = $TestAppRoot
+                    GEORAEPLAN_TEST_SERVER_ROOT = $ServerWorkingDirectory
+                    GEORAEPLAN_TEST_SERVER_BASEURL = ($serverState.ServerUrl + '/')
+                    GEORAEPLAN_SYNC_BASEURL = ($serverState.ServerUrl + '/')
                 } -Action {
                     Invoke-DotnetWithOutput `
                         -DotnetExe $DotnetExe `
@@ -14866,7 +14891,29 @@ function Initialize-IsolatedServerData {
             throw $seedSyncWarning
         }
 
-        $storedCredentials = if ($ResetAllUserPasswords) {
+        $bypassStoredCredentialsForProtectedSnapshotReset =
+            -not $ResetAllUserPasswords -and
+            $ResetUnresolvedPasswords -and
+            $null -ne $SourceUsersSnapshot
+        $storedCredentials = if (
+            $ResetAllUserPasswords -or
+            $bypassStoredCredentialsForProtectedSnapshotReset
+        ) {
+            if ($bypassStoredCredentialsForProtectedSnapshotReset) {
+                Write-Utf8File `
+                    -Path (
+                        Join-Path `
+                            $SeedLogRoot `
+                            'stored-sync-credentials.log') `
+                    -Content (
+                        [pscustomobject]@{
+                            schemaVersion = 1
+                            protection = 'DPAPI-CurrentUser'
+                            credentialCount = 0
+                            invocationMode = 'explicit-protected-snapshot-reset'
+                            credentials = @()
+                        } | ConvertTo-Json -Depth 10)
+            }
             @()
         }
         else {
@@ -14901,7 +14948,7 @@ function Initialize-IsolatedServerData {
         $resolvedUsers = Resolve-IsolatedUserDefinitions `
             -SourceUsers $sourceUsers `
             -StoredCredentials $storedCredentials `
-            -ResetUnresolvedPasswords:$ResetUnresolvedUserPasswordsForIsolatedTest `
+            -ResetUnresolvedPasswords:$ResetUnresolvedPasswords `
             -ResetAllPasswords:$ResetAllUserPasswords
         $resolvedUsersSanitized = @(
             $resolvedUsers | ForEach-Object {
@@ -16277,7 +16324,8 @@ if ($CanonicalizeLegacyInvoiceSeed) {
         'E98DF3E657205319F595AE61089F50E1B87F0BD272C650827AA123B4A8616916',
         '719380E811BB04DC364FB6D2E0BD4C4E04B3D3C12F4D56207233D600F80B9A5C',
         'F422BC337476CE0A6A47638A1CF6D1F1CE1103ED81EF02688C8382197BBD8BA1',
-        '937B93127A721A16857403DE5B3B7DDD7669C1787AC0EAD9C32C83A413B37FE2'
+        '937B93127A721A16857403DE5B3B7DDD7669C1787AC0EAD9C32C83A413B37FE2',
+        'D7D83F5970542AAADD37491E4CE79CB63C7044E776802AD52B02BC5CA27D8CAB'
     )
     $requestedLegacyInvoiceSeedSourceDatabaseSha256 =
         $CanonicalizeLegacyInvoiceSeedExpectedSourceDatabaseSha256.Trim()
@@ -16677,6 +16725,8 @@ if (-not $SkipServerSeed) {
         ServerDataRoot = $serverDataRoot
         SourceApiBaseUrl = $sourceApiBaseUrl
         SourceUsersSnapshot = $sourceUsersSnapshotFromFile
+        ResetUnresolvedPasswords =
+            [bool]$ResetUnresolvedUserPasswordsForIsolatedTest
         ResetAllUserPasswords =
             [bool]$ResetAllUserPasswordsForIsolatedTest
     }
