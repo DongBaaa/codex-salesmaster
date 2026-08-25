@@ -113,6 +113,11 @@ public sealed class SyncService : IDisposable
         "TenantCode"
     };
     private static readonly SemaphoreSlim GlobalSyncOperationLock = new(1, 1);
+    private static readonly object SharedAdministrativeBusinessCacheGate = new();
+    private static readonly Dictionary<string, AdministrativeBusinessCacheRefreshState>
+        SharedAdministrativeBusinessCacheRefreshStateByDatabase =
+        new(StringComparer.OrdinalIgnoreCase);
+    private static Guid SharedAdministrativeBusinessCacheSessionId = Guid.Empty;
 
     private readonly LocalDbContext _db;
     private readonly LocalStateService _local;
@@ -169,6 +174,10 @@ public sealed class SyncService : IDisposable
         string BusinessOfficeCode,
         string ScopeType,
         string BusinessDatabaseName);
+
+    private sealed record AdministrativeBusinessCacheRefreshState(
+        DateTime RefreshedAtUtc,
+        WeakReference<LocalDbContext> SourceDbContext);
 
     private sealed record ItemWarehouseStockRevisionConflictResolution(
         IReadOnlyList<ConflictLogDto> ResolvedConflicts,
@@ -917,6 +926,25 @@ public sealed class SyncService : IDisposable
                 _lastAdministrativeBusinessCacheRefreshUtcByDatabase.Clear();
                 _lastAdministrativeBusinessCacheSessionId = _session.SessionId;
             }
+            lock (SharedAdministrativeBusinessCacheGate)
+            {
+                if (SharedAdministrativeBusinessCacheSessionId != _session.SessionId)
+                {
+                    SharedAdministrativeBusinessCacheRefreshStateByDatabase.Clear();
+                    SharedAdministrativeBusinessCacheSessionId = _session.SessionId;
+                }
+                foreach (var (databaseName, refreshState) in
+                         SharedAdministrativeBusinessCacheRefreshStateByDatabase)
+                {
+                    if (refreshState.SourceDbContext.TryGetTarget(out var sourceDbContext) &&
+                        ReferenceEquals(sourceDbContext, _db))
+                    {
+                        continue;
+                    }
+                    _lastAdministrativeBusinessCacheRefreshUtcByDatabase[databaseName] =
+                        refreshState.RefreshedAtUtc;
+                }
+            }
 
             var now = DateTime.UtcNow;
             var mergedBusinessDatabaseCount = 0;
@@ -1087,7 +1115,19 @@ public sealed class SyncService : IDisposable
                     }
 
                     _db.ChangeTracker.Clear();
-                    _lastAdministrativeBusinessCacheRefreshUtcByDatabase[businessDatabaseName] = DateTime.UtcNow;
+                    var refreshedAtUtc = DateTime.UtcNow;
+                    _lastAdministrativeBusinessCacheRefreshUtcByDatabase[businessDatabaseName] =
+                        refreshedAtUtc;
+                    lock (SharedAdministrativeBusinessCacheGate)
+                    {
+                        if (SharedAdministrativeBusinessCacheSessionId == _session.SessionId)
+                        {
+                            SharedAdministrativeBusinessCacheRefreshStateByDatabase[businessDatabaseName] =
+                                new AdministrativeBusinessCacheRefreshState(
+                                    refreshedAtUtc,
+                                    new WeakReference<LocalDbContext>(_db));
+                        }
+                    }
                     mergedBusinessDatabaseCount++;
                 }
                 catch (DesktopClientUpgradeRequiredException)

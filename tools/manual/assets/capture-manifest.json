@@ -1,68 +1,91 @@
 {
-  "schemaVersion": 1,
-  "captureDate": "2026-06-08",
-  "desktopVersion": "1.1.253",
-  "purpose": "기능 설명용 익명화 로컬 테스트 화면",
+  "schemaVersion": 2,
+  "captureDate": "2026-08-22",
+  "desktopVersion": "1.1.693",
+  "purpose": "기능 설명용 현재 Release WPF exact matrix 익명화 화면",
+  "sourceEvidence": {
+    "kind": "georaeplan-current-wpf-exact-matrix-v2",
+    "resultSha256": "6182B6A19A67D7976E27A1C1EF5D39EA27E471111F7C3C67D752B92DFDE2CCC5",
+    "assemblySha256": "C1DD126443642E9D882CCE0693D8EF23F4843D30D50BE23205223EB74E0CE493",
+    "measurementCount": 768,
+    "successScreenshotCount": 36,
+    "modelledMeasurementCount": 0
+  },
   "screenshots": [
     {
       "fileName": "01_login.png",
-      "sha256": "18606AFC634D92C8B484DF7F4D9AA01DE779746F4DE49D6934D957124C27A7A9"
+      "sourceWindow": "LoginWindow",
+      "sha256": "CD91F23C587366FE9730FE3AF6B448D4601A99570F97C63F961C589CB58A80EF"
     },
     {
       "fileName": "03_main.png",
-      "sha256": "33FC6F2CAFFA0D81D9A036DB9E2510C2814C7E93159743E32477736799577BCA"
-    },
-    {
-      "fileName": "04_customer_menu.png",
-      "sha256": "EB9BEFD4F477B97B7A8BC4EF881BA2352E20AFF0B279ED42579110F6FF56754F"
+      "sourceWindow": "MainWindow",
+      "sha256": "CB3CF308E4B3C99731312058A5DCF84B3D0AC398629097007BC73C8F893F597E"
     },
     {
       "fileName": "05_customer_management.png",
-      "sha256": "5AA08C12791E1184E3AC57045635B5B019C12B598D4ACCA5BDA5820E7DE2158D"
+      "sourceWindow": "CustomerManagementWindow",
+      "sha256": "D2E5CB59F2653D652934B8B6AED398A5D7861F8F252D2B516361B284DBA2B482"
     },
     {
       "fileName": "06_customer_edit.png",
-      "sha256": "8F9A9E8BF9E216490415F2116343BCAE94D52937118AE735C5086BD4AFA0819A"
+      "sourceWindow": "CustomerEditWindow",
+      "sha256": "6B4D2E2AF1756BBAF62EBF659FEA700FAD6DAFF0F81E3DDB0E3CFE16D6F965B3"
     },
     {
       "fileName": "07_inventory.png",
-      "sha256": "1C31D2AEE50151456CD72C68D24A90FF61D38CBB3AFF1EDDC1BE292890F03B4C"
+      "sourceWindow": "InventoryWindow",
+      "sha256": "9BC3EB8F9A6FB4FCF543D134D6453A83F5374F77EA8F59E7CF397D30DE584934"
     },
     {
       "fileName": "08_sales_invoice.png",
-      "sha256": "0B976974A20A1080FC6AA1D7D8AB9A8457DE619E7C82C3EF2F876EDF677996DC"
+      "sourceWindow": "SalesWindow",
+      "sha256": "D38B99DCCC0310C07698FBC954D64492256AB8E9D1C72DF1CEFF89020CF75607"
     },
     {
       "fileName": "09_payment.png",
-      "sha256": "0E8210B5C79C689018FEB3C3904320A1189C44E36F469931A8747C7CE8A57E9E"
+      "sourceWindow": "PaymentWindow",
+      "sha256": "993B1549E5F1A1305273711E071387839BBAFEBA5B9FA89493D21201ABDD484C"
     },
     {
       "fileName": "10_period_ledger.png",
-      "sha256": "F5586F76D06771E253350560FB125E2FF8813CA4E56F0736690CD5BF5CBB6FD7"
+      "sourceWindow": "PeriodLedgerWindow",
+      "sha256": "3AC2AC7EDCDD2298A3121A3D25E2E1D22F8816AE37E54F10EDE37E6D6653FD1D"
     },
     {
       "fileName": "12_rental_billing.png",
-      "sha256": "0E17B7460BEE98DA7A289D0AD90E17345E665D550D62B4F6A3F56097D30EF549"
+      "sourceWindow": "RentalBillingWindow",
+      "sha256": "BCD7DCAFB353A5130A128B04A07C8E3BF397BDFE4E49049D18587485D7C1D3C4"
     },
     {
       "fileName": "13_rental_assets.png",
-      "sha256": "E5D019AE72BF2B175F4D758ACF9C254E013BFE70709E24825E40173B4DA6C0A6"
+      "sourceWindow": "RentalAssetWindow",
+      "sha256": "7AC2D5B3BEE7B6A240C24E638511716C1750F5EF874CF76C19F6584EEC65FE7B"
     },
     {
       "fileName": "14_rental_onboarding.png",
-      "sha256": "5556832DE5CB702EC23983C57019A7669F7864540AE9AF242038C72A0ED41BF9"
+      "sourceWindow": "RentalCustomerOnboardingWindow",
+      "sha256": "951516F568C5DCBC1F561DEC9ABB05444810207E6835F9A95F1006FC32F0657C"
     },
     {
       "fileName": "15_environment_settings.png",
-      "sha256": "068918A39B9C72FEE9E400C1CEB14F4FEA9D7DB295A59FFAB6AC5CA21AA56457"
-    },
-    {
-      "fileName": "16_recycle_bin.png",
-      "sha256": "CA7E76F4FE13D4233424FD5D87BFD0873D2D050A8E566519528425E0F6698D03"
+      "sourceWindow": "EnvironmentSettingsWindow",
+      "sha256": "E61C488E53B8CF466579A13B945AA0ADFD81825478F324D570036A409E421D57"
     },
     {
       "fileName": "17_rental_dashboard.png",
-      "sha256": "5B93A9FB3F7068F6F4116C2AE44C52F47FFCA4423FA8B556A5EABF7B7985EDBA"
+      "sourceWindow": "RentalDashboardWindow",
+      "sha256": "06B3BFC1BB3AD09EB6D8D00EA7D203CE37D50A28F615B52044E47AEFF218682A"
+    },
+    {
+      "fileName": "18_trade_print.png",
+      "sourceWindow": "TradePrintWindow",
+      "sha256": "43FD97482BF4336BE1AEDA66C5126A911857FDB9D13171E3AADCE76669887A2B"
+    },
+    {
+      "fileName": "19_sync_diagnostics.png",
+      "sourceWindow": "SyncDiagnosticsWindow",
+      "sha256": "02B8B132B8704F046B21326DDCC67C8FA3A3E9A5261D3FCC9DD57D43998565D0"
     }
   ]
 }

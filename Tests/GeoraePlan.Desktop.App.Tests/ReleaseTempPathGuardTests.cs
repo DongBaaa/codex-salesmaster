@@ -44,9 +44,10 @@ public sealed class ReleaseTempPathGuardTests
             "Services",
             "DesktopAppUpdateService.cs");
 
-        Assert.Contains("directoryPath = AppPaths.TempDir;", source, StringComparison.Ordinal);
         Assert.Contains("var tempRoot = AppPaths.TempDir;", source, StringComparison.Ordinal);
         Assert.Contains("Path.Combine(AppPaths.TempDir, \"GeoraePlan\")", source, StringComparison.Ordinal);
+        Assert.Contains("var packageDirectory = GetPreparedPackageDirectory(package);", source, StringComparison.Ordinal);
+        Assert.Contains("var targetPath = Path.GetFullPath(Path.Combine(packageDirectory, safePackageFileName));", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Path.GetTempPath()", source, StringComparison.Ordinal);
     }
 
@@ -62,20 +63,25 @@ public sealed class ReleaseTempPathGuardTests
             "Updater",
             "거래플랜.Updater",
             "Program.cs");
+        var transportSource = ReadRepositoryFile(
+            "Shared",
+            "GeoraePlan.UpdateTransport",
+            "ResumableUpdatePackageDownloader.cs");
 
-        Assert.Contains("VerifyExpectedPackageFileSize(targetPath, package.FileSize);", serviceSource, StringComparison.Ordinal);
-        Assert.Contains("VerifyExpectedPackageFileSize(temporaryPath, package.FileSize);", serviceSource, StringComparison.Ordinal);
-        Assert.Contains("private static void VerifyExpectedPackageFileSize(string filePath, long expectedFileSize)", serviceSource, StringComparison.Ordinal);
+        Assert.Contains("PackageDownloader.DownloadAsync(", serviceSource, StringComparison.Ordinal);
         AssertInOrder(
             serviceSource,
-            "await VerifySha256Async(temporaryPath, package.Sha256, ct);",
-            "VerifyExpectedPackageFileSize(temporaryPath, package.FileSize);",
-            "File.Move(temporaryPath, targetPath, overwrite: true);");
+            "package.FileSize,",
+            "package.Sha256,",
+            "PackageDownloadHttp.SendAsync(");
         AssertInOrder(
-            serviceSource,
-            "if (File.Exists(targetPath) && await TryVerifySha256Async(targetPath, package.Sha256, ct))",
-            "VerifyExpectedPackageFileSize(targetPath, package.FileSize);",
-            "return new DesktopPreparedUpdatePackage");
+            transportSource,
+            "IsExactFileAsync(",
+            "ValidateResponseLength(",
+            "IsExactFileAsync(",
+            "Publish(partialPath, finalPath);");
+        Assert.Contains("expectedFileSize", transportSource, StringComparison.Ordinal);
+        Assert.Contains("SHA256.Create()", transportSource, StringComparison.Ordinal);
 
         Assert.Contains("VerifyExpectedPackageFileSize(packagePath, options.FileSize);", updaterSource, StringComparison.Ordinal);
         Assert.Contains("private static void VerifyExpectedPackageFileSize(string filePath, long expectedFileSize)", updaterSource, StringComparison.Ordinal);
@@ -99,6 +105,7 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("$tempInitializer = Join-Path $ProjectRoot 'tools\\common\\Initialize-GeoraePlanTemp.ps1'", source, StringComparison.Ordinal);
         Assert.Contains(". $tempInitializer -ProjectRoot $ProjectRoot", source, StringComparison.Ordinal);
         Assert.Contains("function Write-JsonFileAtomically", source, StringComparison.Ordinal);
+        Assert.Contains("$json = $json.Replace(\"`r`n\", \"`n\").Replace(\"`r\", \"`n\")", source, StringComparison.Ordinal);
         Assert.Contains("[System.IO.File]::Replace($tempPath, $TargetPath, $backupPath, $true)", source, StringComparison.Ordinal);
         Assert.Contains("[System.IO.File]::Move($tempPath, $TargetPath)", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Move-Item -LiteralPath $tempPath -Destination $TargetPath -Force", source, StringComparison.Ordinal);
@@ -106,6 +113,12 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("function Copy-GeoraePlanReleaseTransactionFileAtomically", source, StringComparison.Ordinal);
         Assert.Contains("[int]$KeepDesktopPackageCount = 2", source, StringComparison.Ordinal);
         Assert.Contains("[int]$KeepAndroidPackageCount = 2", source, StringComparison.Ordinal);
+        Assert.Contains("$releaseJournalTypeDefinition = @'", source, StringComparison.Ordinal);
+        Assert.Contains("if ($PSVersionTable.PSEdition -eq 'Core')", source, StringComparison.Ordinal);
+        Assert.Contains("Add-Type -TypeDefinition $releaseJournalTypeDefinition", source, StringComparison.Ordinal);
+        Assert.Contains("-ReferencedAssemblies System.Runtime.Serialization", source, StringComparison.Ordinal);
+        Assert.Contains("if ($PlatformNode -is [Collections.IDictionary])", source, StringComparison.Ordinal);
+        Assert.Contains("$installers = $PlatformNode['installers']", source, StringComparison.Ordinal);
         Assert.Contains("$previousManifestPath = Join-Path $manifestRoot ($Channel + '.previous.json')", source, StringComparison.Ordinal);
         Assert.Contains("$deliveryManifestPath = Join-Path $ProjectRoot (\"배포\\\" + $Channel + '.json')", source, StringComparison.Ordinal);
 
@@ -792,12 +805,73 @@ public sealed class ReleaseTempPathGuardTests
             "linux",
             "Publish-GeoraeplanLinuxPcRelease.ps1");
 
+        Assert.Contains("function Get-GeoraePlanLinuxFileSha256", source, StringComparison.Ordinal);
+        Assert.Contains("[Security.Cryptography.SHA256]::Create()", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Get-FileHash", source, StringComparison.Ordinal);
+        Assert.Contains("$null = $copyTask.GetAwaiter().GetResult()", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "$gateArgs += @(",
+            "'-AllowedIntegrityWarningCodes',",
+            "($AllowedIntegrityWarningCodes -join ','))");
+        Assert.DoesNotContain(
+            "$gateArgs += $AllowedIntegrityWarningCodes",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains("[switch]$PreserveLiveUpdateAssets", source, StringComparison.Ordinal);
+        Assert.Contains("[switch]$PreserveLiveAndroidUpdate", source, StringComparison.Ordinal);
+        Assert.Contains("PreserveExistingAndroid = $true", source, StringComparison.Ordinal);
+        Assert.Contains("reason=verified-live-android-update-preserved", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "if ($MirrorToLive -and $PreserveLiveUpdateAssets)",
+            "pre-deploy_android_signing_continuity=not-applicable reason=verified-live-update-assets-preserved",
+            "elseif ($MirrorToLive -and $PreserveLiveAndroidUpdate)",
+            "pre-deploy_android_signing_continuity=not-applicable reason=verified-live-android-update-preserved",
+            "elseif ($MirrorToLive -and -not $SkipAndroidSigningContinuityCheck.IsPresent)",
+            "Invoke-AndroidSigningContinuityGate `");
+        var uploadFunction = ExtractPowerShellScriptSection(
+            source,
+            "function Invoke-SshTarUpload",
+            "function Get-RemoteEnvMap");
+        Assert.DoesNotContain("georaeplan-linux-upload-", uploadFunction, StringComparison.Ordinal);
+        Assert.DoesNotContain("cmd /c", uploadFunction, StringComparison.Ordinal);
+        Assert.Contains("$tarStartInfo.RedirectStandardOutput = $true", uploadFunction, StringComparison.Ordinal);
+        Assert.Contains("$sshStartInfo.RedirectStandardInput = $true", uploadFunction, StringComparison.Ordinal);
+        AssertInOrder(
+            uploadFunction,
+            "$sshProcess.Start()",
+            "$tarProcess.Start()",
+            "$tarProcess.StandardOutput.BaseStream.CopyToAsync($sshProcess.StandardInput.BaseStream)",
+            "$sshProcess.StandardInput.Close()",
+            "$tarProcess.WaitForExit()",
+            "$sshProcess.WaitForExit()");
         Assert.Contains("[switch]$AllowMissingLiveUpdateBaseline", source, StringComparison.Ordinal);
         Assert.Contains("function Copy-VerifiedLiveUpdateRollbackBaselineFromSourceUpdatesRoot", source, StringComparison.Ordinal);
         Assert.Contains("function Invoke-SshFileDownload", source, StringComparison.Ordinal);
         Assert.Contains(
             "function Copy-RemoteUpdatePointerEvidenceToStaging",
             source,
+            StringComparison.Ordinal);
+        var pointerCopyFunction = ExtractPowerShellScriptSection(
+            source,
+            "function Copy-RemoteUpdatePointerEvidenceToStaging",
+            "function Copy-LiveUpdateRollbackBaseline");
+        Assert.Contains(
+            "Invoke-SshFileDownload `",
+            pointerCopyFunction,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "-DestinationPath $stagingPointerPath `",
+            pointerCopyFunction,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "$pointerJson = [string]$pointerResult.StdOut",
+            pointerCopyFunction,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Set-Content `",
+            pointerCopyFunction,
             StringComparison.Ordinal);
         Assert.Contains(
             "function Copy-GeoraePlanPointerRollbackEvidence",
@@ -806,13 +880,33 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("function Copy-LiveUpdateRollbackBaseline", source, StringComparison.Ordinal);
         Assert.Contains("$remoteUpdatesRoot = $Config.RemoteRoot + '/app/live/updates'", source, StringComparison.Ordinal);
         Assert.Contains("exit 44", source, StringComparison.Ordinal);
-        Assert.Contains("$remoteManifestReadCommand =", source, StringComparison.Ordinal);
-        AssertInOrder(
+        var liveBaselineCopyFunction = ExtractPowerShellScriptSection(
             source,
+            "function Copy-LiveUpdateRollbackBaseline",
+            "function Copy-LocalUpdateRollbackBaseline");
+        Assert.Contains("$remoteManifestReadCommand =", liveBaselineCopyFunction, StringComparison.Ordinal);
+        AssertInOrder(
+            liveBaselineCopyFunction,
             "if [ -L $quotedRemoteManifestPath ]; then exit 45;",
             "elif [ ! -e $quotedRemoteManifestPath ]; then exit 44;",
             "elif [ ! -f $quotedRemoteManifestPath ]; then exit 45;",
-            "else cat -- $quotedRemoteManifestPath; fi");
+            "else exit 0; fi");
+        Assert.Contains(
+            "Invoke-SshFileDownload `",
+            liveBaselineCopyFunction,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "-DestinationPath $stagingManifestPath `",
+            liveBaselineCopyFunction,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "$manifestJson = [string]$manifestResult.StdOut",
+            liveBaselineCopyFunction,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Set-Content -LiteralPath $stagingManifestPath",
+            liveBaselineCopyFunction,
+            StringComparison.Ordinal);
         Assert.Contains("Invoke-SshFileDownload -RemotePath $remotePackagePath -DestinationPath $localPackagePath -Config $Config", source, StringComparison.Ordinal);
         Assert.Contains("same-origin", source, StringComparison.Ordinal);
         Assert.Contains("live_update_rollback_baseline_seeded", source, StringComparison.Ordinal);
@@ -846,7 +940,8 @@ public sealed class ReleaseTempPathGuardTests
         AssertInOrder(
             verifiedCopyFunction,
             "$sourceStream.CopyTo($targetStream)",
-            "$temporaryHash = (",
+            "$temporaryHash =",
+            "Get-GeoraePlanLinuxFileSha256 -Path $temporaryPath",
             "'Copied update evidence hash/size does not match the '",
             "[IO.File]::Move($temporaryPath, $TargetPath)");
         Assert.Contains(
@@ -1031,7 +1126,7 @@ public sealed class ReleaseTempPathGuardTests
             "tools",
             "linux",
             "Publish-GeoraeplanLinuxPcRelease.ps1");
-        var durableFunctions = ExtractPowerShellScriptSection(
+        var durableFunctions = ExtractLinuxReleaseHarnessSection(
             linuxSource,
             "function Assert-GeoraePlanLinuxRegularDirectoryChain",
             "function Assert-SafeReleaseId");
@@ -1421,7 +1516,7 @@ public sealed class ReleaseTempPathGuardTests
             "tools",
             "linux",
             "Publish-GeoraeplanLinuxPcRelease.ps1");
-        var pointerFunctions = ExtractPowerShellScriptSection(
+        var pointerFunctions = ExtractLinuxReleaseHarnessSection(
             linuxSource,
             "function Get-GeoraePlanLinuxRegularPointerItem",
             "function Read-GeoraePlanDurableUpdateWrapperStateFile");
@@ -1498,7 +1593,7 @@ public sealed class ReleaseTempPathGuardTests
             "tools",
             "linux",
             "Publish-GeoraeplanLinuxPcRelease.ps1");
-        var pointerFunctions = ExtractPowerShellScriptSection(
+        var pointerFunctions = ExtractLinuxReleaseHarnessSection(
             linuxSource,
             "function Get-GeoraePlanLinuxRegularPointerItem",
             "function Read-GeoraePlanDurableUpdateWrapperStateFile");
@@ -1580,7 +1675,7 @@ public sealed class ReleaseTempPathGuardTests
             "tools",
             "linux",
             "Publish-GeoraeplanLinuxPcRelease.ps1");
-        var durableFunctions = ExtractPowerShellScriptSection(
+        var durableFunctions = ExtractLinuxReleaseHarnessSection(
             linuxSource,
             "function Assert-GeoraePlanLinuxRegularDirectoryChain",
             "function Assert-SafeReleaseId");
@@ -1734,7 +1829,7 @@ public sealed class ReleaseTempPathGuardTests
                 "tools",
                 "linux",
                 "Publish-GeoraeplanLinuxPcRelease.ps1");
-            var durableFunctions = ExtractPowerShellScriptSection(
+            var durableFunctions = ExtractLinuxReleaseHarnessSection(
                 linuxReleaseSource,
                 "function Assert-GeoraePlanLinuxRegularDirectoryChain",
                 "function Assert-SafeReleaseId");
@@ -1852,7 +1947,7 @@ public sealed class ReleaseTempPathGuardTests
                 "tools",
                 "linux",
                 "Publish-GeoraeplanLinuxPcRelease.ps1");
-            var durableFunctions = ExtractPowerShellScriptSection(
+            var durableFunctions = ExtractLinuxReleaseHarnessSection(
                 linuxReleaseSource,
                 "function Assert-GeoraePlanLinuxRegularDirectoryChain",
                 "function Assert-SafeReleaseId");
@@ -2231,17 +2326,11 @@ public sealed class ReleaseTempPathGuardTests
                 "tools",
                 "linux",
                 "Publish-GeoraeplanLinuxPcRelease.ps1");
-            var functionStart = linuxReleaseSource.IndexOf(
-                "function Get-GeoraePlanLinuxRegularPointerItem",
-                StringComparison.Ordinal);
-            var functionEnd = linuxReleaseSource.IndexOf(
-                "Assert-SafeReleaseId -Value $ReleaseId",
-                functionStart,
-                StringComparison.Ordinal);
-            Assert.True(functionStart >= 0 && functionEnd > functionStart);
-
             var testScriptPath = Path.Combine(testRoot, "run-baseline-copy.ps1");
-            var script = linuxReleaseSource[functionStart..functionEnd] + Environment.NewLine +
+            var script = ExtractLinuxReleaseHarnessSection(
+                             linuxReleaseSource,
+                             "function Get-GeoraePlanLinuxRegularPointerItem",
+                             "Assert-SafeReleaseId -Value $ReleaseId") + Environment.NewLine +
                          $"Copy-LocalUpdateRollbackBaseline -Root '{EscapePowerShellSingleQuotedLiteral(projectRoot)}' -PublishRoot '{EscapePowerShellSingleQuotedLiteral(publishRoot)}' -Channel 'stable'" +
                          Environment.NewLine;
             File.WriteAllText(testScriptPath, script, new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
@@ -2366,7 +2455,7 @@ public sealed class ReleaseTempPathGuardTests
                 "tools",
                 "linux",
                 "Publish-GeoraeplanLinuxPcRelease.ps1");
-            var functions = ExtractPowerShellScriptSection(
+            var functions = ExtractLinuxReleaseHarnessSection(
                 linuxSource,
                 "function Get-GeoraePlanLinuxRegularPointerItem",
                 "Assert-SafeReleaseId -Value $ReleaseId");
@@ -2453,7 +2542,7 @@ public sealed class ReleaseTempPathGuardTests
                 "tools",
                 "linux",
                 "Publish-GeoraeplanLinuxPcRelease.ps1");
-            var functions = ExtractPowerShellScriptSection(
+            var functions = ExtractLinuxReleaseHarnessSection(
                 linuxSource,
                 "function Get-GeoraePlanLinuxRegularPointerItem",
                 "Assert-SafeReleaseId -Value $ReleaseId");
@@ -2571,7 +2660,7 @@ public sealed class ReleaseTempPathGuardTests
                 "tools",
                 "linux",
                 "Publish-GeoraeplanLinuxPcRelease.ps1");
-            var script = ExtractPowerShellScriptSection(
+            var script = ExtractLinuxReleaseHarnessSection(
                              linuxReleaseSource,
                              "function Assert-GeoraePlanLinuxRegularDirectoryChain",
                              "Assert-SafeReleaseId -Value $ReleaseId") +
@@ -2669,7 +2758,7 @@ public sealed class ReleaseTempPathGuardTests
                 "linux",
                 "Publish-GeoraeplanLinuxPcRelease.ps1");
             var testScriptPath = Path.Combine(testRoot, "run-verified-live-baseline-copy.ps1");
-            var script = ExtractPowerShellScriptSection(
+            var script = ExtractLinuxReleaseHarnessSection(
                              linuxReleaseSource,
                              "function Get-GeoraePlanLinuxRegularPointerItem",
                              "Assert-SafeReleaseId -Value $ReleaseId") + Environment.NewLine +
@@ -2737,7 +2826,7 @@ public sealed class ReleaseTempPathGuardTests
                 "linux",
                 "Publish-GeoraeplanLinuxPcRelease.ps1");
             var testScriptPath = Path.Combine(testRoot, "run-verified-live-baseline-block.ps1");
-            var script = ExtractPowerShellScriptSection(
+            var script = ExtractLinuxReleaseHarnessSection(
                              linuxReleaseSource,
                              "function Get-GeoraePlanLinuxRegularPointerItem",
                              "Assert-SafeReleaseId -Value $ReleaseId") + Environment.NewLine +
@@ -2770,7 +2859,9 @@ public sealed class ReleaseTempPathGuardTests
 
         Assert.Contains("[switch]$Apply", source, StringComparison.Ordinal);
         Assert.Contains("Test-ManifestPackage -Package $package", source, StringComparison.Ordinal);
-        Assert.Contains("Get-FileHash -Algorithm SHA256", source, StringComparison.Ordinal);
+        Assert.Contains("function Get-RollbackFileSha256", source, StringComparison.Ordinal);
+        Assert.Contains("[Security.Cryptography.SHA256]::Create()", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Get-FileHash", source, StringComparison.Ordinal);
         Assert.Contains("if (-not $Apply)", source, StringComparison.Ordinal);
         Assert.Contains("rollback_manifest=PREVIEW_OK", source, StringComparison.Ordinal);
         Assert.Contains(
@@ -3239,7 +3330,7 @@ public sealed class ReleaseTempPathGuardTests
             "Restore-GeoraePlanPreviousUpdateManifest.ps1");
         var rollbackFunctions = ExtractPowerShellScriptSection(
             rollbackSource,
-            "function Assert-RollbackPathWithinRoot",
+            "function Get-RollbackFileSha256",
             "function New-RollbackTransactionJournal");
         var testRoot = Path.Combine(
             repositoryRoot,
@@ -4026,7 +4117,7 @@ public sealed class ReleaseTempPathGuardTests
 
         Assert.Contains("Get-ChildItem -LiteralPath $appRoot -Recurse -File -Filter '*.pdb'", installerSource, StringComparison.Ordinal);
         Assert.Contains("Remove-Item -Force -ErrorAction Stop", installerSource, StringComparison.Ordinal);
-        Assert.Contains("Get-AuthenticodeSignature -LiteralPath $resolvedPath", signingSource, StringComparison.Ordinal);
+        Assert.Contains("Microsoft.PowerShell.Security\\Get-AuthenticodeSignature", signingSource, StringComparison.Ordinal);
         Assert.Contains("[switch]$RequireSigned", signingSource, StringComparison.Ordinal);
         Assert.Contains("windows_authenticode=PASS", signingSource, StringComparison.Ordinal);
         Assert.Contains("windows_authenticode=WARNING_UNSIGNED", signingSource, StringComparison.Ordinal);
@@ -4288,7 +4379,14 @@ public sealed class ReleaseTempPathGuardTests
 
         Assert.Contains("function Resolve-GeoraePlanScriptTempDirectory", linuxReleaseSource, StringComparison.Ordinal);
         Assert.Contains("@($env:GEORAEPLAN_TEMP_ROOT, $env:TEMP, [System.IO.Path]::GetTempPath())", linuxReleaseSource, StringComparison.Ordinal);
-        Assert.Contains("$archiveDirectory = Resolve-GeoraePlanScriptTempDirectory", linuxReleaseSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "$tarProcess.StandardOutput.BaseStream.CopyToAsync($sshProcess.StandardInput.BaseStream)",
+            linuxReleaseSource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "$archiveDirectory = Resolve-GeoraePlanScriptTempDirectory",
+            linuxReleaseSource,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -6582,15 +6680,19 @@ public sealed class ReleaseTempPathGuardTests
         AssertInOrder(
             linuxRelease,
             "Invoke-GeoraePlanDurableUpdateAssetPublish `",
-            "if ($MirrorToLive -and -not $SkipAndroidSigningContinuityCheck.IsPresent)",
+            "elseif ($MirrorToLive -and $PreserveLiveAndroidUpdate)",
+            "elseif ($MirrorToLive -and -not $SkipAndroidSigningContinuityCheck.IsPresent)",
             "Invoke-AndroidSigningContinuityGate `",
             "Update-PublishedAppSettings -PublishRoot $tempPublishRoot");
 
         Assert.Contains("[switch]$SkipAndroidSigningContinuityCheck", deployAfterTest, StringComparison.Ordinal);
+        Assert.Contains("[switch]$PreserveLiveAndroidUpdate", deployAfterTest, StringComparison.Ordinal);
+        Assert.Contains("$linuxArgs += '-PreserveLiveAndroidUpdate'", deployAfterTest, StringComparison.Ordinal);
         Assert.Contains("[switch]$AcceptAndroidSigningCertificateChange", deployAfterTest, StringComparison.Ordinal);
         Assert.Contains("$linuxArgs += '-SkipAndroidSigningContinuityCheck'", deployAfterTest, StringComparison.Ordinal);
         Assert.Contains("$linuxArgs += '-AcceptAndroidSigningCertificateChange'", deployAfterTest, StringComparison.Ordinal);
         Assert.Contains("[switch]$SkipAndroidSigningContinuityCheck", verificationDeploy, StringComparison.Ordinal);
+        Assert.Contains("[switch]$PreserveLiveAndroidUpdate", verificationDeploy, StringComparison.Ordinal);
         Assert.Contains("[switch]$AcceptAndroidSigningCertificateChange", verificationDeploy, StringComparison.Ordinal);
 
         Assert.Contains("[switch]$AcceptCertificateChange", continuityScript, StringComparison.Ordinal);
@@ -7480,7 +7582,7 @@ public sealed class ReleaseTempPathGuardTests
             "tools",
             "linux",
             "Publish-GeoraeplanLinuxPcRelease.ps1"));
-        var durableFunctions = ExtractPowerShellScriptSection(
+        var durableFunctions = ExtractLinuxReleaseHarnessSection(
             linuxReleaseSource,
             "function Assert-GeoraePlanLinuxRegularDirectoryChain",
             "function Assert-SafeReleaseId");
@@ -7523,6 +7625,17 @@ public sealed class ReleaseTempPathGuardTests
         Assert.True(end > start, $"End token was not found after start token: {endToken}");
         return source[start..end];
     }
+
+    private static string ExtractLinuxReleaseHarnessSection(
+        string source,
+        string startToken,
+        string endToken)
+        => ExtractPowerShellScriptSection(
+               source,
+               "function Get-GeoraePlanLinuxFileSha256",
+               "if ($ExpectedClientCompatibilityMode") +
+           Environment.NewLine +
+           ExtractPowerShellScriptSection(source, startToken, endToken);
 
     private static (string Path, string Version) GetVersionedDesktopFixture()
     {

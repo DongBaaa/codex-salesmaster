@@ -5,8 +5,8 @@
     [string]$JavaSdkDirectory,
     [string]$ApkPath,
     [string]$PackageName = 'kr.georaeplan.mobile',
-    [string]$Username = 'usenet',
-    [string]$Password = '1234',
+    [string]$Username = '',
+    [string]$Password = '',
     [string]$EvidenceDirectory,
     [switch]$SkipInstall,
     [switch]$RequireUpdateInPlace,
@@ -290,6 +290,58 @@ function Invoke-Adb {
         throw "adb 실패: adb $($Arguments -join ' ')`n$output"
     }
     return $output
+}
+
+function Invoke-AdbShellTextInput {
+    param(
+        [Parameter(Mandatory = $true)][string]$AdbPath,
+        [Parameter(Mandatory = $true)][string]$DeviceId,
+        [Parameter(Mandatory = $true)][string]$Text
+    )
+
+    if ($DeviceId -notmatch '^[A-Za-z0-9._:-]+$') {
+        throw 'Android device id contains unsupported characters.'
+    }
+
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $AdbPath
+    $startInfo.Arguments = '-s "' + $DeviceId + '" shell'
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            throw 'adb shell text input process did not start.'
+        }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.StandardInput.AutoFlush = $true
+        $singleQuoteEscape = ([char]39) + '\' + ([char]39) + ([char]39)
+        foreach ($ch in $Text.ToCharArray()) {
+            $safeText = ([string]$ch).Replace(' ', '%s')
+            $quoted = "'" + $safeText.Replace("'", $singleQuoteEscape) + "'"
+            $process.StandardInput.WriteLine('input text ' + $quoted)
+            Start-Sleep -Milliseconds 60
+        }
+        $process.StandardInput.WriteLine('exit')
+        $process.StandardInput.Close()
+        if (-not $process.WaitForExit(30000)) {
+            try { $process.Kill() } catch {}
+            throw 'adb shell text input timed out.'
+        }
+        $null = $stdoutTask.GetAwaiter().GetResult()
+        $null = $stderrTask.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) {
+            throw "adb shell text input failed (exit=$($process.ExitCode))."
+        }
+    }
+    finally {
+        $process.Dispose()
+    }
 }
 
 function Set-MobileDiagnosticFault {
@@ -894,11 +946,10 @@ function Set-AndroidTextSlow {
         [string]$Text
     )
 
-    foreach ($ch in $Text.ToCharArray()) {
-        $safeText = ([string]$ch).Replace(' ', '%s')
-        Invoke-Adb -AdbPath $AdbPath -Arguments @('-s', $DeviceId, 'shell', 'input', 'text', $safeText) | Out-Null
-        Start-Sleep -Milliseconds 60
-    }
+    Invoke-AdbShellTextInput `
+        -AdbPath $AdbPath `
+        -DeviceId $DeviceId `
+        -Text $Text
 }
 
 function Clear-AndroidTextField {
@@ -1500,6 +1551,9 @@ if ($freshInstall) {
 }
 
 if ($dump.Content.Contains('계정 로그인') -or ($dump.Content.Contains('로그인') -and $dump.Content.Contains('비밀번호'))) {
+    if ([string]::IsNullOrWhiteSpace($Username) -or [string]::IsNullOrEmpty($Password)) {
+        throw '로그인 화면에는 명시적 자격 증명이 필요합니다.'
+    }
     $dump = Set-LoginTextField `
         -AdbPath $resolvedAdb `
         -DeviceId $deviceId `

@@ -47,7 +47,7 @@
             <Setter Property="IsReadOnly" Value="True"/>
             <Setter Property="IsReadOnlyCaretVisible" Value="True"/>
             <Setter Property="AcceptsReturn" Value="True"/>
-            <Setter Property="TextWrapping" Value="NoWrap"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
             <Setter Property="HorizontalScrollBarVisibility" Value="Auto"/>
             <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
             <Setter Property="VerticalContentAlignment" Value="Top"/>

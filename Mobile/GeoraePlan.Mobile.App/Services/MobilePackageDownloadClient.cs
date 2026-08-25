@@ -15,13 +15,14 @@ internal sealed class MobilePackageDownloadClient
     }
 
     public async Task<HttpResponseMessage> SendAsync(
-        Uri packageUri,
+        HttpRequestMessage request,
         string expectedSha256,
-        HttpCompletionOption completionOption,
         CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(request);
+        var packageUri = request.RequestUri;
         ArgumentNullException.ThrowIfNull(packageUri);
-        if (!packageUri.IsAbsoluteUri)
+        if (request.Method != HttpMethod.Get || !packageUri.IsAbsoluteUri)
             throw new InvalidOperationException("APK 다운로드 주소는 절대 URI여야 합니다.");
 
         var normalizedSha256 = (expectedSha256 ?? string.Empty).Trim();
@@ -32,10 +33,9 @@ internal sealed class MobilePackageDownloadClient
                 "APK 다운로드 요청의 SHA256 형식이 올바르지 않습니다.");
         }
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, packageUri);
         _clientIdentity.Apply(request);
         return await _http
-            .SendAsync(request, completionOption, ct)
+            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
             .ConfigureAwait(false);
     }
 }

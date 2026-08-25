@@ -141,10 +141,11 @@ public sealed class MainWindowResponsiveLayoutTests
 
     [Theory]
     [InlineData(1200, 600, false)]
+    [InlineData(1199.99, 600, true)]
     [InlineData(1200, 599.99, true)]
     [InlineData(1092.8, 526.4, true)]
     [InlineData(894.7, 429.3, true)]
-    public void CompactLayout_UsesClientHeightThreshold(
+    public void CompactLayout_UsesClientWidthOrHeightThreshold(
         double clientWidth,
         double clientHeight,
         bool expected)
@@ -156,9 +157,9 @@ public sealed class MainWindowResponsiveLayoutTests
     }
 
     [Theory]
-    [InlineData(744, 400, false)]
-    [InlineData(743.99, 400, true)]
-    [InlineData(744, 399.99, true)]
+    [InlineData(760, 560, false)]
+    [InlineData(759.99, 560, true)]
+    [InlineData(760, 559.99, true)]
     [InlineData(651, 308, true)]
     [InlineData(1200, 700, false)]
     public void ContentScrollFallback_ProtectsDenseWorkspace(
@@ -238,16 +239,8 @@ public sealed class MainWindowResponsiveLayoutTests
                     (string?)element.Attribute(xaml + "Name"),
                     "MainRootPanel",
                     StringComparison.Ordinal));
-        Assert.Equal(
-            MainWindowResponsiveLayoutPolicy
-                .MinimumContentWidthDip
-                .ToString("0"),
-            (string?)rootPanel.Attribute("MinWidth"));
-        Assert.Equal(
-            MainWindowResponsiveLayoutPolicy
-                .MinimumContentHeightDip
-                .ToString("0"),
-            (string?)rootPanel.Attribute("MinHeight"));
+        Assert.Null(rootPanel.Attribute("MinWidth"));
+        Assert.Null(rootPanel.Attribute("MinHeight"));
         Assert.Null(rootPanel.Attribute("SizeChanged"));
 
         var navigation = Assert.Single(
@@ -514,6 +507,22 @@ public sealed class MainWindowResponsiveLayoutTests
             StringComparison.Ordinal);
         Assert.Contains(
             "ShouldUseContentScrollFallback",
+            codeBehindSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ShouldUseCompactLayout(\n                clientSize)",
+            codeBehindSource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "responsiveLayoutSize",
+            codeBehindSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            ".MinimumContentWidthDip",
+            codeBehindSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            ".MinimumContentHeightDip",
             codeBehindSource,
             StringComparison.Ordinal);
         Assert.Contains(

@@ -60,6 +60,14 @@ public sealed class SyncPage : ContentPage
         var pushButton = GeoraePlanTheme.CreateButton("서버에 올리기", GeoraePlanTheme.Purple);
         pushButton.SetBinding(Button.CommandProperty, nameof(SyncViewModel.PushCommand));
 
+        var settingsButton = GeoraePlanTheme.CreateButton("설정 열기", GeoraePlanTheme.SecondaryButton);
+        settingsButton.Clicked += async (_, _) =>
+        {
+            await MobileErrorHandler.RunGuardedAsync(
+                () => Navigation.PushAsync(new SettingsPage()),
+                "설정 화면 열기");
+        };
+
         Content = new ScrollView
         {
             Content = new VerticalStackLayout
@@ -81,7 +89,8 @@ public sealed class SyncPage : ContentPage
                         pullButton,
                         pushButton,
                         activity,
-                        statusLabel)
+                        statusLabel,
+                        settingsButton)
                 }
             }
         };

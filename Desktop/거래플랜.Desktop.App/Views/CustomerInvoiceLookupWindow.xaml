@@ -257,8 +257,8 @@
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <StackPanel>
-                                    <TextBlock Text="{Binding NameOriginal}" TextTrimming="CharacterEllipsis"/>
-                                    <TextBlock Text="{Binding Phone}" FontSize="11" Foreground="#90CAF9" TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Text="{Binding NameOriginal}" TextWrapping="Wrap" TextTrimming="None"/>
+                                    <TextBlock Text="{Binding Phone}" FontSize="11" Foreground="#90CAF9" TextWrapping="Wrap" TextTrimming="None"/>
                                 </StackPanel>
                             </DataTemplate>
                         </ListBox.ItemTemplate>

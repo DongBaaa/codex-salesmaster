@@ -74,7 +74,7 @@
             <Setter Property="BorderBrush" Value="#5D7593"/>
             <Setter Property="Background" Value="{StaticResource TradePlanSecondaryBrush}"/>
             <Setter Property="Padding" Value="14,0"/>
-            <Setter Property="Height" Value="38"/>
+            <Setter Property="MinHeight" Value="38"/>
             <Setter Property="MinWidth" Value="108"/>
             <Setter Property="Cursor" Value="Hand"/>
         </Style>
@@ -88,7 +88,8 @@
             <Setter Property="CanUserAddRows" Value="False"/>
             <Setter Property="AlternatingRowBackground" Value="#223754"/>
             <Setter Property="RowBackground" Value="#1E2D40"/>
-            <Setter Property="RowHeight" Value="34"/>
+            <Setter Property="RowHeight" Value="NaN"/>
+            <Setter Property="MinRowHeight" Value="34"/>
             <Setter Property="HeadersVisibility" Value="Column"/>
             <Setter Property="EnableRowVirtualization" Value="True"/>
             <Setter Property="EnableColumnVirtualization" Value="True"/>

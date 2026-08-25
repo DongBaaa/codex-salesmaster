@@ -5,6 +5,44 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class MultiPcInventoryTransferOpenListUiaGateTests
 {
     [Fact]
+    public void MultiPcRuntime_DrainsTheShutdownBoundaryBeforeStartingFixtureWork()
+    {
+        var root = FindProjectRoot();
+        var source = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "MainWindow.MultiPcE2E.cs"));
+        var methodStart = source.IndexOf(
+            "private async Task RunMultiPcDesktopE2EAsync",
+            StringComparison.Ordinal);
+        var methodEnd = source.IndexOf(
+            "private async Task<MultiPcE2EContext> ValidateMultiPcE2EContextAsync",
+            methodStart,
+            StringComparison.Ordinal);
+        Assert.True(methodStart >= 0 && methodEnd > methodStart);
+        var method = source[methodStart..methodEnd];
+
+        var beginShutdown = method.IndexOf("BeginShutdownProtection();", StringComparison.Ordinal);
+        var drainShutdown = method.IndexOf(
+            "await Task.WhenAll(",
+            StringComparison.Ordinal);
+        var fixturePreflight = method.IndexOf(
+            "await RunMultiPcSessionPreflightAsync(context, steps);",
+            StringComparison.Ordinal);
+
+        Assert.True(beginShutdown >= 0);
+        Assert.True(beginShutdown < drainShutdown);
+        Assert.True(drainShutdown < fixturePreflight);
+        var stoppedBoundary = method[drainShutdown..fixturePreflight];
+        Assert.Contains("_vm.DrainPendingBackgroundWorkForShutdownAsync()", stoppedBoundary, StringComparison.Ordinal);
+        Assert.Contains("_realtimeRevisionDrainTask", stoppedBoundary, StringComparison.Ordinal);
+        Assert.Contains("_runtimeSyncDrainTask", stoppedBoundary, StringComparison.Ordinal);
+        Assert.Contains("_windowCommandDrainTask", stoppedBoundary, StringComparison.Ordinal);
+        Assert.DoesNotContain("_windowBackgroundWork.DrainAsync", stoppedBoundary, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Runner_ParsesAndRequiresSameVisibleWindowRowDeltaAndTransferIdentity()
     {
         var root = FindProjectRoot();
@@ -142,6 +180,58 @@ public sealed class MultiPcInventoryTransferOpenListUiaGateTests
         Assert.Contains("TimeSpan.FromSeconds(70)", passiveObservation, StringComparison.Ordinal);
         Assert.Contains("StartRealtimeRevisionMonitor();", source, StringComparison.Ordinal);
         Assert.Contains("StopRealtimeRevisionMonitor();", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RealtimeObservation_ReopensAndResealsTheCanceledWindowLifetimeBoundary()
+    {
+        var source = ReadInventoryTransferMultiPcSource();
+        var startMethodStart = source.IndexOf(
+            "private void StartMultiPcRealtimeRevisionObservation()",
+            StringComparison.Ordinal);
+        var stopMethodStart = source.IndexOf(
+            "private void StopMultiPcRealtimeRevisionObservation()",
+            startMethodStart,
+            StringComparison.Ordinal);
+        var stopMethodEnd = source.IndexOf(
+            "private static async Task<MultiPcUiaGate> WaitForMultiPcInventoryTransferUiaGateAsync",
+            stopMethodStart,
+            StringComparison.Ordinal);
+        Assert.True(startMethodStart >= 0 && stopMethodStart > startMethodStart && stopMethodEnd > stopMethodStart);
+
+        var startMethod = source[startMethodStart..stopMethodStart];
+        var stopMethod = source[stopMethodStart..stopMethodEnd];
+        var resumeViewModel = startMethod.IndexOf("_vm.ResumePendingBackgroundWorkAfterShutdownCanceled();", StringComparison.Ordinal);
+        var resumeWindowTracker = startMethod.IndexOf("_windowBackgroundWork.Resume();", StringComparison.Ordinal);
+        var replaceWindowToken = startMethod.IndexOf("_windowBackgroundWorkCts = new CancellationTokenSource();", StringComparison.Ordinal);
+        var restoreWindows = startMethod.IndexOf("RestoreApplicationWindowsAfterCanceledShutdown();", StringComparison.Ordinal);
+        var clearClosing = startMethod.IndexOf("_isClosingOrClosed = false;", StringComparison.Ordinal);
+        var startMonitor = startMethod.IndexOf("StartRealtimeRevisionMonitor();", StringComparison.Ordinal);
+
+        Assert.True(resumeViewModel >= 0);
+        Assert.True(resumeViewModel < resumeWindowTracker);
+        Assert.True(resumeWindowTracker < replaceWindowToken);
+        Assert.True(replaceWindowToken < restoreWindows);
+        Assert.True(restoreWindows < clearClosing);
+        Assert.True(clearClosing < startMonitor);
+        Assert.DoesNotContain("_windowBackgroundWork.IsCompleted", startMethod, StringComparison.Ordinal);
+        Assert.Contains("_runtimeSyncDrainTask.IsCompletedSuccessfully", startMethod, StringComparison.Ordinal);
+        Assert.Contains("_windowCommandDrainTask.IsCompletedSuccessfully", startMethod, StringComparison.Ordinal);
+        Assert.Contains("_vm.IsShutdownBackgroundWorkCompleted", startMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("StartRuntimeSyncService", startMethod, StringComparison.Ordinal);
+        Assert.DoesNotContain("_centralRevisionPollTimer?.Start()", startMethod, StringComparison.Ordinal);
+
+        var stopMonitor = stopMethod.IndexOf("StopRealtimeRevisionMonitor();", StringComparison.Ordinal);
+        var sealWindowTracker = stopMethod.IndexOf("_windowBackgroundWork.BeginShutdown();", StringComparison.Ordinal);
+        var cancelWindowToken = stopMethod.IndexOf("_windowBackgroundWorkCts.Cancel();", StringComparison.Ordinal);
+        var cancelViewModel = stopMethod.IndexOf("_vm.CancelPendingBackgroundWorkForShutdown();", StringComparison.Ordinal);
+        var restoreClosing = stopMethod.IndexOf("_isClosingOrClosed = true;", StringComparison.Ordinal);
+
+        Assert.True(stopMonitor >= 0);
+        Assert.True(stopMonitor < sealWindowTracker);
+        Assert.True(sealWindowTracker < cancelWindowToken);
+        Assert.True(cancelWindowToken < cancelViewModel);
+        Assert.True(cancelViewModel < restoreClosing);
     }
 
     [Fact]

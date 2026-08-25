@@ -5,6 +5,8 @@ param(
     [string]$ReleaseId = (Get-Date -Format 'yyyyMMdd-HHmmss'),
     [switch]$SkipBuild,
     [switch]$MirrorToLive,
+    [switch]$PreserveLiveUpdateAssets,
+    [switch]$PreserveLiveAndroidUpdate,
     [string]$LinuxSshHost = '192.168.0.199',
     [string]$LinuxSshUser = 'itw',
     [int]$LinuxSshPort = 2222,
@@ -45,6 +47,27 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Get-GeoraePlanLinuxFileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [IO.FileStream]::new(
+        $Path,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read,
+        4096,
+        [IO.FileOptions]::SequentialScan)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        return [BitConverter]::ToString(
+            $sha256.ComputeHash($stream)).Replace('-', '')
+    }
+    finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
 
 if ($ExpectedClientCompatibilityMode -cnotin @('AuditOnly', 'StrictBlock')) {
     throw (
@@ -607,8 +630,7 @@ function Get-GeoraePlanDurableUpdatePointerSha256 {
     if ($null -eq $pointerItem) {
         return ''
     }
-    return (
-        Get-FileHash -LiteralPath $pointerPath -Algorithm SHA256).Hash
+    return Get-GeoraePlanLinuxFileSha256 -Path $pointerPath
 }
 
 function Read-GeoraePlanDurableUpdateWrapperStateFile {
@@ -1597,10 +1619,8 @@ function Assert-GeoraePlanLinuxManifestReferencedAssets {
                     'Linux update manifest asset size/binding is invalid: ' +
                     $assetPath)
             }
-            $actualHash = (
-                Get-FileHash `
-                    -LiteralPath $assetPath `
-                    -Algorithm SHA256).Hash
+            $actualHash =
+                Get-GeoraePlanLinuxFileSha256 -Path $assetPath
             if (-not [string]::Equals(
                 $actualHash,
                 $expectedHash,
@@ -1861,8 +1881,7 @@ function Copy-GeoraePlanUpdateEvidenceFileAtomically {
 
     $sourceItem =
         Get-Item -LiteralPath $SourcePath -Force -ErrorAction Stop
-    $sourceHash = (
-        Get-FileHash -LiteralPath $SourcePath -Algorithm SHA256).Hash
+    $sourceHash = Get-GeoraePlanLinuxFileSha256 -Path $SourcePath
     if (
         $sourceItem.PSIsContainer -or
         $sourceItem.Length -ne $ExpectedFileSize -or
@@ -1878,10 +1897,7 @@ function Copy-GeoraePlanUpdateEvidenceFileAtomically {
     if (Test-Path -LiteralPath $TargetPath -PathType Leaf) {
         $targetItem =
             Get-Item -LiteralPath $TargetPath -Force -ErrorAction Stop
-        $targetHash = (
-            Get-FileHash `
-                -LiteralPath $TargetPath `
-                -Algorithm SHA256).Hash
+        $targetHash = Get-GeoraePlanLinuxFileSha256 -Path $TargetPath
         if (
             $targetItem.Length -ne $ExpectedFileSize -or
             -not [string]::Equals(
@@ -1927,10 +1943,8 @@ function Copy-GeoraePlanUpdateEvidenceFileAtomically {
     try {
         $temporaryItem =
             Get-Item -LiteralPath $temporaryPath -Force -ErrorAction Stop
-        $temporaryHash = (
-            Get-FileHash `
-                -LiteralPath $temporaryPath `
-                -Algorithm SHA256).Hash
+        $temporaryHash =
+            Get-GeoraePlanLinuxFileSha256 -Path $temporaryPath
         if (
             $temporaryItem.PSIsContainer -or
             ($temporaryItem.Attributes -band
@@ -2049,8 +2063,7 @@ function Get-GeoraePlanUpdatePointerEvidence {
     ) ($generationId + '.json')
     $runtimeItem =
         Get-Item -LiteralPath $runtimePath -Force -ErrorAction Stop
-    $runtimeHash = (
-        Get-FileHash -LiteralPath $runtimePath -Algorithm SHA256).Hash
+    $runtimeHash = Get-GeoraePlanLinuxFileSha256 -Path $runtimePath
     if (
         $runtimeItem.PSIsContainer -or
         $runtimeItem.Length -ne $runtimeSize -or
@@ -2090,10 +2103,8 @@ function Get-GeoraePlanUpdatePointerEvidence {
     return [pscustomobject]@{
         Pointer = $pointer
         PointerPath = [IO.Path]::GetFullPath($pointerPath)
-        PointerSha256 = (
-            Get-FileHash `
-                -LiteralPath $pointerPath `
-                -Algorithm SHA256).Hash
+        PointerSha256 =
+            Get-GeoraePlanLinuxFileSha256 -Path $pointerPath
         GenerationId = $generationId
         RuntimePath = [IO.Path]::GetFullPath($runtimePath)
         StagedDeliveryPath =
@@ -3073,29 +3084,109 @@ function Invoke-SshTarUpload {
 
     $tarExe = Resolve-TarExecutable
     $sshExe = Resolve-SshExecutable
-    $archiveDirectory = Split-Path -Parent $SourceDirectory
-    if ([string]::IsNullOrWhiteSpace($archiveDirectory) -or -not (Test-Path -LiteralPath $archiveDirectory)) {
-        $archiveDirectory = Resolve-GeoraePlanScriptTempDirectory
-    }
-    $archivePath = Join-Path $archiveDirectory ("georaeplan-linux-upload-" + [Guid]::NewGuid().ToString('N') + '.tar')
+    $quotedRemoteDirectory = Convert-ToSingleQuotedShellLiteral -Value $RemoteDirectory
+    $remoteCommand = "rm -rf $quotedRemoteDirectory && mkdir -p $quotedRemoteDirectory && tar -xf - -C $quotedRemoteDirectory"
+
+    $tarStartInfo = [System.Diagnostics.ProcessStartInfo]::new($tarExe)
+    $tarStartInfo.UseShellExecute = $false
+    $tarStartInfo.CreateNoWindow = $true
+    $tarStartInfo.RedirectStandardOutput = $true
+    $tarStartInfo.RedirectStandardError = $true
+    $tarStartInfo.Arguments = (@('-C', $SourceDirectory, '-cf', '-', '.') |
+        ForEach-Object { Quote-ProcessArgument -Argument $_ }) -join ' '
+
+    $sshArguments = New-SshArgumentList -Config $Config -BatchMode
+    $sshArguments += $remoteCommand
+    $sshStartInfo = [System.Diagnostics.ProcessStartInfo]::new($sshExe)
+    $sshStartInfo.UseShellExecute = $false
+    $sshStartInfo.CreateNoWindow = $true
+    $sshStartInfo.RedirectStandardInput = $true
+    $sshStartInfo.RedirectStandardOutput = $true
+    $sshStartInfo.RedirectStandardError = $true
+    $sshStartInfo.Arguments = ($sshArguments |
+        ForEach-Object { Quote-ProcessArgument -Argument $_ }) -join ' '
+
+    $tarProcess = [System.Diagnostics.Process]::new()
+    $tarProcess.StartInfo = $tarStartInfo
+    $sshProcess = [System.Diagnostics.Process]::new()
+    $sshProcess.StartInfo = $sshStartInfo
+    $tarStarted = $false
+    $sshStarted = $false
+    $sshInputClosed = $false
 
     try {
-        & $tarExe -C $SourceDirectory -cf $archivePath .
-        if ($LASTEXITCODE -ne 0) {
-            throw "tar archive creation failed for $SourceDirectory"
+        if (-not $sshProcess.Start()) {
+            throw 'Failed to start Linux PC ssh upload process.'
+        }
+        $sshStarted = $true
+        $sshStdoutTask = $sshProcess.StandardOutput.ReadToEndAsync()
+        $sshStderrTask = $sshProcess.StandardError.ReadToEndAsync()
+
+        if (-not $tarProcess.Start()) {
+            throw 'Failed to start local tar upload process.'
+        }
+        $tarStarted = $true
+        $tarStderrTask = $tarProcess.StandardError.ReadToEndAsync()
+
+        $copyTask = $tarProcess.StandardOutput.BaseStream.CopyToAsync($sshProcess.StandardInput.BaseStream)
+        $copyError = $null
+        try {
+            $null = $copyTask.GetAwaiter().GetResult()
+        }
+        catch {
+            $copyError = $_
+            if (-not $tarProcess.HasExited) {
+                $tarProcess.Kill()
+            }
+        }
+        finally {
+            $sshProcess.StandardInput.Close()
+            $sshInputClosed = $true
         }
 
-        $quotedRemoteDirectory = Convert-ToSingleQuotedShellLiteral -Value $RemoteDirectory
-        $remoteCommand = "rm -rf $quotedRemoteDirectory && mkdir -p $quotedRemoteDirectory && tar -xf - -C $quotedRemoteDirectory"
-        $argumentString = ((New-SshArgumentList -Config $Config) + @($remoteCommand) | ForEach-Object { Quote-ProcessArgument $_ }) -join ' '
-        $cmdLine = "`"$sshExe`" $argumentString < `"$archivePath`""
-        $commandOutput = cmd /c $cmdLine 2>&1 | Out-String
-        if ($LASTEXITCODE -ne 0) {
-            throw "Linux PC ssh upload failed with exit code ${LASTEXITCODE}: $commandOutput"
+        $tarProcess.WaitForExit()
+        $sshProcess.WaitForExit()
+        $tarStderr = $tarStderrTask.GetAwaiter().GetResult()
+        $sshStdout = $sshStdoutTask.GetAwaiter().GetResult()
+        $sshStderr = $sshStderrTask.GetAwaiter().GetResult()
+
+        if ($null -ne $copyError) {
+            throw "Linux PC ssh upload stream failed: $($copyError.Exception.Message) tar_stderr=$tarStderr ssh_stderr=$sshStderr"
+        }
+        if ($tarProcess.ExitCode -ne 0) {
+            throw "Local tar upload failed with exit code $($tarProcess.ExitCode): $tarStderr"
+        }
+        if ($sshProcess.ExitCode -ne 0) {
+            $message = if ([string]::IsNullOrWhiteSpace($sshStderr)) { $sshStdout } else { $sshStderr }
+            throw "Linux PC ssh upload failed with exit code $($sshProcess.ExitCode): $message"
         }
     }
     finally {
-        Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+        if ($sshStarted -and -not $sshInputClosed) {
+            try {
+                $sshProcess.StandardInput.Close()
+            }
+            catch {
+            }
+        }
+        if ($tarStarted -and -not $tarProcess.HasExited) {
+            try {
+                $tarProcess.Kill()
+                $tarProcess.WaitForExit()
+            }
+            catch {
+            }
+        }
+        if ($sshStarted -and -not $sshProcess.HasExited) {
+            try {
+                $sshProcess.Kill()
+                $sshProcess.WaitForExit()
+            }
+            catch {
+            }
+        }
+        $tarProcess.Dispose()
+        $sshProcess.Dispose()
     }
 }
 
@@ -3324,8 +3415,9 @@ function Invoke-ReleaseOperationalGate {
         $gateArgs += @('-SecretPath', $SecretPath)
     }
     if ($AllowedIntegrityWarningCodes.Count -gt 0) {
-        $gateArgs += '-AllowedIntegrityWarningCodes'
-        $gateArgs += $AllowedIntegrityWarningCodes
+        $gateArgs += @(
+            '-AllowedIntegrityWarningCodes',
+            ($AllowedIntegrityWarningCodes -join ','))
     }
     if ($FailOnOperationalWarnings) {
         $gateArgs += '-FailOnOperationalWarnings'
@@ -3592,7 +3684,7 @@ function Test-UpdatePackageFile {
     if ($expectedHash -notmatch '^[0-9A-Fa-f]{64}$') {
         throw "$BaselineLabel $platform 패키지 sha256이 없어 무결성 검증을 할 수 없습니다: $PackagePath"
     }
-    $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PackagePath).Hash
+    $actualHash = Get-GeoraePlanLinuxFileSha256 -Path $PackagePath
     if (-not [string]::Equals($expectedHash, $actualHash, [StringComparison]::OrdinalIgnoreCase)) {
         throw "$BaselineLabel $platform 패키지 SHA256이 manifest와 다릅니다: $PackagePath"
     }
@@ -3855,8 +3947,7 @@ function Copy-GeoraePlanPointerRollbackEvidence {
             Join-Path $targetManifestRoot 'delivery-generations'
         ) $Channel
     ) ($evidence.GenerationId + '.json')
-    $pointerHash =
-        (Get-FileHash -LiteralPath $pointerPath -Algorithm SHA256).Hash
+    $pointerHash = Get-GeoraePlanLinuxFileSha256 -Path $pointerPath
     Copy-GeoraePlanUpdateEvidenceFileAtomically `
         -SourcePath $evidence.RuntimePath `
         -TargetPath $targetRuntimePath `
@@ -4040,7 +4131,7 @@ function Invoke-SshFileDownload {
         $destinationStream = [System.IO.File]::Open($DestinationPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
         $copyTask = $process.StandardOutput.BaseStream.CopyToAsync($destinationStream)
         $stderrTask = $process.StandardError.ReadToEndAsync()
-        $copyTask.GetAwaiter().GetResult()
+        $null = $copyTask.GetAwaiter().GetResult()
         $destinationStream.Flush()
         $destinationStream.Dispose()
         $destinationStream = $null
@@ -4075,6 +4166,13 @@ function Copy-RemoteUpdatePointerEvidenceToStaging {
 
     $remotePointerPath =
         $RemoteUpdatesRoot + '/manifest/' + $Channel + '.current.json'
+    $stagingManifestRoot = Join-Path $StagingUpdatesRoot 'manifest'
+    $stagingPointerPath =
+        Join-Path $stagingManifestRoot ($Channel + '.current.json')
+    New-Item `
+        -ItemType Directory `
+        -Force `
+        -Path $stagingManifestRoot | Out-Null
     $quotedRemotePointerPath =
         Convert-ToSingleQuotedShellLiteral -Value $remotePointerPath
     $pointerResult = Invoke-SshCommand `
@@ -4083,7 +4181,7 @@ function Copy-RemoteUpdatePointerEvidenceToStaging {
             "if [ -L $quotedRemotePointerPath ]; then exit 45; " +
             "elif [ ! -e $quotedRemotePointerPath ]; then exit 44; " +
             "elif [ ! -f $quotedRemotePointerPath ]; then exit 45; " +
-            "else cat -- $quotedRemotePointerPath; fi") `
+            "else exit 0; fi") `
         -IgnoreExitCode `
         -BatchMode
     if ($pointerResult.ExitCode -eq 44) {
@@ -4107,7 +4205,12 @@ function Copy-RemoteUpdatePointerEvidenceToStaging {
             "$BaselineLabel pointer를 Linux PC에서 읽지 못했습니다: " +
             "$remotePointerPath / $message")
     }
-    $pointerJson = [string]$pointerResult.StdOut
+    Invoke-SshFileDownload `
+        -RemotePath $remotePointerPath `
+        -DestinationPath $stagingPointerPath `
+        -Config $Config
+    $pointerJson =
+        Get-Content -LiteralPath $stagingPointerPath -Raw -Encoding UTF8
     if ([string]::IsNullOrWhiteSpace($pointerJson)) {
         throw "$BaselineLabel pointer 응답이 비어 있습니다."
     }
@@ -4176,9 +4279,6 @@ function Copy-RemoteUpdatePointerEvidenceToStaging {
         throw "$BaselineLabel pointer runtime 경로가 canonical하지 않습니다."
     }
 
-    $stagingManifestRoot = Join-Path $StagingUpdatesRoot 'manifest'
-    $stagingPointerPath =
-        Join-Path $stagingManifestRoot ($Channel + '.current.json')
     $stagingRuntimePath = Join-Path (
         Join-Path (
             Join-Path $stagingManifestRoot 'generations'
@@ -4189,14 +4289,6 @@ function Copy-RemoteUpdatePointerEvidenceToStaging {
             Join-Path $stagingManifestRoot 'delivery-generations'
         ) $Channel
     ) ($generationId + '.json')
-    New-Item `
-        -ItemType Directory `
-        -Force `
-        -Path $stagingManifestRoot | Out-Null
-    Set-Content `
-        -LiteralPath $stagingPointerPath `
-        -Value $pointerJson `
-        -Encoding UTF8
     $remoteRuntimePath =
         $RemoteUpdatesRoot + '/manifest/generations/' +
         $Channel + '/' + $generationId + '.json'
@@ -4206,10 +4298,8 @@ function Copy-RemoteUpdatePointerEvidenceToStaging {
         -Config $Config
     $runtimeItem =
         Get-Item -LiteralPath $stagingRuntimePath -Force -ErrorAction Stop
-    $runtimeHash = (
-        Get-FileHash `
-            -LiteralPath $stagingRuntimePath `
-            -Algorithm SHA256).Hash
+    $runtimeHash =
+        Get-GeoraePlanLinuxFileSha256 -Path $stagingRuntimePath
     if (
         $runtimeItem.PSIsContainer -or
         $runtimeItem.Length -ne $runtimeFileSize -or
@@ -4275,7 +4365,7 @@ function Copy-LiveUpdateRollbackBaseline {
             "if [ -L $quotedRemoteManifestPath ]; then exit 45; " +
             "elif [ ! -e $quotedRemoteManifestPath ]; then exit 44; " +
             "elif [ ! -f $quotedRemoteManifestPath ]; then exit 45; " +
-            "else cat -- $quotedRemoteManifestPath; fi"
+            "else exit 0; fi"
         $manifestResult = Invoke-SshCommand `
             -Config $Config `
             -Command $remoteManifestReadCommand `
@@ -4302,12 +4392,16 @@ function Copy-LiveUpdateRollbackBaseline {
             throw "$baselineLabel manifest를 Linux PC에서 읽지 못했습니다: $remoteManifestPath / $message"
         }
 
-        $manifestJson = [string]$manifestResult.StdOut
+        Invoke-SshFileDownload `
+            -RemotePath $remoteManifestPath `
+            -DestinationPath $stagingManifestPath `
+            -Config $Config
+        $manifestJson =
+            Get-Content -LiteralPath $stagingManifestPath -Raw -Encoding UTF8
         if ([string]::IsNullOrWhiteSpace($manifestJson)) {
             throw "$baselineLabel manifest 응답이 비어 있습니다: $remoteManifestPath"
         }
 
-        Set-Content -LiteralPath $stagingManifestPath -Value $manifestJson -Encoding UTF8
         $remoteGenerationId =
             Copy-RemoteUpdatePointerEvidenceToStaging `
                 -RemoteUpdatesRoot $remoteUpdatesRoot `
@@ -4489,6 +4583,15 @@ if ($AllowLegacyLiveMirror) {
 if ($AllowScheduledApplyTrigger) {
     Write-Warning 'AllowScheduledApplyTrigger is ignored for Linux PC deploy. Direct SSH apply-release.sh is used.'
 }
+if ($PreserveLiveUpdateAssets -and -not $MirrorToLive) {
+    throw 'PreserveLiveUpdateAssets requires MirrorToLive so the verified live update baseline can be copied.'
+}
+if ($PreserveLiveAndroidUpdate -and -not $MirrorToLive) {
+    throw 'PreserveLiveAndroidUpdate requires MirrorToLive so the verified live Android baseline can be copied.'
+}
+if ($PreserveLiveUpdateAssets -and $PreserveLiveAndroidUpdate) {
+    throw 'PreserveLiveUpdateAssets cannot be combined with PreserveLiveAndroidUpdate.'
+}
 
 if ($MirrorToLive -and -not $SkipPlatformHealthChecks) {
     Invoke-PublicHealthCheck -Name 'trade' -Url 'https://trade.2884.kr/healthz'
@@ -4612,7 +4715,15 @@ try {
     }
 
     $updateAssetScript = Join-Path $ProjectRoot 'tools\release\Publish-GeoraePlanUpdateAssets.ps1'
-    if (Test-Path -LiteralPath $updateAssetScript) {
+    if ($PreserveLiveUpdateAssets) {
+        $preservedUpdatesRoot = Join-Path $tempPublishRoot 'updates'
+        Assert-GeoraePlanLinuxManifestReferencedAssets `
+            -UpdatesRoot $preservedUpdatesRoot `
+            -ProjectRoot $ProjectRoot `
+            -Channel 'stable'
+        Write-Host "linux_update_assets_preserved=verified-live-baseline channel=stable path=$preservedUpdatesRoot"
+    }
+    elseif (Test-Path -LiteralPath $updateAssetScript) {
         $updateAssetArgs = @{
         }
         if (-not [string]::IsNullOrWhiteSpace($DesktopNotes)) {
@@ -4620,6 +4731,9 @@ try {
         }
         if (-not [string]::IsNullOrWhiteSpace($AndroidNotes)) {
             $updateAssetArgs.AndroidNotes = $AndroidNotes
+        }
+        if ($PreserveLiveAndroidUpdate) {
+            $updateAssetArgs.PreserveExistingAndroid = $true
         }
 
         Invoke-GeoraePlanDurableUpdateAssetPublish `
@@ -4631,7 +4745,13 @@ try {
             -Channel 'stable'
     }
 
-    if ($MirrorToLive -and -not $SkipAndroidSigningContinuityCheck.IsPresent) {
+    if ($MirrorToLive -and $PreserveLiveUpdateAssets) {
+        Write-Host 'pre-deploy_android_signing_continuity=not-applicable reason=verified-live-update-assets-preserved'
+    }
+    elseif ($MirrorToLive -and $PreserveLiveAndroidUpdate) {
+        Write-Host 'pre-deploy_android_signing_continuity=not-applicable reason=verified-live-android-update-preserved'
+    }
+    elseif ($MirrorToLive -and -not $SkipAndroidSigningContinuityCheck.IsPresent) {
         Invoke-AndroidSigningContinuityGate `
             -Root $ProjectRoot `
             -PublishRoot $tempPublishRoot `

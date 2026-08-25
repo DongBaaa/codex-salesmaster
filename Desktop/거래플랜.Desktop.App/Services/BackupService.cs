@@ -87,29 +87,49 @@ public sealed class BackupService
     {
         try
         {
-            if (!File.Exists(AppPaths.LocalDbFile))
-                return null;
+            return await RunBackupWorkOffUiThreadAsync(
+                async () =>
+                {
+                    if (!File.Exists(AppPaths.LocalDbFile))
+                        return null;
 
-            Directory.CreateDirectory(AppPaths.BackupDir);
-            var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
-            var destinationPath = Path.Combine(
-                AppPaths.BackupDir,
-                $"거래플랜_{stamp}{BackupPackageExtension}");
+                    Directory.CreateDirectory(AppPaths.BackupDir);
+                    var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
+                    var destinationPath = Path.Combine(
+                        AppPaths.BackupDir,
+                        $"거래플랜_{stamp}{BackupPackageExtension}");
 
-            await CreateConsistentBackupPackageAsync(
-                AppPaths.LocalDbFile,
-                AppPaths.TransactionAttachmentsDir,
-                destinationPath,
-                ct);
+                    await CreateConsistentBackupPackageAsync(
+                            AppPaths.LocalDbFile,
+                            AppPaths.TransactionAttachmentsDir,
+                            destinationPath,
+                            ct)
+                        .ConfigureAwait(false);
 
-            TrimManagedBackups();
-            return destinationPath;
+                    TrimManagedBackups();
+                    return destinationPath;
+                },
+                ct).ConfigureAwait(false);
         }
         catch
         {
             return null;
         }
     }
+
+    internal static Task<T> RunBackupWorkOffUiThreadAsync<T>(
+        Func<Task<T>> work,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(work);
+        return Task.Run(work, ct);
+    }
+
+    public Task<IReadOnlyList<BackupSnapshotInfo>> GetBackupSnapshotsAsync(
+        CancellationToken ct = default)
+        => RunBackupWorkOffUiThreadAsync(
+            () => Task.FromResult(GetBackupSnapshots()),
+            ct);
 
     public IReadOnlyList<BackupSnapshotInfo> GetBackupSnapshots()
     {

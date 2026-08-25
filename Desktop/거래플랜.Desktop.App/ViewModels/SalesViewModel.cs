@@ -2916,8 +2916,8 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
                 Text = text ?? string.Empty,
                 FontSize = 8.8,
                 TextAlignment = align,
-                TextWrapping = System.Windows.TextWrapping.NoWrap,
-                TextTrimming = autoShrink ? System.Windows.TextTrimming.None : System.Windows.TextTrimming.CharacterEllipsis
+                TextWrapping = System.Windows.TextWrapping.Wrap,
+                TextTrimming = System.Windows.TextTrimming.None
             };
 
             if (autoShrink)

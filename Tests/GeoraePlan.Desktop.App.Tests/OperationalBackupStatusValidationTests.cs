@@ -126,7 +126,7 @@ public sealed class OperationalBackupStatusValidationTests
     }
 
     [Fact]
-    public void OperationalGate_UsesDedicatedBackupIntegrityCheckAndKeepsReplicaIndependent()
+    public void OperationalGate_UsesDedicatedBackupReplicaAndRestoreDrillIntegrityChecks()
     {
         var operationalGate = File.ReadAllText(
             Path.Combine(
@@ -148,10 +148,89 @@ public sealed class OperationalBackupStatusValidationTests
             operationalGate,
             StringComparison.Ordinal);
         Assert.Contains(
+            "Test-GeoraePlanExternalReplicaStatus.ps1",
+            operationalGate,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "-Name 'external replica integrity'",
+            operationalGate,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
             "$replica -match 'replica=ok'",
             operationalGate,
             StringComparison.Ordinal);
+        Assert.Contains(
+            "$replicaIntegrityPassed",
+            operationalGate,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Test-GeoraePlanBackupRestoreDrillStatus.ps1",
+            operationalGate,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "-Name 'backup restore drill integrity'",
+            operationalGate,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "$restoreDrillIntegrityPassed",
+            operationalGate,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "$replicaIntegrityPassed -and $restoreDrillIntegrityPassed",
+            operationalGate,
+            StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task ReplicaHelper_RequiresExactBindingToCurrentBackup()
+    {
+        using var fixture = new ReplicaStatusFixture();
+
+        var pass = await RunReplicaValidatorAsync(fixture);
+        Assert.True(
+            pass.Status == "PASS",
+            $"status={pass.Status}; reason={pass.Reason}; detail={pass.Detail}");
+        Assert.Equal("replica_verified", pass.Reason);
+
+        fixture.WriteReplicaStatus(sourceRunId: "20260812T041837Z-70000");
+        var wrongRun = await RunReplicaValidatorAsync(fixture);
+        Assert.Equal("FAIL", wrongRun.Status);
+        Assert.Equal("replica_source_mismatch", wrongRun.Reason);
+
+        fixture.WriteReplicaStatus(sourceManifestSha256: new string('b', 64));
+        var wrongManifest = await RunReplicaValidatorAsync(fixture);
+        Assert.Equal("FAIL", wrongManifest.Status);
+        Assert.Equal("replica_source_mismatch", wrongManifest.Reason);
+    }
+
+    [Fact]
+    public async Task ReplicaHelper_RejectsExtraKeysStaleStatusAndNewerFailure()
+    {
+        using var fixture = new ReplicaStatusFixture();
+        fixture.WriteReplicaStatus(extraLine: "forged=ok");
+        var extra = await RunReplicaValidatorAsync(fixture);
+        Assert.Equal("replica_status_invalid", extra.Reason);
+
+        fixture.WriteReplicaStatus(verifiedAt: DateTimeOffset.UtcNow.AddHours(-37));
+        var stale = await RunReplicaValidatorAsync(fixture);
+        Assert.Equal("replica_status_stale", stale.Reason);
+
+        var verifiedAt = DateTimeOffset.UtcNow.AddHours(-1);
+        fixture.WriteReplicaStatus(verifiedAt: verifiedAt);
+        fixture.WriteFailureStatus(verifiedAt.AddMinutes(10));
+        var newerFailure = await RunReplicaValidatorAsync(fixture);
+        Assert.Equal("newer_replica_failure", newerFailure.Reason);
+    }
+
+    private static Task<ValidationResult> RunReplicaValidatorAsync(
+        ReplicaStatusFixture fixture)
+        => RunValidatorProcessAsync(
+            Path.Combine(
+                FindRepositoryRoot(),
+                "tools",
+                "ops",
+                "Test-GeoraePlanExternalReplicaStatus.ps1"),
+            fixture.StateRoot);
 
     private static async Task<ValidationResult> RunValidatorAsync(
         BackupStatusFixture fixture)
@@ -161,22 +240,36 @@ public sealed class OperationalBackupStatusValidationTests
             "tools",
             "ops",
             "Test-GeoraePlanBackupStatus.ps1");
+        return await RunValidatorProcessAsync(scriptPath, fixture.StateRoot);
+    }
+
+    private static async Task<ValidationResult> RunValidatorProcessAsync(
+        string scriptPath,
+        string stateRoot)
+    {
+        var windowsPowerShellPath = GetWindowsPowerShellPath();
+        var windowsPowerShellHome = Path.GetDirectoryName(windowsPowerShellPath)
+            ?? throw new InvalidOperationException(
+                "The Windows PowerShell home directory was not found.");
         using var process = new Process();
         process.StartInfo = new ProcessStartInfo
         {
-            FileName = GetWindowsPowerShellPath(),
+            FileName = windowsPowerShellPath,
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true
         };
+        process.StartInfo.Environment["PSModulePath"] = Path.Combine(
+            windowsPowerShellHome,
+            "Modules");
         process.StartInfo.ArgumentList.Add("-NoProfile");
         process.StartInfo.ArgumentList.Add("-ExecutionPolicy");
         process.StartInfo.ArgumentList.Add("Bypass");
         process.StartInfo.ArgumentList.Add("-File");
         process.StartInfo.ArgumentList.Add(scriptPath);
         process.StartInfo.ArgumentList.Add("-PlatformStateRoot");
-        process.StartInfo.ArgumentList.Add(fixture.StateRoot);
+        process.StartInfo.ArgumentList.Add(stateRoot);
         process.StartInfo.ArgumentList.Add("-OutputFormat");
         process.StartInfo.ArgumentList.Add("Json");
 
@@ -192,7 +285,7 @@ public sealed class OperationalBackupStatusValidationTests
         {
             process.Kill(entireProcessTree: true);
             throw new TimeoutException(
-                $"Backup validator timed out for fixture {fixture.Root}.");
+                $"Backup validator timed out for state root {stateRoot}.");
         }
 
         var stdout = await stdoutTask;
@@ -388,6 +481,93 @@ public sealed class OperationalBackupStatusValidationTests
 
             if (Directory.Exists(fixtureRoot))
                 Directory.Delete(fixtureRoot, recursive: true);
+        }
+    }
+
+    private sealed class ReplicaStatusFixture : IDisposable
+    {
+        internal static readonly UTF8Encoding Utf8NoBom =
+            new(encoderShouldEmitUTF8Identifier: false);
+        internal const string RunId = "20260812T041836Z-62161";
+        internal const string SourceManifest =
+            "28a329536278002eb8fa4ca66b45d4b6c06d0ff7ce0a1453bf69a4bfb6f69dc6";
+
+        internal ReplicaStatusFixture()
+        {
+            Root = Path.Combine(
+                Path.GetTempPath(),
+                "georaeplan-replica-status-tests",
+                Guid.NewGuid().ToString("N"));
+            StateRoot = Path.Combine(Root, "ops", "state");
+            Directory.CreateDirectory(StateRoot);
+            var completedAt = DateTimeOffset.UtcNow.AddHours(-40);
+            File.WriteAllText(
+                Path.Combine(StateRoot, "backup-status.txt"),
+                string.Join(
+                    '\n',
+                    "backup=ok",
+                    "replica=disabled",
+                    $"run_id={RunId}",
+                    $"completed_at={completedAt:O}",
+                    $"set_path=/srv/georaeplan/backups/automatic/sets/backup_{RunId}.complete",
+                    $"manifest_sha256={SourceManifest}",
+                    string.Empty),
+                Utf8NoBom);
+            WriteReplicaStatus(verifiedAt: DateTimeOffset.UtcNow.AddHours(-1));
+        }
+
+        internal string Root { get; }
+        internal string StateRoot { get; }
+
+        internal void WriteReplicaStatus(
+            string sourceRunId = RunId,
+            string sourceManifestSha256 = SourceManifest,
+            DateTimeOffset? verifiedAt = null,
+            string? extraLine = null)
+        {
+            var lines = new List<string>
+            {
+                "replica=ok",
+                "replica_id=0123456789abcdef0123456789abcdef",
+                $"source_run_id={sourceRunId}",
+                $"source_manifest_sha256={sourceManifestSha256}",
+                $"replica_set_path=/mnt/georaeplan-replica/sets/replica_{sourceRunId}.complete",
+                $"replica_manifest_sha256={new string('c', 64)}",
+                $"verified_at={verifiedAt ?? DateTimeOffset.UtcNow.AddHours(-1):O}",
+                "restore_catalog_validation=ok",
+                "archive_validation=ok"
+            };
+            if (extraLine is not null)
+                lines.Add(extraLine);
+            File.WriteAllText(
+                Path.Combine(StateRoot, "external-replica-status.txt"),
+                string.Join('\n', lines) + "\n",
+                Utf8NoBom);
+            var failurePath = Path.Combine(
+                StateRoot,
+                "external-replica-failure-status.txt");
+            if (File.Exists(failurePath))
+                File.Delete(failurePath);
+        }
+
+        internal void WriteFailureStatus(DateTimeOffset failedAt)
+        {
+            File.WriteAllText(
+                Path.Combine(StateRoot, "external-replica-failure-status.txt"),
+                string.Join(
+                    '\n',
+                    "replica=failed",
+                    "replica_id=0123456789abcdef0123456789abcdef",
+                    $"failed_at={failedAt:O}",
+                    "exit_code=3",
+                    string.Empty),
+                Utf8NoBom);
+        }
+
+        public void Dispose()
+        {
+            if (Directory.Exists(Root))
+                Directory.Delete(Root, recursive: true);
         }
     }
 

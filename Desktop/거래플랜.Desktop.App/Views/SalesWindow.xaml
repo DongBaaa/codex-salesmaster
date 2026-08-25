@@ -32,7 +32,7 @@
             <Setter Property="Padding" Value="6,3"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="MinHeight" Value="28"/>
-            <Setter Property="TextWrapping" Value="NoWrap"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
             <Setter Property="AcceptsReturn" Value="False"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="MinWidth" Value="180"/>
@@ -152,7 +152,7 @@
         <Style x:Key="GridCellTextBoxStyle" TargetType="{x:Type TextBox}" BasedOn="{StaticResource {x:Type TextBox}}">
             <Setter Property="MinWidth" Value="0"/>
             <Setter Property="MinHeight" Value="0"/>
-            <Setter Property="Height" Value="Auto"/>
+            <Setter Property="Height" Value="NaN"/>
             <Setter Property="Padding" Value="3,0"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="HorizontalAlignment" Value="Stretch"/>
@@ -165,7 +165,8 @@
             <Setter Property="MinHeight" Value="24"/>
             <Setter Property="Padding" Value="4,1"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
-            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+            <Setter Property="TextTrimming" Value="None"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
         </Style>
         <Style x:Key="ReadOnlyMoneyDisplayTextStyle" TargetType="{x:Type TextBlock}" BasedOn="{StaticResource ReadOnlyDisplayTextStyle}">
             <Setter Property="FontWeight" Value="Bold"/>
@@ -202,8 +203,8 @@
                                Style="{StaticResource TradePlanWindowSubtitleStyle}"
                                Foreground="#E7EEF9"
                                FontSize="12"
-                               TextWrapping="NoWrap"
-                               TextTrimming="CharacterEllipsis"
+                               TextWrapping="Wrap"
+                               TextTrimming="None"
                                ToolTip="{Binding HeaderSubtitleText}"/>
                 </StackPanel>
                 <WrapPanel x:Name="SalesHeaderActions"
@@ -239,8 +240,8 @@
             <TextBlock x:Name="SalesAutoSaveNoticeText"
                        Text="이 화면은 자동저장 방식으로 동작합니다. 항목추가/항목수정, 수금/지급 입력 진입, 창 닫기 시 입력 내역이 저장됩니다. 단, 렌탈 청구 전표는 저장 버튼으로 반영 범위를 확인한 뒤 저장합니다."
                        Foreground="#FFD180"
-                       TextWrapping="NoWrap"
-                       TextTrimming="CharacterEllipsis"
+                       TextWrapping="Wrap"
+                       TextTrimming="None"
                        ToolTip="이 화면은 자동저장 방식으로 동작합니다. 항목추가/항목수정, 수금/지급 입력 진입, 창 닫기 시 입력 내역이 저장됩니다. 단, 렌탈 청구 전표는 저장 버튼으로 반영 범위를 확인한 뒤 저장합니다."/>
         </Border>
 
@@ -266,15 +267,16 @@
                            Grid.Column="1"
                            Text="{Binding RentalBillingLinkedNoticeText}"
                            Foreground="#EAF2FF"
-                           TextWrapping="NoWrap"
-                           TextTrimming="CharacterEllipsis"
+                           TextWrapping="Wrap"
+                           TextTrimming="None"
                            ToolTip="{Binding RentalBillingLinkedNoticeText}"/>
                 <TextBlock x:Name="SalesRentalLinkedReferenceText"
                            Grid.Column="2"
                            Text="{Binding RentalBillingLinkedReferenceText}"
                            Foreground="#B8C7D8"
                            TextAlignment="Right"
-                           TextTrimming="CharacterEllipsis"
+                           TextWrapping="Wrap"
+                           TextTrimming="None"
                            ToolTip="{Binding RentalBillingLinkedReferenceText}"
                            Margin="10,0,0,0"/>
             </Grid>
@@ -543,7 +545,7 @@
                         <ScrollViewer x:Name="SalesLineEntryScrollViewer"
                                       HorizontalScrollBarVisibility="Auto"
                                       VerticalScrollBarVisibility="Disabled">
-                        <Grid x:Name="SalesLineEntryContent" MinWidth="1180">
+                        <Grid x:Name="SalesLineEntryContent" MinWidth="1160">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="1.55*" MinWidth="260"/>
                                 <ColumnDefinition Width="38"/>
@@ -590,11 +592,11 @@
                             <TextBox Grid.Row="1" Grid.Column="7" Height="32" MinWidth="0" Text="{Binding InputRemark, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0"/>
 
                             <StackPanel Grid.Row="1" Grid.Column="8" Orientation="Horizontal" Margin="4,0,0,0" HorizontalAlignment="Left">
-                                <Button Style="{StaticResource TradePlanEditButtonStyle}" Content="항목추가" Width="80" Height="34" MinWidth="80" Padding="6,0" Margin="0,0,4,0" Command="{Binding AddLineCommand}"/>
-                                <Button Style="{StaticResource TradePlanCompactButtonStyle}" Content="▲" Width="34" Height="34" MinWidth="34" Padding="0" Margin="0,0,4,0" ToolTip="선택한 품목을 위로 이동" Command="{Binding MoveLineUpCommand}"/>
-                                <Button Style="{StaticResource TradePlanCompactButtonStyle}" Content="▼" Width="34" Height="34" MinWidth="34" Padding="0" Margin="0,0,4,0" ToolTip="선택한 품목을 아래로 이동" Command="{Binding MoveLineDownCommand}"/>
-                                <Button Style="{StaticResource TradePlanEditButtonStyle}" Content="항목수정" Width="80" Height="34" MinWidth="80" Padding="6,0" Margin="0,0,4,0" Command="{Binding UpdateLineCommand}"/>
-                                <Button Style="{StaticResource TradePlanDangerButtonStyle}" Content="항목삭제" Width="80" Height="34" MinWidth="80" Padding="6,0" Command="{Binding DeleteLineCommand}"/>
+                                <Button Style="{StaticResource TradePlanEditButtonStyle}" Content="항목추가" Width="72" Height="34" MinWidth="72" Padding="4,0" Margin="0,0,2,0" Command="{Binding AddLineCommand}"/>
+                                <Button Style="{StaticResource TradePlanCompactButtonStyle}" Content="▲" Width="30" Height="34" MinWidth="30" Padding="0" Margin="0,0,2,0" ToolTip="선택한 품목을 위로 이동" Command="{Binding MoveLineUpCommand}"/>
+                                <Button Style="{StaticResource TradePlanCompactButtonStyle}" Content="▼" Width="30" Height="34" MinWidth="30" Padding="0" Margin="0,0,2,0" ToolTip="선택한 품목을 아래로 이동" Command="{Binding MoveLineDownCommand}"/>
+                                <Button Style="{StaticResource TradePlanEditButtonStyle}" Content="항목수정" Width="72" Height="34" MinWidth="72" Padding="4,0" Margin="0,0,2,0" Command="{Binding UpdateLineCommand}"/>
+                                <Button Style="{StaticResource TradePlanDangerButtonStyle}" Content="항목삭제" Width="72" Height="34" MinWidth="72" Padding="4,0" Command="{Binding DeleteLineCommand}"/>
                             </StackPanel>
                         </Grid>
                         </ScrollViewer>
@@ -608,8 +610,9 @@
                               SelectedItem="{Binding SelectedLine}"
                               IsReadOnly="False"
                               BorderThickness="0"
-                              ColumnHeaderHeight="22"
-                              RowHeight="22">
+                              ColumnHeaderHeight="NaN"
+                              RowHeight="NaN"
+                              MinRowHeight="32">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="No" Width="42" IsReadOnly="True" ElementStyle="{StaticResource RightGridCellTextBlockStyle}" Binding="{Binding RowNo}"/>
                             <DataGridTextColumn Header="품명" Width="*" MinWidth="220" ElementStyle="{StaticResource GridCellTextBlockStyle}" EditingElementStyle="{StaticResource GridCellTextBoxStyle}" Binding="{Binding ItemName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
@@ -765,8 +768,9 @@
                               IsReadOnly="True"
                               BorderThickness="0"
                               FontSize="12"
-                              ColumnHeaderHeight="22"
-                              RowHeight="22"
+                              ColumnHeaderHeight="NaN"
+                              RowHeight="NaN"
+                              MinRowHeight="32"
                               MouseDoubleClick="ItemSearchResultsDataGrid_MouseDoubleClick">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="품명" Binding="{Binding NameOriginal}" Width="*"/>

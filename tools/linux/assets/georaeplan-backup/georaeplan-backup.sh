@@ -363,6 +363,33 @@ read_database_snapshot() {
   printf '%s\n' "$snapshot"
 }
 
+read_database_business_count_digest() {
+  local database_name="$1"
+  local output
+  local -a lines
+  local -a expected_keys=(
+    users customers items transactions rental_assets invoices payments)
+  local index
+
+  if ! output="$(
+    "${compose[@]}" exec -T postgres \
+      psql --no-password -X -q -v ON_ERROR_STOP=1 \
+      -U "$database_user" -d "$database_name" -At \
+      -c $'SELECT \'users=\' || count(*) FROM "Users";\nSELECT \'customers=\' || count(*) FROM "Customers";\nSELECT \'items=\' || count(*) FROM "Items";\nSELECT \'transactions=\' || count(*) FROM "Transactions";\nSELECT \'rental_assets=\' || count(*) FROM "RentalAssets";\nSELECT \'invoices=\' || count(*) FROM "Invoices";\nSELECT \'payments=\' || count(*) FROM "Payments";'
+  )"; then
+    return 1
+  fi
+
+  output="${output//$'\r'/}"
+  mapfile -t lines <<< "$output"
+  [[ "${#lines[@]}" -eq "${#expected_keys[@]}" ]] || return 1
+  for index in "${!expected_keys[@]}"; do
+    [[ "${lines[$index]}" =~ ^${expected_keys[$index]}=[0-9]+$ ]] || return 1
+  done
+
+  printf '%s' "$output" | sha256sum | awk '{print $1}'
+}
+
 central_database_bytes="$(read_database_size "$central_database")"
 business_database_bytes="$(read_database_size "$business_database")"
 files_bytes="$(du -sb -- "$FILES_ROOT" | awk '{print $1}')"
@@ -455,19 +482,47 @@ database_snapshot_before_sha256="$(
 echo \
   "backup_database_snapshot phase=before sha256=$database_snapshot_before_sha256"
 
+if ! central_business_count_sha256_before="$(read_database_business_count_digest "$central_database")"; then
+  echo "backup_prerequisite_failed reason=business_count_digest_unavailable scope=central phase=before" >&2
+  exit 5
+fi
 echo "backup_database_start scope=central database=$central_database"
 "${compose[@]}" exec -T postgres \
   pg_dump --no-password -U "$database_user" -d "$central_database" -Fc \
   > "$central_dump"
 [[ -s "$central_dump" ]]
 "${compose[@]}" exec -T postgres pg_restore -l < "$central_dump" > /dev/null
+if ! central_business_count_sha256_after="$(read_database_business_count_digest "$central_database")"; then
+  echo "backup_prerequisite_failed reason=business_count_digest_unavailable scope=central phase=after" >&2
+  exit 5
+fi
+if [[ "$central_business_count_sha256_before" != "$central_business_count_sha256_after" ]]; then
+  echo "backup_prerequisite_failed reason=business_count_digest_drift scope=central before_sha256=$central_business_count_sha256_before after_sha256=$central_business_count_sha256_after" >&2
+  exit 5
+fi
+central_business_count_sha256="$central_business_count_sha256_before"
+echo "backup_business_count_digest_consistency=ok scope=central sha256=$central_business_count_sha256"
 
+if ! business_business_count_sha256_before="$(read_database_business_count_digest "$business_database")"; then
+  echo "backup_prerequisite_failed reason=business_count_digest_unavailable scope=business phase=before" >&2
+  exit 5
+fi
 echo "backup_database_start scope=business database=$business_database"
 "${compose[@]}" exec -T postgres \
   pg_dump --no-password -U "$database_user" -d "$business_database" -Fc \
   > "$business_dump"
 [[ -s "$business_dump" ]]
 "${compose[@]}" exec -T postgres pg_restore -l < "$business_dump" > /dev/null
+if ! business_business_count_sha256_after="$(read_database_business_count_digest "$business_database")"; then
+  echo "backup_prerequisite_failed reason=business_count_digest_unavailable scope=business phase=after" >&2
+  exit 5
+fi
+if [[ "$business_business_count_sha256_before" != "$business_business_count_sha256_after" ]]; then
+  echo "backup_prerequisite_failed reason=business_count_digest_drift scope=business before_sha256=$business_business_count_sha256_before after_sha256=$business_business_count_sha256_after" >&2
+  exit 5
+fi
+business_business_count_sha256="$business_business_count_sha256_before"
+echo "backup_business_count_digest_consistency=ok scope=business sha256=$business_business_count_sha256"
 
 if ! database_snapshot_after="$(read_database_snapshot)"; then
   echo \
@@ -526,6 +581,8 @@ required_available_bytes=$required_available_bytes
 file_deletion_lease=exclusive_during_database_and_file_capture
 database_snapshot_consistency=unchanged_across_both_dumps
 database_snapshot_sha256=$database_snapshot_sha256
+central_business_count_sha256=$central_business_count_sha256
+business_business_count_sha256=$business_business_count_sha256
 replica=disabled
 EOF
 

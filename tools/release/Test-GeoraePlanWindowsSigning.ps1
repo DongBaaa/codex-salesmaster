@@ -12,6 +12,14 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$securityModulePath = Join-Path `
+    $PSHOME `
+    'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1'
+if (-not (Test-Path -LiteralPath $securityModulePath -PathType Leaf)) {
+    throw "Trusted Windows PowerShell security module was not found: $securityModulePath"
+}
+Import-Module -Name $securityModulePath -Force -ErrorAction Stop
+
 function Resolve-ProjectRoot {
     param([Parameter(Mandatory = $true)][string]$ScriptPath)
 
@@ -139,7 +147,8 @@ foreach ($path in $Paths) {
     }
 
     $resolvedPath = (Resolve-Path -LiteralPath $path).Path
-    $signature = Get-AuthenticodeSignature -LiteralPath $resolvedPath
+    $signature = Microsoft.PowerShell.Security\Get-AuthenticodeSignature `
+        -LiteralPath $resolvedPath
 
     $signerSubject = ''
     $signerThumbprint = ''

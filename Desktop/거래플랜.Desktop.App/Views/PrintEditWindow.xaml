@@ -422,7 +422,7 @@
                                 <DataGridTextColumn Header="단가" Width="90" Binding="{Binding UnitPrice, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                                 <DataGridTextColumn Header="금액" Width="90" Binding="{Binding Amount, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                                 <DataGridTextColumn Header="비고" Width="120" Binding="{Binding Remark, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
-                                <DataGridTemplateColumn Header="삭제" Width="58">
+                                <DataGridTemplateColumn Header="삭제" Width="112">
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
                                             <Button Content="삭제"

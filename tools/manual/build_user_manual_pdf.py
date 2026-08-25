@@ -5,6 +5,7 @@ import hashlib
 import html
 import io
 import json
+import re
 import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -35,7 +36,12 @@ from reportlab.platypus import (
 from reportlab.platypus.tableofcontents import TableOfContents
 
 
-DOC_DATE = "2026-07-28"
+DOC_DATE = "2026-08-22"
+CAPTURE_EVIDENCE_KIND = "georaeplan-current-wpf-exact-matrix-v2"
+EXPECTED_CAPTURE_RESULT_SHA256 = "6182B6A19A67D7976E27A1C1EF5D39EA27E471111F7C3C67D752B92DFDE2CCC5"
+EXPECTED_CAPTURE_ASSEMBLY_SHA256 = "C1DD126443642E9D882CCE0693D8EF23F4843D30D50BE23205223EB74E0CE493"
+EXPECTED_CAPTURE_MEASUREMENT_COUNT = 768
+EXPECTED_CAPTURE_SCREENSHOT_COUNT = 36
 
 PROJECT_ROOT: Path
 SCREENSHOT_DIR: Path
@@ -52,6 +58,11 @@ PUBLIC_STABLE_ANDROID_VERSION: str
 PUBLIC_STABLE_ANDROID_FILENAME: str
 CAPTURE_DATE: str
 CAPTURE_DESKTOP_VERSION: str
+CAPTURE_RESULT_SHA256: str
+CAPTURE_ASSEMBLY_SHA256: str
+CAPTURE_MEASUREMENT_COUNT: int
+CAPTURE_SUCCESS_SCREENSHOT_COUNT: int
+CAPTURE_MODELLED_MEASUREMENT_COUNT: int
 SCREENSHOT_FILES: tuple[str, ...]
 
 
@@ -111,23 +122,60 @@ def sha256_file(path: Path) -> str:
 
 def load_capture_manifest(manifest_path: Path, screenshot_dir: Path) -> dict:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("schemaVersion") != 1:
-        raise ValueError("캡처 manifest schemaVersion은 1이어야 합니다.")
+    if manifest.get("schemaVersion") != 2:
+        raise ValueError("캡처 manifest schemaVersion은 2여야 합니다.")
+
+    source_evidence = manifest.get("sourceEvidence")
+    expected_evidence_keys = {
+        "kind",
+        "resultSha256",
+        "assemblySha256",
+        "measurementCount",
+        "successScreenshotCount",
+        "modelledMeasurementCount",
+    }
+    if not isinstance(source_evidence, dict) or set(source_evidence) != expected_evidence_keys:
+        raise ValueError("캡처 sourceEvidence 스키마가 정확하지 않습니다.")
+    if source_evidence.get("kind") != CAPTURE_EVIDENCE_KIND:
+        raise ValueError("캡처 sourceEvidence kind가 현재 WPF exact 계약과 다릅니다.")
+    if source_evidence.get("resultSha256") != EXPECTED_CAPTURE_RESULT_SHA256:
+        raise ValueError("캡처 exact 결과 SHA-256이 고정된 현재 증거와 다릅니다.")
+    if source_evidence.get("assemblySha256") != EXPECTED_CAPTURE_ASSEMBLY_SHA256:
+        raise ValueError("캡처 실행 어셈블리 SHA-256이 고정된 현재 증거와 다릅니다.")
+    if source_evidence.get("measurementCount") != EXPECTED_CAPTURE_MEASUREMENT_COUNT:
+        raise ValueError("캡처 exact 측정 수는 768이어야 합니다.")
+    if source_evidence.get("successScreenshotCount") != EXPECTED_CAPTURE_SCREENSHOT_COUNT:
+        raise ValueError("캡처 exact 성공 화면 수는 36이어야 합니다.")
+    if source_evidence.get("modelledMeasurementCount") != 0:
+        raise ValueError("캡처 exact 증거에는 모델링 측정이 없어야 합니다.")
 
     screenshots = manifest.get("screenshots")
     if not isinstance(screenshots, list) or len(screenshots) != 15:
         raise ValueError("캡처 manifest에는 정확히 15개 스크린샷이 있어야 합니다.")
 
+    file_names: set[str] = set()
+    source_windows: set[str] = set()
+    screenshot_hashes: set[str] = set()
     for entry in screenshots:
+        if not isinstance(entry, dict) or set(entry) != {"fileName", "sourceWindow", "sha256"}:
+            raise ValueError(f"잘못된 캡처 manifest 항목입니다: {entry!r}")
         file_name = entry.get("fileName")
+        source_window = entry.get("sourceWindow")
         expected_hash = entry.get("sha256")
         if (
             not isinstance(file_name, str)
             or Path(file_name).name != file_name
+            or not isinstance(source_window, str)
+            or re.fullmatch(r"[A-Za-z][A-Za-z0-9]*Window", source_window) is None
             or not isinstance(expected_hash, str)
-            or len(expected_hash) != 64
+            or re.fullmatch(r"[0-9A-F]{64}", expected_hash) is None
         ):
             raise ValueError(f"잘못된 캡처 manifest 항목입니다: {entry!r}")
+        if file_name in file_names or source_window in source_windows or expected_hash in screenshot_hashes:
+            raise ValueError(f"중복된 캡처 manifest 항목입니다: {entry!r}")
+        file_names.add(file_name)
+        source_windows.add(source_window)
+        screenshot_hashes.add(expected_hash)
 
         screenshot_path = screenshot_dir / file_name
         if not screenshot_path.is_file():
@@ -158,6 +206,11 @@ def configure(project_root: Path) -> None:
     global PUBLIC_STABLE_ANDROID_FILENAME
     global CAPTURE_DATE
     global CAPTURE_DESKTOP_VERSION
+    global CAPTURE_RESULT_SHA256
+    global CAPTURE_ASSEMBLY_SHA256
+    global CAPTURE_MEASUREMENT_COUNT
+    global CAPTURE_SUCCESS_SCREENSHOT_COUNT
+    global CAPTURE_MODELLED_MEASUREMENT_COUNT
     global SCREENSHOT_FILES
 
     PROJECT_ROOT = project_root
@@ -201,6 +254,22 @@ def configure(project_root: Path) -> None:
     )
     CAPTURE_DATE = str(capture_manifest["captureDate"])
     CAPTURE_DESKTOP_VERSION = str(capture_manifest["desktopVersion"])
+    capture_evidence = capture_manifest["sourceEvidence"]
+    CAPTURE_RESULT_SHA256 = str(capture_evidence["resultSha256"])
+    CAPTURE_ASSEMBLY_SHA256 = str(capture_evidence["assemblySha256"])
+    CAPTURE_MEASUREMENT_COUNT = int(capture_evidence["measurementCount"])
+    CAPTURE_SUCCESS_SCREENSHOT_COUNT = int(capture_evidence["successScreenshotCount"])
+    CAPTURE_MODELLED_MEASUREMENT_COUNT = int(capture_evidence["modelledMeasurementCount"])
+    if CAPTURE_DATE != DOC_DATE:
+        raise ValueError(
+            "화면 캡처 날짜는 문서 기능 기준일과 같아야 합니다: "
+            f"document={DOC_DATE} capture={CAPTURE_DATE}"
+        )
+    if CAPTURE_DESKTOP_VERSION != LOCAL_DESKTOP_VERSION:
+        raise ValueError(
+            "화면 캡처 Desktop 버전은 현재 소스 버전과 같아야 합니다: "
+            f"source={LOCAL_DESKTOP_VERSION} capture={CAPTURE_DESKTOP_VERSION}"
+        )
     SCREENSHOT_FILES = tuple(
         str(entry["fileName"])
         for entry in capture_manifest["screenshots"]
@@ -557,7 +626,7 @@ def build_story(styles):
                 f"{PUBLIC_STABLE_ANDROID_VERSION} / {PUBLIC_STABLE_ANDROID_FILENAME}",
             ],
             ["주요 대상", "일반 사용자, 운영 관리자, 처음 유지보수하는 담당자"],
-            ["화면 캡처 기준", f"{CAPTURE_DATE} / Desktop {CAPTURE_DESKTOP_VERSION} / 캡처 전용 로컬 DB"],
+            ["화면 캡처 기준", f"{CAPTURE_DATE} / Desktop {CAPTURE_DESKTOP_VERSION} / current Release exact WPF"],
         ],
         widths=[95, DOC_WIDTH - 95],
     )
@@ -566,7 +635,8 @@ def build_story(styles):
         styles,
         "문서 사용 전 주의",
         [
-            f"화면 캡처는 {CAPTURE_DATE}의 Desktop {CAPTURE_DESKTOP_VERSION}에서 만든 기능 설명용 예시입니다. 현재 소스 화면과 일치하거나 최신 화면 검증을 마쳤다는 뜻이 아닙니다.",
+            f"화면 캡처는 {CAPTURE_DATE}의 Desktop {CAPTURE_DESKTOP_VERSION} current Release에서 실제 WPF 36개 창을 768회 측정한 exact 결과 중 선별한 15개 화면입니다.",
+            f"exact 결과 SHA-256은 {CAPTURE_RESULT_SHA256}이며 모델링 측정은 {CAPTURE_MODELLED_MEASUREMENT_COUNT}건입니다. 화면은 합성·익명 상태이고 운영 데이터 저장 동작은 수행하지 않았습니다.",
             f"기능 설명은 {DOC_DATE}의 로컬 Desktop 소스 {LOCAL_DESKTOP_VERSION}/FileVersion {LOCAL_DESKTOP_FILE_VERSION}, 공개 stable Desktop {PUBLIC_STABLE_DESKTOP_VERSION}, Android 현재 소스 {ANDROID_VERSION}/versionCode {ANDROID_VERSION_CODE}, Android 공개 stable {PUBLIC_STABLE_ANDROID_VERSION}를 분리해 기록했습니다.",
             "공개 stable의 실제 live manifest·다운로드, Android 서명 연속성·실기기 업데이트, 실물 프린터 출력은 이 문서 생성 과정에서 검증하지 않았습니다.",
             "삭제, 수금, 청구, 전표 저장은 연결 데이터가 있으므로 운영 DB에서 임의 테스트하지 마세요.",
@@ -685,7 +755,7 @@ def build_story(styles):
         [
             "바탕화면 또는 시작 메뉴에서 거래플랜 실행 아이콘을 사용합니다.",
             "로그인 화면이 열리면 서버 주소, 네트워크 연결, 계정/비밀번호를 확인합니다.",
-            f"환경설정 또는 버전/업데이트 영역에서 현재 버전을 확인합니다. 문서 작성 시점의 로컬 Desktop 소스는 {LOCAL_DESKTOP_VERSION}, 공개 stable Desktop은 {PUBLIC_STABLE_DESKTOP_VERSION}이며, 화면 캡처는 별도 과거 기준인 {CAPTURE_DESKTOP_VERSION}입니다.",
+            f"환경설정 또는 버전/업데이트 영역에서 현재 버전을 확인합니다. 문서 작성 시점의 로컬 Desktop 소스와 화면 캡처는 {LOCAL_DESKTOP_VERSION}, 공개 stable Desktop은 {PUBLIC_STABLE_DESKTOP_VERSION}입니다.",
             "서버가 열리지 않는다는 메시지는 프로그램 실행 문제와 서버/API 연결 문제를 구분해서 봐야 합니다.",
         ],
     )
@@ -790,7 +860,7 @@ def build_story(styles):
     )
     story.append(CondPageBreak(245))
     add_heading(story, styles, 2, "5.3 상단 메뉴 구성")
-    add_screenshot(story, styles, "04_customer_menu.png", "상단 메뉴 예시: 거래처 관련 메뉴 선택 상태", max_height=205)
+    add_screenshot(story, styles, "03_main.png", "메인 상단 업무 메뉴: 최신 메인화면에서 전체 업무 진입점을 확인", max_height=205)
     add_table(
         story,
         styles,
@@ -923,6 +993,7 @@ def build_story(styles):
         ],
     )
     add_heading(story, styles, 2, "8.3 인쇄와 미리보기")
+    add_screenshot(story, styles, "18_trade_print.png", "거래플랜 인쇄 화면: 전체 프린터 목록, 상태, 매수, 페이지 범위, PDF/XPS 저장", max_height=220)
     add_bullets(
         story,
         styles,
@@ -1123,7 +1194,7 @@ def build_story(styles):
         ],
         widths=[90, 190, DOC_WIDTH - 280],
     )
-    add_screenshot(story, styles, "16_recycle_bin.png", "휴지통 화면: 삭제 항목 복원, 영구삭제, 삭제 차단 사유 확인", max_height=220)
+    add_screenshot(story, styles, "19_sync_diagnostics.png", "동기화 진단 화면: 서버 연결, 미해결 항목, outbox와 복구 상태 확인", max_height=220)
     add_heading(story, styles, 2, "14.2 삭제와 복원 원칙")
     add_bullets(
         story,
@@ -1263,7 +1334,8 @@ def build_story(styles):
             "업데이트 APK는 설치된 앱과 같은 서명이어야 하고 versionCode가 반드시 증가해야 합니다.",
             "기존 앱 데이터와 로그인 상태를 보존하는 검증 명령은 정확히 `adb install -r <새 APK 경로>`를 사용합니다.",
             "검증 중 uninstall, 앱 데이터 clear, downgrade를 사용하지 않습니다. 이런 동작은 업데이트 호환성 실패를 숨기거나 사용자 데이터를 지울 수 있습니다.",
-            f"공개 stable manifest의 표시 버전은 {PUBLIC_STABLE_ANDROID_VERSION}이고 현재 소스도 {ANDROID_VERSION}/versionCode {ANDROID_VERSION_CODE}입니다. 같은 표시 버전의 현재 소스를 새 정식 업데이트 후보로 취급하지 않습니다.",
+            f"공개 stable manifest의 표시 버전은 {PUBLIC_STABLE_ANDROID_VERSION}입니다.",
+            f"현재 Android 소스는 {ANDROID_VERSION}/versionCode {ANDROID_VERSION_CODE}입니다. production signing과 게시 연속성을 확인하기 전에는 운영 배포본으로 취급하지 않습니다.",
         ],
     )
     add_note(
@@ -1456,7 +1528,6 @@ def build_story(styles):
             ["파일명", "설명"],
             ["01_login.png", "로그인 화면"],
             ["03_main.png", "메인 대시보드"],
-            ["04_customer_menu.png", "상단 거래처 메뉴"],
             ["05_customer_management.png", "거래처 관리 목록"],
             ["06_customer_edit.png", "거래처 등록/수정"],
             ["07_inventory.png", "품목/재고 관리"],
@@ -1467,8 +1538,9 @@ def build_story(styles):
             ["13_rental_assets.png", "렌탈 자산/설치현황"],
             ["14_rental_onboarding.png", "신규 렌탈 등록"],
             ["15_environment_settings.png", "환경설정"],
-            ["16_recycle_bin.png", "휴지통"],
             ["17_rental_dashboard.png", "렌탈 대시보드"],
+            ["18_trade_print.png", "전용 인쇄창과 프린터 목록"],
+            ["19_sync_diagnostics.png", "동기화 진단"],
         ],
         widths=[170, DOC_WIDTH - 170],
     )
@@ -1585,7 +1657,7 @@ def validate_pdf() -> dict:
     )
     required_update_fragments = (
         f"공개 stable manifest의 표시 버전은 {PUBLIC_STABLE_ANDROID_VERSION}",
-        f"현재 소스도 {ANDROID_VERSION}/versionCode {ANDROID_VERSION_CODE}",
+        f"현재 Android 소스는 {ANDROID_VERSION}/versionCode {ANDROID_VERSION_CODE}",
         "adb install -r",
     )
     missing_android_fragments = (
@@ -1612,7 +1684,7 @@ def validate_pdf() -> dict:
         )
 
     verification = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "documentDate": DOC_DATE,
         "artifact": str(OUTPUT_PATH.relative_to(PROJECT_ROOT)).replace("\\", "/"),
         "rootCopy": str(REQUESTED_PATH.relative_to(PROJECT_ROOT)).replace("\\", "/"),
@@ -1632,6 +1704,14 @@ def validate_pdf() -> dict:
             "androidStableFileName": PUBLIC_STABLE_ANDROID_FILENAME,
         },
         "screenshots": list(SCREENSHOT_FILES),
+        "captureEvidence": {
+            "kind": CAPTURE_EVIDENCE_KIND,
+            "resultSha256": CAPTURE_RESULT_SHA256,
+            "assemblySha256": CAPTURE_ASSEMBLY_SHA256,
+            "measurementCount": CAPTURE_MEASUREMENT_COUNT,
+            "successScreenshotCount": CAPTURE_SUCCESS_SCREENSHOT_COUNT,
+            "modelledMeasurementCount": CAPTURE_MODELLED_MEASUREMENT_COUNT,
+        },
     }
     VERIFICATION_PATH.write_text(
         json.dumps(verification, ensure_ascii=False, indent=2) + "\n",

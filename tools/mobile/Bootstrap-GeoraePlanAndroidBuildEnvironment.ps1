@@ -17,19 +17,57 @@ function Resolve-DefaultProjectRoot {
     return (Resolve-Path (Join-Path (Split-Path -Parent $ScriptPath) '..\..')).Path
 }
 
+function Get-JavaSdkMajorVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$CandidatePath
+    )
+
+    $releasePath = Join-Path $CandidatePath 'release'
+    if (-not (Test-Path -LiteralPath $releasePath -PathType Leaf)) {
+        return $null
+    }
+
+    $versionLine = Get-Content -LiteralPath $releasePath -Encoding ASCII |
+        Where-Object { $_ -match '^JAVA_VERSION=' } |
+        Select-Object -First 1
+    if ($versionLine -match '^JAVA_VERSION="(?<major>\d+)(?:[._]|")') {
+        return [int]$Matches.major
+    }
+
+    return $null
+}
+
 function Get-ResolvedJavaSdkDirectory {
     param(
         [string]$RequestedPath
     )
 
-    $candidates = [System.Collections.Generic.List[string]]::new()
-
     if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
-        $candidates.Add($RequestedPath) | Out-Null
+        if (-not (Test-Path -LiteralPath $RequestedPath -PathType Container)) {
+            throw "Requested JavaSdkDirectory does not exist: $RequestedPath"
+        }
+
+        $resolvedRequestedPath = (Resolve-Path -LiteralPath $RequestedPath).Path
+        if ((Get-JavaSdkMajorVersion -CandidatePath $resolvedRequestedPath) -ne 17 -or
+            -not (Test-Path -LiteralPath (Join-Path $resolvedRequestedPath 'bin\java.exe') -PathType Leaf) -or
+            -not (Test-Path -LiteralPath (Join-Path $resolvedRequestedPath 'bin\javac.exe') -PathType Leaf) -or
+            -not (Test-Path -LiteralPath (Join-Path $resolvedRequestedPath 'bin\keytool.exe') -PathType Leaf)) {
+            throw "Requested JavaSdkDirectory must be a complete JDK 17: $resolvedRequestedPath"
+        }
+
+        return $resolvedRequestedPath
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($env:JAVA_HOME)) {
-        $candidates.Add($env:JAVA_HOME) | Out-Null
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    foreach ($directCandidate in @(
+        $env:GEORAEPLAN_ANDROID_JAVA_SDK,
+        'D:\DevCaches\georaeplan-android-jdk\microsoft-jdk-17.0.20',
+        (Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\microsoft-jdk-17.0.20'),
+        $env:JAVA_HOME
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($directCandidate)) {
+            $candidates.Add($directCandidate) | Out-Null
+        }
     }
 
     foreach ($commandName in @('javac', 'java', 'keytool')) {
@@ -40,22 +78,29 @@ function Get-ResolvedJavaSdkDirectory {
     }
 
     foreach ($pattern in @(
-        (Join-Path $env:USERPROFILE '.antigravity\extensions\*\jre\*\bin\javac.exe'),
-        'C:\Program Files\Microsoft\jdk*\bin\javac.exe',
-        'C:\Program Files\Java\*\bin\javac.exe',
-        'C:\Deployment Tool\jre8\bin\javac.exe'
+        'C:\Program Files\Microsoft\jdk-17*\bin\javac.exe',
+        'C:\Program Files\Java\jdk-17*\bin\javac.exe',
+        (Join-Path $env:USERPROFILE '.antigravity\extensions\*\jre\*\bin\javac.exe')
     )) {
-        $match = Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($null -ne $match) {
+        foreach ($match in Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | Sort-Object FullName -Descending) {
             $candidates.Add((Split-Path -Parent (Split-Path -Parent $match.FullName))) | Out-Null
         }
     }
 
     foreach ($candidate in $candidates | Select-Object -Unique) {
-        if (-not [string]::IsNullOrWhiteSpace($candidate) -and
-            (Test-Path -LiteralPath (Join-Path $candidate 'bin\java.exe')) -and
-            (Test-Path -LiteralPath (Join-Path $candidate 'bin\keytool.exe'))) {
-            return (Resolve-Path -LiteralPath $candidate).Path
+        if ([string]::IsNullOrWhiteSpace($candidate) -or -not (Test-Path -LiteralPath $candidate -PathType Container)) {
+            continue
+        }
+
+        $resolvedCandidate = (Resolve-Path -LiteralPath $candidate).Path
+        if ((Get-JavaSdkMajorVersion -CandidatePath $resolvedCandidate) -ne 17) {
+            continue
+        }
+
+        if ((Test-Path -LiteralPath (Join-Path $resolvedCandidate 'bin\java.exe') -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $resolvedCandidate 'bin\javac.exe') -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $resolvedCandidate 'bin\keytool.exe') -PathType Leaf)) {
+            return $resolvedCandidate
         }
     }
 
@@ -87,7 +132,7 @@ if ([string]::IsNullOrWhiteSpace($AndroidSdkDirectory)) {
 
 $JavaSdkDirectory = Get-ResolvedJavaSdkDirectory -RequestedPath $JavaSdkDirectory
 if ([string]::IsNullOrWhiteSpace($JavaSdkDirectory)) {
-    throw 'JavaSdkDirectory not found. Install JDK 17+ or pass -JavaSdkDirectory.'
+    throw 'JavaSdkDirectory not found. Install a complete JDK 17 or pass -JavaSdkDirectory.'
 }
 
 New-Item -ItemType Directory -Force -Path $DotNetInstallDir | Out-Null

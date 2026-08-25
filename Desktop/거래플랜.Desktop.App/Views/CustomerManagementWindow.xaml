@@ -47,7 +47,7 @@
             <Setter Property="BorderBrush" Value="#5D7593"/>
             <Setter Property="Background" Value="{StaticResource TradePlanSecondaryBrush}"/>
             <Setter Property="Padding" Value="14,0"/>
-            <Setter Property="Height" Value="38"/>
+            <Setter Property="MinHeight" Value="38"/>
             <Setter Property="MinWidth" Value="108"/>
             <Setter Property="FontFamily" Value="Malgun Gothic"/>
             <Setter Property="Cursor" Value="Hand"/>
@@ -63,7 +63,8 @@
             <Setter Property="CanUserAddRows" Value="False"/>
             <Setter Property="AlternatingRowBackground" Value="#223754"/>
             <Setter Property="RowBackground" Value="#1E2D40"/>
-            <Setter Property="RowHeight" Value="30"/>
+            <Setter Property="RowHeight" Value="NaN"/>
+            <Setter Property="MinRowHeight" Value="30"/>
             <Setter Property="HeadersVisibility" Value="Column"/>
             <Setter Property="EnableRowVirtualization" Value="True"/>
             <Setter Property="EnableColumnVirtualization" Value="True"/>
@@ -94,7 +95,8 @@
         <Style x:Key="CustomerGridTextStyle" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="TextAlignment" Value="Left"/>
-            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+            <Setter Property="TextTrimming" Value="None"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
         </Style>
         <Style x:Key="CustomerGridComboCellStyle" TargetType="DataGridCell" BasedOn="{StaticResource {x:Type DataGridCell}}">
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>

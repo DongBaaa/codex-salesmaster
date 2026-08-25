@@ -43,23 +43,54 @@ function Get-ResolvedDotNetPath {
     return $null
 }
 
+function Get-JavaSdkMajorVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$CandidatePath
+    )
+
+    $releasePath = Join-Path $CandidatePath 'release'
+    if (-not (Test-Path -LiteralPath $releasePath -PathType Leaf)) {
+        return $null
+    }
+
+    $versionLine = Get-Content -LiteralPath $releasePath -Encoding ASCII |
+        Where-Object { $_ -match '^JAVA_VERSION=' } |
+        Select-Object -First 1
+    if ($versionLine -match '^JAVA_VERSION="(?<major>\d+)(?:[._]|")') {
+        return [int]$Matches.major
+    }
+
+    return $null
+}
+
 function Get-ResolvedJavaSdkDirectory {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
         [string]$RequestedPath
     )
 
-    $candidates = [System.Collections.Generic.List[string]]::new()
-
     if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
-        $candidates.Add($RequestedPath) | Out-Null
+        if (-not (Test-Path -LiteralPath $RequestedPath -PathType Container)) {
+            throw "Requested JavaSdkDirectory does not exist: $RequestedPath"
+        }
+
+        $resolvedRequestedPath = (Resolve-Path -LiteralPath $RequestedPath).Path
+        if ((Get-JavaSdkMajorVersion -CandidatePath $resolvedRequestedPath) -ne 17 -or
+            -not (Test-Path -LiteralPath (Join-Path $resolvedRequestedPath 'bin\java.exe') -PathType Leaf) -or
+            -not (Test-Path -LiteralPath (Join-Path $resolvedRequestedPath 'bin\javac.exe') -PathType Leaf) -or
+            -not (Test-Path -LiteralPath (Join-Path $resolvedRequestedPath 'bin\keytool.exe') -PathType Leaf)) {
+            throw "Requested JavaSdkDirectory must be a complete JDK 17: $resolvedRequestedPath"
+        }
+
+        return $resolvedRequestedPath
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($env:JAVA_HOME)) {
-        $candidates.Add($env:JAVA_HOME) | Out-Null
-    }
-
+    $candidates = [System.Collections.Generic.List[string]]::new()
     foreach ($directCandidate in @(
+        $env:GEORAEPLAN_ANDROID_JAVA_SDK,
+        'D:\DevCaches\georaeplan-android-jdk\microsoft-jdk-17.0.20',
+        (Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\microsoft-jdk-17.0.20'),
+        $env:JAVA_HOME,
         (Join-Path $env:ProgramFiles 'Android\Android Studio\jbr'),
         (Join-Path ${env:ProgramFiles(x86)} 'Android\Android Studio\jbr'),
         (Join-Path $env:LOCALAPPDATA 'Programs\Android Studio\jbr')
@@ -77,22 +108,29 @@ function Get-ResolvedJavaSdkDirectory {
     }
 
     foreach ($pattern in @(
-        (Join-Path $env:USERPROFILE '.antigravity\extensions\*\jre\*\bin\javac.exe'),
-        'C:\Program Files\Microsoft\jdk*\bin\javac.exe',
-        'C:\Program Files\Java\*\bin\javac.exe',
-        'C:\Deployment Tool\jre8\bin\javac.exe'
+        'C:\Program Files\Microsoft\jdk-17*\bin\javac.exe',
+        'C:\Program Files\Java\jdk-17*\bin\javac.exe',
+        (Join-Path $env:USERPROFILE '.antigravity\extensions\*\jre\*\bin\javac.exe')
     )) {
-        $match = Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($null -ne $match) {
+        foreach ($match in Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | Sort-Object FullName -Descending) {
             $candidates.Add((Split-Path -Parent (Split-Path -Parent $match.FullName))) | Out-Null
         }
     }
 
     foreach ($candidate in $candidates | Select-Object -Unique) {
-        if (-not [string]::IsNullOrWhiteSpace($candidate) -and
-            (Test-Path -LiteralPath (Join-Path $candidate 'bin\java.exe')) -and
-            (Test-Path -LiteralPath (Join-Path $candidate 'bin\keytool.exe'))) {
-            return (Resolve-Path -LiteralPath $candidate).Path
+        if ([string]::IsNullOrWhiteSpace($candidate) -or -not (Test-Path -LiteralPath $candidate -PathType Container)) {
+            continue
+        }
+
+        $resolvedCandidate = (Resolve-Path -LiteralPath $candidate).Path
+        if ((Get-JavaSdkMajorVersion -CandidatePath $resolvedCandidate) -ne 17) {
+            continue
+        }
+
+        if ((Test-Path -LiteralPath (Join-Path $resolvedCandidate 'bin\java.exe') -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $resolvedCandidate 'bin\javac.exe') -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $resolvedCandidate 'bin\keytool.exe') -PathType Leaf)) {
+            return $resolvedCandidate
         }
     }
 
@@ -190,11 +228,12 @@ if (-not [string]::IsNullOrWhiteSpace($resolvedDotNetPath)) {
 Add-CheckResult -Results $results -Name 'maui-android-workload' -Passed $workloadInstalled -Detail $workloadDetail
 
 $javaExecutable = if ($resolvedJavaSdkDirectory) { Join-Path $resolvedJavaSdkDirectory 'bin\java.exe' } else { $null }
+$javacExecutable = if ($resolvedJavaSdkDirectory) { Join-Path $resolvedJavaSdkDirectory 'bin\javac.exe' } else { $null }
 $keytoolExecutable = if ($resolvedJavaSdkDirectory) { Join-Path $resolvedJavaSdkDirectory 'bin\keytool.exe' } else { $null }
 $adbExecutable = if ($resolvedAndroidSdkDirectory) { Join-Path $resolvedAndroidSdkDirectory 'platform-tools\adb.exe' } else { $null }
 $emulatorExecutable = if ($resolvedAndroidSdkDirectory) { Join-Path $resolvedAndroidSdkDirectory 'emulator\emulator.exe' } else { $null }
 
-Add-CheckResult -Results $results -Name 'java-sdk' -Passed ($javaExecutable -and (Test-Path -LiteralPath $javaExecutable)) -Detail ($(if ($javaExecutable) { $resolvedJavaSdkDirectory } else { 'JDK/JRE not found' }))
+Add-CheckResult -Results $results -Name 'java-sdk-17' -Passed ($javaExecutable -and $javacExecutable -and (Test-Path -LiteralPath $javaExecutable) -and (Test-Path -LiteralPath $javacExecutable) -and ((Get-JavaSdkMajorVersion -CandidatePath $resolvedJavaSdkDirectory) -eq 17)) -Detail ($(if ($javaExecutable) { "$resolvedJavaSdkDirectory (major=17)" } else { 'complete JDK 17 not found' }))
 Add-CheckResult -Results $results -Name 'keytool' -Passed ($keytoolExecutable -and (Test-Path -LiteralPath $keytoolExecutable)) -Detail ($(if ($keytoolExecutable) { $keytoolExecutable } else { 'keytool not found' }))
 Add-CheckResult -Results $results -Name 'android-sdk' -Passed (-not [string]::IsNullOrWhiteSpace($resolvedAndroidSdkDirectory)) -Detail ($(if ($resolvedAndroidSdkDirectory) { $resolvedAndroidSdkDirectory } else { 'Android SDK not found' }))
 Add-CheckResult -Results $results -Name 'android-studio(optional)' -Passed $true -Detail ($(if ($resolvedAndroidStudioPath) { $resolvedAndroidStudioPath } else { 'Android Studio not found (okay unless using Android Studio 직접 테스트)' }))

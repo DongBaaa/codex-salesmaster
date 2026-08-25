@@ -10,6 +10,8 @@ internal static class ChildWindowResponsiveLayoutPolicy
 {
     internal const double MinimumWidthDip = 640d;
     internal const double MinimumHeightDip = 400d;
+    internal const double MinimumContentWidthDip = 760d;
+    internal const double MinimumContentHeightDip = 560d;
     internal const double WorkAreaInsetDip = 16d;
 
     private const uint MonitorDefaultToNearest = 0x00000002;

@@ -42,6 +42,8 @@ internal sealed class ImmutableSqliteInspectionGuard : IDisposable
 
     public string DatabasePath { get; }
 
+    public string InitialSha256 => _initialSha256;
+
     public static ImmutableSqliteInspectionGuard Acquire(
         string databasePath)
     {

@@ -5,6 +5,175 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class SoakObservationGuardTests
 {
     [Fact]
+    public void BaselineSoakScheduler_IsIndependentFailClosedAndExact()
+    {
+        var root = FindRepositoryRoot();
+        var scriptPath = Path.Combine(
+            root,
+            "tools",
+            "verification",
+            "Start-GeoraePlanBaselineSoak.ps1");
+        Assert.True(File.Exists(scriptPath), $"Scheduler not found: {scriptPath}");
+        var source = File.ReadAllText(scriptPath);
+
+        foreach (var required in new[]
+                 {
+                     "[ValidateSet('Start', 'Status', 'Cleanup')]",
+                     "SampleCount -ne 1440",
+                     "IntervalSeconds -ne 60",
+                     "BaseUrl must be exactly https://trade.2884.kr.",
+                     "The test runtime is explicitly invalid",
+                     "ScheduledTaskLogonType = 'Interactive'",
+                     "ScheduledTaskRunLevel = 'Limited'",
+                     "-ExecutionTimeLimit ([TimeSpan]::Zero)",
+                     "New-ScheduledTaskPrincipal",
+                     "Register-ScheduledTask",
+                     "Start-ScheduledTask",
+                     "function Get-FileSha256",
+                     "FirstSampleHealthy = $true",
+                     "Cleanup before exact baseline completion requires -ForceCleanup.",
+                     "EvidencePreserved = [IO.Directory]::Exists($soak)"
+                 })
+        {
+            Assert.Contains(required, source, StringComparison.Ordinal);
+        }
+
+        Assert.Contains(
+            "60BC0FEC39E8B94E7657AD900F40D941574F68C78C4B03B49DC8FC81C82F1AC0",
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Register-ScheduledTask -Force",
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Get-FileHash",
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Remove-Item -Recurse",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task BaselineSoakScheduler_ValidateOnlyAcceptsCertifiedFixtureWithoutMutation()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var testRoot = Path.Combine(
+            TestProcessIsolation.TempRoot,
+            $"baseline-scheduler-validate-{Guid.NewGuid():N}");
+        var projectRoot = Path.Combine(testRoot, "project");
+        var runtimeRoot = Path.Combine(projectRoot, "테스트 시행", "실행환경");
+        var verificationRoot = Path.Combine(projectRoot, "tools", "verification");
+        var runId = $"fixture-{Guid.NewGuid():N}"[..40];
+        var soakRoot = Path.Combine(
+            @"D:\DevCaches\georaeplan-v1-soak",
+            $"soak-{runId}");
+        var runAllTaskName = $"GeoraePlan-Soak-{runId}-RunAll";
+        var observerTaskName = $"GeoraePlan-Soak-{runId}-Observer";
+
+        Directory.CreateDirectory(Path.Combine(runtimeRoot, "App"));
+        Directory.CreateDirectory(verificationRoot);
+        try
+        {
+            File.Copy(
+                Path.Combine(
+                    repositoryRoot,
+                    "tools",
+                    "verification",
+                    "Invoke-GeoraePlanSoakObservation.ps1"),
+                Path.Combine(
+                    verificationRoot,
+                    "Invoke-GeoraePlanSoakObservation.ps1"));
+            File.WriteAllText(
+                Path.Combine(runtimeRoot, ".georaeplan-runtime-ready"),
+                "fixture-ready");
+            File.WriteAllText(
+                Path.Combine(runtimeRoot, "Run-All.ps1"),
+                "throw 'ValidateOnly must not execute Run-All.'");
+            File.WriteAllBytes(
+                Path.Combine(runtimeRoot, "App", "거래플랜.Desktop.App.exe"),
+                [0x4D, 0x5A, 0x00, 0x00]);
+            File.WriteAllBytes(
+                Path.Combine(runtimeRoot, "App", "거래플랜.Desktop.App.dll"),
+                [0x4D, 0x5A, 0x00, 0x00]);
+
+            var startInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = ResolveWindowsPowerShellPath(),
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            foreach (var argument in new[]
+                     {
+                         "-NoLogo",
+                         "-NoProfile",
+                         "-NonInteractive",
+                         "-ExecutionPolicy",
+                         "Bypass",
+                         "-File",
+                         Path.Combine(
+                             repositoryRoot,
+                             "tools",
+                             "verification",
+                             "Start-GeoraePlanBaselineSoak.ps1"),
+                         "-Mode",
+                         "Start",
+                         "-RunId",
+                         runId,
+                         "-ProjectRoot",
+                         projectRoot,
+                         "-SoakRoot",
+                         soakRoot,
+                         "-ValidateOnly"
+                     })
+            {
+                startInfo.ArgumentList.Add(argument);
+            }
+
+            using var process = new System.Diagnostics.Process
+            {
+                StartInfo = startInfo
+            };
+            Assert.True(process.Start());
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+
+            Assert.True(
+                process.ExitCode == 0,
+                $"ValidateOnly failed. Exit={process.ExitCode}{Environment.NewLine}" +
+                $"stdout:{Environment.NewLine}{stdout}{Environment.NewLine}" +
+                $"stderr:{Environment.NewLine}{stderr}");
+            Assert.True(string.IsNullOrWhiteSpace(stderr), stderr);
+            using var json = System.Text.Json.JsonDocument.Parse(stdout);
+            var root = json.RootElement;
+            Assert.Equal("PASS", root.GetProperty("Result").GetString());
+            Assert.Equal("VALIDATED", root.GetProperty("Mode").GetString());
+            Assert.Equal(runId, root.GetProperty("RunId").GetString());
+            Assert.Equal(
+                "Interactive",
+                root.GetProperty("ScheduledTaskLogonType").GetString());
+            Assert.Equal(
+                "Limited",
+                root.GetProperty("ScheduledTaskRunLevel").GetString());
+            Assert.False(Directory.Exists(soakRoot));
+            Assert.False(ScheduledTaskExists(runAllTaskName));
+            Assert.False(ScheduledTaskExists(observerTaskName));
+        }
+        finally
+        {
+            if (Directory.Exists(testRoot))
+                Directory.Delete(testRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void SoakObservation_IsReadOnlyAndPersistsIncrementalEvidence()
     {
         var repoRoot = FindRepositoryRoot();
@@ -131,17 +300,24 @@ public sealed class SoakObservationGuardTests
     public void SoakObservation_IsUtf8BomForWindowsPowerShellCompatibility()
     {
         var repoRoot = FindRepositoryRoot();
-        var scriptPath = Path.Combine(
-            repoRoot,
-            "tools",
-            "verification",
-            "Invoke-GeoraePlanSoakObservation.ps1");
-        var bytes = File.ReadAllBytes(scriptPath);
+        foreach (var fileName in new[]
+                 {
+                     "Invoke-GeoraePlanSoakObservation.ps1",
+                     "Start-GeoraePlanBaselineSoak.ps1"
+                 })
+        {
+            var scriptPath = Path.Combine(
+                repoRoot,
+                "tools",
+                "verification",
+                fileName);
+            var bytes = File.ReadAllBytes(scriptPath);
 
-        Assert.True(bytes.Length > 3);
-        Assert.Equal(0xEF, bytes[0]);
-        Assert.Equal(0xBB, bytes[1]);
-        Assert.Equal(0xBF, bytes[2]);
+            Assert.True(bytes.Length > 3);
+            Assert.Equal(0xEF, bytes[0]);
+            Assert.Equal(0xBB, bytes[1]);
+            Assert.Equal(0xBF, bytes[2]);
+        }
     }
 
     [Fact]
@@ -176,5 +352,44 @@ public sealed class SoakObservationGuardTests
         }
 
         throw new InvalidOperationException("Repository root could not be located.");
+    }
+
+    private static string ResolveWindowsPowerShellPath()
+        => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+            "System32",
+            "WindowsPowerShell",
+            "v1.0",
+            "powershell.exe");
+
+    private static bool ScheduledTaskExists(string taskName)
+    {
+        var startInfo = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = ResolveWindowsPowerShellPath(),
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        foreach (var argument in new[]
+                 {
+                     "-NoLogo",
+                     "-NoProfile",
+                     "-NonInteractive",
+                     "-Command",
+                     $"if (Get-ScheduledTask -TaskName '{taskName}' -ErrorAction SilentlyContinue) {{ exit 0 }} else {{ exit 1 }}"
+                 })
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        using var process = new System.Diagnostics.Process
+        {
+            StartInfo = startInfo
+        };
+        Assert.True(process.Start());
+        process.WaitForExit(10_000);
+        return process.ExitCode == 0;
     }
 }

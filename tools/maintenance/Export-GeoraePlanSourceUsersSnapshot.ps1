@@ -381,19 +381,27 @@ function ConvertFrom-StoredCredentialEnvelopeOutput {
 }
 
 function Get-PromptedSystemAdminCredential {
-    $credential = Get-Credential `
-        -Message '거래플랜 시스템 관리자 계정을 입력하세요.'
-    if ($null -eq $credential -or
-        [string]::IsNullOrWhiteSpace([string]$credential.UserName)) {
+    $username = Read-Host -Prompt '거래플랜 시스템 관리자 아이디'
+    if ([string]::IsNullOrWhiteSpace([string]$username)) {
         throw 'The local system-administrator credential prompt was cancelled.'
     }
-    if ($null -eq $credential.Password -or $credential.Password.Length -eq 0) {
-        if ($null -ne $credential.Password) {
-            $credential.Password.Dispose()
+
+    $password = $null
+    try {
+        $password = Read-Host -Prompt '거래플랜 시스템 관리자 비밀번호' -AsSecureString
+        if ($null -eq $password -or $password.Length -eq 0) {
+            throw 'The local system-administrator password cannot be empty.'
         }
-        throw 'The local system-administrator password cannot be empty.'
+
+        $credential = New-Object Management.Automation.PSCredential($username, $password)
+        $password = $null
+        return $credential
     }
-    return $credential
+    finally {
+        if ($null -ne $password) {
+            $password.Dispose()
+        }
+    }
 }
 
 function Get-SourceUsersViaApi {

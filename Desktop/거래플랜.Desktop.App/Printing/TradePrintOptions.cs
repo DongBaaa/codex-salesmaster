@@ -1,9 +1,7 @@
-using System.Printing;
-
 namespace 거래플랜.Desktop.App.Printing;
 
 public sealed record TradePrintDialogResult(
-    PrintQueue? PrintQueue,
+    string? PrintQueueName,
     int CopyCount,
     bool Collate,
     IReadOnlyList<int>? PageNumbers,

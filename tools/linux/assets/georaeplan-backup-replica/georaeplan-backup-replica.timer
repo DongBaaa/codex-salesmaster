@@ -1,0 +1,11 @@
+[Unit]
+Description=Replicate the latest verified GeoraePlan backup externally
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 Asia/Seoul
+RandomizedDelaySec=20m
+Persistent=true
+Unit=georaeplan-backup-replica.service
+
+[Install]
+WantedBy=timers.target

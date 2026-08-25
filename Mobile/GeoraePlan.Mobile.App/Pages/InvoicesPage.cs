@@ -87,16 +87,16 @@ public sealed class InvoicesPage : ContentPage
                 async () => await Shell.Current.Navigation.PushAsync(ServiceHelper.GetRequiredService<PaymentDraftPage>()),
                 "전표 작업");
 
-        var actionGrid = new VerticalStackLayout
-        {
-            Spacing = 8,
-            Children =
-            {
+        var actionGrid =
+            GeoraePlanTheme.CreateWrappingActions(
                 createSalesInvoiceButton,
                 createPurchaseInvoiceButton,
-                createPaymentButton
-            }
-        };
+                createPaymentButton);
+
+
+
+
+
 
         var statusLabel = GeoraePlanTheme.CreateStatusLabel();
         statusLabel.SetBinding(Label.TextProperty, nameof(InvoicesViewModel.StatusMessage));
@@ -154,8 +154,8 @@ public sealed class InvoicesPage : ContentPage
 
                 var remarkLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 remarkLabel.LineHeight = 1.0;
-                remarkLabel.LineBreakMode = LineBreakMode.TailTruncation;
-                remarkLabel.MaxLines = 1;
+                remarkLabel.LineBreakMode = LineBreakMode.WordWrap;
+                remarkLabel.HorizontalOptions = LayoutOptions.Fill;
                 remarkLabel.SetBinding(Label.TextProperty, nameof(InvoiceLineDto.Remark));
 
                 return new Border
@@ -199,8 +199,8 @@ public sealed class InvoicesPage : ContentPage
 
                 var noteLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 noteLabel.LineHeight = 1.0;
-                noteLabel.LineBreakMode = LineBreakMode.TailTruncation;
-                noteLabel.MaxLines = 1;
+                noteLabel.LineBreakMode = LineBreakMode.WordWrap;
+                noteLabel.HorizontalOptions = LayoutOptions.Fill;
                 noteLabel.SetBinding(Label.TextProperty, nameof(PaymentDto.Note));
 
                 return new Border
@@ -314,8 +314,8 @@ public sealed class InvoicesPage : ContentPage
 
                 var memoLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 memoLabel.LineHeight = 1.0;
-                memoLabel.LineBreakMode = LineBreakMode.TailTruncation;
-                memoLabel.MaxLines = 1;
+                memoLabel.LineBreakMode = LineBreakMode.WordWrap;
+                memoLabel.HorizontalOptions = LayoutOptions.Fill;
                 memoLabel.SetBinding(Label.TextProperty, nameof(InvoiceListItem.MemoDisplay));
 
                 var border = new Border
@@ -350,30 +350,36 @@ public sealed class InvoicesPage : ContentPage
         var inverseBooleanConverter = new InverseBooleanConverter();
         collectionView.SetBinding(VisualElement.IsVisibleProperty, new Binding(nameof(InvoicesViewModel.HasSelectedInvoice), converter: inverseBooleanConverter));
 
+        var headerStack = new VerticalStackLayout
+        {
+            Spacing = 12,
+            Children = { searchGrid, actionGrid, statusLabel }
+        };
+        var headerScrollView = new ScrollView
+        {
+            MaximumHeightRequest = 360,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Default,
+            Content = headerStack
+        };
         var contentGrid = new Grid
         {
             Padding = 16,
             RowDefinitions =
             {
                 new RowDefinition(GridLength.Auto),
-                new RowDefinition(GridLength.Auto),
-                new RowDefinition(GridLength.Auto),
                 new RowDefinition(GridLength.Star)
             },
             RowSpacing = 12
         };
-        contentGrid.Add(searchGrid);
-        Grid.SetRow(searchGrid, 0);
-        contentGrid.Add(actionGrid);
-        Grid.SetRow(actionGrid, 1);
-        contentGrid.Add(statusLabel);
-        Grid.SetRow(statusLabel, 2);
+        contentGrid.Add(headerScrollView);
         contentGrid.Add(detailScrollView);
-        Grid.SetRow(detailScrollView, 3);
+        Grid.SetRow(detailScrollView, 1);
         contentGrid.Add(collectionView);
-        Grid.SetRow(collectionView, 3);
+        Grid.SetRow(collectionView, 1);
 
         Content = contentGrid;
+        contentGrid.SizeChanged += (_, _) =>
+            headerScrollView.MaximumHeightRequest = Math.Max(120, Math.Min(360, contentGrid.Height * 0.45));
     }
 
     protected override async void OnAppearing()

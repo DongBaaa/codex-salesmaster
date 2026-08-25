@@ -11,6 +11,83 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class BackupGenerationRestoreTests
 {
     [Fact]
+    public async Task BackupNow_DispatchesDatabaseSnapshotAndCompressionAwayFromCallingUiThread()
+    {
+        var testSourcePath = GetTestSourcePath();
+        var repositoryRoot = Path.GetFullPath(
+            Path.Combine(Path.GetDirectoryName(testSourcePath)!, "..", ".."));
+        var serviceSource = await File.ReadAllTextAsync(
+            Path.Combine(
+                repositoryRoot,
+                "Desktop",
+                "거래플랜.Desktop.App",
+                "Services",
+                "BackupService.cs"));
+        var backupMethodStart = serviceSource.IndexOf(
+            "public async Task<string?> BackupNowWithPathAsync(",
+            StringComparison.Ordinal);
+        var backupMethodEnd = serviceSource.IndexOf(
+            "public IReadOnlyList<BackupSnapshotInfo> GetBackupSnapshots()",
+            backupMethodStart,
+            StringComparison.Ordinal);
+        Assert.True(backupMethodStart >= 0 && backupMethodEnd > backupMethodStart);
+        var backupMethodSource = serviceSource[backupMethodStart..backupMethodEnd];
+        Assert.Contains(
+            "RunBackupWorkOffUiThreadAsync",
+            backupMethodSource,
+            StringComparison.Ordinal);
+
+        var helper = typeof(BackupService)
+            .GetMethods(System.Reflection.BindingFlags.NonPublic |
+                        System.Reflection.BindingFlags.Static)
+            .SingleOrDefault(method =>
+                string.Equals(
+                    method.Name,
+                    "RunBackupWorkOffUiThreadAsync",
+                    StringComparison.Ordinal) &&
+                method.IsGenericMethodDefinition);
+        Assert.NotNull(helper);
+
+        var completion = new TaskCompletionSource<(int Caller, int Worker, int Value)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var uiThread = new Thread(() =>
+        {
+            try
+            {
+                var callerThreadId = Environment.CurrentManagedThreadId;
+                Func<Task<int>> work = async () =>
+                {
+                    var workerThreadId = Environment.CurrentManagedThreadId;
+                    await Task.Yield();
+                    return workerThreadId;
+                };
+                var closedHelper = helper!.MakeGenericMethod(typeof(int));
+                var task = Assert.IsAssignableFrom<Task<int>>(
+                    closedHelper.Invoke(
+                        null,
+                        [work, CancellationToken.None]));
+                var workerThreadId = task.GetAwaiter().GetResult();
+                completion.TrySetResult((callerThreadId, workerThreadId, 1));
+            }
+            catch (Exception ex)
+            {
+                completion.TrySetException(ex);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "backup-ui-responsiveness-contract"
+        };
+        uiThread.SetApartmentState(ApartmentState.STA);
+        uiThread.Start();
+
+        var result = await completion.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(1, result.Value);
+        Assert.NotEqual(result.Caller, result.Worker);
+        Assert.True(uiThread.Join(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
     public async Task PackageBackup_CrossRootRestoreRewritesStoredPathAndRestoresOneGeneration()
     {
         using var scope = new TemporaryDirectory();

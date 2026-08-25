@@ -26,6 +26,7 @@ public partial class SalesWindow : Window
         ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(this);
         _vm = vm;
         DataContext = vm;
+        Title = vm.WindowTitleText;
         _vm.ConfirmRentalLinkedInvoiceEdit = ConfirmRentalLinkedInvoiceEdit;
         Loaded += (_, _) =>
         {
@@ -58,7 +59,9 @@ public partial class SalesWindow : Window
         if (ActualHeight <= 0d)
             return;
 
-        var useCompactLayout = ActualHeight < CompactWorkspaceHeightThreshold;
+        var useCompactLayout =
+            !ResponsiveWindowBehavior.GetIsEnabled(this) &&
+            ActualHeight < CompactWorkspaceHeightThreshold;
         if (_isCompactWorkspaceLayout == useCompactLayout)
             return;
 

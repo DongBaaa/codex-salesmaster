@@ -61,6 +61,11 @@ public partial class MainWindow
                 await InitialDashboardLoadTask.WaitAsync(TimeSpan.FromSeconds(120));
 
             BeginShutdownProtection();
+            await Task.WhenAll(
+                _vm.DrainPendingBackgroundWorkForShutdownAsync(),
+                _realtimeRevisionDrainTask,
+                _runtimeSyncDrainTask,
+                _windowCommandDrainTask);
             await RunMultiPcSessionPreflightAsync(context, steps);
 
             if (string.Equals(context.Role, "A", StringComparison.Ordinal))

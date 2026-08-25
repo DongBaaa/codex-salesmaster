@@ -580,6 +580,75 @@ public sealed class UsersControllerScopeTests : IDisposable
     }
 
     [Fact]
+    public async Task PasswordPolicy_RejectsFiveCharactersAndAcceptsExactlySixWithoutMutatingRejectedState()
+    {
+        var currentUser = CreateTenantAdmin();
+        await using var dbContext = CreateDbContext(currentUser);
+        var controller = CreateController(dbContext, currentUser);
+
+        var rejectedCreate = await controller.Create(new CreateUserRequest
+        {
+            Username = "five-character-password",
+            Password = "12345",
+            Role = "User",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            IsActive = true
+        }, CancellationToken.None);
+
+        var rejectedCreateResult = Assert.IsType<BadRequestObjectResult>(rejectedCreate.Result);
+        Assert.Contains("at least 6 characters", Assert.IsType<string>(rejectedCreateResult.Value));
+        Assert.False(await dbContext.Users.AnyAsync(user => user.Username == "five-character-password"));
+
+        var acceptedCreate = await controller.Create(new CreateUserRequest
+        {
+            Username = "six-character-password",
+            Password = "123456",
+            Role = "User",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            IsActive = true
+        }, CancellationToken.None);
+
+        Assert.IsType<CreatedAtActionResult>(acceptedCreate.Result);
+        dbContext.ChangeTracker.Clear();
+        var persisted = await dbContext.Users.SingleAsync(user => user.Username == "six-character-password");
+        Assert.True(BCrypt.Net.BCrypt.Verify("123456", persisted.PasswordHash));
+        var acceptedPasswordHash = persisted.PasswordHash;
+
+        var rejectedUpdate = await controller.UpdatePassword(
+            persisted.Id,
+            new UpdateUserPasswordRequest
+            {
+                ExpectedRevision = persisted.Revision,
+                Password = "54321"
+            },
+            CancellationToken.None);
+
+        var rejectedUpdateResult = Assert.IsType<BadRequestObjectResult>(rejectedUpdate);
+        Assert.Contains("at least 6 characters", Assert.IsType<string>(rejectedUpdateResult.Value));
+        dbContext.ChangeTracker.Clear();
+        persisted = await dbContext.Users.SingleAsync(user => user.Username == "six-character-password");
+        Assert.Equal(acceptedPasswordHash, persisted.PasswordHash);
+
+        var acceptedUpdate = await controller.UpdatePassword(
+            persisted.Id,
+            new UpdateUserPasswordRequest
+            {
+                ExpectedRevision = persisted.Revision,
+                Password = "654321"
+            },
+            CancellationToken.None);
+
+        Assert.IsType<NoContentResult>(acceptedUpdate);
+        dbContext.ChangeTracker.Clear();
+        persisted = await dbContext.Users.SingleAsync(user => user.Username == "six-character-password");
+        Assert.True(BCrypt.Net.BCrypt.Verify("654321", persisted.PasswordHash));
+    }
+
+    [Fact]
     public async Task Update_PermissionOnlyRequest_AdvancesAggregateAndRejectsStaleWrite()
     {
         var currentUser = CreateTenantAdmin();

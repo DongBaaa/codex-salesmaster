@@ -25,8 +25,8 @@
             <TextBlock Text="회수이유와 장애내용은 관리메모와 분리되어 이번 출력물에만 반영됩니다."
                        FontSize="13"
                        Foreground="#B8C7DC"
-                       TextWrapping="NoWrap"
-                       TextTrimming="CharacterEllipsis"
+                       TextWrapping="Wrap"
+                       TextTrimming="None"
                        ToolTip="회수이유와 장애내용은 관리메모와 분리되어 이번 출력물에만 반영됩니다."/>
         </StackPanel>
 

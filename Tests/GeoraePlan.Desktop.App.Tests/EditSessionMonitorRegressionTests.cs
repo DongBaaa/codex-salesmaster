@@ -28,6 +28,31 @@ public sealed class EditSessionMonitorRegressionTests
     }
 
     [Fact]
+    public void SalesWindow_SeedsNativeTitleBeforeSessionMonitorCapturesIt()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "SalesWindow.xaml.cs"));
+
+        var dataContextIndex = source.IndexOf(
+            "DataContext = vm;",
+            StringComparison.Ordinal);
+        var titleIndex = source.IndexOf(
+            "Title = vm.WindowTitleText;",
+            StringComparison.Ordinal);
+        var monitorIndex = source.IndexOf(
+            "EntityEditSessionMonitor.TryCreate(",
+            StringComparison.Ordinal);
+
+        Assert.True(dataContextIndex >= 0);
+        Assert.True(titleIndex > dataContextIndex);
+        Assert.True(monitorIndex > titleIndex);
+    }
+
+    [Fact]
     public void EntityEditSessionMonitor_ReleasesRegisteredSessionWhenSubjectDisappears()
     {
         var source = File.ReadAllText(Path.Combine(

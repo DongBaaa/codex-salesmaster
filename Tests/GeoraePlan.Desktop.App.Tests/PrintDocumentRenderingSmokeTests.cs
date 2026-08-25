@@ -264,6 +264,73 @@ public sealed class PrintDocumentRenderingSmokeTests
         });
     }
 
+    [Fact]
+    public void FixedPrintDocuments_PreserveLongCanariesWithoutEllipsisAndRenderWithoutPrinting()
+    {
+        RunOnSta(() =>
+        {
+            var itemCanary = "LONG-ITEM-CANARY-" + new string('X', 96);
+            var addressCanary = "LONG-ADDRESS-CANARY-" + new string('Y', 112);
+            var memoCanary = "LONG-MEMO-CANARY-" + new string('Z', 128);
+            var printService = new WpfInvoicePrintService();
+
+            var salesModel = CreatePrintModel(VoucherType.Sales);
+            salesModel.SupplierAddress = addressCanary;
+            salesModel.BuyerAddress = addressCanary;
+            salesModel.Memo = memoCanary;
+            salesModel.Lines[0].ItemName = itemCanary;
+            salesModel.Lines[0].Specification = itemCanary;
+            salesModel.Lines[0].Remark = memoCanary;
+
+            var salesDocument = printService.BuildFixedDocument(salesModel);
+            RenderFixedDocumentFirstPage(salesDocument);
+            AssertFixedDocumentFullText("sales", salesDocument, itemCanary, addressCanary, memoCanary);
+
+            var procurementModel = CreatePrintModel(VoucherType.Procurement);
+            procurementModel.SupplierAddress = addressCanary;
+            procurementModel.BuyerAddress = addressCanary;
+            procurementModel.Memo = memoCanary;
+            procurementModel.Lines[0].ItemName = itemCanary;
+            procurementModel.Lines[0].Specification = itemCanary;
+            procurementModel.Lines[0].Remark = memoCanary;
+
+            var procurementDocument = printService.BuildFixedDocument(procurementModel);
+            RenderFixedDocumentFirstPage(procurementDocument);
+            AssertFixedDocumentFullText("procurement", procurementDocument, itemCanary, addressCanary, memoCanary);
+
+            var (invoice, customer, company) = CreateSampleInvoice(VoucherType.Sales);
+            var invoiceLine = Assert.Single(invoice.Lines);
+            invoiceLine.ItemNameOriginal = itemCanary;
+            invoiceLine.SpecificationOriginal = itemCanary;
+            invoiceLine.Remark = memoCanary;
+            customer.Address = addressCanary;
+            company.Address = addressCanary;
+            var supplementModel = CreatePrintModel(VoucherType.Sales);
+            supplementModel.EstimateRemarks = memoCanary;
+            supplementModel.Memo = memoCanary;
+            supplementModel.Lines[0].ItemName = itemCanary;
+            supplementModel.Lines[0].Specification = itemCanary;
+            supplementModel.Lines[0].Remark = memoCanary;
+
+            var estimate = SupplementDocumentBuilder.BuildEstimateDocument(
+                invoice,
+                customer,
+                company,
+                supplementModel);
+            RenderFixedDocumentFirstPage(estimate);
+            AssertFixedDocumentFullText("estimate", estimate, itemCanary, addressCanary, memoCanary);
+
+            var claim = SupplementDocumentBuilder.BuildPaymentClaimDocument(
+                invoice,
+                customer,
+                company,
+                new[] { itemCanary, addressCanary, memoCanary },
+                supplementModel);
+            RenderFixedDocumentFirstPage(claim);
+            AssertFixedDocumentFullText("claim", claim, itemCanary, addressCanary, memoCanary);
+        });
+    }
+
     private static (LocalInvoice Invoice, LocalCustomer Customer, LocalCompanyProfile Company) CreateSampleInvoice(VoucherType voucherType)
     {
         var customerId = Guid.NewGuid();
@@ -411,6 +478,42 @@ public sealed class PrintDocumentRenderingSmokeTests
         }
 
         return builder.ToString();
+    }
+
+    private static void AssertFixedDocumentFullText(string documentKind, FixedDocument document, params string[] canaries)
+    {
+        var textBlocks = EnumerateDependencyObjects(document)
+            .OfType<TextBlock>()
+            .ToArray();
+        Assert.NotEmpty(textBlocks);
+        Assert.All(textBlocks, textBlock => Assert.Equal(TextTrimming.None, textBlock.TextTrimming));
+
+        var fullText = string.Join(Environment.NewLine, textBlocks.Select(ReadTextBlockText));
+        foreach (var canary in canaries)
+        {
+            Assert.True(
+                fullText.Contains(canary, StringComparison.Ordinal),
+                $"{documentKind} document did not retain canary: {canary[..Math.Min(32, canary.Length)]}");
+        }
+    }
+
+    private static IEnumerable<DependencyObject> EnumerateDependencyObjects(FixedDocument document)
+    {
+        var pending = new Stack<DependencyObject>();
+        foreach (PageContent pageContent in document.Pages)
+        {
+            if (pageContent.Child is not null)
+                pending.Push(pageContent.Child);
+        }
+
+        while (pending.Count > 0)
+        {
+            var current = pending.Pop();
+            yield return current;
+            var childCount = VisualTreeHelper.GetChildrenCount(current);
+            for (var index = 0; index < childCount; index++)
+                pending.Push(VisualTreeHelper.GetChild(current, index));
+        }
     }
 
     private static void AppendText(DependencyObject node, StringBuilder builder)

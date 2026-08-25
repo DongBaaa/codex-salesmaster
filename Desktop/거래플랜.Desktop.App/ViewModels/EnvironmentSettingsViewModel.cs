@@ -43,8 +43,14 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     [ObservableProperty] private string _statusMessage = "환경설정을 불러왔습니다.";
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanInteract))]
+    [NotifyPropertyChangedFor(nameof(IsCloseBlocked))]
     private bool _isBusy;
     public bool CanInteract => !IsBusy;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsCloseBlocked))]
+    private bool _isInitialLoadInProgress;
+    public bool IsCloseBlocked => IsBusy && !IsInitialLoadInProgress;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanEditCompanyProfiles))]
@@ -147,6 +153,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
 
     public async Task InitializeAsync()
     {
+        IsInitialLoadInProgress = true;
         IsBusy = true;
         var hadInitializationWarning = false;
         try
@@ -168,6 +175,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         finally
         {
             IsBusy = false;
+            IsInitialLoadInProgress = false;
         }
     }
 
@@ -639,6 +647,13 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         if (EditingUserId == Guid.Empty && string.IsNullOrWhiteSpace(EditingPassword))
         {
             StatusMessage = "신규 사용자는 비밀번호를 입력해야 합니다.";
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(EditingPassword) &&
+            !UserPasswordPolicy.MeetsMinimumLength(EditingPassword))
+        {
+            StatusMessage = $"비밀번호는 {UserPasswordPolicy.MinimumLength}자 이상 입력하세요.";
             return;
         }
 

@@ -32,6 +32,8 @@ public sealed class PrintEditPersistenceGuardTests
         Assert.Contains("PreviewDocument", xaml, StringComparison.Ordinal);
         Assert.Contains("ItemsSource=\"{Binding Lines}\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Command=\"{Binding SaveCommand}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("<DataGridTemplateColumn Header=\"삭제\" Width=\"112\">", xaml, StringComparison.Ordinal);
+        Assert.Contains("<Button Content=\"삭제\"", xaml, StringComparison.Ordinal);
 
         Assert.Contains("JsonSerializer.Serialize(model, PrintModelJsonOptions)", salesViewModel, StringComparison.Ordinal);
         Assert.Contains("JsonSerializer.Deserialize<InvoicePrintModel>", salesViewModel, StringComparison.Ordinal);

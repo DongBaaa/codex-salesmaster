@@ -758,7 +758,7 @@ public sealed class WpfInvoicePrintService : IPrintService
         grid.Children.Add(labelBorder);
 
         var valueBlock = CreateText(value ?? string.Empty, 10.5);
-        valueBlock.TextWrapping = wrap ? TextWrapping.Wrap : TextWrapping.NoWrap;
+        valueBlock.TextWrapping = TextWrapping.Wrap;
         var valueBorder = new Border
         {
             BorderBrush = borderBrush,
@@ -836,8 +836,8 @@ public sealed class WpfInvoicePrintService : IPrintService
             isHeader ? FontWeights.Bold : FontWeights.Normal,
             foreground ?? (isHeader ? borderBrush : Brushes.Black),
             alignment);
-        textBlock.TextWrapping = TextWrapping.NoWrap;
-        textBlock.TextTrimming = autoShrink ? TextTrimming.None : TextTrimming.CharacterEllipsis;
+        textBlock.TextWrapping = TextWrapping.Wrap;
+        textBlock.TextTrimming = TextTrimming.None;
         if (autoShrink)
         {
             textBlock.HorizontalAlignment = alignment switch
@@ -911,8 +911,8 @@ public sealed class WpfInvoicePrintService : IPrintService
             fontWeight ?? FontWeights.Normal,
             foreground ?? Brushes.Black,
             alignment);
-        textBlock.TextWrapping = wrap ? TextWrapping.Wrap : TextWrapping.NoWrap;
-        textBlock.TextTrimming = autoShrink ? TextTrimming.None : TextTrimming.CharacterEllipsis;
+        textBlock.TextWrapping = TextWrapping.Wrap;
+        textBlock.TextTrimming = TextTrimming.None;
         if (lineHeight.HasValue)
             textBlock.LineHeight = lineHeight.Value;
 

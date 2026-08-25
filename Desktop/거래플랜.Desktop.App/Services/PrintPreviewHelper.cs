@@ -17,68 +17,37 @@ public static class PrintPreviewHelper
         ArgumentNullException.ThrowIfNull(document);
         ConfigureDocumentForA4(document);
 
-        var previewWindow = new Window
-        {
-            Title = title,
-            Width = 980,
-            Height = 760,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Background = Brushes.White
-        };
+        var previewWindow = CreatePreviewShell(title, out var root, out var description, out var actionPanel);
 
         var owner = Application.Current?.Windows.OfType<Window>().FirstOrDefault(w => w.IsActive);
         if (owner is not null && owner != previewWindow)
             previewWindow.Owner = owner;
 
-        var root = new Grid
-        {
-            Background = Brushes.White
-        };
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-
-        var toolbar = new DockPanel
-        {
-            Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#1A2B4A")),
-            Margin = new Thickness(0, 0, 0, 1),
-            LastChildFill = false
-        };
-
-        var description = new TextBlock
-        {
-            Text = "미리보기를 확인한 뒤 프린터를 선택해 인쇄하세요.",
-            Foreground = Brushes.White,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(12, 0, 0, 0),
-            FontFamily = new FontFamily("맑은 고딕")
-        };
-        DockPanel.SetDock(description, Dock.Left);
-        toolbar.Children.Add(description);
-
         var closeButton = new Button
         {
-            Content = "닫기",
-            Width = 90,
+            Content = CreateWrappedButtonText("닫기"),
+            MinWidth = 90,
+            MinHeight = 38,
             Margin = new Thickness(8),
-            Padding = new Thickness(8, 4, 8, 4),
+            Padding = new Thickness(12, 6, 12, 6),
             Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#455A64")),
             Foreground = Brushes.White,
             BorderBrush = Brushes.Transparent,
             FontFamily = new FontFamily("맑은 고딕")
         };
         closeButton.Click += (_, _) => previewWindow.Close();
-        DockPanel.SetDock(closeButton, Dock.Right);
-        toolbar.Children.Add(closeButton);
+        actionPanel.Children.Add(closeButton);
 
         DocumentViewer? viewer = null;
         var printed = false;
         var isPrinting = false;
         var printButton = new Button
         {
-            Content = "프린터 선택 후 인쇄",
-            Width = 190,
+            Content = CreateWrappedButtonText("프린터 선택 후 인쇄"),
+            MinWidth = 190,
+            MinHeight = 38,
             Margin = new Thickness(8),
-            Padding = new Thickness(8, 4, 8, 4),
+            Padding = new Thickness(12, 6, 12, 6),
             Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#1E88E5")),
             Foreground = Brushes.White,
             BorderBrush = Brushes.Transparent,
@@ -143,11 +112,7 @@ public static class PrintPreviewHelper
                 }
             }
         };
-        DockPanel.SetDock(printButton, Dock.Right);
-        toolbar.Children.Add(printButton);
-
-        Grid.SetRow(toolbar, 0);
-        root.Children.Add(toolbar);
+        actionPanel.Children.Insert(0, printButton);
 
         viewer = new DocumentViewer
         {
@@ -156,13 +121,85 @@ public static class PrintPreviewHelper
             Background = Brushes.White,
             Foreground = Brushes.Black
         };
-        Grid.SetRow(viewer, 1);
+        Grid.SetRow(viewer, 2);
         root.Children.Add(viewer);
 
         previewWindow.Content = root;
         DialogWindowCloseHelper.ShowDialog(previewWindow);
         return printed;
     }
+
+    internal static Window CreatePreviewShell(
+        string title,
+        out Grid root,
+        out TextBlock description,
+        out WrapPanel actionPanel)
+    {
+        var previewWindow = new Window
+        {
+            Title = title,
+            Width = 980,
+            Height = 760,
+            MinWidth = 520,
+            MinHeight = 420,
+            MaxWidth = Math.Max(520, SystemParameters.WorkArea.Width - 48),
+            MaxHeight = Math.Max(420, SystemParameters.WorkArea.Height - 48),
+            ResizeMode = ResizeMode.CanResizeWithGrip,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = Brushes.White
+        };
+
+        root = new Grid { Background = Brushes.White };
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+        description = new TextBlock
+        {
+            Text = "미리보기를 확인한 뒤 프린터를 선택해 인쇄하세요.",
+            Foreground = Brushes.White,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(12, 10, 12, 6),
+            FontFamily = new FontFamily("맑은 고딕"),
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.None
+        };
+
+        actionPanel = new WrapPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(4, 0, 4, 4)
+        };
+
+        var toolbar = new Grid
+        {
+            Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#1A2B4A")),
+            Margin = new Thickness(0, 0, 0, 1)
+        };
+        toolbar.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        toolbar.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Grid.SetRow(description, 0);
+        Grid.SetRow(actionPanel, 1);
+        toolbar.Children.Add(description);
+        toolbar.Children.Add(actionPanel);
+        Grid.SetRow(toolbar, 0);
+        Grid.SetRowSpan(toolbar, 2);
+        root.Children.Add(toolbar);
+
+        previewWindow.Content = root;
+        FullTextLayoutBehavior.SetIsEnabled(previewWindow, true);
+        return previewWindow;
+    }
+
+    private static TextBlock CreateWrappedButtonText(string text)
+        => new()
+        {
+            Text = text,
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.None,
+            TextAlignment = TextAlignment.Center
+        };
 
     private static void ConfigureDocumentForA4(FlowDocument document)
     {

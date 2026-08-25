@@ -855,18 +855,33 @@ public sealed class BuildCacheProvisionerSafetyTests
         string arguments,
         string workingDirectory)
     {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = fileName,
+            Arguments = arguments,
+            WorkingDirectory = workingDirectory,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        if (string.Equals(
+                Path.GetFileName(fileName),
+                "powershell.exe",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            var windowsPowerShellHome = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.System),
+                "WindowsPowerShell",
+                "v1.0");
+            startInfo.Environment["PSModulePath"] = Path.Combine(
+                windowsPowerShellHome,
+                "Modules");
+        }
+
         using var process = new Process
         {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = fileName,
-                Arguments = arguments,
-                WorkingDirectory = workingDirectory,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            }
+            StartInfo = startInfo
         };
         process.Start();
         var stdout = process.StandardOutput.ReadToEndAsync();

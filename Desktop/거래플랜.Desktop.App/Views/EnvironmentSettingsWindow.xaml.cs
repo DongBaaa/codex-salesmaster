@@ -39,7 +39,7 @@ public partial class EnvironmentSettingsWindow : Window
         object? sender,
         CancelEventArgs e)
     {
-        if (!_viewModel.IsBusy)
+        if (!_viewModel.IsCloseBlocked)
             return;
 
         e.Cancel = true;

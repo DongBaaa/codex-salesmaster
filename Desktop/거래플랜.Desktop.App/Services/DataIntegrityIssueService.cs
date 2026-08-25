@@ -731,9 +731,7 @@ public sealed class DataIntegrityIssueService
     internal Func<ItemDuplicateMergeRequestDto, CancellationToken, Task<ItemDuplicateMergeResultDto?>>? TestOnlyExecuteItemDuplicateMergeAsync { get; set; }
     internal Func<SessionState, CancellationToken, Task<int>>? TestOnlyCountDirtyAsync { get; set; }
     internal Func<CancellationToken, Task<bool>>? TestOnlyRefreshCurrentBusinessScopeAsync { get; set; }
-#if DEBUG
     internal bool TestOnlyUseLegacyLocalItemDuplicateMerge { get; set; }
-#endif
 
     public Task<DataIntegrityScanResult> ScanAsync(SessionState session, CancellationToken ct = default)
         => ExecuteCoordinatedDbContextOperationAsync(
@@ -1650,7 +1648,6 @@ public sealed class DataIntegrityIssueService
         SessionState session,
         CancellationToken ct = default)
     {
-#if DEBUG
         if (TestOnlyUseLegacyLocalItemDuplicateMerge)
         {
             var legacyResult = await ExecuteCoordinatedDbContextOperationAsync(
@@ -1676,7 +1673,6 @@ public sealed class DataIntegrityIssueService
                 _syncRequestDispatcher?.RequestFlushSync();
             return legacyResult;
         }
-#endif
 
         return await ExecuteCoordinatedDbContextOperationAsync(
             () => ExecuteServerAuthoritativeItemDuplicateMergeAndRefreshInsideLocksAsync(
@@ -2231,9 +2227,7 @@ public sealed class DataIntegrityIssueService
 
         var permissionReasons = new List<string>();
         var requiresOnlineServerMerge = true;
-#if DEBUG
         requiresOnlineServerMerge = !TestOnlyUseLegacyLocalItemDuplicateMerge;
-#endif
         if (requiresOnlineServerMerge && (!session.IsLoggedIn || session.IsOfflineMode))
         {
             permissionReasons.Add(

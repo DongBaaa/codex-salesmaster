@@ -23,18 +23,6 @@ public sealed class RentalsPage : ContentPage
         _refreshCoordinator.AllChanged += HandleRealtimeRefreshRequested;
         BindingContext = _viewModel;
 
-        var sectionGrid = new Grid
-        {
-            ColumnSpacing = 8,
-            ColumnDefinitions =
-            {
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Star)
-            }
-        };
-
         var profilesButton = GeoraePlanTheme.CreateCompactButton("청구프로필", GeoraePlanTheme.SecondaryButton);
         profilesButton.SetBinding(Button.BackgroundColorProperty, nameof(RentalsViewModel.ProfilesButtonColor));
         profilesButton.Clicked += (_, _) => _viewModel.ShowBillingProfiles();
@@ -51,10 +39,11 @@ public sealed class RentalsPage : ContentPage
         assignmentHistoriesButton.SetBinding(Button.BackgroundColorProperty, nameof(RentalsViewModel.AssignmentHistoriesButtonColor));
         assignmentHistoriesButton.Clicked += (_, _) => _viewModel.ShowAssignmentHistories();
 
-        sectionGrid.Add(profilesButton);
-        sectionGrid.Add(assetsButton, 1, 0);
-        sectionGrid.Add(logsButton, 2, 0);
-        sectionGrid.Add(assignmentHistoriesButton, 3, 0);
+        var sectionActions = GeoraePlanTheme.CreateWrappingActions(
+            profilesButton,
+            assetsButton,
+            logsButton,
+            assignmentHistoriesButton);
 
         var searchBar = GeoraePlanTheme.CreateSearchBar("거래처 / 장비 / 청구상태 검색");
         searchBar.SetBinding(SearchBar.TextProperty, nameof(RentalsViewModel.SearchText));
@@ -122,7 +111,7 @@ public sealed class RentalsPage : ContentPage
                         GeoraePlanTheme.CreateSectionTitle("렌탈 조회", 15),
                         GeoraePlanTheme.CreateBodyText("같은 서버 sync 데이터 기준으로 청구프로필, 자산, 청구 이력, 설치 이력을 조회합니다.", true, 12),
                         GeoraePlanTheme.CreateBodyText("모바일 렌탈은 조회 전용입니다. 청구 생성, 입금 등록, 프로필/자산 수정은 PC 렌탈 청구관리에서 처리하세요.", true, 12),
-                        sectionGrid,
+                        sectionActions,
                         searchBar,
                         actionGrid,
                         titleLabel,

@@ -33,10 +33,11 @@ public sealed partial class EnvironmentSettingsViewModel
     }
 
     [RelayCommand]
-    private Task ReloadBackupSnapshotsAsync()
+    private async Task ReloadBackupSnapshotsAsync()
     {
+        var snapshots = await _backup.GetBackupSnapshotsAsync();
         BackupSnapshots.Clear();
-        foreach (var snapshot in _backup.GetBackupSnapshots())
+        foreach (var snapshot in snapshots)
         {
             BackupSnapshots.Add(new BackupSnapshotRow
             {
@@ -53,7 +54,6 @@ public sealed partial class EnvironmentSettingsViewModel
             : $"로컬 DB 백업 {BackupSnapshots.Count:N0}건을 불러왔습니다. 오늘 백업은 모두 보관하고 지난 날짜는 일별 최신 1개만 보관하며 30일 초과 백업은 자동 정리됩니다.";
 
         SelectedBackupSnapshot ??= BackupSnapshots.FirstOrDefault();
-        return Task.CompletedTask;
     }
 
     [RelayCommand]

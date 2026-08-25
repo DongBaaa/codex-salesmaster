@@ -42,9 +42,11 @@ function Test-SourceFallbackSupport {
     $xamlPath = Join-Path $Root 'Desktop\거래플랜.Desktop.App\Views\TradePrintWindow.xaml'
     $codeBehindPath = Join-Path $Root 'Desktop\거래플랜.Desktop.App\Views\TradePrintWindow.xaml.cs'
     $executorPath = Join-Path $Root 'Desktop\거래플랜.Desktop.App\Services\TradePrintExecutor.cs'
+    $catalogPath = Join-Path $Root 'Desktop\거래플랜.Desktop.App\Printing\TradePrinterCatalog.cs'
     $xaml = Read-TextFileSafely -Path $xamlPath
     $codeBehind = Read-TextFileSafely -Path $codeBehindPath
     $executor = Read-TextFileSafely -Path $executorPath
+    $catalog = Read-TextFileSafely -Path $catalogPath
 
     if ([string]::IsNullOrWhiteSpace($xaml)) {
         Add-Issue -Issues $failures -Message "전용 인쇄창 XAML을 찾지 못했습니다: $xamlPath"
@@ -55,6 +57,9 @@ function Test-SourceFallbackSupport {
     if ([string]::IsNullOrWhiteSpace($executor)) {
         Add-Issue -Issues $failures -Message "인쇄 실행 서비스를 찾지 못했습니다: $executorPath"
     }
+    if ([string]::IsNullOrWhiteSpace($catalog)) {
+        Add-Issue -Issues $failures -Message "프린터 카탈로그 소스를 찾지 못했습니다: $catalogPath"
+    }
 
     foreach ($check in @(
         @{ Source = $xaml; Needle = 'PDF 저장'; Label = 'PDF 저장 버튼' },
@@ -62,10 +67,18 @@ function Test-SourceFallbackSupport {
         @{ Source = $xaml; Needle = '거래플랜 전용 인쇄'; Label = '전용 인쇄창 제목' },
         @{ Source = $codeBehind; Needle = 'OnRefreshPrintersClick'; Label = '프린터 새로고침 동작' },
         @{ Source = $codeBehind; Needle = 'OnOpenPrinterManagementClick'; Label = 'Windows 프린터 관리 열기 동작' },
+        @{ Source = $codeBehind; Needle = 'printerCatalog.Printers'; Label = '전체 프린터 카탈로그 표시' },
+        @{ Source = $codeBehind; Needle = 'PrinterComboBox.ItemsSource = items'; Label = '프린터 선택 목록 연결' },
         @{ Source = $executor; Needle = 'SaveDocumentAsPdf'; Label = 'PDF 저장 구현' },
         @{ Source = $executor; Needle = 'SaveDocumentAsXps'; Label = 'XPS 저장 구현' },
-        @{ Source = $executor; Needle = 'LoadInstalledPrintQueues'; Label = '프린터 목록 로딩 구현' },
-        @{ Source = $executor; Needle = 'EnumeratedPrintQueueTypes.DirectPrinting'; Label = '직접 연결 프린터 검색' }
+        @{ Source = $executor; Needle = 'TradePrinterCatalog.LoadSnapshot()'; Label = '프린터 카탈로그 로딩 구현' },
+        @{ Source = $catalog; Needle = 'public static PrinterCatalogSnapshot LoadSnapshot()'; Label = '프린터 카탈로그 스냅샷' },
+        @{ Source = $catalog; Needle = 'LoadWindowsInstalledPrinterNames()'; Label = 'Windows 설치 프린터 이름 조회' },
+        @{ Source = $catalog; Needle = 'var flags = PrinterEnumLocal | PrinterEnumConnections;'; Label = '로컬·연결 프린터 전체 검색' },
+        @{ Source = $catalog; Needle = 'PrinterInfoLevel = 2'; Label = '프린터 상세정보 열거' },
+        @{ Source = $catalog; Needle = 'EnumPrinters('; Label = 'Windows 프린터 열거 호출' },
+        @{ Source = $catalog; Needle = 'EntryPoint = "EnumPrintersW"'; Label = 'Windows 전체 프린터 API 호출' },
+        @{ Source = $catalog; Needle = 'GroupBy(static item => item.QueueName, StringComparer.OrdinalIgnoreCase)'; Label = '중복 프린터 이름 정규화' }
     )) {
         if ([string]::IsNullOrWhiteSpace([string]$check.Source) -or ([string]$check.Source).IndexOf([string]$check.Needle, [System.StringComparison]::Ordinal) -lt 0) {
             Add-Issue -Issues $failures -Message "인쇄 fallback/source guard 누락: $($check.Label)"

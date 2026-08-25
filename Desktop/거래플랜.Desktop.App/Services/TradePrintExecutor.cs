@@ -1,7 +1,6 @@
 using System.IO;
 using System.IO.Packaging;
 using System.Printing;
-using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
@@ -24,24 +23,6 @@ public static class TradePrintExecutor
     public const double A4Height = 1122.5;
     private const double PdfPointPerDeviceIndependentPixel = 72d / 96d;
     private const double PdfRenderDpi = 144d;
-    private const uint PrinterEnumLocal = 0x00000002;
-    private const uint PrinterEnumConnections = 0x00000004;
-    private const uint PrinterInfoLevel = 4;
-
-    private static readonly EnumeratedPrintQueueTypes[] InstalledPrinterQueueTypes =
-    [
-        EnumeratedPrintQueueTypes.Local,
-        EnumeratedPrintQueueTypes.Connections,
-        EnumeratedPrintQueueTypes.Shared,
-        EnumeratedPrintQueueTypes.DirectPrinting,
-        EnumeratedPrintQueueTypes.PushedMachineConnection,
-        EnumeratedPrintQueueTypes.PushedUserConnection,
-        EnumeratedPrintQueueTypes.WorkOffline,
-        EnumeratedPrintQueueTypes.Queued,
-        EnumeratedPrintQueueTypes.PublishedInDirectoryServices,
-        EnumeratedPrintQueueTypes.Fax
-    ];
-
     public static bool TryPrintDocument(
         IDocumentPaginatorSource document,
         string jobName,
@@ -49,17 +30,36 @@ public static class TradePrintExecutor
         => TryPrintDocument(document, jobName, new WpfSize(A4Width, A4Height), out errorMessage);
 
     public static bool TryPrintDiagnosticPage(
-        PrintQueue? printQueue,
+        string? printQueueName,
         out string? errorMessage)
-        => TryPrintDiagnosticPage(
-            printQueue,
-            DateTimeOffset.Now,
-            static (queue, document, printTicket) =>
-            {
-                var writer = PrintQueue.CreateXpsDocumentWriter(queue);
-                writer.Write(document.DocumentPaginator, printTicket);
-            },
-            out errorMessage);
+    {
+        errorMessage = null;
+        if (string.IsNullOrWhiteSpace(printQueueName))
+        {
+            errorMessage = "1쪽 테스트 인쇄를 보낼 프린터를 선택하세요.";
+            return false;
+        }
+
+        try
+        {
+            using var printServer = new LocalPrintServer();
+            using var printQueue = printServer.GetPrintQueue(printQueueName);
+            return TryPrintDiagnosticPage(
+                printQueue,
+                DateTimeOffset.Now,
+                static (queue, document, printTicket) =>
+                {
+                    var writer = PrintQueue.CreateXpsDocumentWriter(queue);
+                    writer.Write(document.DocumentPaginator, printTicket);
+                },
+                out errorMessage);
+        }
+        catch (Exception ex) when (ex is PrintQueueException or PrintSystemException or InvalidOperationException or UnauthorizedAccessException)
+        {
+            errorMessage = $"1쪽 테스트 인쇄를 보낼 프린터를 열 수 없습니다: {ex.Message}";
+            return false;
+        }
+    }
 
     public static bool TryPrintDocument(
         IDocumentPaginatorSource document,
@@ -71,41 +71,29 @@ public static class TradePrintExecutor
         ArgumentNullException.ThrowIfNull(document);
         errorMessage = null;
 
-        LocalPrintServer? printServer = null;
-        (IReadOnlyList<PrintQueue> PrintQueues, PrintQueue? DefaultPrintQueue) LoadPrinterSnapshot()
-        {
-            printServer ??= new LocalPrintServer();
-            return (LoadInstalledPrintQueues(printServer), TryGetDefaultPrintQueue(printServer));
-        }
-
-        (IReadOnlyList<PrintQueue> PrintQueues, PrintQueue? DefaultPrintQueue) LoadPrinterSnapshotSafely()
+        PrinterCatalogSnapshot LoadPrinterSnapshotSafely()
         {
             try
             {
-                return LoadPrinterSnapshot();
+                return TradePrinterCatalog.LoadSnapshot();
             }
-            catch (Exception ex) when (ex is PrintSystemException or InvalidOperationException or UnauthorizedAccessException)
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or UnauthorizedAccessException)
             {
                 AppLogger.Warn("PRINT", $"프린터 시스템을 열 수 없어 파일 저장 전용으로 인쇄창을 표시합니다: {ex.Message}");
-                return (Array.Empty<PrintQueue>(), null);
+                return new PrinterCatalogSnapshot(Array.Empty<PrinterCatalogItem>(), null);
             }
         }
 
         try
         {
-            IReadOnlyList<PrintQueue> printQueues = Array.Empty<PrintQueue>();
-            PrintQueue? defaultQueue = null;
             var printerSnapshot = LoadPrinterSnapshotSafely();
-            printQueues = printerSnapshot.PrintQueues;
-            defaultQueue = printerSnapshot.DefaultPrintQueue;
 
             var paginator = document.DocumentPaginator;
             paginator.PageSize = pageSize;
             var pageCount = ResolvePageCount(paginator);
 
             var dialog = new TradePrintWindow(
-                printQueues,
-                defaultQueue,
+                printerSnapshot,
                 pageCount,
                 LoadPrinterSnapshotSafely,
                 currentPageNumber,
@@ -128,7 +116,7 @@ public static class TradePrintExecutor
                 return true;
             }
 
-            if (dialog.PrintOptions.PrintQueue is null)
+            if (string.IsNullOrWhiteSpace(dialog.PrintOptions.PrintQueueName))
             {
                 errorMessage = "인쇄할 프린터를 선택하세요. 프린터가 없거나 복합기 연결이 안 되면 PDF 저장 또는 파일 저장(XPS)을 사용하세요.";
                 return false;
@@ -138,8 +126,10 @@ public static class TradePrintExecutor
             var driverCopyCount = ReferenceEquals(copyExpandedPaginator, targetPaginator)
                 ? dialog.PrintOptions.CopyCount
                 : 1;
-            var printTicket = BuildPrintTicket(dialog.PrintOptions.PrintQueue, driverCopyCount, dialog.PrintOptions.Collate);
-            var writer = PrintQueue.CreateXpsDocumentWriter(dialog.PrintOptions.PrintQueue);
+            using var printServer = new LocalPrintServer();
+            using var printQueue = printServer.GetPrintQueue(dialog.PrintOptions.PrintQueueName);
+            var printTicket = BuildPrintTicket(printQueue, driverCopyCount, dialog.PrintOptions.Collate);
+            var writer = PrintQueue.CreateXpsDocumentWriter(printQueue);
             writer.Write(copyExpandedPaginator, printTicket);
             return true;
         }
@@ -162,10 +152,6 @@ public static class TradePrintExecutor
         {
             errorMessage = $"인쇄 중 오류가 발생했습니다: {ex.Message}";
             return false;
-        }
-        finally
-        {
-            printServer?.Dispose();
         }
     }
 
@@ -218,173 +204,6 @@ public static class TradePrintExecutor
         {
             errorMessage = $"1쪽 테스트 인쇄를 보내지 못했습니다: {ex.Message}";
             return false;
-        }
-    }
-
-    private static IReadOnlyList<PrintQueue> LoadInstalledPrintQueues(LocalPrintServer printServer)
-    {
-        var queuesByName = new Dictionary<string, PrintQueue>(StringComparer.OrdinalIgnoreCase);
-
-        try
-        {
-            foreach (var queue in printServer.GetPrintQueues(InstalledPrinterQueueTypes))
-                AddQueue(queue);
-        }
-        catch (PrintSystemException ex)
-        {
-            AppLogger.Warn("PRINT", $"프린터 전체 목록 확인 실패: {ex.Message}");
-        }
-
-        foreach (var printerName in LoadWindowsInstalledPrinterNames())
-        {
-            if (queuesByName.ContainsKey(printerName))
-                continue;
-
-            try
-            {
-                AddQueue(printServer.GetPrintQueue(printerName));
-            }
-            catch (Exception ex) when (
-                ex is PrintQueueException or
-                    PrintSystemException or
-                    InvalidOperationException or
-                    UnauthorizedAccessException)
-            {
-                AppLogger.Warn(
-                    "PRINT",
-                    $"Windows 등록 프린터 '{printerName}' 열기 실패: {ex.Message}");
-            }
-        }
-
-        try
-        {
-            var defaultQueue = TryGetDefaultPrintQueue(printServer);
-            if (defaultQueue is not null)
-                AddQueue(defaultQueue);
-        }
-        catch (PrintSystemException ex)
-        {
-            AppLogger.Warn("PRINT", $"기본 프린터 확인 실패: {ex.Message}");
-        }
-
-        return queuesByName.Values
-            .OrderBy(static queue => SafeRead(queue, static q => q.FullName), StringComparer.CurrentCultureIgnoreCase)
-            .ToList();
-
-        void AddQueue(PrintQueue queue)
-        {
-            var key = SafeRead(queue, static q => q.FullName);
-            if (string.IsNullOrWhiteSpace(key))
-                key = SafeRead(queue, static q => q.Name);
-            if (string.IsNullOrWhiteSpace(key))
-            {
-                queue.Dispose();
-                return;
-            }
-
-            if (!queuesByName.TryAdd(key, queue))
-                queue.Dispose();
-        }
-    }
-
-    private static IReadOnlyList<string> LoadWindowsInstalledPrinterNames()
-    {
-        IntPtr buffer = IntPtr.Zero;
-        try
-        {
-            var flags = PrinterEnumLocal | PrinterEnumConnections;
-            _ = EnumPrinters(
-                flags,
-                null,
-                PrinterInfoLevel,
-                IntPtr.Zero,
-                0,
-                out var requiredBytes,
-                out _);
-            if (requiredBytes == 0)
-                return Array.Empty<string>();
-
-            buffer = Marshal.AllocHGlobal(checked((int)requiredBytes));
-            if (!EnumPrinters(
-                    flags,
-                    null,
-                    PrinterInfoLevel,
-                    buffer,
-                    requiredBytes,
-                    out _,
-                    out var returnedCount))
-            {
-                throw new System.ComponentModel.Win32Exception(
-                    Marshal.GetLastWin32Error());
-            }
-
-            var entrySize = Marshal.SizeOf<PrinterInfo4>();
-            var names = new List<string>(checked((int)returnedCount));
-            for (var index = 0; index < returnedCount; index++)
-            {
-                var entry = Marshal.PtrToStructure<PrinterInfo4>(
-                    IntPtr.Add(buffer, checked((int)index * entrySize)));
-                var name = Marshal.PtrToStringUni(entry.PrinterName);
-                if (!string.IsNullOrWhiteSpace(name))
-                    names.Add(name);
-            }
-
-            return names
-                .Where(static name => !string.IsNullOrWhiteSpace(name))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(static name => name, StringComparer.CurrentCultureIgnoreCase)
-                .ToList();
-        }
-        catch (Exception ex) when (
-            ex is System.ComponentModel.Win32Exception or
-                InvalidOperationException or
-                UnauthorizedAccessException)
-        {
-            AppLogger.Warn(
-                "PRINT",
-                $"Windows 설치 프린터 이름 목록 확인 실패: {ex.Message}");
-            return Array.Empty<string>();
-        }
-        finally
-        {
-            if (buffer != IntPtr.Zero)
-                Marshal.FreeHGlobal(buffer);
-        }
-    }
-
-    [DllImport(
-        "winspool.drv",
-        EntryPoint = "EnumPrintersW",
-        CharSet = CharSet.Unicode,
-        SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool EnumPrinters(
-        uint flags,
-        string? name,
-        uint level,
-        IntPtr printerInfo,
-        uint bufferSize,
-        out uint requiredBytes,
-        out uint returnedCount);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private readonly struct PrinterInfo4
-    {
-        public readonly IntPtr PrinterName;
-        public readonly IntPtr ServerName;
-        public readonly uint Attributes;
-    }
-
-    private static PrintQueue? TryGetDefaultPrintQueue(LocalPrintServer printServer)
-    {
-        try
-        {
-            return printServer.DefaultPrintQueue;
-        }
-        catch (Exception ex) when (ex is PrintSystemException or InvalidOperationException)
-        {
-            AppLogger.Warn("PRINT", $"기본 프린터 확인 실패: {ex.Message}");
-            return null;
         }
     }
 

@@ -208,8 +208,8 @@ public sealed class CustomersPage : ContentPage
 
                 var memoLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 memoLabel.LineHeight = 1.0;
-                memoLabel.LineBreakMode = LineBreakMode.TailTruncation;
-                memoLabel.MaxLines = 1;
+                memoLabel.LineBreakMode = LineBreakMode.WordWrap;
+                memoLabel.HorizontalOptions = LayoutOptions.Fill;
                 memoLabel.SetBinding(Label.TextProperty, nameof(InvoiceDto.Memo));
 
                 return new Border
@@ -251,8 +251,8 @@ public sealed class CustomersPage : ContentPage
 
                 var noteLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 noteLabel.LineHeight = 1.0;
-                noteLabel.LineBreakMode = LineBreakMode.TailTruncation;
-                noteLabel.MaxLines = 1;
+                noteLabel.LineBreakMode = LineBreakMode.WordWrap;
+                noteLabel.HorizontalOptions = LayoutOptions.Fill;
                 noteLabel.SetBinding(Label.TextProperty, nameof(CustomerPaymentHistoryRow.NoteDisplay));
 
                 var attachmentButton = GeoraePlanTheme.CreateCompactButton("첨부 보기", GeoraePlanTheme.Purple);
@@ -361,8 +361,8 @@ public sealed class CustomersPage : ContentPage
 
                 var noteLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 noteLabel.LineHeight = 1.0;
-                noteLabel.LineBreakMode = LineBreakMode.TailTruncation;
-                noteLabel.MaxLines = 1;
+                noteLabel.LineBreakMode = LineBreakMode.WordWrap;
+                noteLabel.HorizontalOptions = LayoutOptions.Fill;
                 noteLabel.SetBinding(Label.TextProperty, nameof(CustomerDto.Notes));
 
                 var salesInvoiceButton = GeoraePlanTheme.CreateCompactButton("판매작성", GeoraePlanTheme.Success);
@@ -422,19 +422,10 @@ public sealed class CustomersPage : ContentPage
                 },
                         "거래처 작업");
 
-                var actionGrid = new Grid
-                {
-                    ColumnSpacing = 8,
-                    ColumnDefinitions =
-                    {
-                        new ColumnDefinition(GridLength.Star),
-                        new ColumnDefinition(GridLength.Star),
-                        new ColumnDefinition(GridLength.Star)
-                    }
-                };
-                actionGrid.Add(salesInvoiceButton, 0, 0);
-                actionGrid.Add(purchaseInvoiceButton, 1, 0);
-                actionGrid.Add(contractButton, 2, 0);
+                var actionLayout = GeoraePlanTheme.CreateWrappingActions(
+                    salesInvoiceButton,
+                    purchaseInvoiceButton,
+                    contractButton);
 
                 var inlineDetail = CreateInlineCustomerDetailView();
                 inlineDetail.SetBinding(VisualElement.IsVisibleProperty, new Binding(path: ".", converter: new SelectedCustomerVisibilityConverter(_viewModel)));
@@ -442,7 +433,7 @@ public sealed class CustomersPage : ContentPage
                 var body = new VerticalStackLayout
                 {
                     Spacing = 4,
-                    Children = { nameLabel, infoLabel, noteLabel, actionGrid, inlineDetail }
+                    Children = { nameLabel, infoLabel, noteLabel, actionLayout, inlineDetail }
                 };
 
                 var border = new Border
@@ -597,8 +588,8 @@ try
 
                 var noteLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 noteLabel.LineHeight = 1.0;
-                noteLabel.LineBreakMode = LineBreakMode.TailTruncation;
-                noteLabel.MaxLines = 2;
+                noteLabel.LineBreakMode = LineBreakMode.WordWrap;
+                noteLabel.HorizontalOptions = LayoutOptions.Fill;
                 noteLabel.SetBinding(Label.TextProperty, nameof(CustomerRentalLinkRow.Note));
 
                 return new Border
@@ -766,8 +757,8 @@ try
 
                 var memoLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 memoLabel.LineHeight = 1.0;
-                memoLabel.LineBreakMode = LineBreakMode.TailTruncation;
-                memoLabel.MaxLines = 1;
+                memoLabel.LineBreakMode = LineBreakMode.WordWrap;
+                memoLabel.HorizontalOptions = LayoutOptions.Fill;
                 memoLabel.SetBinding(Label.TextProperty, nameof(InvoiceDto.Memo));
 
                 return new Border
@@ -809,8 +800,8 @@ try
 
                 var noteLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 noteLabel.LineHeight = 1.0;
-                noteLabel.LineBreakMode = LineBreakMode.TailTruncation;
-                noteLabel.MaxLines = 1;
+                noteLabel.LineBreakMode = LineBreakMode.WordWrap;
+                noteLabel.HorizontalOptions = LayoutOptions.Fill;
                 noteLabel.SetBinding(Label.TextProperty, nameof(CustomerPaymentHistoryRow.NoteDisplay));
 
                 var attachmentButton = GeoraePlanTheme.CreateCompactButton("첨부 보기", GeoraePlanTheme.Purple);

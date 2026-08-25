@@ -2,6 +2,7 @@
 param(
     [switch]$Apply,
     [switch]$PromptForSudoCredential,
+    [System.Management.Automation.PSCredential]$SudoCredential,
     [switch]$SkipRemoteReadOnlyCheck,
     [string]$LinuxSshHost = '192.168.0.199',
     [string]$LinuxSshUser = 'itw',
@@ -79,17 +80,22 @@ function Invoke-SshCommand {
 function Invoke-SshSudoCommand {
     param(
         [Parameter(Mandatory = $true)][string]$SshExe,
-        [Parameter(Mandatory = $true)][string]$Command
+        [Parameter(Mandatory = $true)][string]$Command,
+        [System.Management.Automation.PSCredential]$Credential
     )
 
     if ([string]::IsNullOrWhiteSpace($Command)) {
         throw 'Linux PC sudo command cannot be empty.'
     }
 
-    $credential = Get-Credential `
-        -UserName $LinuxSshUser `
-        -Message 'Linux PC 거래플랜 백업 설치용 sudo 비밀번호를 입력하세요.'
-    if ($null -eq $credential -or $null -eq $credential.Password) {
+    $ownsCredential = $false
+    if ($null -eq $Credential) {
+        $Credential = Get-Credential `
+            -UserName $LinuxSshUser `
+            -Message 'Linux PC 거래플랜 백업 설치용 sudo 비밀번호를 입력하세요.'
+        $ownsCredential = $true
+    }
+    if ($null -eq $Credential -or $null -eq $Credential.Password) {
         throw 'Linux PC sudo credential entry was cancelled.'
     }
 
@@ -97,9 +103,9 @@ function Invoke-SshSudoCommand {
     $plainPassword = $null
     $stdinPayload = $null
     try {
-        $passwordPointer =
-            [Runtime.InteropServices.Marshal]::SecureStringToBSTR(
-                $credential.Password)
+                $passwordPointer =
+                    [Runtime.InteropServices.Marshal]::SecureStringToBSTR(
+                $Credential.Password)
         $plainPassword =
             [Runtime.InteropServices.Marshal]::PtrToStringBSTR(
                 $passwordPointer)
@@ -150,8 +156,10 @@ function Invoke-SshSudoCommand {
             [Runtime.InteropServices.Marshal]::ZeroFreeBSTR(
                 $passwordPointer)
         }
-        $credential.Password.Dispose()
-        $credential = $null
+        if ($ownsCredential -and $null -ne $Credential.Password) {
+            $Credential.Password.Dispose()
+        }
+        $Credential = $null
     }
 }
 
@@ -177,6 +185,12 @@ if ($Apply -and $SkipRemoteReadOnlyCheck) {
 }
 if ($PromptForSudoCredential -and -not $Apply) {
     throw '-PromptForSudoCredential requires -Apply.'
+}
+if ($null -ne $SudoCredential -and -not $Apply) {
+    throw '-SudoCredential requires -Apply.'
+}
+if ($PromptForSudoCredential -and $null -ne $SudoCredential) {
+    throw '-PromptForSudoCredential cannot be combined with -SudoCredential.'
 }
 
 $assetRoot = Join-Path $PSScriptRoot 'assets\georaeplan-backup'
@@ -407,7 +421,7 @@ test "`$(sudo -n stat -Lc '%a:%U:%G' /etc/systemd/system/georaeplan-backup.servi
 test "`$(sudo -n stat -Lc '%a:%U:%G' /etc/systemd/system/georaeplan-backup.timer)" = '644:root:root'
 printf 'backup_schedule_remote_assets=ok\n'
 "@
-    if ($PromptForSudoCredential) {
+    if ($PromptForSudoCredential -or $null -ne $SudoCredential) {
         $promptedApplyCommand =
             $applyCommand.Replace('sudo -n ', '')
         if ($promptedApplyCommand -match '(?im)(^|[;&|])[ \t]*sudo\b') {
@@ -416,7 +430,8 @@ printf 'backup_schedule_remote_assets=ok\n'
         $applyOutput =
             Invoke-SshSudoCommand `
                 -SshExe $sshExe `
-                -Command $promptedApplyCommand
+                -Command $promptedApplyCommand `
+                -Credential $SudoCredential
     }
     else {
         $applyOutput =

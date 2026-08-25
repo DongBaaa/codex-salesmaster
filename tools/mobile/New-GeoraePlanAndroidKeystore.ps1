@@ -7,6 +7,8 @@ param(
     [string]$Alias = 'georaeplan',
     [string]$StorePass,
     [string]$KeyPass,
+    [string]$StorePassEnvironmentVariable = 'GEORAEPLAN_ANDROID_STORE_PASSWORD',
+    [string]$KeyPassEnvironmentVariable = 'GEORAEPLAN_ANDROID_KEY_PASSWORD',
     [string]$DistinguishedName = 'CN=GeoraePlan, OU=Private Distribution, O=GeoraePlan, L=Incheon, S=Incheon, C=KR',
     [int]$ValidityDays = 3650,
     [switch]$Force
@@ -73,12 +75,20 @@ if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path $ProjectRoot 'Mobile\GeoraePlan.Mobile.App\signing\georaeplan-release.keystore'
 }
 
-if ([string]::IsNullOrWhiteSpace($StorePass)) {
-    throw 'StorePass is required.'
+if (-not [string]::IsNullOrWhiteSpace($StorePass) -or -not [string]::IsNullOrWhiteSpace($KeyPass)) {
+    throw 'Android keystore passwords must be supplied through environment-variable references; command-line secret values are forbidden.'
 }
 
-if ([string]::IsNullOrWhiteSpace($KeyPass)) {
-    throw 'KeyPass is required.'
+foreach ($secretEnvironmentVariable in @(
+    [pscustomobject]@{ Name = $StorePassEnvironmentVariable; Label = 'Store password' },
+    [pscustomobject]@{ Name = $KeyPassEnvironmentVariable; Label = 'Key password' }
+)) {
+    if ([string]::IsNullOrWhiteSpace($secretEnvironmentVariable.Name) -or $secretEnvironmentVariable.Name -cnotmatch '^[A-Za-z_][A-Za-z0-9_]{0,127}$') {
+        throw "$($secretEnvironmentVariable.Label) environment variable name is invalid."
+    }
+    if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($secretEnvironmentVariable.Name, 'Process'))) {
+        throw "$($secretEnvironmentVariable.Label) environment variable is not available in the current process."
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($KeytoolPath)) {
@@ -118,8 +128,8 @@ $arguments = @(
     '-keyalg', 'RSA'
     '-keysize', '2048'
     '-validity', $ValidityDays.ToString()
-    '-storepass', $StorePass
-    '-keypass', $KeyPass
+    '-storepass:env', $StorePassEnvironmentVariable
+    '-keypass:env', $KeyPassEnvironmentVariable
     '-dname', $DistinguishedName
 )
 

@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <ProjectReference Include="..\..\Shared\GeoraePlan.UpdateTransport\GeoraePlan.UpdateTransport.csproj" />
     <ProjectReference Include="..\..\Shared\거래플랜.Shared.Contracts\거래플랜.Shared.Contracts.csproj" />
     <ProjectReference Include="..\..\Updater\거래플랜.Updater\거래플랜.Updater.csproj" ReferenceOutputAssembly="false" Private="false" />
   </ItemGroup>
@@ -28,8 +29,8 @@
     <Product>거래플랜</Product>
     <ApplicationIcon>..\..\AppIcons\tradeplan-windows.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.1.692</Version>
-    <FileVersion>1.1.692.0</FileVersion>
+    <Version>1.1.693</Version>
+    <FileVersion>1.1.693.0</FileVersion>
   </PropertyGroup>
   <ItemGroup></ItemGroup>
   <ItemGroup>

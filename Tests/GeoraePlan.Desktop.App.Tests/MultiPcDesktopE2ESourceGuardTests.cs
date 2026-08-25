@@ -157,7 +157,7 @@ public sealed class MultiPcDesktopE2ESourceGuardTests
             StringComparison.Ordinal);
 
         var preparationSetApiStart = preparation.IndexOf(
-            "Copy-Item -LiteralPath $setApiSource",
+            "$stagedSetApiPath = Join-Path $stageRoot 'Set-ApiBaseUrl.ps1'",
             StringComparison.Ordinal);
         var preparationSetApiEnd = preparation.IndexOf(
             "$testAndroidPackageState",
@@ -168,6 +168,14 @@ public sealed class MultiPcDesktopE2ESourceGuardTests
             preparationSetApiEnd > preparationSetApiStart);
         var preparationSetApi =
             preparation[preparationSetApiStart..preparationSetApiEnd];
+        Assert.Contains(
+            "Copy-Item",
+            preparationSetApi,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "-LiteralPath $setApiSource",
+            preparationSetApi,
+            StringComparison.Ordinal);
         Assert.Contains(
             "Invoke-HiddenSetApiBaseUrl",
             preparationSetApi,
@@ -1127,12 +1135,61 @@ public sealed class MultiPcDesktopE2ESourceGuardTests
             runner,
             StringComparison.Ordinal);
         Assert.Contains(
-            "$requiredUiSteps = @(\"login-window\", \"login-submit\", \"main-buttons\")",
+            "$requiredUiSteps = @(",
             runner,
             StringComparison.Ordinal);
+        foreach (var requiredUiStep in new[]
+                 {
+                     "\"login-window\"",
+                     "\"login-submit\"",
+                     "\"main-buttons\"",
+                     "\"window-거래처 관리\"",
+                     "\"window-품목/재고 관리\"",
+                     "\"window-판매(매출)\"",
+                     "\"window-렌탈 청구관리\"",
+                     "\"window-렌탈 자산/설치현황\""
+                 })
+        {
+            Assert.Contains(requiredUiStep, runner, StringComparison.Ordinal);
+        }
         Assert.Contains(
             "did not exercise the actual login-window credential input path",
             runner,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "VerifyPriorityWindowsWithInAppSelfTest = `$true",
+            runner,
+            StringComparison.Ordinal);
+        Assert.Contains("MultiPcUiRole = $roleLiteral", runner, StringComparison.Ordinal);
+        Assert.Contains("MultiPcUiBarrierRoot = $runRootLiteral", runner, StringComparison.Ordinal);
+        Assert.Contains(
+            "[switch]$LoginOnly",
+            uiSmoke,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Login-only mode requires KeepAppOpen and cannot run in-app or priority-window verification.",
+            uiSmoke,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "if (-not $LoginOnly -and (-not $UseInAppSelfTest -or $VerifyPriorityWindowsWithInAppSelfTest))",
+            uiSmoke,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "$priorityUiMutex.WaitOne([TimeSpan]::FromSeconds(180))",
+            uiSmoke,
+            StringComparison.Ordinal);
+        Assert.Contains("Write-UiBarrierMarkerAtomic", uiSmoke, StringComparison.Ordinal);
+        Assert.Contains(
+            "Wait-FileReady -Path $multiPcUiPeerMarkerPath",
+            uiSmoke,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "if ($UseInAppSelfTest -and -not $inAppPassed)",
+            uiSmoke,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "$passed = @($steps | Where-Object { -not $_.Passed }).Count -eq 0",
+            uiSmoke,
             StringComparison.Ordinal);
         Assert.Contains("DeferredInteractionGate", runner, StringComparison.Ordinal);
         Assert.DoesNotContain(
@@ -1211,6 +1268,18 @@ public sealed class MultiPcDesktopE2ESourceGuardTests
         Assert.Contains("ownedStartTimeTicks", runner, StringComparison.Ordinal);
         Assert.Contains("server-db-rollback", runner, StringComparison.Ordinal);
         Assert.Contains("source-appsettings-rollback", runner, StringComparison.Ordinal);
+        Assert.Contains("[AllowEmptyString()]", runner, StringComparison.Ordinal);
+        Assert.Contains(
+            "function Restore-FileBytesPreservingMetadata",
+            runner,
+            StringComparison.Ordinal);
+        Assert.Contains("[System.IO.FileMode]::Open", runner, StringComparison.Ordinal);
+        Assert.Contains("$stream.Flush($true)", runner, StringComparison.Ordinal);
+        Assert.Contains("$sourceAppSettingsOriginalSddl", runner, StringComparison.Ordinal);
+        Assert.Contains(
+            "Source App appsettings restore ACL mismatch.",
+            runner,
+            StringComparison.Ordinal);
         Assert.Contains("transient-backup-cleanup", runner, StringComparison.Ordinal);
         Assert.Contains(".gp-stage-*", runner, StringComparison.Ordinal);
         Assert.Contains(".gp-validate-*", runner, StringComparison.Ordinal);
@@ -2052,6 +2121,9 @@ public sealed class MultiPcDesktopE2ESourceGuardTests
                 return ComputeFileSha256(contractPath);
             }
 
+            string validationStdout = string.Empty;
+            string validationStderr = string.Empty;
+
             int RunValidation(
                 Dictionary<string, object?> contract,
                 string? serverDirOverride = null,
@@ -2077,11 +2149,18 @@ public sealed class MultiPcDesktopE2ESourceGuardTests
                         ["SeedUsers__Sentinel"] = "must-not-survive",
                         ["sEeDuSeRs__ItwPassword"] = "must-not-survive"
                     });
+                var stdoutTask = process.StandardOutput.ReadToEndAsync();
+                var stderrTask = process.StandardError.ReadToEndAsync();
                 process.WaitForExit();
+                validationStdout = stdoutTask.GetAwaiter().GetResult();
+                validationStderr = stderrTask.GetAwaiter().GetResult();
                 return process.ExitCode;
             }
 
-            Assert.Equal(0, RunValidation(NewContract()));
+            var validContractExitCode = RunValidation(NewContract());
+            Assert.True(
+                validContractExitCode == 0,
+                $"Valid bootstrap contract was rejected. exit={validContractExitCode}; stdout={validationStdout}; stderr={validationStderr}");
 
             var arbitraryRoot = Path.Combine(tempRoot, "arbitrary", "Server");
             Directory.CreateDirectory(arbitraryRoot);

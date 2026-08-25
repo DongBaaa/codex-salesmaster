@@ -183,6 +183,29 @@ public sealed class DatabaseInitializationGateMiddlewareTests
                 ".WithMetadata(new AllowDuringDatabaseInitializationAttribute())"));
     }
 
+    [Fact]
+    public void HostedPipeline_LeavesHstsToThePublicReverseProxy()
+    {
+        var programSource = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot().FullName,
+            "Server",
+            "거래플랜.Server.Api",
+            "Program.cs"));
+
+        Assert.DoesNotContain(
+            "Strict-Transport-Security",
+            programSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "X-Content-Type-Options",
+            programSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Permissions-Policy",
+            programSource,
+            StringComparison.Ordinal);
+    }
+
     private static async Task<(DefaultHttpContext Context, Func<bool> NextCalled)> InvokeAsync(
         DatabaseInitializationState state,
         Endpoint? endpoint = null)

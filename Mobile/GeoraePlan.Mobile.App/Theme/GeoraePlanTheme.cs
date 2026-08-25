@@ -1,5 +1,7 @@
 ﻿using Microsoft.Maui.Controls.Shapes;
 
+using System.Runtime.CompilerServices;
+
 namespace GeoraePlan.Mobile.App.Theme;
 
 public static class GeoraePlanTheme
@@ -81,8 +83,13 @@ public static class GeoraePlanTheme
         return picker;
     }
 
-    public static Button CreateButton(string text, Color backgroundColor)
-        => new()
+    public static Button CreateButton(
+        string text,
+        Color backgroundColor,
+        [CallerFilePath] string sourceFile = "",
+        [CallerLineNumber] int sourceLine = 0)
+    {
+        var button = new Button
         {
             Text = text,
             BackgroundColor = backgroundColor,
@@ -93,10 +100,26 @@ public static class GeoraePlanTheme
             MinimumWidthRequest = 0,
             MinimumHeightRequest = 44
         };
+#if GEORAEPLAN_MOBILE_UI_MATRIX
+        UiMatrix.MobileUiMatrixActionRegistry.RegisterButton(
+            button,
+            sourceFile,
+            sourceLine);
+#endif
+        return button;
+    }
 
-    public static Button CreateCompactButton(string text, Color backgroundColor)
+    public static Button CreateCompactButton(
+        string text,
+        Color backgroundColor,
+        [CallerFilePath] string sourceFile = "",
+        [CallerLineNumber] int sourceLine = 0)
     {
-        var button = CreateButton(text, backgroundColor);
+        var button = CreateButton(
+            text,
+            backgroundColor,
+            sourceFile,
+            sourceLine);
         button.MinimumHeightRequest = 36;
         button.CornerRadius = 8;
         button.Padding = new Thickness(10, 0);
@@ -159,7 +182,8 @@ public static class GeoraePlanTheme
 
         foreach (var child in children)
         {
-            child.MinimumWidthRequest = Math.Max(child.MinimumWidthRequest, 76);
+            child.MinimumWidthRequest = Math.Max(child.MinimumWidthRequest, 128);
+            child.MinimumHeightRequest = Math.Max(child.MinimumHeightRequest, 80);
             child.Margin = new Thickness(0, 0, 8, 8);
             FlexLayout.SetGrow(child, 1);
             layout.Children.Add(child);
@@ -184,7 +208,7 @@ public static class GeoraePlanTheme
             }
         };
         grid.Add(primary);
-        grid.Add(CreateWrappingActions(actions), 0, 1);
+        grid.Add(CreateHorizontalActionScroller(actions), 0, 1);
         return grid;
     }
 

@@ -136,8 +136,10 @@ function Assert-AndroidReleaseSigningReady {
     $signingConfigDirectory = Split-Path -Parent $resolvedSigningConfigPath
     $keystorePath = [string]$signingConfig.keystorePath
     $keyAlias = [string]$signingConfig.keyAlias
-    $storePass = [string]$signingConfig.storePass
-    $keyPass = [string]$signingConfig.keyPass
+    $hasInlineStorePass = -not [string]::IsNullOrWhiteSpace([string]$signingConfig.storePass)
+    $hasInlineKeyPass = -not [string]::IsNullOrWhiteSpace([string]$signingConfig.keyPass)
+    $storePassEnvironmentVariable = [string]$signingConfig.storePassEnvironmentVariable
+    $keyPassEnvironmentVariable = [string]$signingConfig.keyPassEnvironmentVariable
 
     if ([string]::IsNullOrWhiteSpace($keystorePath)) {
         throw 'Android signing config is missing keystorePath before release build.'
@@ -147,21 +149,35 @@ function Assert-AndroidReleaseSigningReady {
         throw 'Android signing config is missing keyAlias before release build.'
     }
 
-    if ([string]::IsNullOrWhiteSpace($storePass)) {
-        throw 'Android signing config is missing storePass before release build.'
-    }
-
-    if ([string]::IsNullOrWhiteSpace($keyPass)) {
-        throw 'Android signing config is missing keyPass before release build.'
-    }
-
     $resolvedKeystorePath = Resolve-AndroidSigningPath -PathValue $keystorePath -BaseDirectory $signingConfigDirectory
     if (-not (Test-Path -LiteralPath $resolvedKeystorePath)) {
         throw "Android keystore not found before release build: $resolvedKeystorePath"
     }
 
     if ($AllowLegacyAndroidDebugSigning) {
+        if ((-not $hasInlineStorePass -and [string]::IsNullOrWhiteSpace($storePassEnvironmentVariable)) -or
+            (-not $hasInlineKeyPass -and [string]::IsNullOrWhiteSpace($keyPassEnvironmentVariable))) {
+            throw 'Legacy Android signing config is missing a password source before release build.'
+        }
         return
+    }
+
+    if ($hasInlineStorePass -or $hasInlineKeyPass) {
+        throw 'Production inline Android signing passwords are forbidden; use storePassEnvironmentVariable/keyPassEnvironmentVariable.'
+    }
+
+    foreach ($secretEnvironmentVariable in @(
+        [pscustomobject]@{ Name = $storePassEnvironmentVariable; Label = 'Android store password' },
+        [pscustomobject]@{ Name = $keyPassEnvironmentVariable; Label = 'Android key password' }
+    )) {
+        if ([string]::IsNullOrWhiteSpace($secretEnvironmentVariable.Name) -or $secretEnvironmentVariable.Name -cnotmatch '^[A-Za-z_][A-Za-z0-9_]{0,127}$') {
+            throw "$($secretEnvironmentVariable.Label) environment variable reference is invalid before release build."
+        }
+        $secretValue = [Environment]::GetEnvironmentVariable($secretEnvironmentVariable.Name, 'Process')
+        if ([string]::IsNullOrWhiteSpace($secretValue)) {
+            throw "$($secretEnvironmentVariable.Label) environment variable is not available before release build."
+        }
+        $secretValue = $null
     }
 
     $isDebugKeystorePath = [System.IO.Path]::GetFileName($resolvedKeystorePath).Equals('debug.keystore', [System.StringComparison]::OrdinalIgnoreCase)

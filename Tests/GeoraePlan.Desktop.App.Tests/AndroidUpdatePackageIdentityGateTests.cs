@@ -88,34 +88,43 @@ public sealed class AndroidUpdatePackageIdentityGateTests
     }
 
     [Fact]
-    public void TestEnvironmentPreparation_InspectsAndroidAfterLeaseBeforeRuntimeMutation()
+    public void TestEnvironmentPreparation_InspectsAndroidAfterWorkspaceLeasesBeforeRuntimeMutation()
     {
         var source = ReadRepositoryFile(
             "\uD14C\uC2A4\uD2B8 \uC2DC\uD589",
             "\uD14C\uC2A4\uD2B8-\uD658\uACBD-\uC900\uBE44.ps1");
-        var lease = source.LastIndexOf(
-            "$preparationLease = [IO.File]::Open(",
+        var workspaceLease = source.LastIndexOf(
+            "New-IsolatedRuntimePromotionWorkspace -OutputRoot $OutputRoot",
             StringComparison.Ordinal);
         var firstInspection = source.IndexOf(
             "-InspectOnly",
-            lease,
+            workspaceLease,
             StringComparison.Ordinal);
         var secondInspection = source.IndexOf(
             "-InspectOnly",
             firstInspection + 1,
             StringComparison.Ordinal);
-        var markerRemoval = source.IndexOf(
-            "if (Test-Path -LiteralPath $runtimeReadyMarkerPath)",
-            lease,
+        var preparationGate = source.IndexOf(
+            "Enter-PreparationGateLease -Path $preparationGateLeasePath",
+            secondInspection + 1,
+            StringComparison.Ordinal);
+        var runtimeMutation = source.IndexOf(
+            "$runtimeOutputMutationStarted = $true",
+            preparationGate + 1,
             StringComparison.Ordinal);
 
-        Assert.True(lease >= 0 && firstInspection > lease);
+        Assert.True(
+            workspaceLease >= 0 && firstInspection > workspaceLease,
+            "Android inspection did not follow the held promotion workspace acquisition.");
         Assert.True(
             secondInspection > firstInspection,
             "Android absence was not confirmed by a second pre-mutation inspection.");
         Assert.True(
-            markerRemoval > secondInspection,
-            "Android identity/absence was not fixed before the old ready marker/runtime mutation.");
+            preparationGate > secondInspection,
+            "Android identity/absence was not fixed before the preparation gate.");
+        Assert.True(
+            runtimeMutation > preparationGate,
+            "Runtime mutation began before the held workspace and Android identity gates completed.");
     }
 
     [Fact]

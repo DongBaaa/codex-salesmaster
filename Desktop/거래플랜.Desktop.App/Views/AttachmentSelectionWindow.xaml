@@ -15,7 +15,7 @@
     <Window.Resources>
         <Style x:Key="DialogActionButtonStyle" TargetType="Button">
             <Setter Property="Width" Value="112"/>
-            <Setter Property="Height" Value="38"/>
+            <Setter Property="MinHeight" Value="38"/>
             <Setter Property="Margin" Value="0,0,8,0"/>
             <Setter Property="Padding" Value="16,0"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
@@ -42,8 +42,8 @@
                            Foreground="#A7D1FF"
                            FontFamily="맑은 고딕"
                            Margin="0,6,0,0"
-                           TextWrapping="NoWrap"
-                           TextTrimming="CharacterEllipsis"
+                           TextWrapping="Wrap"
+                           TextTrimming="None"
                            ToolTip="{Binding StatusMessage}"/>
             </StackPanel>
         </Border>
@@ -117,8 +117,8 @@
                            FontSize="13"
                            Margin="0,0,10,0"
                            VerticalAlignment="Center"
-                           TextWrapping="NoWrap"
-                           TextTrimming="CharacterEllipsis"
+                           TextWrapping="Wrap"
+                           TextTrimming="None"
                            ToolTip="체크한 순서가 인쇄 순서로 반영됩니다."/>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                     <Button Content="순서 초기화"

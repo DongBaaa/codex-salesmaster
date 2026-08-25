@@ -39,12 +39,12 @@ public sealed class UpdaterFailureWindowRuntimeTests
                     logPath);
 
                 Assert.Equal("Visible", GetPrivateFieldProperty(window!, "_buttonPanel", "Visibility")?.ToString());
-                Assert.Equal("로그 복사", GetPrivateFieldProperty(window!, "_copyLogButton", "Content")?.ToString());
+                Assert.Equal("로그 복사", GetPrivateButtonText(window!, "_copyLogButton"));
                 Assert.Equal(true, GetPrivateFieldProperty(window!, "_openLogFolderButton", "IsEnabled"));
 
                 InvokeInstanceMethod(window!, "CopyFailureLogToClipboard");
 
-                if (!string.Equals("복사 완료", GetPrivateFieldProperty(window!, "_copyLogButton", "Content")?.ToString(), StringComparison.Ordinal))
+                if (!string.Equals("복사 완료", GetPrivateButtonText(window!, "_copyLogButton"), StringComparison.Ordinal))
                 {
                     Assert.Contains("로그 복사에 실패했습니다", GetPrivateFieldProperty(window!, "_detailBlock", "Text")?.ToString(), StringComparison.Ordinal);
                     return;
@@ -94,7 +94,7 @@ public sealed class UpdaterFailureWindowRuntimeTests
                     "로그 파일 없는 실패",
                     missingLogPath);
 
-                Assert.Equal("오류 내용 복사", GetPrivateFieldProperty(window!, "_copyLogButton", "Content")?.ToString());
+                Assert.Equal("오류 내용 복사", GetPrivateButtonText(window!, "_copyLogButton"));
                 Assert.Equal(false, GetPrivateFieldProperty(window!, "_openLogFolderButton", "IsEnabled"));
 
                 InvokeInstanceMethod(window!, "CopyFailureLogToClipboard");
@@ -104,6 +104,57 @@ public sealed class UpdaterFailureWindowRuntimeTests
                     return;
                 Assert.Contains("로그 파일 없는 실패", clipboardText, StringComparison.Ordinal);
                 Assert.DoesNotContain("--- update.log ---", clipboardText, StringComparison.Ordinal);
+            }
+            finally
+            {
+                if (window is not null)
+                    TryCloseWindow(window);
+            }
+        });
+    }
+
+    [Fact]
+    public void UpdaterWindow_LongStatusUsesResizableFullTextGridAndWrappingActions()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        RunOnStaThread(() =>
+        {
+            object? window = null;
+            try
+            {
+                var windowType = LoadUpdaterWindowType();
+                window = Activator.CreateInstance(windowType, nonPublic: true);
+                Assert.NotNull(window);
+
+                InvokeInstanceMethod(
+                    window!,
+                    "ShowFailure",
+                    "업데이트 과정에서 매우 긴 제목이 발생해도 전체 문구를 표시해야 합니다.",
+                    string.Join(' ', Enumerable.Repeat("상세 오류 원인과 복구 안내를 생략하지 않고 표시합니다.", 24)),
+                    null);
+
+                Assert.Equal("CanResizeWithGrip", GetInstanceProperty(window!, "ResizeMode")?.ToString());
+                Assert.Equal("Height", GetInstanceProperty(window!, "SizeToContent")?.ToString());
+                Assert.True(Convert.ToDouble(GetInstanceProperty(window!, "MinWidth")) >= 420);
+                Assert.True(Convert.ToDouble(GetInstanceProperty(window!, "MinHeight")) >= 320);
+                Assert.Equal("Wrap", GetPrivateFieldProperty(window!, "_titleBlock", "TextWrapping")?.ToString());
+                Assert.Equal("None", GetPrivateFieldProperty(window!, "_titleBlock", "TextTrimming")?.ToString());
+                Assert.Equal("Wrap", GetPrivateFieldProperty(window!, "_detailBlock", "TextWrapping")?.ToString());
+                Assert.Equal("None", GetPrivateFieldProperty(window!, "_detailBlock", "TextTrimming")?.ToString());
+                Assert.Equal("WrapPanel", GetPrivateFieldValue(window!, "_buttonPanel").GetType().Name);
+
+                foreach (var fieldName in new[] { "_copyLogButton", "_openLogFolderButton" })
+                {
+                    var button = GetPrivateFieldValue(window!, fieldName);
+                    Assert.True(Convert.ToDouble(GetInstanceProperty(button, "MinHeight")) >= 38);
+                    var content = GetInstanceProperty(button, "Content");
+                    Assert.NotNull(content);
+                    Assert.Equal("TextBlock", content!.GetType().Name);
+                    Assert.Equal("Wrap", GetInstanceProperty(content, "TextWrapping")?.ToString());
+                    Assert.Equal("None", GetInstanceProperty(content, "TextTrimming")?.ToString());
+                }
             }
             finally
             {
@@ -185,13 +236,36 @@ public sealed class UpdaterFailureWindowRuntimeTests
 
     private static object? GetPrivateFieldProperty(object instance, string fieldName, string propertyName)
     {
-        var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
-        Assert.NotNull(field);
-        var fieldValue = field!.GetValue(instance);
-        Assert.NotNull(fieldValue);
+        var fieldValue = GetPrivateFieldValue(instance, fieldName);
         var property = fieldValue!.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
         Assert.NotNull(property);
         return property!.GetValue(fieldValue);
+    }
+
+    private static object GetPrivateFieldValue(object instance, string fieldName)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        var value = field!.GetValue(instance);
+        Assert.NotNull(value);
+        return value!;
+    }
+
+    private static object? GetInstanceProperty(object instance, string propertyName)
+    {
+        var property = instance.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
+        Assert.NotNull(property);
+        return property!.GetValue(instance);
+    }
+
+    private static string? GetPrivateButtonText(object instance, string fieldName)
+    {
+        var content = GetPrivateFieldProperty(instance, fieldName, "Content");
+        return content is string text
+            ? text
+            : content is null
+                ? null
+                : GetInstanceProperty(content, "Text") as string;
     }
 
     private static void TryCloseWindow(object window)
@@ -237,7 +311,8 @@ public sealed class UpdaterFailureWindowRuntimeTests
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null)
         {
-            if (Directory.Exists(Path.Combine(directory.FullName, ".git")) &&
+            if ((Directory.Exists(Path.Combine(directory.FullName, ".git")) ||
+                 File.Exists(Path.Combine(directory.FullName, ".git"))) &&
                 Directory.Exists(Path.Combine(directory.FullName, "Desktop")) &&
                 Directory.Exists(Path.Combine(directory.FullName, "Updater")))
             {

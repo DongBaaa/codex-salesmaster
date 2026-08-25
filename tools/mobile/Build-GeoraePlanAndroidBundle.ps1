@@ -10,6 +10,8 @@ param(
     [string]$KeyAlias,
     [string]$StorePass,
     [string]$KeyPass,
+    [string]$StorePassEnvironmentVariable,
+    [string]$KeyPassEnvironmentVariable,
     [string]$Configuration = 'Release',
     [string]$Framework = 'net8.0-android',
     [string]$OutputRoot,
@@ -35,6 +37,8 @@ $scriptPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'Build
     -KeyAlias $KeyAlias `
     -StorePass $StorePass `
     -KeyPass $KeyPass `
+    -StorePassEnvironmentVariable $StorePassEnvironmentVariable `
+    -KeyPassEnvironmentVariable $KeyPassEnvironmentVariable `
     -Configuration $Configuration `
     -Framework $Framework `
     -OutputRoot $OutputRoot `

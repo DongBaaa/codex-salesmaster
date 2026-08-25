@@ -15,7 +15,7 @@ internal sealed class UpdateProgressWindow : Window
     private readonly TextBlock _detailBlock;
     private readonly ScrollViewer _detailScrollViewer;
     private readonly ProgressBar _progressBar;
-    private readonly StackPanel _buttonPanel;
+    private readonly WrapPanel _buttonPanel;
     private readonly Button _copyLogButton;
     private readonly Button _openLogFolderButton;
     private string _failureDetail = string.Empty;
@@ -24,18 +24,25 @@ internal sealed class UpdateProgressWindow : Window
     public UpdateProgressWindow()
     {
         Title = "거래플랜 업데이트";
-        Width = 520;
-        Height = 190;
+        Width = 560;
+        MinWidth = 420;
+        MinHeight = 220;
+        MaxWidth = Math.Max(420, SystemParameters.WorkArea.Width - 48);
+        MaxHeight = Math.Max(320, SystemParameters.WorkArea.Height - 48);
+        SizeToContent = SizeToContent.Height;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
-        ResizeMode = ResizeMode.NoResize;
+        ResizeMode = ResizeMode.CanResizeWithGrip;
         Background = Brushes.White;
         ShowInTaskbar = true;
 
-        var panel = new StackPanel
+        var panel = new Grid
         {
-            Margin = new Thickness(24),
-            Orientation = Orientation.Vertical
+            Margin = new Thickness(24)
         };
+        panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        panel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
         _titleBlock = new TextBlock
         {
@@ -43,7 +50,9 @@ internal sealed class UpdateProgressWindow : Window
             FontSize = 20,
             FontWeight = FontWeights.SemiBold,
             Foreground = new SolidColorBrush(Color.FromRgb(25, 32, 56)),
-            Margin = new Thickness(0, 0, 0, 8)
+            Margin = new Thickness(0, 0, 0, 8),
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.None
         };
 
         _detailBlock = new TextBlock
@@ -51,16 +60,18 @@ internal sealed class UpdateProgressWindow : Window
             Text = "잠시만 기다려 주세요.",
             FontSize = 13,
             TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.None,
             Foreground = new SolidColorBrush(Color.FromRgb(90, 97, 120))
         };
 
         _detailScrollViewer = new ScrollViewer
         {
             Content = _detailBlock,
-            MaxHeight = 72,
+            MinHeight = 48,
+            MaxHeight = Math.Max(120, Math.Min(360, SystemParameters.WorkArea.Height * 0.45)),
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Margin = new Thickness(0, 0, 0, 16)
+            Margin = new Thickness(0, 0, 0, 12)
         };
 
         _progressBar = new ProgressBar
@@ -69,10 +80,11 @@ internal sealed class UpdateProgressWindow : Window
             Minimum = 0,
             Maximum = 100,
             IsIndeterminate = true,
-            Foreground = new SolidColorBrush(Color.FromRgb(38, 95, 255))
+            Foreground = new SolidColorBrush(Color.FromRgb(38, 95, 255)),
+            Margin = new Thickness(0, 4, 0, 0)
         };
 
-        _buttonPanel = new StackPanel
+        _buttonPanel = new WrapPanel
         {
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
@@ -93,6 +105,10 @@ internal sealed class UpdateProgressWindow : Window
         _buttonPanel.Children.Add(_openLogFolderButton);
         _buttonPanel.Children.Add(closeButton);
 
+        Grid.SetRow(_titleBlock, 0);
+        Grid.SetRow(_detailScrollViewer, 1);
+        Grid.SetRow(_progressBar, 2);
+        Grid.SetRow(_buttonPanel, 3);
         panel.Children.Add(_titleBlock);
         panel.Children.Add(_detailScrollViewer);
         panel.Children.Add(_progressBar);
@@ -112,15 +128,14 @@ internal sealed class UpdateProgressWindow : Window
         _failureDetail = detail;
         _failureLogPath = string.IsNullOrWhiteSpace(logPath) ? null : logPath;
 
-        Height = 320;
-        _detailScrollViewer.MaxHeight = 150;
+        MinHeight = 320;
         _titleBlock.Text = title;
         _titleBlock.Foreground = new SolidColorBrush(Color.FromRgb(176, 45, 49));
         _detailBlock.Text = detail + Environment.NewLine + Environment.NewLine + "아래 버튼으로 오류 로그를 복사하거나 로그 위치를 열어 전달할 수 있습니다.";
         _progressBar.IsIndeterminate = false;
         _progressBar.Value = 100;
         _progressBar.Foreground = new SolidColorBrush(Color.FromRgb(176, 45, 49));
-        _copyLogButton.Content = HasReadableFailureLog() ? "로그 복사" : "오류 내용 복사";
+        SetActionButtonText(_copyLogButton, HasReadableFailureLog() ? "로그 복사" : "오류 내용 복사");
         _openLogFolderButton.IsEnabled = HasReadableFailureLog();
         _buttonPanel.Visibility = Visibility.Visible;
     }
@@ -128,12 +143,26 @@ internal sealed class UpdateProgressWindow : Window
     private static Button CreateActionButton(string text)
         => new()
         {
-            Content = text,
+            Content = new TextBlock
+            {
+                Text = text,
+                TextWrapping = TextWrapping.Wrap,
+                TextTrimming = TextTrimming.None,
+                TextAlignment = TextAlignment.Center
+            },
             MinWidth = 96,
-            Height = 32,
+            MinHeight = 38,
             Margin = new Thickness(8, 0, 0, 0),
-            Padding = new Thickness(12, 0, 12, 0)
+            Padding = new Thickness(12, 6, 12, 6)
         };
+
+    private static void SetActionButtonText(Button button, string text)
+    {
+        if (button.Content is TextBlock textBlock)
+            textBlock.Text = text;
+        else
+            button.Content = text;
+    }
 
     private bool HasReadableFailureLog()
         => !string.IsNullOrWhiteSpace(_failureLogPath) && File.Exists(_failureLogPath);
@@ -155,7 +184,7 @@ internal sealed class UpdateProgressWindow : Window
             }
 
             SetClipboardTextWithRetry(content.ToString());
-            _copyLogButton.Content = "복사 완료";
+            SetActionButtonText(_copyLogButton, "복사 완료");
         }
         catch (Exception ex)
         {

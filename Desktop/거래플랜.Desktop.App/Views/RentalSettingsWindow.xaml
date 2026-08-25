@@ -33,7 +33,7 @@
             <Setter Property="BorderBrush" Value="#5D7593"/>
             <Setter Property="Background" Value="{StaticResource TradePlanSecondaryBrush}"/>
             <Setter Property="Padding" Value="14,0"/>
-            <Setter Property="Height" Value="38"/>
+            <Setter Property="MinHeight" Value="38"/>
             <Setter Property="MinWidth" Value="108"/>
             <Setter Property="FontFamily" Value="Malgun Gothic"/>
             <Setter Property="Cursor" Value="Hand"/>
@@ -49,7 +49,8 @@
             <Setter Property="CanUserAddRows" Value="False"/>
             <Setter Property="AlternatingRowBackground" Value="#223754"/>
             <Setter Property="RowBackground" Value="#1E2D40"/>
-            <Setter Property="RowHeight" Value="34"/>
+            <Setter Property="RowHeight" Value="NaN"/>
+            <Setter Property="MinRowHeight" Value="34"/>
             <Setter Property="HeadersVisibility" Value="Column"/>
             <Setter Property="EnableRowVirtualization" Value="True"/>
             <Setter Property="EnableColumnVirtualization" Value="True"/>
@@ -169,16 +170,20 @@
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
-                <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,10">
-                    <StackPanel DockPanel.Dock="Left">
+                <Grid Grid.Row="0" Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Margin="0,0,12,0">
                         <TextBlock Text="렌탈 거래처명 정리" Foreground="#4FC3F7" FontWeight="Bold"/>
                         <TextBlock Text="메인 거래처 테이블 기준으로 렌탈 청구프로필/설치자산의 거래처명과 담당지점 연결을 점검합니다." Foreground="#9FB3C8" Margin="0,4,0,0" TextWrapping="Wrap"/>
                     </StackPanel>
-                    <WrapPanel DockPanel.Dock="Right" HorizontalAlignment="Right">
+                    <WrapPanel Grid.Column="1" HorizontalAlignment="Right">
                         <Button Content="검토 새로고침" Margin="0,0,6,0" Command="{Binding ReloadCustomerLinkCleanupCommand}"/>
                         <Button Content="메인 거래처명 동기화" Style="{StaticResource TradePlanEditButtonStyle}" Command="{Binding NormalizeCustomerLinksCommand}" IsEnabled="{Binding CanManage}"/>
                     </WrapPanel>
-                </DockPanel>
+                </Grid>
 
                 <TextBlock Grid.Row="1" Text="{Binding CustomerLinkCleanupSummary}" Foreground="#90CAF9" Margin="0,0,0,10"/>
 

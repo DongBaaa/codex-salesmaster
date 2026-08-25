@@ -16280,11 +16280,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return string.Empty;
 
         var normalizedKey = RentalCatalogValueNormalizer.NormalizeLooseKey(normalizedName);
-        var options = _db.ItemCategoryOptions.Local
-            .Concat(await _db.ItemCategoryOptions.IgnoreQueryFilters().ToListAsync(ct))
-            .GroupBy(option => option.Id)
-            .Select(group => group.First())
-            .ToList();
+        var options = await GetCurrentItemCategoryOptionsAsync(ct);
         var existing = options.FirstOrDefault(option =>
             string.Equals(
                 RentalCatalogValueNormalizer.NormalizeLooseKey(option.Name),
@@ -16306,10 +16302,22 @@ WHERE ""AssignedUsername"" <> '';", ct);
                 throw new InvalidOperationException($"삭제되었거나 비활성화된 품목분류 '{existingName}'입니다. 선택값 관리에서 먼저 복구하세요.");
             }
 
-            existing.IsActive = true;
-            existing.IsDeleted = false;
-            existing.IsDirty = true;
-            existing.UpdatedAtUtc = DateTime.UtcNow;
+            var trackedExisting = _db.ItemCategoryOptions.Local
+                .FirstOrDefault(option => option.Id == existing.Id);
+            if (trackedExisting is null)
+            {
+                trackedExisting = await _db.ItemCategoryOptions.IgnoreQueryFilters()
+                    .FirstAsync(option => option.Id == existing.Id, ct);
+            }
+            else if (_db.Entry(trackedExisting).State == EntityState.Unchanged)
+            {
+                await _db.Entry(trackedExisting).ReloadAsync(ct);
+            }
+
+            trackedExisting.IsActive = true;
+            trackedExisting.IsDeleted = false;
+            trackedExisting.IsDirty = true;
+            trackedExisting.UpdatedAtUtc = DateTime.UtcNow;
             TryAddUnique(repairResult?.AddedCategoryNames, existingName);
             return existingName;
         }
@@ -16345,6 +16353,25 @@ WHERE ""AssignedUsername"" <> '';", ct);
 
         TryAddUnique(repairResult?.AddedCategoryNames, normalizedName);
         return normalizedName;
+    }
+
+    private async Task<List<LocalItemCategoryOption>> GetCurrentItemCategoryOptionsAsync(
+        CancellationToken ct)
+    {
+        var options = await _db.ItemCategoryOptions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .ToListAsync(ct);
+
+        foreach (var entry in _db.ChangeTracker.Entries<LocalItemCategoryOption>()
+                     .Where(entry => entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted))
+        {
+            options.RemoveAll(option => option.Id == entry.Entity.Id);
+            if (entry.State != EntityState.Deleted)
+                options.Add(entry.Entity);
+        }
+
+        return options;
     }
 
     private async Task<LocalItem?> EnsureRentalItemAsync(

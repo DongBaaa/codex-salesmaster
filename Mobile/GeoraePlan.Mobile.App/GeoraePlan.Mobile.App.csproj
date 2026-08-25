@@ -28,10 +28,20 @@
     <DefineConstants>$(DefineConstants);GEORAEPLAN_MOBILE_LOCAL_TEST</DefineConstants>
     <AndroidManifestPlaceholders>usesCleartextTraffic=true</AndroidManifestPlaceholders>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(GeoraePlanMobileUiMatrix)' == 'true'">
+    <DefineConstants>$(DefineConstants);GEORAEPLAN_MOBILE_UI_MATRIX</DefineConstants>
+    <ApplicationId>kr.georaeplan.mobile.uimatrix</ApplicationId>
+    <ApplicationTitle>GeoraePlan UI Matrix</ApplicationTitle>
+    <AndroidManifest>Platforms\Android\AndroidManifest.UiMatrix.xml</AndroidManifest>
+    <AndroidManifestPlaceholders>usesCleartextTraffic=false</AndroidManifestPlaceholders>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(TargetFramework)' == 'net8.0-android'">
     <AndroidSdkDirectory Condition="'$(AndroidSdkDirectory)' == '' and '$(ANDROID_SDK_ROOT)' != '' and Exists('$(ANDROID_SDK_ROOT)')">$(ANDROID_SDK_ROOT)</AndroidSdkDirectory>
     <AndroidSdkDirectory Condition="'$(AndroidSdkDirectory)' == '' and '$(ANDROID_HOME)' != '' and Exists('$(ANDROID_HOME)')">$(ANDROID_HOME)</AndroidSdkDirectory>
     <AndroidSdkDirectory Condition="'$(AndroidSdkDirectory)' == '' and '$(LOCALAPPDATA)' != '' and Exists('$(LOCALAPPDATA)\GeoraePlan.Android\android-sdk')">$(LOCALAPPDATA)\GeoraePlan.Android\android-sdk</AndroidSdkDirectory>
+    <JavaSdkDirectory Condition="'$(JavaSdkDirectory)' == '' and '$(GEORAEPLAN_ANDROID_JAVA_SDK)' != '' and Exists('$(GEORAEPLAN_ANDROID_JAVA_SDK)\bin\java.exe')">$(GEORAEPLAN_ANDROID_JAVA_SDK)</JavaSdkDirectory>
+    <JavaSdkDirectory Condition="'$(JavaSdkDirectory)' == '' and Exists('D:\DevCaches\georaeplan-android-jdk\microsoft-jdk-17.0.20\bin\java.exe')">D:\DevCaches\georaeplan-android-jdk\microsoft-jdk-17.0.20</JavaSdkDirectory>
+    <JavaSdkDirectory Condition="'$(JavaSdkDirectory)' == '' and '$(LOCALAPPDATA)' != '' and Exists('$(LOCALAPPDATA)\GeoraePlan.Android\microsoft-jdk-17.0.20\bin\java.exe')">$(LOCALAPPDATA)\GeoraePlan.Android\microsoft-jdk-17.0.20</JavaSdkDirectory>
     <JavaSdkDirectory Condition="'$(JavaSdkDirectory)' == '' and '$(JAVA_HOME)' != '' and Exists('$(JAVA_HOME)\bin\java.exe')">$(JAVA_HOME)</JavaSdkDirectory>
     <JavaSdkDirectory Condition="'$(JavaSdkDirectory)' == '' and '$(ProgramFiles)' != '' and Exists('$(ProgramFiles)\Android\Android Studio\jbr\bin\java.exe')">$(ProgramFiles)\Android\Android Studio\jbr</JavaSdkDirectory>
     <JavaSdkDirectory Condition="'$(JavaSdkDirectory)' == '' and '$(LOCALAPPDATA)' != '' and Exists('$(LOCALAPPDATA)\Programs\Android Studio\jbr\bin\java.exe')">$(LOCALAPPDATA)\Programs\Android Studio\jbr</JavaSdkDirectory>
@@ -65,6 +75,7 @@
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\Shared\GeoraePlan.UpdateTransport\GeoraePlan.UpdateTransport.csproj" />
     <ProjectReference Include="..\..\Shared\거래플랜.Shared.Contracts\거래플랜.Shared.Contracts.csproj" />
   </ItemGroup>
 </Project>

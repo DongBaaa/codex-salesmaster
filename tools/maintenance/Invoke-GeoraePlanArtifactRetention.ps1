@@ -845,6 +845,30 @@ function Assert-JsonIntegerOne {
     }
 }
 
+function Get-RetentionFileSha256 {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    $stream = [IO.File]::Open(
+        $Path,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read)
+    $algorithm = $null
+    try {
+        $algorithm = [Security.Cryptography.SHA256]::Create()
+        $hash = $algorithm.ComputeHash($stream)
+        return ([BitConverter]::ToString($hash)).Replace('-', '')
+    }
+    finally {
+        if ($null -ne $algorithm) {
+            $algorithm.Dispose()
+        }
+        $stream.Dispose()
+    }
+}
+
 function Assert-RetentionParentOwner {
     param(
         [Parameter(Mandatory = $true)][string]$ParentPath,
@@ -894,7 +918,7 @@ function Assert-RetentionParentOwner {
     }
     return [pscustomobject]@{
         MarkerPath = $markerPath
-        MarkerSha256 = (Get-FileHash -LiteralPath $markerPath -Algorithm SHA256).Hash
+        MarkerSha256 = Get-RetentionFileSha256 -Path $markerPath
         ParentId = [string]$metadata.parentId
     }
 }
@@ -978,7 +1002,7 @@ function Get-ArtifactTreeEntries {
                 $pending.Push($child.FullName)
             }
             else {
-                $record.sha256 = (Get-FileHash -LiteralPath $child.FullName -Algorithm SHA256).Hash
+                $record.sha256 = Get-RetentionFileSha256 -Path $child.FullName
             }
             $result.Add([pscustomobject]$record)
         }
@@ -1056,7 +1080,7 @@ function Assert-EvidenceBundle {
     if ($expectedHash -notmatch '\A[0-9A-Fa-f]{64}\z') {
         throw 'Evidence bundle SHA-256 is malformed.'
     }
-    $actualHash = (Get-FileHash -LiteralPath $evidencePath -Algorithm SHA256).Hash
+    $actualHash = Get-RetentionFileSha256 -Path $evidencePath
     if (-not [string]::Equals($actualHash, $expectedHash, $comparison)) {
         throw 'Evidence bundle SHA-256 does not match.'
     }
@@ -1546,8 +1570,8 @@ function Assert-ArtifactCandidate {
         PhysicalPath = $rootIdentity.PhysicalPath
         VolumeSerialNumber = $rootIdentity.VolumeSerialNumber
         FileId = $rootIdentity.FileId
-        OwnerMetadataSha256 = (Get-FileHash -LiteralPath $ownerPath -Algorithm SHA256).Hash
-        CompletionMetadataSha256 = (Get-FileHash -LiteralPath $completionPath -Algorithm SHA256).Hash
+        OwnerMetadataSha256 = Get-RetentionFileSha256 -Path $ownerPath
+        CompletionMetadataSha256 = Get-RetentionFileSha256 -Path $completionPath
         EvidencePath = $evidence.Path
         EvidencePhysicalPath = $evidence.PhysicalPath
         EvidenceVolumeSerialNumber = $evidence.VolumeSerialNumber
@@ -1623,8 +1647,8 @@ function Remove-ValidatedArtifactCandidate {
 
     $tombstoneOwnerPath = Join-Path $tombstonePath $ownerFileName
     $tombstoneCompletionPath = Join-Path $tombstonePath $completionFileName
-    $ownerHash = (Get-FileHash -LiteralPath $tombstoneOwnerPath -Algorithm SHA256).Hash
-    $completionHash = (Get-FileHash -LiteralPath $tombstoneCompletionPath -Algorithm SHA256).Hash
+    $ownerHash = Get-RetentionFileSha256 -Path $tombstoneOwnerPath
+    $completionHash = Get-RetentionFileSha256 -Path $tombstoneCompletionPath
     if (
         -not [string]::Equals($ownerHash, $fresh.OwnerMetadataSha256, $comparison) -or
         -not [string]::Equals($completionHash, $fresh.CompletionMetadataSha256, $comparison)) {

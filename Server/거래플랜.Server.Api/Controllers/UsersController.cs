@@ -43,8 +43,8 @@ public sealed class UsersController : ControllerBase
         if (string.IsNullOrWhiteSpace(username))
             return BadRequest("Username is required.");
 
-        if (string.IsNullOrWhiteSpace(request.Password))
-            return BadRequest("Password is required.");
+        if (!UserPasswordPolicy.MeetsMinimumLength(request.Password))
+            return BadRequest($"Password must be at least {UserPasswordPolicy.MinimumLength} characters.");
 
         var exists = await _dbContext.Users
             .IgnoreQueryFilters()
@@ -172,8 +172,8 @@ public sealed class UsersController : ControllerBase
         [FromBody] UpdateUserPasswordRequest request,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(request.Password))
-            return BadRequest("Password is required.");
+        if (!UserPasswordPolicy.MeetsMinimumLength(request.Password))
+            return BadRequest($"Password must be at least {UserPasswordPolicy.MinimumLength} characters.");
 
         var user = await ApplyUserManagementScope(_dbContext.Users.AsQueryable())
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);

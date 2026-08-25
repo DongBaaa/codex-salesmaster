@@ -45,7 +45,7 @@
             <Setter Property="BorderBrush" Value="#5D7593"/>
             <Setter Property="Background" Value="{StaticResource TradePlanSecondaryBrush}"/>
             <Setter Property="Padding" Value="14,0"/>
-            <Setter Property="Height" Value="38"/>
+            <Setter Property="MinHeight" Value="38"/>
             <Setter Property="MinWidth" Value="108"/>
             <Setter Property="FontFamily" Value="Malgun Gothic"/>
             <Setter Property="Cursor" Value="Hand"/>
@@ -92,25 +92,26 @@
                 BorderBrush="#2E4060"
                 BorderThickness="1">
             <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <StackPanel Grid.Row="0">
                     <TextBlock Text="동기화 진단" FontSize="22" FontWeight="Bold" Foreground="#4FC3F7"/>
                     <TextBlock Text="동기화 확인 항목, 서버/로컬 무결성, sync outbox 재시도 상태를 한 화면에서 확인합니다."
                                Foreground="#9FB3C8"
-                               Margin="0,4,0,0"/>
+                               Margin="0,4,0,0"
+                               TextWrapping="Wrap"/>
                     <TextBlock Text="{Binding SummaryStatusText}" Foreground="#90CAF9" Margin="0,8,0,0" TextWrapping="Wrap"/>
                 </StackPanel>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
+                <WrapPanel Grid.Row="1" Margin="0,12,0,0">
                     <Button Content="새로고침(F5)" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding RefreshCommand}" Margin="0,0,6,0"/>
                     <Button Content="동기화 재시도" Style="{StaticResource TradePlanEditButtonStyle}" Command="{Binding RetrySyncCommand}" Margin="0,0,6,0"/>
                     <Button Content="공유 캐시 다시 만들기" Style="{StaticResource TradePlanEditButtonStyle}" Command="{Binding RebuildSharedCacheCommand}" Margin="0,0,6,0" IsEnabled="{Binding CanManageSyncMaintenance}" ToolTip="{Binding SyncMaintenancePermissionHint}"/>
                     <Button Content="선택 항목 복구" Style="{StaticResource TradePlanEditButtonStyle}" Command="{Binding RunSelectedRepairCommand}" Margin="0,0,6,0" IsEnabled="{Binding CanManageSyncMaintenance}" ToolTip="{Binding SyncMaintenancePermissionHint}"/>
                     <Button Content="복구 가능 항목 전체 처리" Style="{StaticResource TradePlanPrimaryButtonStyle}" Command="{Binding RunAutoRepairCommand}" Margin="0,0,6,0" IsEnabled="{Binding CanManageSyncMaintenance}" ToolTip="{Binding SyncMaintenancePermissionHint}"/>
                     <Button Content="닫기(F12)" Style="{StaticResource TradePlanSecondaryButtonStyle}" Click="CloseButton_Click"/>
-                </StackPanel>
+                </WrapPanel>
             </Grid>
         </Border>
 
@@ -299,7 +300,12 @@
                     </Grid.RowDefinitions>
 
                     <Border Grid.Row="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
-                        <DataGrid ItemsSource="{Binding Events}" SelectedItem="{Binding SelectedEvent}" IsReadOnly="True" BorderThickness="0">
+                        <DataGrid x:Name="SyncEventsDataGrid"
+                                  MinHeight="180"
+                                  ItemsSource="{Binding Events}"
+                                  SelectedItem="{Binding SelectedEvent}"
+                                  IsReadOnly="True"
+                                  BorderThickness="0">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="마지막 발생" Binding="{Binding LastOccurredAtUtc, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}" Width="160"/>
                                 <DataGridTextColumn Header="유형" Binding="{Binding Category}" Width="130"/>

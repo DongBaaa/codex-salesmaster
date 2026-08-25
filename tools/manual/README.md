@@ -12,7 +12,9 @@
   - `Mobile\GeoraePlan.Mobile.App\GeoraePlan.Mobile.App.csproj`
   - `배포\stable.json`
 - `배포\업데이트\manifest\stable.json`은 로컬 게시 과정에서 만드는 무시 대상 복사본이므로 재현 입력으로 사용하지 않습니다.
-- 화면 캡처 날짜·Desktop 버전·파일 SHA-256은 `assets\capture-manifest.json`에서 검증합니다.
+- 화면 캡처 날짜·Desktop 버전·파일 SHA-256과 current Release WPF exact 실행 증거는 `assets\capture-manifest.json`에서 검증합니다.
+- 캡처 manifest schema 2는 exact 결과 SHA-256, 실행 어셈블리 SHA-256, 768개 측정, 36개 성공 화면, 모델링 0건을 고정합니다.
+- 캡처 날짜가 문서 기능 기준일과 다르거나, 캡처 Desktop 버전이 현재 소스 버전과 다르거나, exact 증거·15개 선별 화면 중 하나라도 달라지면 생성이 중단됩니다.
 
 ## 실행
 
@@ -37,6 +39,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 - 모든 페이지의 추출 가능 텍스트
 - csproj·stable manifest에서 읽은 버전
 - Android 지원 범위, `.gpbackup`, `adb install -r` 핵심 문구
-- 캡처 자산 15개의 SHA-256
+- 캡처 자산 15개의 서로 다른 파일명·원본 창·SHA-256
+- current Release WPF exact 결과와 실행 어셈블리의 고정 SHA-256, 측정 수, 모델링 0건
 
 이 작업은 문서 산출물만 만들며 live 배포, stable manifest 게시, 앱 버전 증가, 정식 설치 패키지 생성, Git commit/push를 수행하지 않습니다.

@@ -1504,10 +1504,10 @@ namespace GeoraePlan.Desktop.App.Tests
                 "https://trade.example.test/updates/download/android/tradeplan-android-v2.0.0.apk");
             var sha256 = new string('A', 64);
 
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
             using var response = await client.SendAsync(
-                uri,
+                request,
                 sha256,
-                HttpCompletionOption.ResponseHeadersRead,
                 CancellationToken.None);
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -1534,11 +1534,11 @@ namespace GeoraePlan.Desktop.App.Tests
                 ClientCompatibilityHeaders.Protocol,
                 "1");
 
+            using var invalidRequest = new HttpRequestMessage(HttpMethod.Get, uri);
             await Assert.ThrowsAsync<InvalidOperationException>(
                 () => client.SendAsync(
-                    uri,
+                    invalidRequest,
                     "bad-sha",
-                    HttpCompletionOption.ResponseHeadersRead,
                     CancellationToken.None));
             Assert.Equal(1, handler.RequestCount);
 
@@ -1548,7 +1548,7 @@ namespace GeoraePlan.Desktop.App.Tests
                 "Services",
                 "MobileAppUpdateService.cs"));
             Assert.Contains(
-                "new Uri(packageUrl, UriKind.Absolute),\n                expectedSha256,",
+                "_packageDownloader.DownloadAsync(\n            packageUri,\n            targetPath,\n            expectedFileSize,\n            expectedSha256,",
                 serviceSource.Replace("\r\n", "\n", StringComparison.Ordinal),
                 StringComparison.Ordinal);
         }

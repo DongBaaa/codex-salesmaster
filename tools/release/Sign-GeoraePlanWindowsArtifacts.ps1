@@ -92,10 +92,36 @@ function Normalize-Thumbprint {
     return (($Value -replace '\s+', '')).ToUpperInvariant()
 }
 
+function Test-CodeSigningCertificateChain {
+    param([Parameter(Mandatory = $true)]$Certificate)
+
+    $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+    try {
+        $chain.ChainPolicy.RevocationMode =
+            [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+        $chain.ChainPolicy.VerificationFlags =
+            [System.Security.Cryptography.X509Certificates.X509VerificationFlags]::NoFlag
+
+        if (-not $chain.Build($Certificate)) {
+            return $false
+        }
+
+        return @($chain.ChainStatus).Count -eq 0
+    }
+    finally {
+        $chain.Dispose()
+    }
+}
+
 function Test-CodeSigningCertificate {
     param([Parameter(Mandatory = $true)]$Certificate)
 
     if (-not $Certificate.HasPrivateKey) {
+        return $false
+    }
+
+    $now = Get-Date
+    if ($Certificate.NotBefore -gt $now -or $Certificate.NotAfter -le $now) {
         return $false
     }
 
@@ -104,18 +130,25 @@ function Test-CodeSigningCertificate {
             $_ -is [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]
         })
     if ($ekuExtensions.Count -eq 0) {
-        return $true
+        return $false
     }
 
+    $hasCodeSigningEku = $false
     foreach ($extension in $ekuExtensions) {
         foreach ($oid in $extension.EnhancedKeyUsages) {
             if ([string]::Equals([string]$oid.Value, $codeSigningOid, [System.StringComparison]::Ordinal)) {
-                return $true
+                $hasCodeSigningEku = $true
+                break
             }
+        }
+
+        if ($hasCodeSigningEku) {
+            break
         }
     }
 
-    return $false
+    return $hasCodeSigningEku -and
+        (Test-CodeSigningCertificateChain -Certificate $Certificate)
 }
 
 function Resolve-FullPath {
@@ -270,10 +303,7 @@ function Try-ResolvePfxCertificate {
             $password,
             [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
         if (-not (Test-CodeSigningCertificate -Certificate $certificate)) {
-            throw 'PFX certificate does not contain a usable private code-signing key.'
-        }
-        if ($certificate.NotBefore -gt (Get-Date) -or $certificate.NotAfter -le (Get-Date)) {
-            throw 'PFX code-signing certificate is not currently valid.'
+            throw 'PFX certificate does not contain a currently valid, trusted private code-signing key.'
         }
         $material = [pscustomobject]@{
             Kind       = 'Pfx'

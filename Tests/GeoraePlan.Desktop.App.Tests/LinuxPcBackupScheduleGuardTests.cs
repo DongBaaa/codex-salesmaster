@@ -5,6 +5,72 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class LinuxPcBackupScheduleGuardTests
 {
     [Fact]
+    public void RestoreDrill_UsesOnlyAReplicaBoundNetworklessEphemeralDatabaseAndStrictStatusGate()
+    {
+        var drill = ReadLinuxTool(
+            "assets",
+            "georaeplan-backup-restore-drill",
+            "georaeplan-backup-restore-drill.sh");
+        var installer = ReadRepositoryFile(
+            "tools",
+            "linux",
+            "Install-GeoraeplanLinuxPcBackupRestoreDrill.ps1");
+        var validator = ReadRepositoryFile(
+            "tools",
+            "ops",
+            "Test-GeoraePlanBackupRestoreDrillStatus.ps1");
+        var operationalGate = ReadRepositoryFile(
+            "tools",
+            "ops",
+            "Invoke-GeoraePlanOperationalGate.ps1");
+
+        foreach (var required in new[]
+                 {
+                     "restore_drill=ok",
+                     "source_run_id",
+                     "source_manifest_sha256",
+                     "replica_manifest_sha256",
+                     "$DOCKER_BIN\" create",
+                     "--network none",
+                     "--read-only",
+                     "--mount \"type=bind,src=$restore_workdir,dst=/var/lib/postgresql/data\"",
+                     "cleanup_restore_workdir",
+                     "pg_restore --exit-on-error --no-owner --no-privileges",
+                     "Users",
+                     "Items",
+                     "Transactions",
+                     "RentalAssets",
+                     "Invoices",
+                     "Payments",
+                     "$DOCKER_BIN\" rm -f"
+                 })
+        {
+            Assert.Contains(required, drill, StringComparison.Ordinal);
+        }
+
+        foreach (var forbidden in new[]
+                 {
+                     "docker compose down",
+                     "docker compose restart",
+                     "docker system prune",
+                     "systemctl restart",
+                     "georaeplan-postgres"
+                 })
+        {
+            Assert.DoesNotContain(forbidden, drill, StringComparison.OrdinalIgnoreCase);
+        }
+
+        Assert.Contains("if (-not $Apply)", installer, StringComparison.Ordinal);
+        Assert.Contains("backup_restore_drill_remote_mutation=none", installer, StringComparison.Ordinal);
+        Assert.Contains("current_image_id=", installer, StringComparison.Ordinal);
+        Assert.Contains("docker image inspect '$imageId'", installer, StringComparison.Ordinal);
+        Assert.Contains("Test-GeoraePlanBackupRestoreDrillStatus.ps1", operationalGate, StringComparison.Ordinal);
+        Assert.Contains("$restoreDrillIntegrityPassed", operationalGate, StringComparison.Ordinal);
+        Assert.Contains("restore_drill_verified", validator, StringComparison.Ordinal);
+        Assert.Contains("replica_manifest_sha256", validator, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void InstallerPromptedSudoKeepsThePasswordOffArgumentsEnvironmentAndFiles()
     {
         var source = ReadRepositoryFile(
@@ -444,7 +510,7 @@ public sealed class LinuxPcBackupScheduleGuardTests
     }
 
     [Fact]
-    public void ReplicaContract_RemainsExplicitlyUnmetWhileExternalReplicaIsDisabled()
+    public void ReplicaContract_RequiresStrictExternalStatusWhileSourceBackupRemainsReplicaDisabled()
     {
         var backup = ReadLinuxTool(
             "assets",
@@ -462,21 +528,39 @@ public sealed class LinuxPcBackupScheduleGuardTests
             "tools",
             "ops",
             "Invoke-GeoraePlanOperationalGate.ps1");
+        var replicaValidator = ReadRepositoryFile(
+            "tools",
+            "ops",
+            "Test-GeoraePlanExternalReplicaStatus.ps1");
+        var replica = ReadLinuxTool(
+            "assets",
+            "georaeplan-backup-replica",
+            "georaeplan-backup-replica.sh");
+        var replicaReadme = ReadLinuxTool(
+            "assets",
+            "georaeplan-backup-replica",
+            "README.md");
 
         Assert.Contains(
             "EXTERNAL_REPLICA_ENABLED=false",
             environmentExample,
             StringComparison.Ordinal);
         Assert.Contains(
+            "Test-GeoraePlanExternalReplicaStatus.ps1",
+            operationalGate,
+            StringComparison.Ordinal);
+        Assert.Contains("$replicaIntegrityPassed", operationalGate, StringComparison.Ordinal);
+        Assert.DoesNotContain(
             "$replica -match 'replica=ok'",
             operationalGate,
             StringComparison.Ordinal);
         Assert.Contains("replica=disabled", backup, StringComparison.Ordinal);
         Assert.DoesNotContain("replica=ok", backup, StringComparison.Ordinal);
-        Assert.Contains(
-            "replica gate를 충족한 것으로 간주하면 안 된다",
-            readme,
-            StringComparison.Ordinal);
+        Assert.Contains("replica=ok", replica, StringComparison.Ordinal);
+        Assert.Contains("source_manifest_sha256", replicaValidator, StringComparison.Ordinal);
+        Assert.Contains("replica_manifest_sha256", replicaValidator, StringComparison.Ordinal);
+        Assert.Contains("restore_drill=not_proven", replicaReadme, StringComparison.Ordinal);
+        Assert.Contains("replica=disabled", readme, StringComparison.Ordinal);
     }
 
     private static string ReadLinuxTool(params string[] relativeParts)

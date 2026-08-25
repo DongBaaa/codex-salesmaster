@@ -204,7 +204,7 @@ public static class ProcurementDocumentBuilder
             FontSize = 19,
             FontWeight = FontWeights.Bold,
             Foreground = TextBrush,
-            TextWrapping = TextWrapping.NoWrap,
+            TextWrapping = TextWrapping.Wrap,
             TextTrimming = TextTrimming.None
         };
         recipientGrid.Children.Add(new Viewbox
@@ -435,8 +435,8 @@ public static class ProcurementDocumentBuilder
     {
         var finalAlignment = center ? TextAlignment.Center : align;
         var block = CreateText(text, fontSize, bold ? FontWeights.Bold : FontWeights.Normal, finalAlignment);
-        block.TextWrapping = wrap ? TextWrapping.Wrap : TextWrapping.NoWrap;
-        block.TextTrimming = wrap ? TextTrimming.None : TextTrimming.CharacterEllipsis;
+        block.TextWrapping = TextWrapping.Wrap;
+        block.TextTrimming = TextTrimming.None;
 
         var border = new Border
         {
@@ -471,8 +471,8 @@ public static class ProcurementDocumentBuilder
     {
         var finalAlignment = center ? TextAlignment.Center : align;
         var block = CreateText(text, fontSize, bold ? FontWeights.Bold : FontWeights.Normal, finalAlignment);
-        block.TextWrapping = wrap ? TextWrapping.Wrap : TextWrapping.NoWrap;
-        block.TextTrimming = wrap ? TextTrimming.None : TextTrimming.CharacterEllipsis;
+        block.TextWrapping = TextWrapping.Wrap;
+        block.TextTrimming = TextTrimming.None;
 
         var border = new Border
         {

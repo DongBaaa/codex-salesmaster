@@ -22,6 +22,7 @@ param(
     [switch]$SkipPostDeployOperationalGate,
     [switch]$FailOnOperationalWarnings,
     [switch]$AcceptRentalTemplateItemReferenceRisk,
+    [switch]$PreserveLiveAndroidUpdate,
     [switch]$SkipAndroidSigningContinuityCheck,
     [switch]$AcceptAndroidSigningCertificateChange,
     [string]$LocalCacheAppDataRoot = '',

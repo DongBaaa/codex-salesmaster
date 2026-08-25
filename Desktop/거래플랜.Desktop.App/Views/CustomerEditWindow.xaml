@@ -76,7 +76,7 @@
             <Setter Property="Padding" Value="14,0"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
-            <Setter Property="Height" Value="34"/>
+            <Setter Property="MinHeight" Value="34"/>
             <Setter Property="MinWidth" Value="102"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
@@ -97,7 +97,8 @@
             <Setter Property="BorderBrush" Value="#4A6382"/>
             <Setter Property="HeadersVisibility" Value="Column"/>
             <Setter Property="GridLinesVisibility" Value="Horizontal"/>
-            <Setter Property="RowHeight" Value="32"/>
+            <Setter Property="RowHeight" Value="NaN"/>
+            <Setter Property="MinRowHeight" Value="32"/>
             <Setter Property="CanUserAddRows" Value="False"/>
             <Setter Property="CanUserDeleteRows" Value="False"/>
             <Setter Property="CanUserResizeRows" Value="False"/>
@@ -152,7 +153,7 @@
         </Border>
 
         <ScrollViewer x:Name="CustomerBodyScrollViewer"
-                      HorizontalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
                       VerticalScrollBarVisibility="Auto">
             <Grid x:Name="CustomerBodyContent"
                   MinWidth="780"
@@ -379,10 +380,11 @@
                             <DataGrid Grid.Row="0"
                                       ItemsSource="{Binding Contracts}"
                                       SelectedItem="{Binding SelectedContract}"
+                                      ScrollViewer.HorizontalScrollBarVisibility="Auto"
                                       AutoGenerateColumns="False">
                                 <DataGrid.Columns>
-                                    <DataGridCheckBoxColumn Header="대표" Binding="{Binding IsPrimary}" Width="60"/>
-                                    <DataGridTemplateColumn Header="상태" Width="78">
+                                    <DataGridCheckBoxColumn Header="대표" Binding="{Binding IsPrimary}" Width="60" MinWidth="60"/>
+                                    <DataGridTemplateColumn Header="상태" Width="78" MinWidth="78">
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
                                                 <TextBlock Text="{Binding FileRegistrationStatus}"
@@ -405,14 +407,14 @@
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>
-                                    <DataGridTextColumn Header="구분" Binding="{Binding ContractType}" Width="110"/>
-                                    <DataGridTextColumn Header="체결일" Binding="{Binding SignedDate}" Width="95"/>
-                                    <DataGridTextColumn Header="만료일" Binding="{Binding ExpireDate}" Width="95"/>
-                                    <DataGridTextColumn Header="파일명" Binding="{Binding FileName}" Width="190"/>
-                                    <DataGridTextColumn Header="용량" Binding="{Binding FileSize, StringFormat={}{0:N0} B}" Width="100"/>
-                                    <DataGridTextColumn Header="등록자" Binding="{Binding UploadedByUsername}" Width="90"/>
-                                    <DataGridTextColumn Header="등록시각" Binding="{Binding UploadedAtUtc, StringFormat={}{0:yyyy-MM-dd HH:mm}}" Width="130"/>
-                                    <DataGridTextColumn Header="메모" Binding="{Binding Description}" Width="*"/>
+                                    <DataGridTextColumn Header="구분" Binding="{Binding ContractType}" Width="110" MinWidth="78"/>
+                                    <DataGridTextColumn Header="체결일" Binding="{Binding SignedDate}" Width="112" MinWidth="112"/>
+                                    <DataGridTextColumn Header="만료일" Binding="{Binding ExpireDate}" Width="112" MinWidth="112"/>
+                                    <DataGridTextColumn Header="파일명" Binding="{Binding FileName}" Width="190" MinWidth="190"/>
+                                    <DataGridTextColumn Header="용량" Binding="{Binding FileSize, StringFormat={}{0:N0} B}" Width="100" MinWidth="100"/>
+                                    <DataGridTextColumn Header="등록자" Binding="{Binding UploadedByUsername}" Width="90" MinWidth="90"/>
+                                    <DataGridTextColumn Header="등록시각" Binding="{Binding UploadedAtUtc, StringFormat={}{0:yyyy-MM-dd HH:mm}}" Width="145" MinWidth="145"/>
+                                    <DataGridTextColumn Header="메모" Binding="{Binding Description}" Width="140" MinWidth="140"/>
                                 </DataGrid.Columns>
                             </DataGrid>
 

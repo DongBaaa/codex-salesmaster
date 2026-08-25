@@ -860,8 +860,8 @@ public sealed class RentalDocumentService
             FontWeight = weight,
             Foreground = Brushes.Black,
             TextAlignment = alignment,
-            TextWrapping = TextWrapping.NoWrap,
-            TextTrimming = trim ? TextTrimming.CharacterEllipsis : TextTrimming.None,
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.None,
             LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
             VerticalAlignment = VerticalAlignment.Center
         };

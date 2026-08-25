@@ -1,0 +1,25 @@
+﻿# VISUAL_QA
+
+- 작업: 렌탈 청구 전표 메인 전표 수정 안내/저장 가드
+- 화면: `Desktop/거래플랜.Desktop.App/Views/SalesWindow.xaml`
+- 디자인 기준: 기존 WPF 다크 업무 화면 토큰 사용
+  - 배경: `#122038`, `#151F2E`
+  - 경계: `#2E4060`, `#FFCC80`
+  - 본문: `#EAF2FF`, 보조: `#B8C7D8`
+- UI 변경:
+  - 상단 `저장` 버튼 추가
+  - 렌탈 청구 전표일 때만 안내 패널 표시
+  - 안내 패널에 현재 전표만 수정되고 렌탈 청구 프로필/임대 자산/다음 청구 설정은 변경되지 않음을 표시
+- 상태 검증:
+  - `SalesViewModel_RentalLinkedInvoice_ExposesEditBoundaryNotice` 통과
+  - `SalesViewModel_RentalLinkedInvoice_CloseAutoSaveIsBlockedUntilExplicitSave` 통과
+  - `SalesWindow_RentalLinkedInvoice_ShowsSaveActionAndEditBoundaryNotice` 통과
+  - 데스크톱 전체 테스트 841개 통과
+  - Release 빌드 경고 0개, 오류 0개
+- WPF 참고:
+  - 이 프로젝트는 브라우저 기반 화면이 아니라 WPF 데스크톱 화면이라 390/768/1280 브라우저 캡처는 적용 대상이 아님.
+  - 대신 XAML 배치 가드, ViewModel 상태 테스트, WPF 컴파일, 전체 데스크톱 회귀 테스트로 검증함.
+- Anti-slop 확인:
+  - 새 문구에 em-dash 없음.
+  - 새 색상은 기존 디자인 문서/기존 WPF 화면에서 쓰는 다크 업무 토큰 범위 안에서만 사용.
+  - 장식 UI가 아니라 저장 위험을 줄이는 업무 안내/가드 UI로 제한.

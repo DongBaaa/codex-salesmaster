@@ -37,11 +37,12 @@
             <Setter Property="Foreground" Value="#EAF2FF"/>
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
-            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+            <Setter Property="TextTrimming" Value="None"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
         </Style>
 
         <Style x:Key="DialogButtonStyle" TargetType="Button">
-            <Setter Property="Height" Value="38"/>
+            <Setter Property="MinHeight" Value="38"/>
             <Setter Property="MinWidth" Value="110"/>
             <Setter Property="Margin" Value="8,0,0,0"/>
             <Setter Property="Padding" Value="16,0"/>
@@ -100,53 +101,90 @@
                 <TextBlock Grid.Row="0" Text="프린터" Style="{StaticResource SectionTitleStyle}"/>
 
                 <Grid Grid.Row="1">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
 
                     <ComboBox x:Name="PrinterComboBox"
-                              Grid.Column="0"
-                              Height="34"
-                              Margin="0,0,12,0"
-                              DisplayMemberPath="DisplayName"
-                              SelectionChanged="OnPrinterSelectionChanged"/>
+                              Grid.Row="0"
+                              MinHeight="54"
+                              MaxDropDownHeight="640"
+                              ScrollViewer.CanContentScroll="False"
+                              VirtualizingStackPanel.IsVirtualizing="False"
+                              SelectionChanged="OnPrinterSelectionChanged">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid MinWidth="560"
+                                      Margin="2,3"
+                                      ToolTip="{Binding QueueName, Mode=OneWay}">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Row="0"
+                                               Text="{Binding DisplayName, Mode=OneWay}"
+                                               FontWeight="SemiBold"
+                                               TextWrapping="Wrap"
+                                               TextTrimming="None"/>
+                                    <TextBlock Grid.Row="1"
+                                               Margin="0,2,0,0"
+                                               Foreground="#455A64"
+                                               TextWrapping="Wrap"
+                                               TextTrimming="None">
+                                        <Run Text="{Binding TypeText, Mode=OneWay}"/>
+                                        <Run Text=" · "/>
+                                        <Run Text="{Binding LocationText, Mode=OneWay}"/>
+                                        <Run Text=" · "/>
+                                        <Run Text="{Binding StatusText, Mode=OneWay}"/>
+                                    </TextBlock>
+                                </Grid>
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
 
-                    <StackPanel Grid.Column="1"
-                                Orientation="Horizontal"
-                                HorizontalAlignment="Right">
+                    <Grid x:Name="PrinterActionGrid"
+                          Grid.Row="1"
+                          Margin="0,8,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
                         <Button x:Name="PropertiesButton"
+                                Grid.Column="0"
                                 Content="속성..."
-                                Width="78"
                                 Height="34"
                                 Margin="0,0,8,0"
                                 Click="OnPrinterPropertiesClick"/>
                         <Button x:Name="OpenPrinterManagementButton"
+                                Grid.Column="1"
                                 Content="프린터 관리"
-                                Width="88"
                                 Height="34"
                                 Margin="0,0,8,0"
                                 Click="OnOpenPrinterManagementClick"/>
                         <Button x:Name="RefreshPrintersButton"
+                                Grid.Column="2"
                                 Content="새로고침"
-                                Width="78"
                                 Height="34"
                                 Margin="0,0,8,0"
                                 Click="OnRefreshPrintersClick"/>
                         <Button x:Name="CopyDiagnosticButton"
+                                Grid.Column="3"
                                 Content="진단 복사"
-                                Width="88"
                                 Height="34"
                                 Margin="0,0,8,0"
                                 ToolTip="현재 프린터 진단 정보를 클립보드에 복사합니다."
                                 Click="OnCopyDiagnosticClick"/>
                         <Button x:Name="PrintDiagnosticButton"
+                                Grid.Column="4"
                                 Content="1쪽 테스트"
-                                Width="92"
                                 Height="34"
                                 ToolTip="선택한 프린터로 1쪽 테스트 인쇄를 보내고 창은 닫지 않습니다."
                                 Click="OnPrintDiagnosticClick"/>
-                    </StackPanel>
+                    </Grid>
                 </Grid>
 
                 <Grid Grid.Row="2" Margin="0,10,0,0">
@@ -242,9 +280,22 @@
                                  Text="1"
                                  TextAlignment="Right"
                                  VerticalContentAlignment="Center"/>
-                        <StackPanel Margin="6,0,0,0">
-                            <Button Content="▲" Style="{DynamicResource TradePlanCompactButtonStyle}" Width="32" Height="15" Padding="0" Click="OnCopyCountIncreaseClick"/>
-                            <Button Content="▼" Style="{DynamicResource TradePlanCompactButtonStyle}" Width="32" Height="15" Padding="0" Click="OnCopyCountDecreaseClick"/>
+                        <StackPanel Orientation="Horizontal" Margin="6,0,0,0">
+                            <Button Content="▲"
+                                    AutomationProperties.Name="인쇄 매수 증가"
+                                    Style="{DynamicResource TradePlanCompactButtonStyle}"
+                                    Width="34"
+                                    Height="24"
+                                    Padding="0"
+                                    Margin="0,0,4,0"
+                                    Click="OnCopyCountIncreaseClick"/>
+                            <Button Content="▼"
+                                    AutomationProperties.Name="인쇄 매수 감소"
+                                    Style="{DynamicResource TradePlanCompactButtonStyle}"
+                                    Width="34"
+                                    Height="24"
+                                    Padding="0"
+                                    Click="OnCopyCountDecreaseClick"/>
                         </StackPanel>
                     </StackPanel>
                     <CheckBox x:Name="CollateCheckBox"

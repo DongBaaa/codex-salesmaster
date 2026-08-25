@@ -43,6 +43,32 @@ public partial class App : Application
 
 {
 
+    private static int _globalWindowLayoutRegistration;
+
+    public App()
+    {
+        if (Interlocked.Exchange(ref _globalWindowLayoutRegistration, 1) != 0)
+            return;
+
+        EventManager.RegisterClassHandler(
+            typeof(Window),
+            FrameworkElement.LoadedEvent,
+            new RoutedEventHandler(OnAnyWindowLoaded),
+            handledEventsToo: true);
+    }
+
+    private static void OnAnyWindowLoaded(object sender, RoutedEventArgs eventArgs)
+    {
+        if (sender is not Window window ||
+            !ReferenceEquals(eventArgs.OriginalSource, window))
+        {
+            return;
+        }
+
+        ResponsiveWindowBehavior.SetIsEnabled(window, true);
+        FullTextLayoutBehavior.SetIsEnabled(window, true);
+    }
+
     private sealed record SaveCycleResult(bool SyncAttempted, bool SyncSucceeded, int RemainingDirtyCount, bool BackupSucceeded);
 
     private static readonly TimeSpan ShutdownSyncTimeout = TimeSpan.FromSeconds(12);
@@ -3297,6 +3323,10 @@ public partial class App : Application
 
             TextAlignment = TextAlignment.Center,
 
+            TextWrapping = TextWrapping.Wrap,
+
+            TextTrimming = TextTrimming.None,
+
             Margin = new Thickness(0, 0, 0, 10)
 
         };
@@ -3318,6 +3348,8 @@ public partial class App : Application
             TextAlignment = TextAlignment.Center,
 
             TextWrapping = TextWrapping.Wrap,
+
+            TextTrimming = TextTrimming.None,
 
             Margin = new Thickness(0, 0, 0, 14)
 
@@ -3354,6 +3386,10 @@ public partial class App : Application
             Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#5C6F82")),
 
             TextAlignment = TextAlignment.Center,
+
+            TextWrapping = TextWrapping.Wrap,
+
+            TextTrimming = TextTrimming.None,
 
             Margin = new Thickness(0, 12, 0, 0)
 
@@ -3450,6 +3486,8 @@ public partial class App : Application
         };
 
         ResponsiveWindowBehavior.SetIsEnabled(popup, false);
+
+        FullTextLayoutBehavior.SetIsEnabled(popup, true);
 
 
 

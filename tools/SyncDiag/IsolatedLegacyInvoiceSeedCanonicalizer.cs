@@ -164,6 +164,10 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
         "E98DF3E657205319F595AE61089F50E1B87F0BD272C650827AA123B4A8616916";
     internal const string LatestApprovedSourceDatabaseSha256 =
         "719380E811BB04DC364FB6D2E0BD4C4E04B3D3C12F4D56207233D600F80B9A5C";
+    internal const string NewestApprovedSourceDatabaseSha256 =
+        "F422BC337476CE0A6A47638A1CF6D1F1CE1103ED81EF02688C8382197BBD8BA1";
+    internal const string SecurityResetApprovedSourceDatabaseSha256 =
+        "937B93127A721A16857403DE5B3B7DDD7669C1787AC0EAD9C32C83A413B37FE2";
 
     internal static readonly JsonSerializerOptions ReportJsonOptions = new()
     {
@@ -228,6 +232,32 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
                     {
                         SourceDatabaseSha256 =
                             LatestApprovedSourceDatabaseSha256,
+                        AuthorizedNonAcknowledgedOutboxCount = 3,
+                        AuthorizedNonAcknowledgedOutboxSha256 =
+                            "AA1704A42D3954DEF917EC10191B622BF4E15DA2C494C36877376D9E25125BC7",
+                        LatestInvoiceBusinessSha256 =
+                            "EE5B6FC6E2C9D58B3FBC066E00C95693F8EBC63DFE1BC1FCE784EB80EDF85CE8",
+                        DependencyReferencesSha256 =
+                            "D5528F8C6750119E3D642C0953C8C2519CB88C1E6E37457C81868839649641F7"
+                    },
+                [NewestApprovedSourceDatabaseSha256] =
+                    ApprovedProfile with
+                    {
+                        SourceDatabaseSha256 =
+                            NewestApprovedSourceDatabaseSha256,
+                        AuthorizedNonAcknowledgedOutboxCount = 3,
+                        AuthorizedNonAcknowledgedOutboxSha256 =
+                            "AA1704A42D3954DEF917EC10191B622BF4E15DA2C494C36877376D9E25125BC7",
+                        LatestInvoiceBusinessSha256 =
+                            "EE5B6FC6E2C9D58B3FBC066E00C95693F8EBC63DFE1BC1FCE784EB80EDF85CE8",
+                        DependencyReferencesSha256 =
+                            "D5528F8C6750119E3D642C0953C8C2519CB88C1E6E37457C81868839649641F7"
+                    },
+                [SecurityResetApprovedSourceDatabaseSha256] =
+                    ApprovedProfile with
+                    {
+                        SourceDatabaseSha256 =
+                            SecurityResetApprovedSourceDatabaseSha256,
                         AuthorizedNonAcknowledgedOutboxCount = 3,
                         AuthorizedNonAcknowledgedOutboxSha256 =
                             "AA1704A42D3954DEF917EC10191B622BF4E15DA2C494C36877376D9E25125BC7",
@@ -382,6 +412,31 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
             cancellationToken);
         authorization.AssertStable();
         preparationLease.AssertStable();
+        await transaction.RollbackAsync(cancellationToken);
+        return preview;
+    }
+
+    internal static async Task<
+            IsolatedLegacyInvoiceSeedCanonicalizationProfilePreview>
+        PreviewReadOnlyProfileAsync(
+            LocalDbContext db,
+            string sourceDatabaseSha256,
+            CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        if (!IsSha256(sourceDatabaseSha256))
+        {
+            throw new ArgumentException(
+                "A valid source database SHA-256 is required.",
+                nameof(sourceDatabaseSha256));
+        }
+
+        await using var transaction =
+            await db.Database.BeginTransactionAsync(cancellationToken);
+        var preview = await BuildProfilePreviewAsync(
+            db,
+            sourceDatabaseSha256,
+            cancellationToken);
         await transaction.RollbackAsync(cancellationToken);
         return preview;
     }

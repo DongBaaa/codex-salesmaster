@@ -12,7 +12,7 @@
     <Window.Resources>
         <Style x:Key="ToolbarButtonStyle" TargetType="Button">
             <Setter Property="Width" Value="92"/>
-            <Setter Property="Height" Value="36"/>
+            <Setter Property="MinHeight" Value="36"/>
             <Setter Property="Margin" Value="0,0,8,0"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="FontSize" Value="13"/>

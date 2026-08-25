@@ -721,8 +721,16 @@ public partial class MainWindow : Window
         Func<Task> loadAsync,
         string windowTitle,
         string failureMessage,
-        Func<Task>? closedAsync = null)
-        => WindowShowHelper.ShowModelessWithDeferredLoad(window, loadAsync, windowTitle, failureMessage, this, closedAsync);
+        Func<Task>? closedAsync = null,
+        bool blockWindowDuringLoad = true)
+        => WindowShowHelper.ShowModelessWithDeferredLoad(
+            window,
+            loadAsync,
+            windowTitle,
+            failureMessage,
+            this,
+            closedAsync,
+            blockWindowDuringLoad);
 
     public Task InitAsync(
         bool deferStartupNotifications = false,
@@ -1371,13 +1379,15 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(path))
             return;
 
+        var fullPath = Path.GetFullPath(path);
+        var folder = Path.GetDirectoryName(fullPath);
         try
         {
-            if (!File.Exists(path))
+            if (!File.Exists(fullPath))
             {
                 MessageBox.Show(
                     this,
-                    $"무결성 상세 리포트 파일을 찾을 수 없습니다.{Environment.NewLine}{path}",
+                    $"무결성 상세 리포트 파일을 찾을 수 없습니다.{Environment.NewLine}{fullPath}",
                     "주기 무결성 점검",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
@@ -1386,26 +1396,34 @@ public partial class MainWindow : Window
 
             Process.Start(new ProcessStartInfo
             {
-                FileName = path,
+                FileName = fullPath,
+                WorkingDirectory = Directory.Exists(folder) ? folder : AppPaths.DiagnosticsDir,
                 UseShellExecute = true
             });
         }
         catch (Exception ex)
         {
             AppLogger.Warn("RUNTIME", $"주기 무결성 상세 리포트 열기 실패: {ex.Message}");
-            var folder = Path.GetDirectoryName(path);
             if (!string.IsNullOrWhiteSpace(folder) && Directory.Exists(folder))
             {
-                Process.Start(new ProcessStartInfo
+                try
                 {
-                    FileName = folder,
-                    UseShellExecute = true
-                });
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = folder,
+                        WorkingDirectory = folder,
+                        UseShellExecute = true
+                    });
+                }
+                catch (Exception folderOpenException)
+                {
+                    AppLogger.Warn("RUNTIME", $"주기 무결성 리포트 폴더 열기 실패: {folderOpenException.Message}");
+                }
             }
 
             MessageBox.Show(
                 this,
-                $"리포트를 직접 열지 못했습니다. 폴더에서 파일을 확인하세요.{Environment.NewLine}{path}{Environment.NewLine}{Environment.NewLine}{ex.Message}",
+                $"리포트를 직접 열지 못했습니다. 폴더에서 파일을 확인하세요.{Environment.NewLine}{fullPath}{Environment.NewLine}{Environment.NewLine}{ex.Message}",
                 "주기 무결성 점검",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
@@ -2798,7 +2816,8 @@ public partial class MainWindow : Window
                 win,
                 () => vm.InitializeAsync(),
                 "환경설정",
-                "환경설정 데이터를 불러오지 못했습니다.");
+                "환경설정 데이터를 불러오지 못했습니다.",
+                blockWindowDuringLoad: false);
         }
         catch (Exception ex)
         {

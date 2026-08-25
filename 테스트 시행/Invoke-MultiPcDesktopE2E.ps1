@@ -432,7 +432,11 @@ function ConvertTo-EncodedPowerShell {
 }
 
 function ConvertTo-SingleQuotedLiteral {
-    param([Parameter(Mandatory = $true)][string]$Value)
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Value
+    )
 
     return "'" + $Value.Replace("'", "''") + "'"
 }
@@ -721,6 +725,9 @@ if (
     AppDataRoot = $appDataLiteral
     UseInAppSelfTest = `$true
     InAppSelfTestReportPath = $inAppReportLiteral
+    VerifyPriorityWindowsWithInAppSelfTest = `$true
+    MultiPcUiRole = $roleLiteral
+    MultiPcUiBarrierRoot = $runRootLiteral
     LoginInputMutexName = $loginInputMutexLiteral
     Username = `$roleLoginUsername
     Password = `$roleLoginPassword
@@ -1413,37 +1420,31 @@ function Test-ExactProcessStillAlive {
     }
 }
 
-function Restore-FileBytesAtomically {
+function Restore-FileBytesPreservingMetadata {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][byte[]]$Bytes
     )
 
     $normalizedPath = [System.IO.Path]::GetFullPath($Path)
-    $directory = Split-Path -Parent $normalizedPath
-    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-        throw "Restore target directory does not exist: $directory"
+    if (-not (Test-Path -LiteralPath $normalizedPath -PathType Leaf)) {
+        throw "Restore target file does not exist: $normalizedPath"
     }
 
-    $tempPath = Join-Path $directory (
-        ".$([System.IO.Path]::GetFileName($normalizedPath)).restore.$([Guid]::NewGuid().ToString('N')).tmp")
-    $backupPath = Join-Path $directory (
-        ".$([System.IO.Path]::GetFileName($normalizedPath)).backup.$([Guid]::NewGuid().ToString('N')).tmp")
+    $stream = [System.IO.FileStream]::new(
+        $normalizedPath,
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::None,
+        4096,
+        [System.IO.FileOptions]::WriteThrough)
     try {
-        [System.IO.File]::WriteAllBytes($tempPath, $Bytes)
-        [System.IO.File]::Replace(
-            $tempPath,
-            $normalizedPath,
-            $backupPath,
-            $true)
+        $stream.SetLength(0)
+        $stream.Write($Bytes, 0, $Bytes.Length)
+        $stream.Flush($true)
     }
     finally {
-        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
-            Remove-Item -LiteralPath $tempPath -Force
-        }
-        if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
-            Remove-Item -LiteralPath $backupPath -Force
-        }
+        $stream.Dispose()
     }
 }
 
@@ -1799,6 +1800,7 @@ $serverUrl = ""
 $sourceAppSettings = Join-Path $sourceAppRoot "appsettings.json"
 $sourceAppSettingsOriginalBytes = $null
 $sourceAppSettingsOriginalSha256 = ""
+$sourceAppSettingsOriginalSddl = ""
 $serverDatabaseSnapshotPath = ""
 $serverDatabaseOriginalSha256 = ""
 $bootstrapContractPath = ""
@@ -1834,6 +1836,8 @@ try {
         [System.IO.File]::ReadAllBytes($sourceAppSettings)
     $sourceAppSettingsOriginalSha256 =
         (Get-FileHash -LiteralPath $sourceAppSettings -Algorithm SHA256).Hash
+    $sourceAppSettingsOriginalSddl =
+        (Get-Acl -LiteralPath $sourceAppSettings).Sddl
     & $setApiScript -BaseUrl $serverUrl -AppSettingsPaths @($sourceAppSettings) | Out-Null
     & $prepareScript -ProjectRoot $ProjectRoot -ExecutionRoot $ExecutionRoot -MultiPcRoot $multiPcRoot -ResetClientData
     Add-Step -Steps $steps -Name "prepare-isolated-runtime" -Passed $true -Detail "physical App/AppData/temp/download roots prepared; cloned Sync.DeviceId removed"
@@ -2083,7 +2087,28 @@ try {
         if ([string]$uiSmokePayload.Result -ne "PASS") {
             throw "PC-$($roleHost.Role) UI smoke JSON result is not PASS."
         }
-        $requiredUiSteps = @("login-window", "login-submit", "main-buttons")
+        $requiredUiSteps = @(
+            "login-window",
+            "login-submit",
+            "main-buttons",
+            "window-거래처 관리",
+            "close-거래처 관리",
+            "window-품목/재고 관리",
+            "close-품목/재고 관리",
+            "window-판매(매출)",
+            "close-판매(매출)",
+            "window-구매(매입)",
+            "close-구매(매입)",
+            "initial-responsive-환경설정",
+            "ready-환경설정",
+            "window-환경설정",
+            "close-환경설정",
+            "ready-렌탈 청구관리",
+            "window-렌탈 청구관리",
+            "close-렌탈 청구관리",
+            "ready-렌탈 자산/설치현황",
+            "window-렌탈 자산/설치현황",
+            "close-렌탈 자산/설치현황")
         foreach ($requiredUiStep in $requiredUiSteps) {
             $matchingUiSteps = @(
                 $uiSmokePayload.Steps |
@@ -2688,7 +2713,7 @@ finally {
 
     if ($null -ne $sourceAppSettingsOriginalBytes) {
         try {
-            Restore-FileBytesAtomically `
+            Restore-FileBytesPreservingMetadata `
                 -Path $sourceAppSettings `
                 -Bytes $sourceAppSettingsOriginalBytes
             $restoredAppSettingsSha256 =
@@ -2699,7 +2724,12 @@ finally {
                 [System.StringComparison]::OrdinalIgnoreCase)) {
                 throw "Source App appsettings restore hash mismatch."
             }
-            Add-Step -Steps $steps -Name "source-appsettings-rollback" -Passed $true -Detail "source App settings restored exactly; SHA-256 $restoredAppSettingsSha256"
+            $restoredAppSettingsSddl =
+                (Get-Acl -LiteralPath $sourceAppSettings).Sddl
+            if ($restoredAppSettingsSddl -cne $sourceAppSettingsOriginalSddl) {
+                throw "Source App appsettings restore ACL mismatch."
+            }
+            Add-Step -Steps $steps -Name "source-appsettings-rollback" -Passed $true -Detail "source App settings bytes and ACL restored exactly; SHA-256 $restoredAppSettingsSha256"
         }
         catch {
             $overall = "FAIL"

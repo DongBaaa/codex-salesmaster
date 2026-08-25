@@ -1,6 +1,6 @@
 ﻿# 거래플랜
 
-- 문서 기준시점: 2026-08-12
+- 문서 기준시점: 2026-08-22
 - 반영 범위: 현재 작업트리의 소스·테스트 상태와 `trade.2884.kr` 공개 stable manifest를 분리해 기록
 - 상태 태그: `[공개]`, `[로컬검증]`, `[검증필요]`, `[승인대기]`
 - 상세 진행 상태와 검증 증거: `D:\거래플랜\tasks\거래플랜-전체-품질화-Goal-현황.md`
@@ -12,24 +12,28 @@
 
 ## 현재 버전 상태
 ### 공개 stable
-- `[공개]` Windows PC `1.1.691`
+- `[공개]` Windows PC `1.1.692`
 - `[공개]` Android 표시 버전은 `0.2.82`입니다. APK 내부 versionCode는 공개 매니페스트에 없으므로 공개값으로 단정하지 않습니다.
-- `[공개]` 2026-08-12 확인에서 `trade.2884.kr/healthz`와 `/readyz`는 HTTP 200이며 `fileDeletionLeaseProtocol=shared-flock-v1`입니다.
+- `[공개]` 2026-08-22 확인에서 `trade.2884.kr/healthz`와 stable manifest는 HTTP 200·redirect 0이며 `fileDeletionLeaseProtocol=shared-flock-v1`입니다.
 - 저장소에서 재현 가능한 공개 버전·파일명·SHA-256 기준은 `D:\거래플랜\배포\stable.json`입니다. `배포\업데이트\manifest\stable.json`은 게시 과정의 로컬 산출물이며 live manifest와는 별도로 확인합니다.
 
 ### 현재 소스·테스트판
-- `[로컬검증]` Windows PC 소스 `1.1.692`, FileVersion `1.1.692.0` (공개 stable `1.1.691`보다 높은 다음 업데이트 후보)
-- `[로컬검증]` Android 소스 `0.2.82`, versionCode `193`
-- `[로컬검증]` 서버 전체 850건 중 840건 통과, PostgreSQL 환경 의존 10건 건너뜀, 실패 0
-- `[로컬검증]` 별도 ephemeral PostgreSQL 전체 12/12, 데스크톱 전체 1,462/1,462 통과
-- 현재 버전의 정식 패키지와 Linux PC live 반영을 완료했고, Goal 관련 변경은 커밋 `bf3798483940315102e528d538f9e9ecb636270d`로 원격 브랜치에 반영했습니다.
+- `[로컬검증]` Windows PC 소스 `1.1.693`, FileVersion `1.1.693.0` (공개 stable `1.1.692`보다 높은 다음 업데이트 후보)
+- `[로컬검증]` Android 소스 `0.2.83`, versionCode `194`
+- `[로컬검증]` 서버 전체 1,478건 통과, PostgreSQL 전용 20건 건너뜀, 실패 0
+- `[로컬검증]` 별도 ephemeral PostgreSQL 업무 회귀 22/22, 데스크톱 전체 3,568/3,568 통과
+- `[로컬검증]` 격리 `Run-All.cmd`, 우선 업무 창 7/7, Multi-PC 24/24, 제한 계정 허용 11/11·차단 2/2 통과
+- `[로컬검증]` WPF 36개 창 768/768, Windows native/앱 프린터 목록 11/11 exact, Android 실제 에뮬레이터 18개 화면 1,044/1,044 통과
+- 이번 품질화 Goal의 현재 소스에 대한 정식 패키지 생성, Linux PC live 반영, 버전 게시, 서명, 실제 기기 설치, Git stage/commit/push는 수행하지 않았습니다.
 
 ### 승인·실사용 검증 대기
 - `[승인대기]` Windows Authenticode/RFC3161 정식 서명과 기존 설치본 덮어쓰기·롤백 설치
-- `[공개]` Android versionCode 증가, Release signing, emulator `adb install -r` 검증 완료
-- `[완료]` Linux PC 거래플랜 전용 자동 백업 schedule 설치·활성화 및 실제 complete set 1회 검증
-- `[자동검증완료/실사용확인대기]` PDF 생성·Excel 왕복·계정 scope·100%·125%·150% WPF 렌더링 감사와 온라인 프린터/Windows 1쪽 테스트 페이지 전송은 통과했습니다. 거래플랜 화면에서의 실제 종이 출력 결과와 운영 제한 계정 실사용은 사용자 확인이 필요합니다.
-- Goal 관련 585개 파일은 무관한 InvestorResearchWeb 삭제 등을 제외해 선택 커밋·push했고, 로컬/원격 SHA가 일치합니다.
+- `[승인대기]` 현재 Android 후보의 버전 게시, production Release signing, 기존 설치본 update-in-place, 실제 기기 설치·회전·권한·ANR 확인
+- `[로컬검증]` Linux PC 거래플랜 전용 자동 백업 schedule 설치·활성화와 complete set 상태는 확인했으며, 외부 replica restore drill은 승인·실행 증거가 필요합니다.
+- `[로컬검증/실사용확인대기]` PDF 생성·Excel 왕복·계정 scope·100~200% WPF 렌더링 감사는 통과했습니다. 거래플랜 화면에서의 실제 종이 출력 결과는 사용자 확인이 필요합니다.
+- `[승인대기]` 현재 Goal 변경의 선택 Git stage/commit/push와 원격 SHA 확인
+- `[검증필요]` 공개 응답의 HSTS가 현재 두 값으로 중복됩니다. 현재 소스는 API의 중복 헤더를 제거해 공개 프록시 단일 소유로 교정했으며, 실제 단일 헤더 확인은 승인된 live 반영 뒤 수행합니다.
+- `[검증필요]` 공개 PC 패키지는 현재 정상·범위초과 Range 요청을 모두 `200`으로 반환하고, PC·Android HEAD에도 `Accept-Ranges`가 없습니다. 현재 소스는 GET `206/416`과 HEAD/GET `Accept-Ranges: bytes`를 활성화했으며 실제 공개 확인은 승인된 live 반영 뒤 수행합니다.
 
 ## Windows PC와 Android 기능 경계
 

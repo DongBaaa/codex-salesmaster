@@ -133,6 +133,14 @@ public sealed class UpdateUserPermissionsRequest
     public List<string> Permissions { get; set; } = new();
 }
 
+public static class UserPasswordPolicy
+{
+    public const int MinimumLength = 6;
+
+    public static bool MeetsMinimumLength(string? password)
+        => !string.IsNullOrWhiteSpace(password) && password.Length >= MinimumLength;
+}
+
 public sealed class CreateUserRequest
 {
     public string Username { get; set; } = string.Empty;

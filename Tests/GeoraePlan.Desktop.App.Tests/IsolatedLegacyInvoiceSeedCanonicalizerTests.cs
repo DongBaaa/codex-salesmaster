@@ -27,6 +27,10 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
         "E98DF3E657205319F595AE61089F50E1B87F0BD272C650827AA123B4A8616916";
     private const string LatestSourceSha256 =
         "719380E811BB04DC364FB6D2E0BD4C4E04B3D3C12F4D56207233D600F80B9A5C";
+    private const string NewestSourceSha256 =
+        "F422BC337476CE0A6A47638A1CF6D1F1CE1103ED81EF02688C8382197BBD8BA1";
+    private const string SecurityResetSourceSha256 =
+        "937B93127A721A16857403DE5B3B7DDD7669C1787AC0EAD9C32C83A413B37FE2";
     private const string GuidPattern =
         @"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b";
     private static readonly IsolatedLegacyInvoiceSeedCanonicalizationProfile
@@ -375,6 +379,26 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
                 SourceDatabaseSha256 = LatestSourceSha256
             },
             latest);
+
+        var newest = IsolatedLegacyInvoiceSeedCanonicalizer
+            .ApprovedProfileForSourceDatabaseSha256ForTests(
+                NewestSourceSha256);
+        Assert.Equal(
+            latest with
+            {
+                SourceDatabaseSha256 = NewestSourceSha256
+            },
+            newest);
+
+        var securityReset = IsolatedLegacyInvoiceSeedCanonicalizer
+            .ApprovedProfileForSourceDatabaseSha256ForTests(
+                SecurityResetSourceSha256);
+        Assert.Equal(
+            newest with
+            {
+                SourceDatabaseSha256 = SecurityResetSourceSha256
+            },
+            securityReset);
     }
 
     [Fact]
@@ -1044,6 +1068,12 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
         IsolatedLegacyInvoiceSeedCanonicalizer
             .AssertApprovedSourceDatabaseSha256ForTests(
                 LatestSourceSha256.ToLowerInvariant());
+        IsolatedLegacyInvoiceSeedCanonicalizer
+            .AssertApprovedSourceDatabaseSha256ForTests(
+                NewestSourceSha256.ToLowerInvariant());
+        IsolatedLegacyInvoiceSeedCanonicalizer
+            .AssertApprovedSourceDatabaseSha256ForTests(
+                SecurityResetSourceSha256.ToLowerInvariant());
         var error = Assert.Throws<
             IsolatedLegacyInvoiceSeedCanonicalizationException>(
             () => IsolatedLegacyInvoiceSeedCanonicalizer
@@ -1539,6 +1569,24 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
             "active_operational_seed_only_not_deleted_history_migration",
             canonicalizer,
             StringComparison.Ordinal);
+        Assert.Contains(
+            NewestSourceSha256,
+            canonicalizer,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            NewestSourceSha256,
+            preparation,
+            StringComparison.Ordinal);
+        Assert.True(
+            CountOccurrences(preparation, NewestSourceSha256) >= 2,
+            "The approved snapshot must be bound in both preflight and report validation.");
+        Assert.Contains(
+            SecurityResetSourceSha256,
+            canonicalizer,
+            StringComparison.Ordinal);
+        Assert.True(
+            CountOccurrences(preparation, SecurityResetSourceSha256) >= 2,
+            "The security-reset snapshot must be bound in both preflight and report validation.");
 
         var updateSql = Between(
             canonicalizer,
@@ -1626,6 +1674,67 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
             CountOccurrences(
                 seedFunction,
                 "'canonicalize-legacy-invoice-test-seed'"));
+    }
+
+    [Fact]
+    public void ReadOnlyProfileCommand_UsesImmutableGuardBeforeAnyInitializer()
+    {
+        var program = File.ReadAllText(
+            RepositoryFile("tools", "SyncDiag", "Program.cs"));
+        var guard = File.ReadAllText(
+            RepositoryFile(
+                "tools",
+                "SyncDiag",
+                "ImmutableSqliteInspectionGuard.cs"));
+        var canonicalizer = File.ReadAllText(
+            RepositoryFile(
+                "tools",
+                "SyncDiag",
+                "IsolatedLegacyInvoiceSeedCanonicalizer.cs"));
+
+        const string command =
+            "inspect-read-only-legacy-invoice-seed-profile";
+        var commandIndex = program.IndexOf(
+            $"\"{command}\"",
+            StringComparison.Ordinal);
+        var initializerIndex = program.IndexOf(
+            "await LocalDbInitializer.InitializeAsync(db)",
+            StringComparison.Ordinal);
+
+        Assert.True(commandIndex >= 0);
+        Assert.True(commandIndex < initializerIndex);
+        Assert.Contains(
+            "ImmutableSqliteInspectionGuard.Acquire",
+            program,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "BuildImmutableInspectionConnectionString",
+            program,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "PreviewReadOnlyProfileAsync",
+            program,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "inspectionGuard.InitialSha256",
+            program,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "inspectionGuard.AssertStableSidecarFree()",
+            program,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "public string InitialSha256",
+            guard,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "internal static async Task<",
+            canonicalizer,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "PreviewReadOnlyProfileAsync",
+            canonicalizer,
+            StringComparison.Ordinal);
     }
 
     private static FiveGroupScenario AddFiveGroupScenario(

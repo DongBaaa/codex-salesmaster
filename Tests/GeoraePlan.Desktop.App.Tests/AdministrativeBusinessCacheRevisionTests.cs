@@ -521,6 +521,82 @@ public sealed class AdministrativeBusinessCacheRevisionTests
     }
 
     [Fact]
+    public async Task AdministrativeBusinessCache_RuntimeScopeRefreshIsReusedByMainScopeForSameSession()
+    {
+        var databasePath = Path.Combine(
+            Path.GetTempPath(),
+            $"georaeplan-admin-cache-cross-scope-{Guid.NewGuid():N}.db");
+        var handler = new AdministrativeCachePullHandler();
+        var services = new ServiceCollection();
+        services.AddSingleton(CreateAdminSession());
+        services.AddSingleton<OfficeAccessService>();
+        services.AddSingleton<SyncRequestDispatcher>();
+        services.AddSingleton<DesktopDataChangeNotifier>();
+        services.AddDbContext<LocalDbContext>(options =>
+            options.UseSqlite($"Data Source={databasePath};Pooling=False"));
+        services.AddScoped<LocalStateService>();
+        services.AddScoped<RentalStateService>();
+        services.AddScoped<SyncDiagnosticsService>();
+        services.AddScoped(provider => new ErpApiClient(
+            new HttpClient(handler, disposeHandler: false)
+            {
+                BaseAddress = new Uri("http://localhost/")
+            },
+            provider.GetRequiredService<SessionState>()));
+        services.AddScoped<SyncService>();
+
+        try
+        {
+            await using var provider = services.BuildServiceProvider(
+                new ServiceProviderOptions
+                {
+                    ValidateOnBuild = true,
+                    ValidateScopes = true
+                });
+
+            await using (var initializationScope = provider.CreateAsyncScope())
+            {
+                var db = initializationScope.ServiceProvider
+                    .GetRequiredService<LocalDbContext>();
+                await db.Database.EnsureCreatedAsync();
+            }
+
+            await using (var runtimeScope = provider.CreateAsyncScope())
+            {
+                var runtimeSync = runtimeScope.ServiceProvider
+                    .GetRequiredService<SyncService>();
+                Assert.True(await runtimeSync.EnsureAdministrativeBusinessCachesAsync());
+            }
+
+            Assert.Equal(2, handler.Requests.Count);
+            Assert.All(handler.Requests, request => Assert.True(request.RentalAdministrationOnly));
+            handler.ClearRequests();
+
+            await using (var mainScope = provider.CreateAsyncScope())
+            {
+                var mainProvider = mainScope.ServiceProvider;
+                var rental = mainProvider.GetRequiredService<RentalStateService>();
+                var session = mainProvider.GetRequiredService<SessionState>();
+
+                var rows = await rental.GetAssetRowsAsync(
+                    new RentalAssetFilter(),
+                    session);
+
+                Assert.Empty(rows);
+            }
+
+            Assert.Empty(handler.Requests);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            File.Delete(databasePath);
+            File.Delete(databasePath + "-shm");
+            File.Delete(databasePath + "-wal");
+        }
+    }
+
+    [Fact]
     public async Task SuccessfulSync_WarmsAdministrativeBusinessCachesBeforeRentalScreenOpens()
     {
         var databasePath = Path.Combine(

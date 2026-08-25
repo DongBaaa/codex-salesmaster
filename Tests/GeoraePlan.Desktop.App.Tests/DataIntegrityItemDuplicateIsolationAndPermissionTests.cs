@@ -282,9 +282,7 @@ public sealed class DataIntegrityItemDuplicateIsolationAndPermissionTests
                 provider.GetRequiredService<SyncRequestDispatcher>(),
                 provider.GetRequiredService<LocalStateService>(),
                 provider.GetRequiredService<IServiceScopeFactory>());
-#if DEBUG
             service.TestOnlyUseLegacyLocalItemDuplicateMerge = true;
-#endif
             return service;
         });
         return services.BuildServiceProvider(new ServiceProviderOptions

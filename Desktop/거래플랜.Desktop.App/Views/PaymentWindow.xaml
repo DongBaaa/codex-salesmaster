@@ -61,7 +61,8 @@
             <Setter Property="Foreground" Value="#EAF2FF"/>
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+            <Setter Property="TextTrimming" Value="None"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
         </Style>
         <Style x:Key="NoteTextBoxStyle" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
             <Setter Property="TextAlignment" Value="Left"/>
@@ -98,13 +99,13 @@
             <Setter Property="Padding" Value="9,0"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="FontSize" Value="11"/>
-            <Setter Property="Height" Value="30"/>
+            <Setter Property="MinHeight" Value="30"/>
             <Setter Property="MinWidth" Value="84"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
         <Style x:Key="PrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource TradePlanPrimaryButtonStyle}">
-            <Setter Property="Height" Value="30"/>
+            <Setter Property="MinHeight" Value="30"/>
             <Setter Property="Padding" Value="9,0"/>
             <Setter Property="FontSize" Value="11"/>
             <Setter Property="FontWeight" Value="Bold"/>
@@ -141,7 +142,8 @@
             <Setter Property="AutoGenerateColumns" Value="False"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="FontSize" Value="11"/>
-            <Setter Property="RowHeight" Value="24"/>
+            <Setter Property="RowHeight" Value="NaN"/>
+            <Setter Property="MinRowHeight" Value="32"/>
             <Setter Property="EnableRowVirtualization" Value="True"/>
             <Setter Property="EnableColumnVirtualization" Value="True"/>
             <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True"/>
@@ -181,16 +183,16 @@
                                Foreground="White"
                                FontSize="18"
                                FontWeight="Bold"
-                               TextWrapping="NoWrap"
-                               TextTrimming="CharacterEllipsis"
+                               TextWrapping="Wrap"
+                               TextTrimming="None"
                                ToolTip="거래처별 수금·지급 내역 입력과 최근 처리기록 확인"/>
                     <TextBlock x:Name="PaymentHeaderSubtitle"
                                Text="거래처별 수금·지급 내역 입력과 최근 처리기록 확인"
                                Foreground="#9FB3C8"
                                Margin="0,3,0,0"
                                FontSize="11"
-                               TextWrapping="NoWrap"
-                               TextTrimming="CharacterEllipsis"
+                               TextWrapping="Wrap"
+                               TextTrimming="None"
                                ToolTip="거래처별 수금·지급 내역 입력과 최근 처리기록 확인"/>
                 </StackPanel>
                 <Button x:Name="PaymentCloseButton"
@@ -308,7 +310,8 @@
                                 <TextBlock Text="{Binding CustomerName}"
                                            Foreground="Black"
                                            FontWeight="Bold"
-                                           TextTrimming="CharacterEllipsis"/>
+                                           TextWrapping="Wrap"
+                                           TextTrimming="None"/>
                             </Button>
 
                             <TextBlock Grid.Column="3" Text="대표전화" Style="{StaticResource InlineInfoLabelStyle}"/>
@@ -408,8 +411,7 @@
                                        FontWeight="Bold"
                                        FontSize="11"
                                        TextWrapping="Wrap"
-                                       TextTrimming="CharacterEllipsis"
-                                       MaxHeight="30"
+                                       TextTrimming="None"
                                        ToolTip="{Binding TransactionContextSummary}"/>
                             <TextBlock x:Name="PaymentTransactionSummaryText"
                                        Text="{Binding TransactionSummary}"
@@ -417,8 +419,7 @@
                                        FontSize="10"
                                        Margin="0,3,0,0"
                                        TextWrapping="Wrap"
-                                       TextTrimming="CharacterEllipsis"
-                                       MaxHeight="28"
+                                       TextTrimming="None"
                                        ToolTip="{Binding TransactionSummary}"/>
                         </StackPanel>
                     </Border>
@@ -669,7 +670,8 @@
                                            FontSize="12"
                                            VerticalAlignment="Center"
                                            MaxWidth="320"
-                                           TextTrimming="CharacterEllipsis"
+                                           TextWrapping="Wrap"
+                                           TextTrimming="None"
                                            ToolTip="{Binding SelectedCustomer.NameOriginal}"/>
                                 <Button Content="수정"
                                         Style="{StaticResource TradePlanEditButtonStyle}"
@@ -832,8 +834,8 @@
                            Text="{Binding StatusMessage}"
                            Margin="0,0,12,0"
                            Foreground="#A5D6A7"
-                           TextWrapping="NoWrap"
-                           TextTrimming="CharacterEllipsis"
+                           TextWrapping="Wrap"
+                           TextTrimming="None"
                            ToolTip="{Binding StatusMessage}"/>
                 <Button x:Name="PaymentSaveButton"
                         Grid.Column="1"

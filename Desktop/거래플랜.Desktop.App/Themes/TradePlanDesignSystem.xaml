@@ -35,6 +35,8 @@
         <Setter Property="FontFamily" Value="Malgun Gothic"/>
         <Setter Property="FontSize" Value="22"/>
         <Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="TextWrapping" Value="Wrap"/>
+        <Setter Property="TextTrimming" Value="None"/>
     </Style>
 
     <Style x:Key="TradePlanWindowSubtitleStyle" TargetType="TextBlock">
@@ -42,6 +44,7 @@
         <Setter Property="FontFamily" Value="Malgun Gothic"/>
         <Setter Property="Margin" Value="0,4,0,0"/>
         <Setter Property="TextWrapping" Value="Wrap"/>
+        <Setter Property="TextTrimming" Value="None"/>
     </Style>
 
     <Style x:Key="TradePlanToolbarLabelStyle" TargetType="TextBlock">
@@ -49,6 +52,8 @@
         <Setter Property="FontFamily" Value="Malgun Gothic"/>
         <Setter Property="FontWeight" Value="Bold"/>
         <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="TextWrapping" Value="Wrap"/>
+        <Setter Property="TextTrimming" Value="None"/>
     </Style>
 
     <Style x:Key="TradePlanActionButtonBaseStyle" TargetType="Button">
@@ -57,7 +62,7 @@
         <Setter Property="BorderBrush" Value="#5D7593"/>
         <Setter Property="BorderThickness" Value="1"/>
         <Setter Property="Padding" Value="14,0"/>
-        <Setter Property="Height" Value="38"/>
+        <Setter Property="MinHeight" Value="38"/>
         <Setter Property="MinWidth" Value="104"/>
         <Setter Property="FontFamily" Value="Malgun Gothic"/>
         <Setter Property="FontSize" Value="13"/>
@@ -65,6 +70,8 @@
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="HorizontalContentAlignment" Value="Center"/>
         <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="ContentTemplateSelector"
+                Value="{DynamicResource FullTextCenterContentTemplateSelector}"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
@@ -74,7 +81,11 @@
                             BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="4"
                             Padding="{TemplateBinding Padding}">
-                        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                        <ContentPresenter Content="{TemplateBinding Content}"
+                                          ContentTemplate="{TemplateBinding ContentTemplate}"
+                                          ContentTemplateSelector="{TemplateBinding ContentTemplateSelector}"
+                                          ContentStringFormat="{TemplateBinding ContentStringFormat}"
+                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                                           VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
                                           RecognizesAccessKey="True"/>
                     </Border>
@@ -126,6 +137,8 @@
     <Style x:Key="TradePlanCompactButtonStyle" TargetType="Button" BasedOn="{StaticResource TradePlanSecondaryButtonStyle}">
         <Setter Property="MinWidth" Value="34"/>
         <Setter Property="Width" Value="34"/>
+        <Setter Property="MinHeight" Value="34"/>
+        <Setter Property="Height" Value="34"/>
         <Setter Property="Padding" Value="0"/>
     </Style>
 </ResourceDictionary>

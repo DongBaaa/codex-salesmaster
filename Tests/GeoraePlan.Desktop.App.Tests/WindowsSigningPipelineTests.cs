@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using Xunit;
@@ -23,6 +25,9 @@ public sealed class WindowsSigningPipelineTests
         Assert.Contains("[string]$ExpectedSignerThumbprint = ''", source, StringComparison.Ordinal);
         Assert.Contains("[string[]]$ExpectedSignerSubjectContains = @()", source, StringComparison.Ordinal);
         Assert.Contains("[string[]]$ExpectedTimestampSubjectContains = @()", source, StringComparison.Ordinal);
+        Assert.Contains("$PSHOME", source, StringComparison.Ordinal);
+        Assert.Contains("Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1", source, StringComparison.Ordinal);
+        Assert.Contains("Microsoft.PowerShell.Security\\Get-AuthenticodeSignature", source, StringComparison.Ordinal);
         Assert.Contains("windows_authenticode=WARNING_UNSIGNED", source, StringComparison.Ordinal);
     }
 
@@ -75,6 +80,8 @@ public sealed class WindowsSigningPipelineTests
         Assert.Contains("[string]::IsNullOrWhiteSpace($WindowsSigningConfigPath) -and -not $RequireSigning", nativeSource, StringComparison.Ordinal);
         Assert.Contains("windows_authenticode_signing=SKIPPED_NO_CONFIG", nativeSource, StringComparison.Ordinal);
         Assert.Contains("(Join-Path $sourceForPackaging 'Updater\\거래플랜.Updater.exe')", nativeSource, StringComparison.Ordinal);
+        Assert.Contains("foreach ($pathToSign in @($Paths))", nativeSource, StringComparison.Ordinal);
+        Assert.Contains("'-Paths', $pathToSign", nativeSource, StringComparison.Ordinal);
         AssertInOrder(
             nativeSource,
             "(Join-Path $sourceForPackaging 'Updater\\거래플랜.Updater.exe')",
@@ -115,6 +122,9 @@ public sealed class WindowsSigningPipelineTests
         Assert.Contains("Only SHA256 is allowed for Windows file digest signing", source, StringComparison.Ordinal);
         Assert.Contains("RFC3161 timestamp URL must be an absolute HTTPS URL", source, StringComparison.Ordinal);
         Assert.Contains("Test-CodeSigningCertificate", source, StringComparison.Ordinal);
+        Assert.Contains("Test-CodeSigningCertificateChain", source, StringComparison.Ordinal);
+        Assert.Contains("X509VerificationFlags]::NoFlag", source, StringComparison.Ordinal);
+        Assert.Contains("return $hasCodeSigningEku -and", source, StringComparison.Ordinal);
         Assert.Contains("Test-GeoraePlanWindowsSigning.ps1", source, StringComparison.Ordinal);
         Assert.Contains("'App\\거래플랜.Desktop.App.exe'", source, StringComparison.Ordinal);
         Assert.Contains("windows_authenticode_signing=SKIPPED_NO_CERTIFICATE", source, StringComparison.Ordinal);
@@ -180,6 +190,89 @@ public sealed class WindowsSigningPipelineTests
     }
 
     [Fact]
+    public async Task WindowsArtifactSigningScript_RejectsUntrustedSelfSignedCertificateBeforeSignTool()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var testRoot = Path.Combine(repositoryRoot, "temp", "windows-signing-untrusted-tests", Guid.NewGuid().ToString("N"));
+        var configPath = Path.Combine(testRoot, "windows-signing.local.json");
+        var pfxPath = Path.Combine(testRoot, "untrusted-code-signing.pfx");
+        var targetPath = Path.Combine(testRoot, "unsigned.exe");
+        var scriptPath = RepositoryFile("tools", "release", "Sign-GeoraePlanWindowsArtifacts.ps1");
+        const string pathEnvironmentVariable = "GEORAEPLAN_TEST_UNTRUSTED_SIGN_PFX_PATH";
+        const string passwordEnvironmentVariable = "GEORAEPLAN_TEST_UNTRUSTED_SIGN_PFX_PASSWORD";
+        const string password = "test-only-password";
+        var originalPath = Environment.GetEnvironmentVariable(pathEnvironmentVariable);
+        var originalPassword = Environment.GetEnvironmentVariable(passwordEnvironmentVariable);
+
+        try
+        {
+            Directory.CreateDirectory(testRoot);
+            File.WriteAllBytes(targetPath, [0x4D, 0x5A, 0x00, 0x00]);
+            var targetBefore = await File.ReadAllBytesAsync(targetPath);
+
+            using var rsa = RSA.Create(2048);
+            var request = new CertificateRequest(
+                "CN=GeoraePlan Untrusted Signing Test",
+                rsa,
+                HashAlgorithmName.SHA256,
+                RSASignaturePadding.Pkcs1);
+            var usages = new OidCollection
+            {
+                new("1.3.6.1.5.5.7.3.3", "Code Signing")
+            };
+            request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(usages, critical: true));
+            request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, critical: true));
+            request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, critical: false));
+            using var certificate = request.CreateSelfSigned(
+                DateTimeOffset.UtcNow.AddMinutes(-5),
+                DateTimeOffset.UtcNow.AddHours(1));
+            await File.WriteAllBytesAsync(pfxPath, certificate.Export(X509ContentType.Pfx, password));
+
+            var config = new
+            {
+                schemaVersion = 1,
+                certificateStoreLocation = "CurrentUser",
+                certificateStoreName = "My",
+                certificateThumbprint = string.Empty,
+                certificateSubjectContains = string.Empty,
+                certificatePathEnvironmentVariable = pathEnvironmentVariable,
+                certificatePasswordEnvironmentVariable = passwordEnvironmentVariable,
+                signToolPath = string.Empty,
+                fileDigestAlgorithm = "SHA256",
+                timestampDigestAlgorithm = "SHA256",
+                timestampRfc3161Url = "https://timestamp.digicert.com",
+                timestampSubjectContains = Array.Empty<string>()
+            };
+            await File.WriteAllTextAsync(
+                configPath,
+                JsonSerializer.Serialize(config),
+                new UTF8Encoding(false));
+
+            Environment.SetEnvironmentVariable(pathEnvironmentVariable, pfxPath);
+            Environment.SetEnvironmentVariable(passwordEnvironmentVariable, password);
+            var result = await RunPowerShellFileAsync(
+                scriptPath,
+                "-ProjectRoot", repositoryRoot,
+                "-WindowsSigningConfigPath", configPath,
+                "-Paths", targetPath,
+                "-RequireSigning");
+
+            var output = result.StdOut + result.StdErr;
+            Assert.NotEqual(0, result.ExitCode);
+            Assert.Contains("No usable Windows signing certificate was resolved", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("signtool.exe was not found", output, StringComparison.Ordinal);
+            Assert.Equal(targetBefore, await File.ReadAllBytesAsync(targetPath));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(pathEnvironmentVariable, originalPath);
+            Environment.SetEnvironmentVariable(passwordEnvironmentVariable, originalPassword);
+            if (Directory.Exists(testRoot))
+                Directory.Delete(testRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task WindowsSigningVerifier_HandlesEmptyExpectationArraysAndFailsOnlyWhenStrict()
     {
         var repositoryRoot = FindRepositoryRoot();
@@ -190,10 +283,12 @@ public sealed class WindowsSigningPipelineTests
         try
         {
             Directory.CreateDirectory(testRoot);
-            File.WriteAllBytes(unsignedPath, [0x4D, 0x5A, 0x00, 0x00]);
+            File.Copy(typeof(WindowsSigningPipelineTests).Assembly.Location, unsignedPath);
 
             var nonStrict = await RunPowerShellFileAsync(verifierPath, "-Paths", unsignedPath);
-            Assert.Equal(0, nonStrict.ExitCode);
+            Assert.True(
+                nonStrict.ExitCode == 0,
+                $"non-strict verifier failed. stdout={nonStrict.StdOut}{Environment.NewLine}stderr={nonStrict.StdErr}");
             Assert.Contains("windows_authenticode=WARNING_UNSIGNED", nonStrict.StdOut + nonStrict.StdErr, StringComparison.Ordinal);
 
             var strict = await RunPowerShellFileAsync(verifierPath, "-Paths", unsignedPath, "-RequireSigned", "-RequireTimestamp");

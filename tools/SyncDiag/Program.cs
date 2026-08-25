@@ -15,7 +15,7 @@ using 거래플랜.Shared.Contracts;
 
 var command = args.FirstOrDefault()?.Trim().ToLowerInvariant();
 var canonicalizationCommitted = false;
-const string usage = "usage: SyncDiag <prepare-test-seed|inspect-legacy-invoice-test-seed-profile|preview-legacy-invoice-test-seed|canonicalize-legacy-invoice-test-seed|prepare-test-seed-retry|preseed-sync|mark-all-dirty|sync|maintenance-sync|inspect|stored-credential-envelopes|source-credential-envelopes|read-only-summary <database-path>|read-only-integrity-report <database-path> <tenant-code> <office-code> [--include-details]|snapshot-sqlite <source-db> <target-db>|finalize-test-app-sqlite|finalize-test-server-sqlite <database-path>>";
+const string usage = "usage: SyncDiag <prepare-test-seed|inspect-legacy-invoice-test-seed-profile|inspect-read-only-legacy-invoice-seed-profile <database-path>|preview-legacy-invoice-test-seed|canonicalize-legacy-invoice-test-seed|prepare-test-seed-retry|preseed-sync|mark-all-dirty|sync|maintenance-sync|inspect|stored-credential-envelopes|source-credential-envelopes|read-only-summary <database-path>|read-only-integrity-report <database-path> <tenant-code> <office-code> [--include-details]|snapshot-sqlite <source-db> <target-db>|finalize-test-app-sqlite|finalize-test-server-sqlite <database-path>>";
 if (string.IsNullOrWhiteSpace(command))
 {
     Console.Error.WriteLine(usage);
@@ -66,6 +66,21 @@ if (string.Equals(
         args[2],
         args[3],
         includeDetails: args.Length == 5);
+}
+
+if (string.Equals(
+        command,
+        "inspect-read-only-legacy-invoice-seed-profile",
+        StringComparison.Ordinal))
+{
+    if (args.Length != 2 || string.IsNullOrWhiteSpace(args[1]))
+    {
+        Console.Error.WriteLine(
+            "usage: SyncDiag inspect-read-only-legacy-invoice-seed-profile <database-path>");
+        return 2;
+    }
+
+    return await PrintReadOnlyLegacyInvoiceSeedProfileAsync(args[1]);
 }
 
 try
@@ -531,6 +546,55 @@ static string BuildImmutableInspectionConnectionString(
         Cache = SqliteCacheMode.Private,
         Pooling = false
     }.ToString();
+}
+
+static async Task<int> PrintReadOnlyLegacyInvoiceSeedProfileAsync(
+    string databasePath)
+{
+    try
+    {
+        using var inspectionGuard =
+            ImmutableSqliteInspectionGuard.Acquire(databasePath);
+        var connectionString = BuildImmutableInspectionConnectionString(
+            inspectionGuard.DatabasePath);
+        var inspectionOptions =
+            new DbContextOptionsBuilder<LocalDbContext>()
+                .UseSqlite(connectionString)
+                .Options;
+        await using var inspectionDb =
+            new LocalDbContext(inspectionOptions);
+        var preview = await IsolatedLegacyInvoiceSeedCanonicalizer
+            .PreviewReadOnlyProfileAsync(
+                inspectionDb,
+                inspectionGuard.InitialSha256);
+
+        inspectionGuard.AssertStableSidecarFree();
+        Console.WriteLine(
+            "legacy_invoice_seed_read_only_profile_succeeded=True");
+        Console.WriteLine(
+            $"legacy_invoice_seed_read_only_profile_sha256={preview.ComputeSha256()}");
+        Console.WriteLine(
+            $"legacy_invoice_seed_read_only_profile_json={preview.ToDeterministicJson()}");
+        Console.WriteLine(
+            $"legacy_invoice_seed_source_database_sha256={inspectionGuard.InitialSha256}");
+        Console.WriteLine(
+            $"legacy_invoice_seed_scope={IsolatedLegacyInvoiceSeedCanonicalizer.ActiveOperationalSeedScope}");
+        return 0;
+    }
+    catch (Exception ex)
+    {
+        var reasonCode = ex switch
+        {
+            FileNotFoundException => "source_missing",
+            UnauthorizedAccessException => "source_access_denied",
+            InvalidOperationException => "source_not_immutable",
+            ArgumentException => "source_invalid",
+            _ => "profile_rejected"
+        };
+        Console.Error.WriteLine(
+            $"legacy_invoice_seed_read_only_profile_failed reason_code={reasonCode}");
+        return 1;
+    }
 }
 
 static async Task PrintDirtyInspectionAsync(LocalDbContext db)

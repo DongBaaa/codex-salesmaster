@@ -4444,10 +4444,12 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
             StringComparison.Ordinal);
         foreach (var approvedSourceHash in new[]
                  {
-                     "795B5A6CA153B788C6272222D778D714DB10873541775493AB7B36EA091E2FBE",
-                     "E98DF3E657205319F595AE61089F50E1B87F0BD272C650827AA123B4A8616916",
-                     "719380E811BB04DC364FB6D2E0BD4C4E04B3D3C12F4D56207233D600F80B9A5C"
-                 })
+                      "795B5A6CA153B788C6272222D778D714DB10873541775493AB7B36EA091E2FBE",
+                      "E98DF3E657205319F595AE61089F50E1B87F0BD272C650827AA123B4A8616916",
+                      "719380E811BB04DC364FB6D2E0BD4C4E04B3D3C12F4D56207233D600F80B9A5C",
+                      "F422BC337476CE0A6A47638A1CF6D1F1CE1103ED81EF02688C8382197BBD8BA1",
+                      "937B93127A721A16857403DE5B3B7DDD7669C1787AC0EAD9C32C83A413B37FE2"
+                  })
         {
             Assert.Contains(
                 approvedSourceHash,
@@ -7463,6 +7465,72 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
     }
 
     [Fact]
+    public void PreparationScript_IsolatedPasswordsMeetTheSixCharacterPolicy()
+    {
+        var source = File.ReadAllText(ResolvePreparationScript());
+
+        Assert.DoesNotContain("'1234'", source, StringComparison.Ordinal);
+        Assert.Contains("'123456'", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "[string]$_.Password -ceq '123456'",
+            source,
+            StringComparison.Ordinal);
+        var passwordFunctionStart = source.LastIndexOf(
+            "function New-LocalTestPassword {",
+            StringComparison.Ordinal);
+        var passwordFunctionEnd = source.IndexOf(
+            "}",
+            passwordFunctionStart,
+            StringComparison.Ordinal);
+        Assert.True(
+            passwordFunctionStart >= 0 &&
+            passwordFunctionEnd > passwordFunctionStart);
+        var passwordFunction = source[
+            passwordFunctionStart..(passwordFunctionEnd + 1)];
+        Assert.Contains(
+            "return '123456'",
+            passwordFunction,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PreparationScript_GeneratedRunAllHashesWithoutPowerShellModules()
+    {
+        var source = File.ReadAllText(ResolvePreparationScript());
+        var runAllStart = source.IndexOf(
+            "$runAllPsContent = @'",
+            StringComparison.Ordinal);
+        var runAllEnd = source.IndexOf(
+            "'@",
+            runAllStart + 1,
+            StringComparison.Ordinal);
+
+        Assert.True(runAllStart >= 0 && runAllEnd > runAllStart);
+        var runAll = source[runAllStart..runAllEnd];
+        var implementation = runAll.IndexOf(
+            "function Get-FileHash {",
+            StringComparison.Ordinal);
+        var firstUse = runAll.IndexOf(
+            "Get-FileHash -LiteralPath",
+            implementation + 1,
+            StringComparison.Ordinal);
+
+        Assert.True(implementation >= 0 && firstUse > implementation);
+        Assert.Contains(
+            "[Security.Cryptography.SHA256]::Create()",
+            runAll,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "[IO.FileMode]::Open",
+            runAll,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "[IO.FileShare]::Read",
+            runAll,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task PreparationScript_SkipDataCopyWithoutDatabaseFailsBeforeRuntimeMutation()
     {
         var testRoot = Path.Combine(
@@ -9405,6 +9473,50 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
     }
 
     [Fact]
+    public void PreparationScript_SkipServerSeedCreatesTypedMarkerBeforeCommonRebase()
+    {
+        var source = File.ReadAllText(ResolvePreparationScript());
+        var mainStart = source.IndexOf(
+            "$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path",
+            StringComparison.Ordinal);
+        Assert.True(mainStart >= 0);
+        var main = source[mainStart..];
+
+        var serverPublish = main.IndexOf(
+            "'publish', $serverProject",
+            StringComparison.Ordinal);
+        var serverDllGuard = main.IndexOf(
+            "if (-not (Test-Path -LiteralPath $serverDll -PathType Leaf))",
+            serverPublish,
+            StringComparison.Ordinal);
+        var skipSeedBranch = main.IndexOf(
+            "if ($SkipServerSeed) {",
+            serverDllGuard,
+            StringComparison.Ordinal);
+        var skipSeedMarker = main.IndexOf(
+            "-Path (Join-Path $serverOutput '.georaeplan-isolated-server-root')",
+            skipSeedBranch,
+            StringComparison.Ordinal);
+        var skipSeedMarkerContent = main.IndexOf(
+            "-Content ([IO.Path]::GetFullPath($serverOutput))",
+            skipSeedMarker,
+            StringComparison.Ordinal);
+        var commonRebase = main.IndexOf(
+            "Set-TypedIsolatedServerRootMarker `",
+            skipSeedMarkerContent,
+            StringComparison.Ordinal);
+
+        Assert.True(
+            serverPublish >= 0 &&
+            serverDllGuard > serverPublish &&
+            skipSeedBranch > serverDllGuard &&
+            skipSeedMarker > skipSeedBranch &&
+            skipSeedMarkerContent > skipSeedMarker &&
+            commonRebase > skipSeedMarkerContent,
+            "SkipServerSeed does not create its typed server-root marker before the common rebase.");
+    }
+
+    [Fact]
     public async Task RuntimePromotionWorkspace_HoldsPrivateIdentityAndRefusesSwappedCleanup()
     {
         var testRoot = Path.Combine(
@@ -9679,6 +9791,10 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
                 }
                 Initialize-TestEnvironmentFinalPathNativeMethods
                 $native = [GeoraePlan.TestEnvironment.FinalPathNativeMethods]
+                if ($null -eq $native.GetMethod(
+                        'WaitForExactPrivatePromotionRootRemoval')) {
+                    throw 'Exact private root removal stabilization is missing.'
+                }
 
                 $stage = Join-Path $TestRoot 'stage'
                 $final = Join-Path $TestRoot 'final'
@@ -9868,6 +9984,101 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
                     (Test-Path $singleEntryRoot)
                 ) {
                     throw 'Directory records were not bound one at a time.'
+                }
+
+                $transientRoot = Join-Path $TestRoot 'transient-lock-root'
+                $native::CreatePrivateDirectory($transientRoot)
+                $transientDirectory = Join-Path $transientRoot 'nested'
+                New-Item -ItemType Directory -Path $transientDirectory |
+                    Out-Null
+                $transientChild = Join-Path $transientDirectory 'child.bin'
+                [IO.File]::WriteAllBytes(
+                    $transientChild,
+                    [byte[]](111, 112, 113, 114))
+                $holderScript = Join-Path $TestRoot 'hold-private-child.ps1'
+                $holderReady = Join-Path $TestRoot 'hold-private-child.ready'
+                @'
+                param([string]$ChildPath, [string]$ReadyPath)
+                $stream = [IO.File]::Open(
+                    $ChildPath,
+                    [IO.FileMode]::Open,
+                    [IO.FileAccess]::Read,
+                    ([IO.FileShare]::Read -bor
+                     [IO.FileShare]::Write -bor
+                     [IO.FileShare]::Delete))
+                try {
+                    [IO.File]::WriteAllText($ReadyPath, 'ready')
+                    Start-Sleep -Milliseconds 3000
+                }
+                finally {
+                    $stream.Dispose()
+                }
+                '@ | Set-Content -LiteralPath $holderScript -Encoding UTF8
+                $holder = Start-Process `
+                    -FilePath (Join-Path $PSHOME 'powershell.exe') `
+                    -ArgumentList @(
+                        '-NoLogo',
+                        '-NoProfile',
+                        '-NonInteractive',
+                        '-ExecutionPolicy',
+                        'Bypass',
+                        '-File',
+                        $holderScript,
+                        '-ChildPath',
+                        $transientChild,
+                        '-ReadyPath',
+                        $holderReady) `
+                    -WindowStyle Hidden `
+                    -PassThru
+                try {
+                    $readyDeadline = [DateTime]::UtcNow.AddSeconds(10)
+                    while (
+                        -not (Test-Path -LiteralPath $holderReady -PathType Leaf) -and
+                        [DateTime]::UtcNow -lt $readyDeadline
+                    ) {
+                        Start-Sleep -Milliseconds 25
+                    }
+                    if (-not (Test-Path -LiteralPath $holderReady -PathType Leaf)) {
+                        throw 'The transient cleanup holder did not become ready.'
+                    }
+                    if ($holder.HasExited) {
+                        throw 'The transient cleanup holder exited before cleanup.'
+                    }
+                    $transientRootLease = $native::CreateFileW(
+                        $transientRoot,
+                        ($native::DeleteAccess -bor $native::FileListDirectory -bor
+                         $native::FileReadAttributes),
+                        ($native::FileShareRead -bor $native::FileShareWrite),
+                        [IntPtr]::Zero,
+                        $native::OpenExisting,
+                        ($native::FileFlagBackupSemantics -bor
+                         $native::FileFlagOpenReparsePoint),
+                        [IntPtr]::Zero)
+                    $transientRootInformation =
+                        $native::GetFileInformation($transientRootLease)
+                    try {
+                        $native::DeletePrivatePromotionTreeAndRoot(
+                            $transientRootLease,
+                            $transientRoot)
+                    }
+                    finally {
+                        $transientRootLease.Dispose()
+                    }
+                    $native::WaitForExactPrivatePromotionRootRemoval(
+                        $transientRoot,
+                        [uint32]$transientRootInformation.VolumeSerialNumber,
+                        [uint32]$transientRootInformation.FileIndexHigh,
+                        [uint32]$transientRootInformation.FileIndexLow,
+                        10000)
+                }
+                finally {
+                    if (-not $holder.HasExited) {
+                        [void]$holder.WaitForExit(10000)
+                    }
+                    $holder.Dispose()
+                }
+                if (Test-Path -LiteralPath $transientRoot) {
+                    throw 'Transient private workspace cleanup was not retried.'
                 }
 
                 $invalid = Join-Path $TestRoot 'runtime-invalid'

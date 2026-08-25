@@ -808,8 +808,22 @@ public partial class MainWindow
         RequireMultiPc(
             _isClosingOrClosed &&
             _realtimeRevisionCts is null &&
-            _realtimeRevisionTask is null,
-            "PC-B realtime revision monitor did not start from the isolated stopped-runtime boundary.");
+            _realtimeRevisionTask is null &&
+            _realtimeRevisionDrainTask.IsCompletedSuccessfully &&
+            _runtimeSyncDrainTask.IsCompletedSuccessfully &&
+            _windowCommandDrainTask.IsCompletedSuccessfully &&
+            _vm.IsShutdownBackgroundWorkCompleted,
+            $"PC-B realtime revision monitor did not start from the isolated stopped-runtime boundary. " +
+            $"closing={_isClosingOrClosed}; monitorCtsNull={_realtimeRevisionCts is null}; " +
+            $"monitorTaskNull={_realtimeRevisionTask is null}; monitorDrain={_realtimeRevisionDrainTask.Status}; " +
+            $"runtimeSyncDrain={_runtimeSyncDrainTask.Status}; windowCommandDrain={_windowCommandDrainTask.Status}; " +
+            $"viewModelBackgroundCompleted={_vm.IsShutdownBackgroundWorkCompleted}");
+
+        _vm.ResumePendingBackgroundWorkAfterShutdownCanceled();
+        _windowBackgroundWork.Resume();
+        _windowBackgroundWorkCts.Dispose();
+        _windowBackgroundWorkCts = new CancellationTokenSource();
+        RestoreApplicationWindowsAfterCanceledShutdown();
         _isClosingOrClosed = false;
         StartRealtimeRevisionMonitor();
         RequireMultiPc(
@@ -821,6 +835,16 @@ public partial class MainWindow
     private void StopMultiPcRealtimeRevisionObservation()
     {
         StopRealtimeRevisionMonitor();
+        _windowBackgroundWork.BeginShutdown();
+        try
+        {
+            _windowBackgroundWorkCts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // The full shutdown-resume path owns disposal; keep the fixture stop idempotent.
+        }
+        _vm.CancelPendingBackgroundWorkForShutdown();
         _isClosingOrClosed = true;
     }
 

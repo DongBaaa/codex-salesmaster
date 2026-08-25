@@ -5,6 +5,9 @@ param(
     [string]$ResultsDirectory = '',
     [string]$TestFilter = 'FullyQualifiedName~PostgreSql',
     [string]$LogFileName = 'ephemeral-postgresql-tests.trx',
+    [ValidateSet('Debug', 'Release')]
+    [string]$Configuration = 'Release',
+    [switch]$RunAllServerTests,
     [switch]$KeepCluster
 )
 
@@ -49,6 +52,13 @@ $testProject = Join-Path $repositoryRoot (
     'Tests\GeoraePlan.Server.Api.Tests\GeoraePlan.Server.Api.Tests.csproj')
 if (-not (Test-Path -LiteralPath $testProject -PathType Leaf)) {
     throw "Server test project was not found: $testProject"
+}
+
+if ($RunAllServerTests -and $PSBoundParameters.ContainsKey('TestFilter')) {
+    throw 'RunAllServerTests and TestFilter cannot be used together.'
+}
+if (-not $RunAllServerTests -and [string]::IsNullOrWhiteSpace($TestFilter)) {
+    throw 'TestFilter cannot be empty unless RunAllServerTests is used.'
 }
 
 if ([string]::IsNullOrWhiteSpace($ResultsDirectory)) {
@@ -107,12 +117,26 @@ try {
         "Host=127.0.0.1;Port=$port;Database=postgres;" +
         'Username=postgres;Pooling=false;Include Error Detail=false'
 
-    Write-Host "ephemeral_postgresql=ready port=$port"
-    dotnet test $testProject `
-        --no-restore `
-        --filter $TestFilter `
-        --logger "trx;LogFileName=$LogFileName" `
-        --results-directory $ResultsDirectory
+    $testArguments = @(
+        'test',
+        $testProject,
+        '--configuration',
+        $Configuration,
+        '--no-restore'
+    )
+    if (-not $RunAllServerTests) {
+        $testArguments += @('--filter', $TestFilter)
+    }
+    $testArguments += @(
+        '--logger',
+        "trx;LogFileName=$LogFileName",
+        '--results-directory',
+        $ResultsDirectory
+    )
+
+    $testScope = if ($RunAllServerTests) { 'all-server-tests' } else { $TestFilter }
+    Write-Host "ephemeral_postgresql=ready port=$port configuration=$Configuration scope=$testScope"
+    & dotnet @testArguments
     if ($LASTEXITCODE -ne 0) {
         throw "PostgreSQL tests failed with exit code $LASTEXITCODE."
     }

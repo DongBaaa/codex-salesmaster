@@ -1,5 +1,6 @@
 ﻿using System.Security.Cryptography;
 using 거래플랜.Shared.Contracts;
+using GeoraePlan.UpdateTransport;
 #if ANDROID
 using Android.App;
 using Android.Content;
@@ -14,11 +15,12 @@ public sealed class MobileAppUpdateService
     private readonly GeoraePlanApiClient _api;
     private readonly MobileClientIdentityProvider _clientIdentity;
     private readonly MobilePackageDownloadClient _packageDownloadClient;
+    private readonly ResumableUpdatePackageDownloader _packageDownloader = new();
 
     public MobileAppUpdateService(
         GeoraePlanApiClient api,
         MobileClientIdentityProvider clientIdentity)
-        : this(api, clientIdentity, new HttpClient())
+        : this(api, clientIdentity, CreatePackageHttpClient())
     {
     }
 
@@ -105,7 +107,13 @@ public sealed class MobileAppUpdateService
         var fileName = string.IsNullOrWhiteSpace(package.FileName)
             ? $"georaeplan-{NormalizeVersionText(package.Version)}.apk"
             : Path.GetFileName(package.FileName) ?? string.Empty;
-        var targetPath = await DownloadPackageAsync(packageUri.ToString(), downloadRoot, fileName, package.Sha256, ct);
+        var targetPath = await DownloadPackageAsync(
+            packageUri,
+            downloadRoot,
+            fileName,
+            package.Sha256,
+            package.FileSize,
+            ct);
 
         if (!await HasMatchingFileAsync(targetPath, package.Sha256, ct))
             throw new InvalidOperationException("다운로드한 APK의 무결성 검증에 실패했습니다.");
@@ -117,7 +125,13 @@ public sealed class MobileAppUpdateService
         return targetPath;
     }
 
-    private async Task<string> DownloadPackageAsync(string packageUrl, string downloadRoot, string fileName, string expectedSha256, CancellationToken ct)
+    private async Task<string> DownloadPackageAsync(
+        Uri packageUri,
+        string downloadRoot,
+        string fileName,
+        string expectedSha256,
+        long expectedFileSize,
+        CancellationToken ct)
     {
         var safeFileName = Path.GetFileName(fileName);
         if (string.IsNullOrWhiteSpace(safeFileName))
@@ -130,59 +144,16 @@ public sealed class MobileAppUpdateService
         if (!targetPath.StartsWith(safeRoot, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("업데이트 파일 저장 경로가 안전하지 않습니다.");
 
-        if (await HasMatchingFileAsync(targetPath, expectedSha256, ct))
-            return targetPath;
-
-        var temporaryPath = Path.Combine(
-            safeRoot,
-            $"{safeFileName}.{System.Environment.ProcessId}.{Guid.NewGuid():N}.download");
-
-        try
-        {
-            using var response = await _packageDownloadClient.SendAsync(
-                new Uri(packageUrl, UriKind.Absolute),
+        return await _packageDownloader.DownloadAsync(
+            packageUri,
+            targetPath,
+            expectedFileSize,
+            expectedSha256,
+            (request, token) => _packageDownloadClient.SendAsync(
+                request,
                 expectedSha256,
-                HttpCompletionOption.ResponseHeadersRead,
-                ct);
-            response.EnsureSuccessStatusCode();
-
-            await using var source = await response.Content.ReadAsStreamAsync(ct);
-            await using (var destination = new FileStream(
-                temporaryPath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                bufferSize: 81920,
-                useAsync: true))
-            {
-                await source.CopyToAsync(destination, ct);
-                await destination.FlushAsync(ct);
-            }
-
-            if (!await HasMatchingFileAsync(temporaryPath, expectedSha256, ct))
-                throw new InvalidOperationException("다운로드한 APK의 무결성 검증에 실패했습니다.");
-
-            System.IO.File.Move(temporaryPath, targetPath, overwrite: true);
-        }
-        finally
-        {
-            TryDeleteFile(temporaryPath);
-        }
-
-        return targetPath;
-    }
-
-    private static void TryDeleteFile(string path)
-    {
-        try
-        {
-            if (System.IO.File.Exists(path))
-                System.IO.File.Delete(path);
-        }
-        catch
-        {
-            // 다음 업데이트 시 다시 정리합니다.
-        }
+                token),
+            cancellationToken: ct).ConfigureAwait(false);
     }
 
     private static async Task<bool> HasMatchingFileAsync(string path, string expectedSha256, CancellationToken ct)
@@ -246,6 +217,15 @@ public sealed class MobileAppUpdateService
 
         return packageUri;
     }
+
+    private static HttpClient CreatePackageHttpClient()
+        => new(new HttpClientHandler
+        {
+            AllowAutoRedirect = false
+        })
+        {
+            Timeout = Timeout.InfiniteTimeSpan
+        };
 
     private static async Task<string> ComputeSha256Async(string path, CancellationToken ct)
     {

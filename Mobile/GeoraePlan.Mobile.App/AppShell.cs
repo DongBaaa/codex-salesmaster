@@ -32,8 +32,7 @@ public sealed class AppShell : Shell
                 CreateTab<CustomersPage>("거래처", "tab_customers.png"),
                 CreateTab<ItemsPage>("품목", "tab_items.png"),
                 CreateTab<InvoicesPage>("전표", "tab_invoices.png"),
-                CreateTab<SyncPage>("동기화"),
-                CreateTab<SettingsPage>("설정")
+                CreateTab<SyncPage>("동기화")
             }
         });
 

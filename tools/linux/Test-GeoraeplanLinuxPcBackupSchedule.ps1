@@ -161,6 +161,10 @@ foreach ($required in @(
         'database_snapshot_drift',
         'backup_database_snapshot_consistency=ok',
         'database_snapshot_consistency=unchanged_across_both_dumps',
+        'central_business_count_sha256',
+        'business_business_count_sha256',
+        'backup_business_count_digest_consistency=ok',
+        'business_count_digest_drift',
         'config --environment',
         'ITWORLD_POSTGRES_DB',
         'ConnectionStrings__Default',
@@ -226,6 +230,9 @@ Assert-True `
     -Message 'Installer remote mutation is not guarded behind the -Apply plan boundary.'
 Assert-Contains -Text $installer -Expected 'backup_schedule_remote_mutation=none' -Label 'installer'
 Assert-Contains -Text $installer -Expected '# georaeplan-sudo-command-end' -Label 'installer'
+Assert-Contains -Text $installer -Expected '[System.Management.Automation.PSCredential]$SudoCredential' -Label 'installer'
+Assert-Contains -Text $installer -Expected '-Credential $SudoCredential' -Label 'installer'
+Assert-Contains -Text $installer -Expected '-PromptForSudoCredential cannot be combined with -SudoCredential.' -Label 'installer'
 Assert-Contains -Text $installer -Expected 'backup_schedule_remote_assets=ok' -Label 'installer'
 Assert-Contains -Text $installer -Expected 'installed_unreadable=%n mode=%a uid=%u gid=%g' -Label 'installer'
 Assert-Contains -Text $installer -Expected 'config --services | grep -qx postgres' -Label 'installer'
@@ -266,6 +273,8 @@ $tracePath = Join-Path $testRoot 'docker-trace.log'
 $failureFlag = Join-Path $testRoot 'fail-pg-dump'
 $snapshotDriftFlag = Join-Path $testRoot 'snapshot-drift'
 $snapshotCountFile = Join-Path $testRoot 'snapshot-count'
+$businessCountDriftFlag = Join-Path $testRoot 'business-count-drift'
+$businessCountFile = Join-Path $testRoot 'business-count'
 $fakeDockerPath = Join-Path $fakeBin 'docker'
 $fakeFlockPath = Join-Path $fakeBin 'flock'
 $fakeDuPath = Join-Path $fakeBin 'du'
@@ -401,6 +410,20 @@ case "${1:-}" in
       fi
       exit 0
     fi
+    if [[ "$*" == *'customers='* ]]; then
+      count=0
+      if [[ -f "$GEORAEPLAN_FAKE_BUSINESS_COUNT_FILE" ]]; then
+        count="$(cat "$GEORAEPLAN_FAKE_BUSINESS_COUNT_FILE")"
+      fi
+      count=$((count + 1))
+      printf '%s\n' "$count" > "$GEORAEPLAN_FAKE_BUSINESS_COUNT_FILE"
+      payments=1
+      if [[ -f "$GEORAEPLAN_FAKE_BUSINESS_COUNT_DRIFT_FILE" && "$count" -ge 2 ]]; then
+        payments=2
+      fi
+      printf '%s\n' users=1 customers=1 items=1 transactions=1 rental_assets=1 invoices=1 "payments=$payments"
+      exit 0
+    fi
     printf '4096\n'
     ;;
   pg_restore)
@@ -485,6 +508,8 @@ fi
     $bashFailureFlag = "$bashTestRoot/fail-pg-dump"
     $bashSnapshotDriftFlag = "$bashTestRoot/snapshot-drift"
     $bashSnapshotCountFile = "$bashTestRoot/snapshot-count"
+    $bashBusinessCountDriftFlag = "$bashTestRoot/business-count-drift"
+    $bashBusinessCountFile = "$bashTestRoot/business-count"
     $bashLowCapacityFlag = "$bashTestRoot/low-capacity"
     $bashApiDatabaseDriftFlag = "$bashTestRoot/api-database-drift"
     $bashApiProtocolMismatchFlag = "$bashTestRoot/api-protocol-mismatch"
@@ -512,6 +537,8 @@ fi
         "GEORAEPLAN_FAKE_DOCKER_FAIL_FILE=$(Convert-ToBashLiteral $bashFailureFlag)",
         "GEORAEPLAN_FAKE_SNAPSHOT_DRIFT_FILE=$(Convert-ToBashLiteral $bashSnapshotDriftFlag)",
         "GEORAEPLAN_FAKE_SNAPSHOT_COUNT_FILE=$(Convert-ToBashLiteral $bashSnapshotCountFile)",
+        "GEORAEPLAN_FAKE_BUSINESS_COUNT_DRIFT_FILE=$(Convert-ToBashLiteral $bashBusinessCountDriftFlag)",
+        "GEORAEPLAN_FAKE_BUSINESS_COUNT_FILE=$(Convert-ToBashLiteral $bashBusinessCountFile)",
         "GEORAEPLAN_FAKE_LOW_CAPACITY_FILE=$(Convert-ToBashLiteral $bashLowCapacityFlag)",
         "GEORAEPLAN_FAKE_API_DB_DRIFT_FILE=$(Convert-ToBashLiteral $bashApiDatabaseDriftFlag)",
         "GEORAEPLAN_FAKE_API_PROTOCOL_MISMATCH_FILE=$(Convert-ToBashLiteral $bashApiProtocolMismatchFlag)",
@@ -576,6 +603,28 @@ fi
     $successMetadata = Get-Content -LiteralPath (Join-Path $completedSets[0].FullName 'metadata.txt') -Raw -Encoding UTF8
     Assert-Contains -Text $successMetadata -Expected 'database_snapshot_consistency=unchanged_across_both_dumps' -Label 'backup metadata'
     Assert-Contains -Text $successMetadata -Expected 'database_snapshot_sha256=' -Label 'backup metadata'
+    Assert-Contains -Text $successMetadata -Expected 'central_business_count_sha256=' -Label 'backup metadata'
+    Assert-Contains -Text $successMetadata -Expected 'business_business_count_sha256=' -Label 'backup metadata'
+
+    Remove-Item -LiteralPath $businessCountFile -Force -ErrorAction SilentlyContinue
+    Set-Content -LiteralPath $businessCountDriftFlag -Value 'drift' -Encoding UTF8
+    $businessCountDriftResult = Invoke-BashAllowFailure -BashExe $bashExe -Command $successCommand
+    Assert-True -Condition ($businessCountDriftResult.ExitCode -ne 0) -Message 'A business-count drift unexpectedly published a backup.'
+    Assert-Contains `
+        -Text ($businessCountDriftResult.Output -join [Environment]::NewLine) `
+        -Expected 'reason=business_count_digest_drift' `
+        -Label 'business count digest drift failure'
+    Assert-True `
+        -Condition ($successStatusHash -eq (Get-FileHash -LiteralPath $successStatusPath -Algorithm SHA256).Hash) `
+        -Message 'A business-count drift overwrote the last successful backup status.'
+    Assert-True `
+        -Condition (@(Get-ChildItem -LiteralPath (Join-Path $testRoot 'backups\automatic\sets') -Directory -Filter 'backup_*.complete').Count -eq 1) `
+        -Message 'A business-count drift published an additional complete set.'
+    Assert-True `
+        -Condition (@(Get-ChildItem -LiteralPath (Join-Path $testRoot 'backups\automatic\.staging') -Force).Count -eq 0) `
+        -Message 'A business-count drift left a staging directory behind.'
+    Remove-Item -LiteralPath $businessCountDriftFlag -Force
+    Remove-Item -LiteralPath $businessCountFile -Force -ErrorAction SilentlyContinue
 
     Remove-Item -LiteralPath $snapshotCountFile -Force -ErrorAction SilentlyContinue
     Set-Content -LiteralPath $snapshotDriftFlag -Value 'drift' -Encoding UTF8

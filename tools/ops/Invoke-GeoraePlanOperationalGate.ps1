@@ -9,6 +9,8 @@ param(
     [string]$PlatformBackupRoot = "",
     [ValidateRange(1, 8760)]
     [int]$MaximumBackupAgeHours = 36,
+    [ValidateRange(1, 8760)]
+    [int]$MaximumRestoreDrillAgeHours = 168,
     [string]$OutputDirectory = "",
     [string]$LocalCacheAppDataRoot = "",
     [string]$LocalCacheEvidenceDirectory = "",
@@ -1299,10 +1301,74 @@ if (-not [string]::IsNullOrWhiteSpace($PlatformStateRoot) -and (Test-Path -Liter
         }
     }
 
+    $replicaIntegrityPassed = $false
+    $replicaValidationScript = Join-Path $resolvedRoot 'tools\ops\Test-GeoraePlanExternalReplicaStatus.ps1'
+    if (-not (Test-Path -LiteralPath $replicaValidationScript -PathType Leaf)) {
+        Add-Check -Checks $checks -Name 'external replica integrity' -Status 'FAIL' -Detail 'strict external replica status validator script not found'
+    }
+    else {
+        try {
+            $replicaValidationOutput = @(
+                & $replicaValidationScript `
+                    -PlatformStateRoot $PlatformStateRoot `
+                    -MaximumAgeHours $MaximumBackupAgeHours)
+            if ($replicaValidationOutput.Count -ne 1) {
+                Add-Check -Checks $checks -Name 'external replica integrity' -Status 'FAIL' -Detail 'strict external replica validator returned an invalid result count'
+            }
+            else {
+                $replicaValidation = $replicaValidationOutput[0]
+                $replicaValidationStatus = [string](Get-JsonPropertyValue -Object $replicaValidation -Name 'Status')
+                $replicaValidationReason = [string](Get-JsonPropertyValue -Object $replicaValidation -Name 'Reason')
+                $replicaValidationDetail = [string](Get-JsonPropertyValue -Object $replicaValidation -Name 'Detail')
+                $replicaIntegrityPassed = $replicaValidationStatus -eq 'PASS'
+                Add-Check `
+                    -Checks $checks `
+                    -Name 'external replica integrity' `
+                    -Status $(if ($replicaIntegrityPassed) { 'PASS' } else { 'FAIL' }) `
+                    -Detail ("reason={0}; {1}" -f $replicaValidationReason, $replicaValidationDetail)
+            }
+        }
+        catch {
+            Add-Check -Checks $checks -Name 'external replica integrity' -Status 'FAIL' -Detail $_.Exception.Message
+        }
+    }
+
+    $restoreDrillIntegrityPassed = $false
+    $restoreDrillValidationScript = Join-Path $resolvedRoot 'tools\ops\Test-GeoraePlanBackupRestoreDrillStatus.ps1'
+    if (-not (Test-Path -LiteralPath $restoreDrillValidationScript -PathType Leaf)) {
+        Add-Check -Checks $checks -Name 'backup restore drill integrity' -Status 'FAIL' -Detail 'strict backup restore drill status validator script not found'
+    }
+    else {
+        try {
+            $restoreDrillValidationOutput = @(
+                & $restoreDrillValidationScript `
+                    -PlatformStateRoot $PlatformStateRoot `
+                    -MaximumAgeHours $MaximumRestoreDrillAgeHours)
+            if ($restoreDrillValidationOutput.Count -ne 1) {
+                Add-Check -Checks $checks -Name 'backup restore drill integrity' -Status 'FAIL' -Detail 'strict backup restore drill validator returned an invalid result count'
+            }
+            else {
+                $restoreDrillValidation = $restoreDrillValidationOutput[0]
+                $restoreDrillValidationStatus = [string](Get-JsonPropertyValue -Object $restoreDrillValidation -Name 'Status')
+                $restoreDrillValidationReason = [string](Get-JsonPropertyValue -Object $restoreDrillValidation -Name 'Reason')
+                $restoreDrillValidationDetail = [string](Get-JsonPropertyValue -Object $restoreDrillValidation -Name 'Detail')
+                $restoreDrillIntegrityPassed = $restoreDrillValidationStatus -eq 'PASS'
+                Add-Check `
+                    -Checks $checks `
+                    -Name 'backup restore drill integrity' `
+                    -Status $(if ($restoreDrillIntegrityPassed) { 'PASS' } else { 'FAIL' }) `
+                    -Detail ("reason={0}; {1}" -f $restoreDrillValidationReason, $restoreDrillValidationDetail)
+            }
+        }
+        catch {
+            Add-Check -Checks $checks -Name 'backup restore drill integrity' -Status 'FAIL' -Detail $_.Exception.Message
+        }
+    }
+
     $dailyEndpointOk = ($daily -match 'healthz=ok') -or ($daily -match 'readyz=ok')
-    $platformOk = $dailyEndpointOk -and ($daily -match 'manifest=ok') -and ($daily -match 'replica=ok') -and ($replica -match 'replica=ok') -and ($cert -match 'cert=ok')
+    $platformOk = $dailyEndpointOk -and ($daily -match 'manifest=ok') -and $replicaIntegrityPassed -and $restoreDrillIntegrityPassed -and ($cert -match 'cert=ok')
     if ($platformOk) {
-        Add-Check -Checks $checks -Name 'platform status files' -Status 'PASS' -Detail 'daily endpoint/manifest/replica/cert ok'
+        Add-Check -Checks $checks -Name 'platform status files' -Status 'PASS' -Detail 'daily endpoint/manifest/replica/restore-drill/cert ok'
     }
     else {
         Add-Check -Checks $checks -Name 'platform status files' -Status 'WARN' -Detail 'state files readable but one or more ok markers missing'
@@ -1310,10 +1376,14 @@ if (-not [string]::IsNullOrWhiteSpace($PlatformStateRoot) -and (Test-Path -Liter
 }
 elseif ([string]::IsNullOrWhiteSpace($PlatformStateRoot)) {
     Add-Check -Checks $checks -Name 'backup state integrity' -Status 'PASS' -Detail 'SKIP: Linux PC platform state root is not configured'
+    Add-Check -Checks $checks -Name 'external replica integrity' -Status 'PASS' -Detail 'SKIP: Linux PC platform state root is not configured'
+    Add-Check -Checks $checks -Name 'backup restore drill integrity' -Status 'PASS' -Detail 'SKIP: Linux PC platform state root is not configured'
     Add-Check -Checks $checks -Name 'platform status files' -Status 'PASS' -Detail 'SKIP: Linux PC platform state root is not configured; live health/manifest checks are used instead'
 }
 else {
     Add-Check -Checks $checks -Name 'backup state integrity' -Status 'FAIL' -Detail ("platform state root is not accessible: {0}" -f $PlatformStateRoot)
+    Add-Check -Checks $checks -Name 'external replica integrity' -Status 'FAIL' -Detail ("platform state root is not accessible: {0}" -f $PlatformStateRoot)
+    Add-Check -Checks $checks -Name 'backup restore drill integrity' -Status 'FAIL' -Detail ("platform state root is not accessible: {0}" -f $PlatformStateRoot)
     Add-Check -Checks $checks -Name 'platform status files' -Status 'WARN' -Detail ("platform state root is not accessible: {0}" -f $PlatformStateRoot)
 }
 

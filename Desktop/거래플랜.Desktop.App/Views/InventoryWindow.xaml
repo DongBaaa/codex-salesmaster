@@ -56,7 +56,7 @@
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="MinWidth" Value="88"/>
-            <Setter Property="Height" Value="36"/>
+            <Setter Property="MinHeight" Value="36"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
         <Style TargetType="CheckBox">
@@ -65,7 +65,7 @@
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
         <Style x:Key="ToolbarButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-            <Setter Property="Height" Value="36"/>
+            <Setter Property="MinHeight" Value="36"/>
             <Setter Property="MinWidth" Value="104"/>
             <Setter Property="Padding" Value="16,0"/>
             <Setter Property="Margin" Value="0,0,8,0"/>
@@ -341,7 +341,7 @@
                 <ScrollViewer x:Name="InventoryDetailScrollViewer"
                               Grid.Row="1"
                               Margin="8,8,8,0"
-                              HorizontalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
                               VerticalScrollBarVisibility="Auto">
                     <StackPanel x:Name="InventoryDetailContent"
                                 MinWidth="650"
@@ -740,8 +740,9 @@
                                   Grid.Row="1"
                                   ItemsSource="{Binding SelectedItemMovements}"
                                   IsReadOnly="True"
-                                  ColumnHeaderHeight="22"
-                                  RowHeight="22"
+                              ColumnHeaderHeight="NaN"
+                              RowHeight="NaN"
+                                  MinRowHeight="32"
                                   BorderThickness="0">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="일자" Binding="{Binding OccurredDate}" Width="95"/>

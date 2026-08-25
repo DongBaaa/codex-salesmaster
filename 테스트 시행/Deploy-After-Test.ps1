@@ -28,6 +28,7 @@ param(
     [int]$ExpectedClientCompatibilityEnabledPolicyCount = 0,
     [switch]$FailOnOperationalWarnings,
     [switch]$AcceptRentalTemplateItemReferenceRisk,
+    [switch]$PreserveLiveAndroidUpdate,
     [switch]$SkipAndroidSigningContinuityCheck,
     [switch]$AcceptAndroidSigningCertificateChange,
     [string]$LocalCacheAppDataRoot = '',
@@ -646,6 +647,9 @@ if (-not $SkipLinuxPc) {
     }
     if ($AcceptRentalTemplateItemReferenceRisk) {
         $linuxArgs += '-AcceptRentalTemplateItemReferenceRisk'
+    }
+    if ($PreserveLiveAndroidUpdate) {
+        $linuxArgs += '-PreserveLiveAndroidUpdate'
     }
     if ($SkipAndroidSigningContinuityCheck) {
         $linuxArgs += '-SkipAndroidSigningContinuityCheck'

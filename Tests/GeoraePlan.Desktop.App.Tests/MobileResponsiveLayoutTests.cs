@@ -28,6 +28,10 @@ public sealed class MobileResponsiveLayoutTests
         Assert.Contains("CreateWrappingActions", source, StringComparison.Ordinal);
         Assert.Contains("FlexWrap.Wrap", source, StringComparison.Ordinal);
         Assert.Contains("CreateHorizontalActionScroller", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "grid.Add(CreateHorizontalActionScroller(actions), 0, 1);",
+            source,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -67,6 +71,7 @@ public sealed class MobileResponsiveLayoutTests
         var invoices = ReadMobileSource("Pages", "InvoicesPage.cs");
         var items = ReadMobileSource("Pages", "ItemsPage.cs");
         var draft = ReadMobileSource("Pages", "InvoiceDraftPage.cs");
+        var recycleBin = ReadMobileSource("Pages", "RecycleBinPage.cs");
 
         Assert.Contains("CreateWrappingActions(", login, StringComparison.Ordinal);
         Assert.Contains(
@@ -77,10 +82,12 @@ public sealed class MobileResponsiveLayoutTests
         Assert.True(CountOccurrences(customers, "CreateStackedActionLayout(") >= 1);
         Assert.True(CountOccurrences(customers, "CreateHorizontalActionScroller(") >= 2);
         Assert.True(CountOccurrences(invoices, "CreateStackedActionLayout(") >= 1);
-        Assert.Contains("var actionGrid = new VerticalStackLayout", invoices, StringComparison.Ordinal);
+        Assert.Contains("CreateWrappingActions(", invoices, StringComparison.Ordinal);
+        Assert.Contains("headerScrollView.MaximumHeightRequest", invoices, StringComparison.Ordinal);
         Assert.True(CountOccurrences(items, "CreateStackedActionLayout(") >= 1);
         Assert.True(CountOccurrences(draft, "CreateStackedActionLayout(") >= 2);
-        Assert.Contains("FlexWrap.Wrap", draft, StringComparison.Ordinal);
+        Assert.Contains("Orientation = ScrollOrientation.Horizontal", draft, StringComparison.Ordinal);
+        Assert.Contains("headerScrollView.MaximumHeightRequest", recycleBin, StringComparison.Ordinal);
         Assert.DoesNotMatch(
             new Regex(@"(?<!Maximum)WidthRequest\s*=\s*210", RegexOptions.CultureInvariant),
             draft);
@@ -109,6 +116,57 @@ public sealed class MobileResponsiveLayoutTests
         }
 
         Assert.Empty(violations);
+    }
+
+    [Fact]
+    public void MobileUserFacingText_NeverUsesEllipsisLineCapsOrFixedMaximumWidths()
+    {
+        var violations = new List<string>();
+        var forbidden = new Regex(
+            @"LineBreakMode\s*=\s*LineBreakMode\.(?:HeadTruncation|MiddleTruncation|TailTruncation|NoWrap)|\bMaxLines\s*=|\bMaximumWidthRequest\s*=",
+            RegexOptions.CultureInvariant);
+
+        foreach (var file in Directory.EnumerateFiles(
+                     MobileRoot,
+                     "*.cs",
+                     SearchOption.AllDirectories))
+        {
+            if (file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) ||
+                file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var source = File.ReadAllText(file, Encoding.UTF8);
+            foreach (Match match in forbidden.Matches(source))
+                violations.Add($"{Path.GetRelativePath(MobileRoot, file)}:{match.Value}");
+        }
+
+        Assert.Empty(violations);
+
+        var app = ReadMobileSource("App.cs");
+        Assert.Contains("RegisterGlobalFullTextStyles();", app, StringComparison.Ordinal);
+        Assert.Contains("Label.LineBreakModeProperty", app, StringComparison.Ordinal);
+        Assert.Contains("Button.LineBreakModeProperty", app, StringComparison.Ordinal);
+        Assert.Contains("LineBreakMode.WordWrap", app, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MobileShell_KeepsFivePrimaryKoreanTabsAndOpensSettingsFromSync()
+    {
+        var shell = ReadMobileSource("AppShell.cs");
+        var sync = ReadMobileSource("Pages", "SyncPage.cs");
+
+        Assert.Equal(
+            5,
+            Regex.Matches(
+                shell,
+                "CreateTab<\\w+Page>\\(\"",
+                RegexOptions.CultureInvariant).Count);
+        Assert.Contains("CreateTab<SyncPage>(\"동기화\")", shell, StringComparison.Ordinal);
+        Assert.DoesNotContain("CreateTab<SettingsPage>", shell, StringComparison.Ordinal);
+        Assert.Contains("CreateButton(\"설정 열기\"", sync, StringComparison.Ordinal);
+        Assert.Contains("Navigation.PushAsync(new SettingsPage())", sync, StringComparison.Ordinal);
     }
 
     private static string ReadMobileSource(params string[] parts)

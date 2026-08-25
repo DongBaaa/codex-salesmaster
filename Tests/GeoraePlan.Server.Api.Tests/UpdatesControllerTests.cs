@@ -6,6 +6,10 @@ using 거래플랜.Server.Api.Services;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Abstractions;
+using Microsoft.AspNetCore.Mvc.Infrastructure;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Xunit;
 
@@ -839,8 +843,71 @@ public sealed class UpdatesControllerTests : IDisposable
         Assert.Equal(StatusCodes.Status200OK, controller.Response.StatusCode);
         Assert.Equal("application/zip", controller.Response.ContentType);
         Assert.Equal(4, controller.Response.ContentLength);
+        Assert.Equal("bytes", controller.Response.Headers.AcceptRanges.ToString());
         Assert.Equal("no-store", controller.Response.Headers.CacheControl.ToString());
         Assert.Equal(fileName, Uri.UnescapeDataString(controller.Response.Headers["X-Update-FileName"].ToString()));
+    }
+
+    [Fact]
+    public void DownloadPackage_EnablesRangeProcessing_ForExistingDesktopPackage()
+    {
+        const string fileName = "package.zip";
+        var packagePath = Path.Combine(_storageRoot, "downloads", "desktop", fileName);
+        File.WriteAllBytes(packagePath, Enumerable.Range(0, 32).Select(index => (byte)index).ToArray());
+        var controller = CreateController();
+
+        var result = Assert.IsType<FileStreamResult>(
+            controller.DownloadPackage("desktop", fileName));
+        using var stream = result.FileStream;
+
+        Assert.True(result.EnableRangeProcessing);
+        Assert.Equal("application/zip", result.ContentType);
+        Assert.Equal("no-store", controller.Response.Headers.CacheControl.ToString());
+        Assert.Equal(fileName, Uri.UnescapeDataString(controller.Response.Headers["X-Update-FileName"].ToString()));
+    }
+
+    [Theory]
+    [InlineData("bytes=0-15", StatusCodes.Status206PartialContent, "bytes 0-15/32", 16)]
+    [InlineData("bytes=32-", StatusCodes.Status416RangeNotSatisfiable, "bytes */32", 0)]
+    public async Task DownloadPackage_ExecutesBoundedAndUnsatisfiedRanges(
+        string range,
+        int expectedStatusCode,
+        string expectedContentRange,
+        int expectedBodyLength)
+    {
+        const string fileName = "package.zip";
+        var expectedBytes = Enumerable.Range(0, 32).Select(index => (byte)index).ToArray();
+        var packagePath = Path.Combine(_storageRoot, "downloads", "desktop", fileName);
+        await File.WriteAllBytesAsync(packagePath, expectedBytes);
+        var controller = CreateController();
+        var httpContext = controller.ControllerContext.HttpContext;
+        httpContext.Request.Method = HttpMethods.Get;
+        httpContext.Request.Headers.Range = range;
+        httpContext.Response.Body = new MemoryStream();
+        using var services = new ServiceCollection()
+            .AddLogging()
+            .AddSingleton<IActionResultExecutor<FileStreamResult>, FileStreamResultExecutor>()
+            .BuildServiceProvider();
+        httpContext.RequestServices = services;
+
+        var result = Assert.IsType<FileStreamResult>(
+            controller.DownloadPackage("desktop", fileName));
+        var actionContext = new ActionContext(
+            httpContext,
+            new RouteData(),
+            new ActionDescriptor());
+        await result.ExecuteResultAsync(actionContext);
+
+        Assert.Equal(expectedStatusCode, httpContext.Response.StatusCode);
+        Assert.Equal("bytes", httpContext.Response.Headers.AcceptRanges.ToString());
+        Assert.Equal(expectedContentRange, httpContext.Response.Headers.ContentRange.ToString());
+        Assert.Equal(expectedBodyLength, httpContext.Response.Body.Length);
+        if (expectedBodyLength > 0)
+        {
+            Assert.Equal(
+                expectedBytes.Take(expectedBodyLength).ToArray(),
+                ((MemoryStream)httpContext.Response.Body).ToArray());
+        }
     }
 
     [Theory]
@@ -1325,6 +1392,8 @@ public sealed class UpdatesControllerTests : IDisposable
             RedirectStandardError = true,
             CreateNoWindow = true
         };
+        startInfo.Environment["PSModulePath"] =
+            Path.Combine(Path.GetTempPath(), "georaeplan-missing-psmodules");
         startInfo.ArgumentList.Add("-NoProfile");
         startInfo.ArgumentList.Add("-ExecutionPolicy");
         startInfo.ArgumentList.Add("Bypass");

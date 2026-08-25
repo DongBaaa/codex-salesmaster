@@ -37,12 +37,75 @@ public sealed class App : Application
         _updateService = updateService;
         _compatibilityGate = compatibilityGate;
         _realtimeSyncService = realtimeSyncService;
+        RegisterGlobalFullTextStyles();
+#if GEORAEPLAN_MOBILE_UI_MATRIX
+        UserAppTheme = AppTheme.Light;
+        MainPage = new NavigationPage(
+            new UiMatrix.MobileUiMatrixHostPage(sessionStore));
+#else
         Services.MobileClientUpgradeRequiredSignal.Raised +=
             HandleClientUpgradeRequired;
         RegisterGlobalExceptionHandlers();
         UserAppTheme = AppTheme.Light;
         MainPage = CreateStartupPage();
         _ = InitializeRootAsync();
+#endif
+    }
+
+    private void RegisterGlobalFullTextStyles()
+    {
+        Resources.Add(new Style(typeof(Label))
+        {
+            Setters =
+            {
+                new Setter
+                {
+                    Property = Label.LineBreakModeProperty,
+                    Value = LineBreakMode.WordWrap
+                },
+                new Setter
+                {
+                    Property = VisualElement.MinimumWidthRequestProperty,
+                    Value = 0d
+                }
+            }
+        });
+        Resources.Add(new Style(typeof(Button))
+        {
+            Setters =
+            {
+                new Setter
+                {
+                    Property = Button.LineBreakModeProperty,
+                    Value = LineBreakMode.WordWrap
+                },
+                new Setter
+                {
+                    Property = VisualElement.MinimumWidthRequestProperty,
+                    Value = 0d
+                }
+            }
+        });
+
+        foreach (var controlType in new[] { typeof(Entry), typeof(Editor), typeof(Picker), typeof(SearchBar) })
+        {
+            Resources.Add(new Style(controlType)
+            {
+                Setters =
+                {
+                    new Setter
+                    {
+                        Property = VisualElement.MinimumWidthRequestProperty,
+                        Value = 0d
+                    },
+                    new Setter
+                    {
+                        Property = View.HorizontalOptionsProperty,
+                        Value = LayoutOptions.Fill
+                    }
+                }
+            });
+        }
     }
 
     private static Page CreateStartupPage()

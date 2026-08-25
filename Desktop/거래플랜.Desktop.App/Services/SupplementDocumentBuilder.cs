@@ -597,8 +597,8 @@ public static class SupplementDocumentBuilder
             Foreground = foreground ?? TextBrush,
             TextAlignment = align,
             VerticalAlignment = vertical,
-            TextWrapping = wrap ? TextWrapping.Wrap : TextWrapping.NoWrap,
-            TextTrimming = wrap || autoShrink ? TextTrimming.None : TextTrimming.CharacterEllipsis
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.None
         };
 
         if (autoShrink)
@@ -672,7 +672,7 @@ public static class SupplementDocumentBuilder
             FontWeight = FontWeights.Normal,
             Foreground = Brushes.Black,
             TextAlignment = TextAlignment.Center,
-            TextWrapping = TextWrapping.NoWrap,
+            TextWrapping = TextWrapping.Wrap,
             VerticalAlignment = VerticalAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Center
         };

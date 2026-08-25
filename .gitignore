@@ -86,6 +86,8 @@ tools/release/windows-signing.local.json
 배포/README.txt
 배포/관리자용/**
 release-temp/
+배포/.georaeplan-release-generations/
+배포/.georaeplan-release-publish-stable.lock
 
 # Additional local scratch / investigation artifacts
 .inspect-*.db

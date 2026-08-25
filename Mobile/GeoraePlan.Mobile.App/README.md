@@ -2,11 +2,11 @@
 - 문서 기준: 2026-07-28
 - 프로젝트 파일: `D:\거래플랜\Mobile\GeoraePlan.Mobile.App\GeoraePlan.Mobile.App.csproj`
 - 앱 ID: `kr.georaeplan.mobile`
-- Android 현재 소스: `0.2.82`, versionCode `193`
+- Android 현재 소스: `0.2.83`, versionCode `194`
 - 공개 stable 표시 버전: `0.2.82`; APK 내부 versionCode는 매니페스트에 없으며 게시 연속성 게이트 증거로 별도 확인
-- 연동 Windows 기준: 현재 소스 `1.1.692` / FileVersion `1.1.692.0` / 공개 stable `1.1.691`
+- 연동 Windows 기준: 현재 소스 `1.1.693` / FileVersion `1.1.693.0` / 공개 stable `1.1.692`
 
-Android 현재 소스 versionCode는 `193`입니다.
+Android 현재 소스 versionCode는 `194`입니다.
 공개 APK의 내부 versionCode는 게시 연속성 게이트에서 검사하며, 새 후보는 그 값보다 큰 versionCode, Release signing, 기존 stable과 서명 연속성, emulator/실기기 `adb install -r` 검증이 필요합니다.
 
 ## 현재 포함 기능
@@ -47,7 +47,7 @@ Android 현재 소스 versionCode는 `193`입니다.
 - 게시 과정에서 생성되는 `D:\거래플랜\배포\업데이트\manifest\stable.json`과 live manifest는 별도 운영 산출물로 확인
 - 2026-07-28 당시 배포 기록의 Android 표시 버전: `0.2.81`; 실제 APK 내부 versionCode는 게시 연속성 게이트에서 확인
 - Android 공개 stable 표시 버전: `0.2.82`
-- Android 현재 소스: `0.2.82`, versionCode `193`; 다음 정식 배포는 표시 버전과 versionCode를 함께 증가시켜야 합니다.
+- Android 현재 소스: `0.2.83`, versionCode `194`; 다음 정식 배포는 production signing과 공개 stable보다 높은 versionCode 연속성을 함께 검증해야 합니다.
 - 서명 키·keystore 비밀번호·토큰은 README, 로그, Git에 기록하지 않습니다.
 
 ## 관련 문서
@@ -71,6 +71,9 @@ Android 현재 소스 versionCode는 `193`입니다.
   - `powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\mobile\Build-GeoraePlanAndroidBundle.ps1" -ProjectRoot "D:\거래플랜" -SigningConfigPath "D:\거래플랜\Mobile\GeoraePlan.Mobile.App\android-signing.local.json"`
 - APK+AAB 동시 생성:
   - `powershell -NoProfile -ExecutionPolicy Bypass -File "D:\거래플랜\tools\mobile\Build-GeoraePlanAndroidApk.ps1" -ProjectRoot "D:\거래플랜" -SigningConfigPath "D:\거래플랜\Mobile\GeoraePlan.Mobile.App\android-signing.local.json" -PackageFormat both`
+- 서명/AOT 실패 원인 진단이 필요할 때만 `-DetailedBuildLog`를 추가합니다. 이 옵션은 MSBuild `normal` 로그와 보호된 임시 비밀파일의 경로만 표시하며 비밀번호 값은 출력하지 않고, 비밀파일은 빌드 성공·실패와 관계없이 종료 시 삭제합니다.
+- 운영 Release signing 설정에는 비밀번호 값 대신 `storePassEnvironmentVariable`, `keyPassEnvironmentVariable` 이름만 기록합니다. 기본 이름은 `GEORAEPLAN_ANDROID_STORE_PASSWORD`, `GEORAEPLAN_ANDROID_KEY_PASSWORD`이며 값은 현재 실행 프로세스의 보안 주입으로만 제공하고 명령행·JSON·로그·영구 사용자 환경변수에는 저장하지 않습니다.
+- 운영 Release는 평문 `storePass`/`keyPass` 설정과 `-StorePass`/`-KeyPass` 인수를 fail-closed로 거부합니다. 기존 debug 서명은 명시적인 로컬 테스트/legacy 연속성 경로에서만 호환됩니다.
 
 ### 직접 `dotnet build` 할 때
 - 기본 권장은 위 전용 빌드 스크립트 사용입니다.
@@ -78,13 +81,15 @@ Android 현재 소스 versionCode는 `193`입니다.
 - 전용 dotnet 후보:
   - `D:\거래플랜\.dotnet\dotnet.exe`
   - `%LOCALAPPDATA%\GeoraePlan.Android\dotnet8\dotnet.exe`
-- 그래도 직접 빌드할 때는 프로젝트가 `ANDROID_SDK_ROOT`, `ANDROID_HOME`, `%LOCALAPPDATA%\GeoraePlan.Android\android-sdk`, `JAVA_HOME`, Android Studio JBR 경로를 순서대로 자동 감지합니다.
+- 그래도 직접 빌드할 때는 프로젝트가 `ANDROID_SDK_ROOT`, `ANDROID_HOME`, `%LOCALAPPDATA%\GeoraePlan.Android\android-sdk`를 감지합니다. Java는 .NET 8 Android API 34 빌드와 경고 없이 맞는 **Microsoft OpenJDK 17**을 사용하며, `GEORAEPLAN_ANDROID_JAVA_SDK`, `D:\DevCaches\georaeplan-android-jdk\microsoft-jdk-17.0.20`, `JAVA_HOME` 순서로 확인합니다. Android Studio JBR 21은 Java 8 소스/대상 옵션의 obsolete 경고가 발생하므로 납품 빌드에 사용하지 않습니다.
+- 현재 고정한 Microsoft OpenJDK 17.0.20 Windows x64 ZIP의 SHA-256은 `E46FD292317C6BB0A8FE9DC63115021329F3A63CAEBA791C185F89F3666A68E5`입니다.
 - `XA5300: Android SDK 디렉터리를 찾을 수 없습니다`가 나오면 아래처럼 SDK/JDK 경로를 명시합니다.
 - Release 직접 `build`는 Android AOT 응답파일 이슈로 실패할 수 있으므로 납품 APK/AAB 생성은 `Build-GeoraePlanAndroidApk.ps1`/`Build-GeoraePlanAndroidBundle.ps1`를 사용하세요. 해당 스크립트는 알려진 AOT 응답파일 오류가 나면 AOT 비활성 재시도를 수행합니다.
 
 ```powershell
 $mobileDotnet = if (Test-Path "D:\거래플랜\.dotnet\dotnet.exe") { "D:\거래플랜\.dotnet\dotnet.exe" } else { "$env:LOCALAPPDATA\GeoraePlan.Android\dotnet8\dotnet.exe" }
-& $mobileDotnet build "D:\거래플랜\Mobile\GeoraePlan.Mobile.App\GeoraePlan.Mobile.App.csproj" -f net8.0-android -c Debug -p:AndroidSdkDirectory="$env:LOCALAPPDATA\GeoraePlan.Android\android-sdk" -p:JavaSdkDirectory="C:\Program Files\Android\Android Studio\jbr"
+$env:GEORAEPLAN_ANDROID_JAVA_SDK = "D:\DevCaches\georaeplan-android-jdk\microsoft-jdk-17.0.20"
+& $mobileDotnet build "D:\거래플랜\Mobile\GeoraePlan.Mobile.App\GeoraePlan.Mobile.App.csproj" -f net8.0-android -c Debug -p:AndroidSdkDirectory="$env:LOCALAPPDATA\GeoraePlan.Android\android-sdk" -p:JavaSdkDirectory="$env:GEORAEPLAN_ANDROID_JAVA_SDK"
 ```
 
 ## Android Studio로 직접 확인하는 방법

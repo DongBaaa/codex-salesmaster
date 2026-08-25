@@ -45,7 +45,7 @@
             <Setter Property="BorderBrush" Value="#5D7593"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding" Value="14,0"/>
-            <Setter Property="Height" Value="38"/>
+            <Setter Property="MinHeight" Value="38"/>
             <Setter Property="MinWidth" Value="96"/>
             <Setter Property="Cursor" Value="Hand"/>
         </Style>
@@ -59,7 +59,8 @@
             <Setter Property="CanUserAddRows" Value="False"/>
             <Setter Property="AlternatingRowBackground" Value="#223754"/>
             <Setter Property="RowBackground" Value="#1E2D40"/>
-            <Setter Property="RowHeight" Value="34"/>
+            <Setter Property="RowHeight" Value="NaN"/>
+            <Setter Property="MinRowHeight" Value="34"/>
             <Setter Property="EnableRowVirtualization" Value="True"/>
             <Setter Property="EnableColumnVirtualization" Value="True"/>
             <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True"/>
@@ -92,14 +93,14 @@
                                FontSize="22"
                                FontWeight="Bold"
                                Foreground="#4FC3F7"
-                               TextWrapping="NoWrap"
-                               TextTrimming="CharacterEllipsis"
+                               TextWrapping="Wrap"
+                               TextTrimming="None"
                                ToolTip="신규 렌탈 거래처 등록"/>
                     <TextBlock Text="거래처 등록 → 렌탈 설정 → 청구 설정 → 거래처 임대 자산 연결 → 표시품목 구성 순서로 진행합니다."
                                Foreground="#9FB3C8"
                                Margin="0,4,0,0"
-                               TextWrapping="NoWrap"
-                               TextTrimming="CharacterEllipsis"
+                               TextWrapping="Wrap"
+                               TextTrimming="None"
                                ToolTip="거래처 등록 → 렌탈 설정 → 청구 설정 → 거래처 임대 자산 연결 → 표시품목 구성 순서로 진행합니다."/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" HorizontalAlignment="Right" MaxWidth="360">
@@ -107,14 +108,14 @@
                                FontSize="16"
                                FontWeight="SemiBold"
                                HorizontalAlignment="Right"
-                               TextWrapping="NoWrap"
-                               TextTrimming="CharacterEllipsis"
+                               TextWrapping="Wrap"
+                               TextTrimming="None"
                                ToolTip="{Binding CurrentStepTitle}"/>
                     <TextBlock Text="{Binding StatusMessage}"
                                Foreground="#90CAF9"
                                HorizontalAlignment="Right"
-                               TextWrapping="NoWrap"
-                               TextTrimming="CharacterEllipsis"
+                               TextWrapping="Wrap"
+                               TextTrimming="None"
                                ToolTip="{Binding StatusMessage}"/>
                 </StackPanel>
             </Grid>
@@ -524,8 +525,8 @@
                            Text="{Binding StatusMessage}"
                            VerticalAlignment="Center"
                            Foreground="#90CAF9"
-                           TextWrapping="NoWrap"
-                           TextTrimming="CharacterEllipsis"
+                           TextWrapping="Wrap"
+                           TextTrimming="None"
                            ToolTip="{Binding StatusMessage}"/>
                 <WrapPanel Grid.Column="1" HorizontalAlignment="Right" Margin="12,0,0,0">
                     <Button Content="이전" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding PreviousStepCommand}"/>

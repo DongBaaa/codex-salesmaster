@@ -87,4 +87,7 @@
     <Compile Include="..\..\tools\SyncDiag\ImmutableSqliteInspectionGuard.cs"
              Link="SyncDiag\ImmutableSqliteInspectionGuard.cs" />
   </ItemGroup>
+  <Target Name="EnsureArtifactRetentionClosureDirectories" AfterTargets="Build">
+    <MakeDir Directories="$(TargetDir)runtimes\win-arm\native" />
+  </Target>
 </Project>

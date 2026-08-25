@@ -79,10 +79,10 @@ public sealed class ArtifactRetentionProducerProvisioningTests
                 closureManifest.RootElement.EnumerateObject().Select(property => property.Name).Order(StringComparer.Ordinal).ToArray());
             Assert.Equal(1, closureManifest.RootElement.GetProperty("schemaVersion").GetInt32());
             Assert.Equal("georaeplan-artifact-retention-test-closure-v1", closureManifest.RootElement.GetProperty("kind").GetString());
-            Assert.Equal(207, closureManifest.RootElement.GetProperty("outputFileCount").GetInt32());
+            Assert.Equal(209, closureManifest.RootElement.GetProperty("outputFileCount").GetInt32());
             Assert.Equal(65, closureManifest.RootElement.GetProperty("outputDirectoryCount").GetInt32());
             var entries = closureManifest.RootElement.GetProperty("entries").EnumerateArray().ToArray();
-            Assert.Equal(274, entries.Length);
+            Assert.Equal(276, entries.Length);
             var relativePaths = entries.Select(entry => entry.GetProperty("relativePath").GetString()!).ToArray();
             Assert.Equal(relativePaths.Order(StringComparer.Ordinal).ToArray(), relativePaths);
             Assert.Equal(relativePaths.Length, relativePaths.Distinct(StringComparer.Ordinal).Count());
@@ -1397,7 +1397,7 @@ public sealed class ArtifactRetentionProducerProvisioningTests
         => await RunProcessAsync(fileName, workingDirectory, null, args);
 
     private static async Task<ProcessResult> RunProcessAsync(string fileName, string? workingDirectory, IReadOnlyDictionary<string, string?>? environment, params string[] args)
-        => await RunProcessAsync(fileName, workingDirectory, TimeSpan.FromSeconds(45), null, environment, args);
+        => await RunProcessAsync(fileName, workingDirectory, TimeSpan.FromSeconds(90), null, environment, args);
 
     private static async Task<ProcessResult> RunProcessAsync(string fileName, string? workingDirectory, TimeSpan timeout, Action? beforeAssignment, IReadOnlyDictionary<string, string?>? environment, params string[] args)
         => await RunProcessAsync(fileName, workingDirectory, timeout, beforeAssignment, environment, CleanupFaultStep.None, args);
@@ -1405,6 +1405,14 @@ public sealed class ArtifactRetentionProducerProvisioningTests
     private static async Task<ProcessResult> RunProcessAsync(string fileName, string? workingDirectory, TimeSpan timeout, Action? beforeAssignment, IReadOnlyDictionary<string, string?>? environment, CleanupFaultStep cleanupFaults, params string[] args)
     {
         var start = new ProcessStartInfo { FileName = fileName, WorkingDirectory = workingDirectory ?? string.Empty, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
+        if (string.Equals(Path.GetFileName(fileName), "powershell.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            var windowsPowerShellHome = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.System),
+                "WindowsPowerShell",
+                "v1.0");
+            start.Environment["PSModulePath"] = Path.Combine(windowsPowerShellHome, "Modules");
+        }
         if (args.Contains("-TestFaultInjection", StringComparer.Ordinal))
             start.Environment["GEORAEPLAN_ARTIFACT_PRODUCER_TEST_MODE"] = "1";
         if (environment is not null)

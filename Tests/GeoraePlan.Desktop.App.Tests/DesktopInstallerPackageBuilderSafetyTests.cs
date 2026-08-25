@@ -17,6 +17,15 @@ public sealed class DesktopInstallerPackageBuilderSafetyTests
             "tools",
             "release",
             "Build-GeoraePlanDesktopInstaller.ps1");
+        var scriptSource = await File.ReadAllTextAsync(scriptPath);
+        Assert.Contains(
+            "Microsoft.PowerShell.Utility.psd1",
+            scriptSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "-Name $powerShellUtilityModulePath",
+            scriptSource,
+            StringComparison.Ordinal);
         var testRoot = CreateDDriveTestRoot("invalid-names");
         var outputRoot = Path.Combine(testRoot, "output");
         var escapedRoot = Path.Combine(testRoot, "escaped-package");
@@ -786,7 +795,10 @@ public sealed class DesktopInstallerPackageBuilderSafetyTests
         {
             var fixture = CreateBuildFixture(testRoot);
             var firstBuild = await RunBuilderAsync(scriptPath, fixture);
-            Assert.Equal(0, firstBuild.ExitCode);
+            Assert.True(
+                firstBuild.ExitCode == 0,
+                $"Initial package build failed. " +
+                $"stdout={firstBuild.StdOut} stderr={firstBuild.StdErr}");
             var adminOutputRoot = Path.Combine(
                 fixture.OutputRoot,
                 "관리자용");
@@ -2943,15 +2955,30 @@ public sealed class DesktopInstallerPackageBuilderSafetyTests
         string scriptPath,
         params (string Name, string? Value)[] argumentsAndEnvironment)
     {
+        var windowsPowerShellHome = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.System),
+            "WindowsPowerShell",
+            "v1.0");
+        var windowsPowerShellPath = Path.Combine(
+            windowsPowerShellHome,
+            "powershell.exe");
         using var process = new Process();
         process.StartInfo = new ProcessStartInfo
         {
-            FileName = "powershell",
+            FileName = File.Exists(windowsPowerShellPath)
+                ? windowsPowerShellPath
+                : "powershell",
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true
         };
+        if (File.Exists(windowsPowerShellPath))
+        {
+            process.StartInfo.Environment["PSModulePath"] = Path.Combine(
+                windowsPowerShellHome,
+                "Modules");
+        }
         process.StartInfo.ArgumentList.Add("-NoProfile");
         process.StartInfo.ArgumentList.Add("-ExecutionPolicy");
         process.StartInfo.ArgumentList.Add("Bypass");

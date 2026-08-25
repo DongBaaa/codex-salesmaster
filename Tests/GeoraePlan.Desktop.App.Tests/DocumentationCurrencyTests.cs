@@ -148,6 +148,83 @@ public sealed class DocumentationCurrencyTests
             normalized);
     }
 
+    [Fact]
+    public void RootReadme_DoesNotClaimApprovalGatedGoalActionsAsCompleted()
+    {
+        var root = FindRepositoryRoot();
+        var readme = File.ReadAllText(Path.Combine(root, "README.md"));
+        var staleCompletionClaims = new[]
+        {
+            "현재 버전의 정식 패키지와 Linux PC live 반영을 완료했고",
+            "Goal 관련 585개 파일",
+            "Android versionCode 증가, Release signing, emulator `adb install -r` 검증 완료",
+        };
+
+        foreach (var staleClaim in staleCompletionClaims)
+        {
+            Assert.DoesNotContain(staleClaim, readme, StringComparison.Ordinal);
+        }
+
+        Assert.Contains(
+            "정식 패키지 생성, Linux PC live 반영, 버전 게시, 서명, 실제 기기 설치, Git stage/commit/push는 수행하지 않았습니다.",
+            readme,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "[승인대기]` 현재 Goal 변경의 선택 Git stage/commit/push와 원격 SHA 확인",
+            readme,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GoalTracker_CurrentAuthoritativeSummaryPrecedesHistoryAndKeepsExternalGatesOpen()
+    {
+        var root = FindRepositoryRoot();
+        var tracker = File.ReadAllText(Path.Combine(
+            root,
+            "tasks",
+            "거래플랜-전체-품질화-Goal-현황.md"));
+        const string currentMarker =
+            "## 2026-08-22 현재 authoritative 완료 감사";
+        const string historicalMarker =
+            "## 2026-08-13 04:42 KST 최신 보호 source-users snapshot과 격리 seed 충돌 차단";
+        var currentIndex = tracker.IndexOf(currentMarker, StringComparison.Ordinal);
+        var historicalIndex = tracker.IndexOf(historicalMarker, StringComparison.Ordinal);
+
+        Assert.True(currentIndex >= 0, "현재 authoritative 완료 감사가 없습니다.");
+        Assert.True(
+            historicalIndex > currentIndex,
+            "현재 authoritative 완료 감사가 누적 이력보다 먼저 나와야 합니다.");
+
+        var current = tracker[currentIndex..historicalIndex];
+        var required = new[]
+        {
+            "Goal 상태: **진행 중**",
+            "soak-20260813-190113",
+            "1,181행에서 끝났고",
+            "soak-quality-20260820-150531",
+            "정확히 1,440개, bad 0",
+            "Windows Authenticode",
+            "Android production keystore",
+            "실제 종이 출력",
+            "외부 backup replica",
+            "`live 반영` 승인",
+            "Git stage/commit/push",
+            "승인 전 수행하지 않습니다.",
+        };
+
+        foreach (var value in required)
+            Assert.Contains(value, current, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            "Goal 상태: **완료**",
+            current,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "전체 Goal 완료를 선언합니다",
+            current,
+            StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("README.md")]
     [InlineData("사용 메뉴얼.md")]
@@ -434,6 +511,9 @@ public sealed class DocumentationCurrencyTests
         Assert.Contains("validate_pdf", generator, StringComparison.Ordinal);
         Assert.Contains("android_supported_section", generator, StringComparison.Ordinal);
         Assert.Contains("android_pc_only_section", generator, StringComparison.Ordinal);
+        Assert.Contains("georaeplan-current-wpf-exact-matrix-v2", generator, StringComparison.Ordinal);
+        Assert.Contains("modelledMeasurementCount", generator, StringComparison.Ordinal);
+        Assert.Contains("sourceEvidence", generator, StringComparison.Ordinal);
         Assert.Contains("[\"동기화\", \"동기화\"]", generator, StringComparison.Ordinal);
         Assert.Matches(
             new Regex(
@@ -478,15 +558,42 @@ public sealed class DocumentationCurrencyTests
 
         using var captureManifest = JsonDocument.Parse(
             File.ReadAllText(captureManifestPath));
-        var screenshots = captureManifest.RootElement
+        var captureRoot = captureManifest.RootElement;
+        Assert.Equal(2, captureRoot.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal("2026-08-22", captureRoot.GetProperty("captureDate").GetString());
+        Assert.Equal("1.1.693", captureRoot.GetProperty("desktopVersion").GetString());
+
+        var sourceEvidence = captureRoot.GetProperty("sourceEvidence");
+        Assert.Equal("georaeplan-current-wpf-exact-matrix-v2", sourceEvidence.GetProperty("kind").GetString());
+        Assert.Equal(
+            "6182B6A19A67D7976E27A1C1EF5D39EA27E471111F7C3C67D752B92DFDE2CCC5",
+            sourceEvidence.GetProperty("resultSha256").GetString());
+        Assert.Equal(
+            "C1DD126443642E9D882CCE0693D8EF23F4843D30D50BE23205223EB74E0CE493",
+            sourceEvidence.GetProperty("assemblySha256").GetString());
+        Assert.Equal(768, sourceEvidence.GetProperty("measurementCount").GetInt32());
+        Assert.Equal(36, sourceEvidence.GetProperty("successScreenshotCount").GetInt32());
+        Assert.Equal(0, sourceEvidence.GetProperty("modelledMeasurementCount").GetInt32());
+
+        var screenshots = captureRoot
             .GetProperty("screenshots")
             .EnumerateArray()
             .ToArray();
         Assert.Equal(15, screenshots.Length);
+        var fileNames = new HashSet<string>(StringComparer.Ordinal);
+        var sourceWindows = new HashSet<string>(StringComparer.Ordinal);
+        var screenshotHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var screenshot in screenshots)
         {
             var fileName = screenshot.GetProperty("fileName").GetString()!;
+            var sourceWindow = screenshot.GetProperty("sourceWindow").GetString()!;
+            var expectedHash = screenshot.GetProperty("sha256").GetString()!;
             Assert.Equal(Path.GetFileName(fileName), fileName);
+            Assert.Matches("^[A-Za-z][A-Za-z0-9]*Window$", sourceWindow);
+            Assert.Matches("^[0-9A-F]{64}$", expectedHash);
+            Assert.True(fileNames.Add(fileName), $"Manual screenshot name is duplicated: {fileName}");
+            Assert.True(sourceWindows.Add(sourceWindow), $"Manual source window is duplicated: {sourceWindow}");
+            Assert.True(screenshotHashes.Add(expectedHash), $"Manual screenshot hash is duplicated: {expectedHash}");
 
             var screenshotPath = Path.Combine(
                 root,
@@ -497,10 +604,14 @@ public sealed class DocumentationCurrencyTests
                 fileName);
             Assert.True(File.Exists(screenshotPath), $"Manual screenshot is missing: {screenshotPath}");
             Assert.Equal(
-                screenshot.GetProperty("sha256").GetString(),
+                expectedHash,
                 Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(screenshotPath))),
                 ignoreCase: true);
         }
+        Assert.DoesNotContain("04_customer_menu.png", fileNames);
+        Assert.DoesNotContain("16_recycle_bin.png", fileNames);
+        Assert.Contains("18_trade_print.png", fileNames);
+        Assert.Contains("19_sync_diagnostics.png", fileNames);
     }
 
     private static CurrentVersions LoadCurrentVersions(string root)

@@ -2928,9 +2928,7 @@ public sealed class DataIntegrityDuplicateMergeTests
         SyncRequestDispatcher dispatcher)
     {
         var service = new DataIntegrityIssueService(db, dispatcher);
-#if DEBUG
         service.TestOnlyUseLegacyLocalItemDuplicateMerge = true;
-#endif
         return service;
     }
 

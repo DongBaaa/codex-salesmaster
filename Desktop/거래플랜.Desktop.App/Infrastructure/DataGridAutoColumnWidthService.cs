@@ -74,6 +74,7 @@ public static class DataGridAutoColumnWidthService
         }
 
         TrackItemsSource(grid);
+        ApplyAutoFit(grid);
         ScheduleAutoFit(grid);
     }
 

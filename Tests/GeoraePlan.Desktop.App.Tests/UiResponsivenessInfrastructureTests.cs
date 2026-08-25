@@ -37,6 +37,43 @@ public sealed class UiResponsivenessInfrastructureTests
     }
 
     [Fact]
+    public void EnvironmentSettings_StaysClosableWhileItsBusyBoundContentIsLocked()
+    {
+        var helper = ReadDesktopSource("Infrastructure", "WindowShowHelper.cs");
+        var mainWindow = ReadDesktopSource("MainWindow.xaml.cs");
+        var environmentViewModel = ReadDesktopSource("ViewModels", "EnvironmentSettingsViewModel.cs");
+        var environmentWindow = ReadDesktopSource("Views", "EnvironmentSettingsWindow.xaml");
+        var environmentWindowCode = ReadDesktopSource("Views", "EnvironmentSettingsWindow.xaml.cs");
+        var openBody = ExtractBlock(
+            mainWindow,
+            "private async Task OpenEnvironmentSettingsWindowAsync(",
+            "private async Task RunBusinessDatabaseTransitionAsync(");
+
+        Assert.Contains("bool blockWindowDuringLoad = true", helper, StringComparison.Ordinal);
+        Assert.Contains("if (blockWindowDuringLoad)", helper, StringComparison.Ordinal);
+        Assert.Contains("window.IsEnabled = false;", helper, StringComparison.Ordinal);
+        Assert.Contains("window.IsEnabled = wasEnabled;", helper, StringComparison.Ordinal);
+        Assert.Contains("window.Cursor = Cursors.Wait;", helper, StringComparison.Ordinal);
+        Assert.Contains("window.Cursor = previousCursor;", helper, StringComparison.Ordinal);
+
+        Assert.Contains("public bool CanInteract => !IsBusy;", environmentViewModel, StringComparison.Ordinal);
+        Assert.Contains("public bool IsCloseBlocked => IsBusy && !IsInitialLoadInProgress;", environmentViewModel, StringComparison.Ordinal);
+        Assert.Contains("IsInitialLoadInProgress = true;", environmentViewModel, StringComparison.Ordinal);
+        Assert.Contains("IsInitialLoadInProgress = false;", environmentViewModel, StringComparison.Ordinal);
+        Assert.Contains("if (!_viewModel.IsCloseBlocked)", environmentWindowCode, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (!_viewModel.IsBusy)", environmentWindowCode, StringComparison.Ordinal);
+        Assert.Contains("IsEnabled=\"{Binding CanInteract}\"", environmentWindow, StringComparison.Ordinal);
+        Assert.Contains("blockWindowDuringLoad: false", openBody, StringComparison.Ordinal);
+        Assert.Contains("() => vm.InitializeAsync()", openBody, StringComparison.Ordinal);
+
+        var rentalOpenBody = ExtractBlock(
+            mainWindow,
+            "private async Task OpenRentalBillingWindowAsync(",
+            "private async Task OpenRentalAssetWindowAsync(");
+        Assert.DoesNotContain("blockWindowDuringLoad: false", rentalOpenBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DataGridAutoFit_KeepsVirtualizationAndBoundsExpensiveTextMeasurement()
     {
         var source = ReadDesktopSource("Infrastructure", "DataGridAutoColumnWidthService.cs")
@@ -75,6 +112,52 @@ public sealed class UiResponsivenessInfrastructureTests
         Assert.True(markPendingIndex > pendingGuardIndex);
         Assert.True(dispatchIndex > markPendingIndex);
         Assert.True(clearPendingIndex > dispatchIndex);
+    }
+
+    [Fact]
+    public void DataGridAutoFit_AppliesHeaderMinimumsBeforeDeferredContentMeasurement()
+    {
+        var source = ReadDesktopSource("Infrastructure", "DataGridAutoColumnWidthService.cs")
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var loadedBody = ExtractBlock(
+            source,
+            "private static void OnDataGridLoaded(object sender, RoutedEventArgs e)",
+            "private static void OnDataGridUnloaded(object sender, RoutedEventArgs e)");
+
+        var trackIndex = loadedBody.IndexOf("TrackItemsSource(grid);", StringComparison.Ordinal);
+        var immediateApplyIndex = loadedBody.IndexOf("ApplyAutoFit(grid);", StringComparison.Ordinal);
+        var deferredApplyIndex = loadedBody.IndexOf("ScheduleAutoFit(grid);", StringComparison.Ordinal);
+
+        Assert.True(trackIndex >= 0);
+        Assert.True(
+            immediateApplyIndex > trackIndex,
+            "표가 처음 보일 때 머리글 최소폭을 즉시 적용해야 합니다.");
+        Assert.True(
+            deferredApplyIndex > immediateApplyIndex,
+            "초기 최소폭 적용 뒤 데이터 기반 재측정을 예약해야 합니다.");
+    }
+
+    [Fact]
+    public void CustomerContractGrid_DeclaresNonCompressibleColumnMinimums()
+    {
+        var source = ReadDesktopSource("Views", "CustomerEditWindow.xaml")
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+        var contractGrid = ExtractBlock(
+            source,
+            "<DataGrid Grid.Row=\"0\"",
+            "<StackPanel Grid.Row=\"1\"");
+
+        Assert.Contains("ScrollViewer.HorizontalScrollBarVisibility=\"Auto\"", contractGrid, StringComparison.Ordinal);
+        Assert.Contains("Header=\"대표\" Binding=\"{Binding IsPrimary}\" Width=\"60\" MinWidth=\"60\"", contractGrid, StringComparison.Ordinal);
+        Assert.Contains("Header=\"상태\" Width=\"78\" MinWidth=\"78\"", contractGrid, StringComparison.Ordinal);
+        Assert.Contains("Header=\"구분\" Binding=\"{Binding ContractType}\" Width=\"110\" MinWidth=\"78\"", contractGrid, StringComparison.Ordinal);
+        Assert.Contains("Header=\"체결일\" Binding=\"{Binding SignedDate}\" Width=\"112\" MinWidth=\"112\"", contractGrid, StringComparison.Ordinal);
+        Assert.Contains("Header=\"만료일\" Binding=\"{Binding ExpireDate}\" Width=\"112\" MinWidth=\"112\"", contractGrid, StringComparison.Ordinal);
+        Assert.Contains("Header=\"파일명\" Binding=\"{Binding FileName}\" Width=\"190\" MinWidth=\"190\"", contractGrid, StringComparison.Ordinal);
+        Assert.Contains("Header=\"용량\" Binding=\"{Binding FileSize, StringFormat={}{0:N0} B}\" Width=\"100\" MinWidth=\"100\"", contractGrid, StringComparison.Ordinal);
+        Assert.Contains("Header=\"등록자\" Binding=\"{Binding UploadedByUsername}\" Width=\"90\" MinWidth=\"90\"", contractGrid, StringComparison.Ordinal);
+        Assert.Contains("Header=\"등록시각\" Binding=\"{Binding UploadedAtUtc, StringFormat={}{0:yyyy-MM-dd HH:mm}}\" Width=\"145\" MinWidth=\"145\"", contractGrid, StringComparison.Ordinal);
+        Assert.Contains("Header=\"메모\" Binding=\"{Binding Description}\" Width=\"140\" MinWidth=\"140\"", contractGrid, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -197,11 +280,8 @@ public sealed class UiResponsivenessInfrastructureTests
     public void PrinterRefresh_DoesNotBlockUiOrRepeatQueueEnumeration()
     {
         var executor = ReadDesktopSource("Services", "TradePrintExecutor.cs");
+        var catalog = ReadDesktopSource("Printing", "TradePrinterCatalog.cs");
         var printWindow = ReadDesktopSource("Views", "TradePrintWindow.xaml.cs");
-        var queueLoadBody = ExtractBlock(
-            executor,
-            "private static IReadOnlyList<PrintQueue> LoadInstalledPrintQueues(",
-            "private static PrintQueue? TryGetDefaultPrintQueue(");
         var refreshHandlerBody = ExtractBlock(
             printWindow,
             "private void OnRefreshPrintersClick(object sender, RoutedEventArgs e)",
@@ -211,13 +291,15 @@ public sealed class UiResponsivenessInfrastructureTests
             "private async Task RefreshPrintersAsync()",
             "private void OnPageModeChecked(object sender, RoutedEventArgs e)");
 
-        Assert.Single(Regex.Matches(queueLoadBody, "GetPrintQueues\\(", RegexOptions.CultureInvariant));
-        Assert.DoesNotContain("InstalledPrinterQueueTypeGroups", executor, StringComparison.Ordinal);
+        Assert.Contains("TradePrinterCatalog.LoadSnapshot()", executor, StringComparison.Ordinal);
+        Assert.Contains("PrinterInfoLevel = 2", catalog, StringComparison.Ordinal);
+        Assert.DoesNotContain("System.Printing", catalog, StringComparison.Ordinal);
         Assert.Contains("=> UiTaskHelper.Run(", refreshHandlerBody, StringComparison.Ordinal);
         Assert.Contains("this,", refreshHandlerBody, StringComparison.Ordinal);
         Assert.Contains("RefreshPrintersAsync,", refreshHandlerBody, StringComparison.Ordinal);
         Assert.DoesNotContain("async void", refreshHandlerBody, StringComparison.Ordinal);
-        Assert.Contains("await Task.Run(_printerRefreshProvider)", refreshBody, StringComparison.Ordinal);
+        Assert.Contains("await Task.Run(_printerCatalogProvider)", refreshBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("PrintQueue", printWindow, StringComparison.Ordinal);
     }
 
     private static string ReadDesktopSource(params string[] relativeSegments)

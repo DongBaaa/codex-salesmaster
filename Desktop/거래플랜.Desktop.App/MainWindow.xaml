@@ -110,13 +110,15 @@
         <Style x:Key="DashboardMetricLabelTextStyle" TargetType="TextBlock">
             <Setter Property="Foreground" Value="#9FB3C8"/>
             <Setter Property="FontSize" Value="11"/>
-            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+            <Setter Property="TextTrimming" Value="None"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
         </Style>
         <Style x:Key="DashboardMetricValueTextStyle" TargetType="TextBlock">
             <Setter Property="Foreground" Value="#EAF2FF"/>
             <Setter Property="FontWeight" Value="Bold"/>
             <Setter Property="FontSize" Value="15"/>
-            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+            <Setter Property="TextTrimming" Value="None"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
             <Setter Property="Margin" Value="0,2,0,0"/>
         </Style>
         <Style TargetType="DataGrid">
@@ -207,9 +209,7 @@
                   HorizontalScrollBarVisibility="Disabled"
                   VerticalScrollBarVisibility="Disabled"
                   SizeChanged="MainRootScrollViewer_SizeChanged">
-        <DockPanel x:Name="MainRootPanel"
-                   MinWidth="744"
-                   MinHeight="400">
+        <DockPanel x:Name="MainRootPanel">
         <Border x:Name="MainHeaderPanel"
                 DockPanel.Dock="Top"
                 Background="#1A2B4A"
@@ -323,7 +323,8 @@
                                    Foreground="#9FB3C8"
                                    VerticalAlignment="Center"
                                    Margin="0,0,10,0"
-                                   TextTrimming="CharacterEllipsis"
+                                   TextTrimming="None"
+                                   TextWrapping="Wrap"
                                    ToolTip="{Binding CurrentUserDisplay}"/>
                         <Button x:Name="LogoutButton"
                                 Content="로그아웃"
@@ -465,7 +466,8 @@
                                                 <StackPanel>
                                                     <TextBlock Text="{Binding CustomerName}"
                                                                FontWeight="Bold"
-                                                               TextTrimming="CharacterEllipsis"/>
+                                                               TextTrimming="None"
+                                                               TextWrapping="Wrap"/>
                                                     <TextBlock Text="{Binding ContractType}"
                                                                Foreground="#90CAF9"
                                                                FontSize="11"
@@ -514,7 +516,8 @@
                         <TextBlock Text="{Binding DesktopUpdateStatusText}"
                                    Foreground="#B7C8DA"
                                    FontSize="12"
-                                   TextTrimming="CharacterEllipsis"/>
+                                   TextTrimming="None"
+                                   TextWrapping="Wrap"/>
                     </StackPanel>
                     <Button Grid.Column="2"
                             Content="{Binding DesktopUpdateActionText}"
@@ -552,7 +555,8 @@
                         <TextBlock Text="이번 달 매출 / 월 평균"
                                    Foreground="#EAF2FF"
                                    FontSize="12"
-                                   TextTrimming="CharacterEllipsis"
+                                   TextTrimming="None"
+                                   TextWrapping="Wrap"
                                    Margin="0,4,0,0"/>
                     </StackPanel>
                 </Button>
@@ -680,7 +684,7 @@
                                         Margin="0,0,8,6"
                                         Width="236">
                                     <StackPanel>
-                                        <TextBlock Text="{Binding CustomerName}" FontWeight="Bold" TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Text="{Binding CustomerName}" FontWeight="Bold" TextTrimming="None" TextWrapping="Wrap"/>
                                         <TextBlock Text="{Binding ContractType}" Foreground="#90CAF9" FontSize="11" Margin="0,2,0,0"/>
                                         <TextBlock Text="{Binding AlertText}" Foreground="#FFCC80" FontSize="11" Margin="0,1,0,0"/>
                                     </StackPanel>
@@ -711,7 +715,7 @@
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="112"/>
-                                        <ColumnDefinition Width="112"/>
+                                        <ColumnDefinition Width="128"/>
                                         <ColumnDefinition Width="112"/>
                                     </Grid.ColumnDefinitions>
                                     <Grid.RowDefinitions>
@@ -822,7 +826,7 @@
                                             </Style.Triggers>
                                         </Style>
                                     </ListBox.ItemContainerStyle>
-                                    <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding NameOriginal}" Foreground="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem}, Path=Foreground}" TextTrimming="CharacterEllipsis"/></DataTemplate></ListBox.ItemTemplate>
+                                    <ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding NameOriginal}" Foreground="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem}, Path=Foreground}" TextTrimming="None" TextWrapping="Wrap"/></DataTemplate></ListBox.ItemTemplate>
                                 </ListBox>
                             </DockPanel>
                         </Border>

@@ -19,8 +19,14 @@
     [int]$ServerPort = 19080,
     [switch]$UseInAppSelfTest,
     [string]$InAppSelfTestReportPath,
+    [switch]$VerifyPriorityWindowsWithInAppSelfTest,
+    [string]$MultiPcUiRole = '',
+    [string]$MultiPcUiBarrierRoot = '',
+    [ValidateRange(1, 600)]
+    [int]$MultiPcUiBarrierTimeoutSec = 180,
     [string]$LoginInputMutexName = '',
     [switch]$AttachExisting,
+    [switch]$LoginOnly,
     [switch]$KeepAppOpen
 )
 
@@ -60,6 +66,25 @@ function Get-BootstrapStringSha256 {
     }
 }
 
+function Get-BootstrapFileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [System.IO.File]::Open(
+        [System.IO.Path]::GetFullPath($Path),
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read,
+        [System.IO.FileShare]::Read)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString(
+            $sha256.ComputeHash($stream))).Replace('-', '')
+    }
+    finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Get-BootstrapDatabaseFileSetSha256 {
     param([Parameter(Mandatory = $true)][string]$DatabasePath)
 
@@ -68,7 +93,7 @@ function Get-BootstrapDatabaseFileSetSha256 {
         $path = "$DatabasePath$suffix"
         if (Test-Path -LiteralPath $path -PathType Leaf) {
             $item = Get-Item -LiteralPath $path -Force
-            $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            $hash = Get-BootstrapFileSha256 -Path $path
             $entries.Add("$suffix`t$($item.Length)`t$hash")
         }
     }
@@ -208,7 +233,7 @@ function Assert-EphemeralAdminBootstrapContract {
                 [System.StringComparison]::OrdinalIgnoreCase) -or
             $ContractSha256 -notmatch '^[0-9A-Fa-f]{64}$' -or
             -not [string]::Equals(
-                (Get-FileHash -LiteralPath $ContractPath -Algorithm SHA256).Hash,
+                (Get-BootstrapFileSha256 -Path $ContractPath),
                 $ContractSha256,
                 [System.StringComparison]::OrdinalIgnoreCase)
         ) { throw 'invalid' }
@@ -269,8 +294,8 @@ function Assert-EphemeralAdminBootstrapContract {
             -not [string]::Equals([string]$marker.runtime_physical_root, $canonicalExecutionRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
             -not [string]::Equals([string]$marker.certification_id, [string]$contract.CertificationId, [System.StringComparison]::Ordinal) -or
             -not [string]::Equals([string]$marker.server_dll_sha256, [string]$contract.ServerDllSha256, [System.StringComparison]::OrdinalIgnoreCase) -or
-            -not [string]::Equals((Get-FileHash -LiteralPath $canonicalMarkerPath -Algorithm SHA256).Hash, [string]$contract.RuntimeMarkerSha256, [System.StringComparison]::OrdinalIgnoreCase) -or
-            -not [string]::Equals((Get-FileHash -LiteralPath $serverDllPath -Algorithm SHA256).Hash, [string]$contract.ServerDllSha256, [System.StringComparison]::OrdinalIgnoreCase)
+            -not [string]::Equals((Get-BootstrapFileSha256 -Path $canonicalMarkerPath), [string]$contract.RuntimeMarkerSha256, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals((Get-BootstrapFileSha256 -Path $serverDllPath), [string]$contract.ServerDllSha256, [System.StringComparison]::OrdinalIgnoreCase)
         ) { throw 'invalid' }
 
         $snapshotSha256 = Get-BootstrapDatabaseFileSetSha256 -DatabasePath $canonicalSnapshotPath
@@ -586,6 +611,37 @@ function Wait-FileReady {
     }
 
     return $false
+}
+
+function Write-UiBarrierMarkerAtomic {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $normalizedPath = [System.IO.Path]::GetFullPath($Path)
+    $temporaryPath = "$normalizedPath.$PID.$([Guid]::NewGuid().ToString('N')).tmp"
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes("ready`n")
+    $stream = $null
+    try {
+        $stream = [System.IO.FileStream]::new(
+            $temporaryPath,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None,
+            4096,
+            [System.IO.FileOptions]::WriteThrough)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+        $stream.Dispose()
+        $stream = $null
+        [System.IO.File]::Move($temporaryPath, $normalizedPath)
+    }
+    finally {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryPath -Force
+        }
+    }
 }
 
 function Start-IsolatedTestServer {
@@ -1139,12 +1195,15 @@ function Click-ElementByCoordinates {
     }
 }
 
-function Invoke-CustomerManagementMenuItem {
-    param([int]$TimeoutSeconds = 4)
+function Invoke-RootMenuItem {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [int]$TimeoutSeconds = 4
+    )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
-        $menuItem = Find-RootByNameAndControlType -Name '거래처 관리' -ControlType ([System.Windows.Automation.ControlType]::MenuItem)
+        $menuItem = Find-RootByNameAndControlType -Name $Name -ControlType ([System.Windows.Automation.ControlType]::MenuItem)
         if ($null -ne $menuItem) {
             if (Click-Element $menuItem) {
                 return $true
@@ -1356,6 +1415,9 @@ function Open-And-VerifyChildWindow {
         [string]$ButtonName,
         [string]$WindowTitle,
         [string[]]$RequiredNames,
+        [string]$MenuItemName = '',
+        [string]$RequiredInitiallyEnabledName = '',
+        [string]$WaitUntilEnabledAutomationId = '',
         [System.Collections.Generic.List[object]]$Steps
     )
 
@@ -1406,6 +1468,7 @@ function Open-And-VerifyChildWindow {
         # foreground 전환 실패 시에도 UIA/좌표 클릭을 계속 시도합니다.
     }
 
+    $openStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $openedViaInvoke = Click-Element $button
     if (-not $openedViaInvoke -and -not (Click-ElementByCoordinates -Element $button)) {
         Add-Step -Steps $Steps -Name "open-$ButtonName" -Passed $false -Detail 'button click failed'
@@ -1413,8 +1476,8 @@ function Open-And-VerifyChildWindow {
     }
 
     $menuClicked = $true
-    if ($ButtonName -eq '거래처 관리') {
-        $menuClicked = Invoke-CustomerManagementMenuItem
+    if (-not [string]::IsNullOrWhiteSpace($MenuItemName)) {
+        $menuClicked = Invoke-RootMenuItem -Name $MenuItemName
     }
 
     $child = Get-ProcessWindow -ProcessId $ProcessId -Name $WindowTitle -Contains -TimeoutSec 8
@@ -1431,8 +1494,8 @@ function Open-And-VerifyChildWindow {
         }
 
         $fallbackClicked = Click-ElementByCoordinates -Element $button -DelayMilliseconds 900
-        if ($fallbackClicked -and $ButtonName -eq '거래처 관리') {
-            $menuClicked = Invoke-CustomerManagementMenuItem
+        if ($fallbackClicked -and -not [string]::IsNullOrWhiteSpace($MenuItemName)) {
+            $menuClicked = Invoke-RootMenuItem -Name $MenuItemName
         }
 
         $child = Get-ProcessWindow -ProcessId $ProcessId -Name $WindowTitle -Contains -TimeoutSec 25
@@ -1440,8 +1503,46 @@ function Open-And-VerifyChildWindow {
 
     if ($null -eq $child) {
         $windowNames = Get-ProcessWindowNames -ProcessId $ProcessId
-        Add-Step -Steps $Steps -Name "open-$ButtonName" -Passed $false -Detail "window not found: $WindowTitle; windows=$($windowNames -join ', '); invokeClicked=$openedViaInvoke; customerMenuClicked=$menuClicked"
+        Add-Step -Steps $Steps -Name "open-$ButtonName" -Passed $false -Detail "window not found: $WindowTitle; windows=$($windowNames -join ', '); invokeClicked=$openedViaInvoke; menuItem=$MenuItemName; menuClicked=$menuClicked"
         return $false
+    }
+
+    $openMilliseconds = [int]$openStopwatch.ElapsedMilliseconds
+    $initialResponsive = $true
+    if (-not [string]::IsNullOrWhiteSpace($RequiredInitiallyEnabledName)) {
+        $initialControl = Find-FirstByName -Root $child -Name $RequiredInitiallyEnabledName
+        $initialResponsive =
+            $null -ne $initialControl -and
+            $child.Current.IsEnabled -and
+            $initialControl.Current.IsEnabled
+        Add-Step `
+            -Steps $Steps `
+            -Name "initial-responsive-$WindowTitle" `
+            -Passed $initialResponsive `
+            -Detail "open_ms=$openMilliseconds; window_enabled=$($child.Current.IsEnabled); control=$RequiredInitiallyEnabledName; control_enabled=$(if ($null -eq $initialControl) { 'missing' } else { $initialControl.Current.IsEnabled })"
+    }
+
+    $ready = $true
+    if (-not [string]::IsNullOrWhiteSpace($WaitUntilEnabledAutomationId)) {
+        $ready = $false
+        $readyDeadline = (Get-Date).AddSeconds(45)
+        while ((Get-Date) -lt $readyDeadline) {
+            $readyControl = Find-FirstByAutomationId -Root $child -AutomationId $WaitUntilEnabledAutomationId
+            if ($null -ne $readyControl -and $readyControl.Current.IsEnabled) {
+                $ready = $true
+                break
+            }
+            Start-Sleep -Milliseconds 250
+        }
+        Add-Step -Steps $Steps -Name "ready-$WindowTitle" -Passed $ready -Detail "automation_id=$WaitUntilEnabledAutomationId; elapsed_ms=$([int]$openStopwatch.ElapsedMilliseconds)"
+    }
+    else {
+        $enabledDeadline = (Get-Date).AddSeconds(45)
+        while (-not $child.Current.IsEnabled -and (Get-Date) -lt $enabledDeadline) {
+            Start-Sleep -Milliseconds 250
+        }
+        $ready = $child.Current.IsEnabled
+        Add-Step -Steps $Steps -Name "ready-$WindowTitle" -Passed $ready -Detail "window_enabled=$ready; elapsed_ms=$([int]$openStopwatch.ElapsedMilliseconds)"
     }
 
     $missing = @()
@@ -1451,10 +1552,21 @@ function Open-And-VerifyChildWindow {
         }
     }
 
-    $passed = $missing.Count -eq 0
-    Add-Step -Steps $Steps -Name "window-$WindowTitle" -Passed $passed -Detail ($(if ($passed) { 'required controls found' } else { 'missing: ' + ($missing -join ', ') }))
+    $passed = $missing.Count -eq 0 -and $initialResponsive -and $ready -and $menuClicked
+    Add-Step -Steps $Steps -Name "window-$WindowTitle" -Passed $passed -Detail ($(if ($passed) { "required controls found; open_ms=$openMilliseconds" } else { 'missing: ' + ($missing -join ', ') }))
+
+    $closeStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     Close-Window $child
-    return $passed
+    $closeDeadline = (Get-Date).AddSeconds(10)
+    do {
+        $remaining = Get-ProcessWindow -ProcessId $ProcessId -Name $WindowTitle -Contains -TimeoutSec 1
+        if ($null -eq $remaining) { break }
+        Start-Sleep -Milliseconds 200
+    }
+    while ((Get-Date) -lt $closeDeadline)
+    $closed = $null -eq $remaining
+    Add-Step -Steps $Steps -Name "close-$WindowTitle" -Passed $closed -Detail "close_ms=$([int]$closeStopwatch.ElapsedMilliseconds)"
+    return ($passed -and $closed)
 }
 
 New-DirectoryIfMissing $EvidenceDirectory
@@ -1477,9 +1589,46 @@ $previousAppEnv = @{}
 $passed = $false
 $errorText = ''
 $processLaunchStartedAt = $null
+$multiPcUiOwnMarkerPath = ''
+$multiPcUiPeerMarkerPath = ''
 
 try {
     $normalizedAppExe = [System.IO.Path]::GetFullPath($AppExe)
+    if ($LoginOnly -and (-not $KeepAppOpen -or $UseInAppSelfTest -or $VerifyPriorityWindowsWithInAppSelfTest)) {
+        throw 'Login-only mode requires KeepAppOpen and cannot run in-app or priority-window verification.'
+    }
+    if ($VerifyPriorityWindowsWithInAppSelfTest) {
+        if (-not $UseInAppSelfTest) {
+            throw 'Priority-window verification mode requires the in-app self-test mode.'
+        }
+        if ($MultiPcUiRole -notin @('A', 'B')) {
+            throw 'Multi-PC UI role must be exactly A or B.'
+        }
+        if ([string]::IsNullOrWhiteSpace($MultiPcUiBarrierRoot)) {
+            throw 'Multi-PC UI barrier root is required.'
+        }
+
+        $normalizedMultiPcUiBarrierRoot =
+            [System.IO.Path]::GetFullPath($MultiPcUiBarrierRoot)
+        if (-not (Test-Path -LiteralPath $normalizedMultiPcUiBarrierRoot -PathType Container)) {
+            throw 'Multi-PC UI barrier root does not exist.'
+        }
+        $barrierRootItem = Get-Item -LiteralPath $normalizedMultiPcUiBarrierRoot -Force
+        if (($barrierRootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Multi-PC UI barrier root cannot be a reparse point.'
+        }
+
+        $multiPcUiOwnMarkerPath = Join-Path `
+            $normalizedMultiPcUiBarrierRoot `
+            "priority-ui-$MultiPcUiRole.ready"
+        $multiPcUiPeerRole = if ($MultiPcUiRole -eq 'A') { 'B' } else { 'A' }
+        $multiPcUiPeerMarkerPath = Join-Path `
+            $normalizedMultiPcUiBarrierRoot `
+            "priority-ui-$multiPcUiPeerRole.ready"
+        if (Test-Path -LiteralPath $multiPcUiOwnMarkerPath) {
+            throw 'The current Multi-PC UI barrier marker must not pre-exist.'
+        }
+    }
     $validatedBootstrapContract = $null
     if ($EnableEphemeralAdminBootstrap) {
         if (-not $StartServer -or
@@ -1733,8 +1882,10 @@ try {
 
     Add-Step -Steps $steps -Name 'main-buttons' -Passed ($missingMainButtons.Count -eq 0) -Detail ($(if ($missingMainButtons.Count -eq 0) { 'all found' } else { 'missing: ' + ($missingMainButtons -join ', ') }))
 
+    $inAppPassed = $true
     if ($UseInAppSelfTest) {
         if (-not (Wait-FileReady -Path $InAppSelfTestReportPath -TimeoutSeconds $InAppSelfTestTimeoutSec)) {
+            $inAppPassed = $false
             Add-Step -Steps $steps -Name 'in-app-self-test' -Passed $false -Detail "report not created: $InAppSelfTestReportPath"
         }
         else {
@@ -1753,15 +1904,63 @@ try {
             }
         }
     }
-    else {
-        $childResults = @()
-        $childResults += Open-And-VerifyChildWindow -MainWindow $mainWindow -ProcessId $process.Id -ButtonName '거래처 관리' -WindowTitle '거래처 관리' -RequiredNames @('새 거래처 등록', '선택 거래처 수정', '선택 거래처 삭제') -Steps $steps
-        $childResults += Open-And-VerifyChildWindow -MainWindow $mainWindow -ProcessId $process.Id -ButtonName '품목/재고 관리' -WindowTitle '품목/재고 관리' -RequiredNames @('신규 품목', '품목 저장', '선택 재고 초기화', '닫기 (F12)') -Steps $steps
-        $childResults += Open-And-VerifyChildWindow -MainWindow $mainWindow -ProcessId $process.Id -ButtonName '판매작성' -WindowTitle '판매(매출)' -RequiredNames @('수금 입력', '항목추가') -Steps $steps
-        $childResults += Open-And-VerifyChildWindow -MainWindow $mainWindow -ProcessId $process.Id -ButtonName '구매작성' -WindowTitle '구매(매입)' -RequiredNames @('지급 입력', '항목추가') -Steps $steps
+
+    if (-not $LoginOnly -and (-not $UseInAppSelfTest -or $VerifyPriorityWindowsWithInAppSelfTest)) {
+        if ($UseInAppSelfTest -and -not $inAppPassed) {
+            throw 'Priority-window verification cannot start after a failed in-app self-test.'
+        }
+
+        if ([string]::IsNullOrWhiteSpace($LoginInputMutexName)) {
+            $LoginInputMutexName = 'Local\GeoraePlan.DesktopUiSmoke.LoginInput.Standalone'
+        }
+        if ($LoginInputMutexName -notmatch '^Local\\GeoraePlan\.[A-Za-z0-9._-]{1,180}$') {
+            throw 'UI interaction mutex name is not in the allowed Local run scope format.'
+        }
+
+        $priorityUiMutex = [System.Threading.Mutex]::new($false, $LoginInputMutexName)
+        $priorityUiMutexAcquired = $false
+        try {
+            try {
+                $priorityUiMutexAcquired =
+                    $priorityUiMutex.WaitOne([TimeSpan]::FromSeconds(180))
+            }
+            catch [System.Threading.AbandonedMutexException] {
+                $priorityUiMutexAcquired = $true
+            }
+            if (-not $priorityUiMutexAcquired) {
+                throw 'Run-scoped priority UI interaction mutex timed out.'
+            }
+
+            $childResults = @()
+            $childResults += Open-And-VerifyChildWindow -MainWindow $mainWindow -ProcessId $process.Id -ButtonName '거래처 관리' -MenuItemName '거래처 관리' -WindowTitle '거래처 관리' -RequiredNames @('새 거래처 등록', '선택 거래처 수정', '선택 거래처 삭제') -Steps $steps
+            $childResults += Open-And-VerifyChildWindow -MainWindow $mainWindow -ProcessId $process.Id -ButtonName '품목/재고 관리' -WindowTitle '품목/재고 관리' -RequiredNames @('신규 품목', '품목 저장', '선택 재고 초기화', '닫기 (F12)') -Steps $steps
+            $childResults += Open-And-VerifyChildWindow -MainWindow $mainWindow -ProcessId $process.Id -ButtonName '판매작성' -WindowTitle '판매(매출)' -RequiredNames @('수금 입력', '항목추가') -Steps $steps
+            $childResults += Open-And-VerifyChildWindow -MainWindow $mainWindow -ProcessId $process.Id -ButtonName '구매작성' -WindowTitle '구매(매입)' -RequiredNames @('지급 입력', '항목추가') -Steps $steps
+            $childResults += Open-And-VerifyChildWindow -MainWindow $mainWindow -ProcessId $process.Id -ButtonName '환경설정' -WindowTitle '환경설정' -RequiredInitiallyEnabledName '닫기(F12)' -WaitUntilEnabledAutomationId 'SettingsTabs' -RequiredNames @('회사 설정', '선택값 관리', '사용자 관리', '닫기(F12)') -Steps $steps
+            $childResults += Open-And-VerifyChildWindow -MainWindow $mainWindow -ProcessId $process.Id -ButtonName '렌탈 업무' -MenuItemName '렌탈 청구관리' -WindowTitle '렌탈 청구관리' -RequiredNames @('새로고침', '신규 설정', '저장', '닫기 (F12)') -Steps $steps
+            $childResults += Open-And-VerifyChildWindow -MainWindow $mainWindow -ProcessId $process.Id -ButtonName '렌탈 업무' -MenuItemName '렌탈 자산 / 설치현황' -WindowTitle '렌탈 자산/설치현황' -RequiredNames @('새로고침', '+ 신규 자산', '닫기 (F12)') -Steps $steps
+            if (@($childResults | Where-Object { -not [bool]$_ }).Count -ne 0) {
+                throw 'One or more priority UI window checks failed.'
+            }
+        }
+        finally {
+            if ($priorityUiMutexAcquired) {
+                try { $priorityUiMutex.ReleaseMutex() } catch { }
+            }
+            $priorityUiMutex.Dispose()
+        }
+
+        if ($VerifyPriorityWindowsWithInAppSelfTest) {
+            Write-UiBarrierMarkerAtomic -Path $multiPcUiOwnMarkerPath
+            Add-Step -Steps $steps -Name "priority-ui-$MultiPcUiRole-complete" -Passed $true -Detail $multiPcUiOwnMarkerPath
+            if (-not (Wait-FileReady -Path $multiPcUiPeerMarkerPath -TimeoutSeconds $MultiPcUiBarrierTimeoutSec)) {
+                throw "Peer priority UI completion marker was not observed: $multiPcUiPeerMarkerPath"
+            }
+            Add-Step -Steps $steps -Name 'priority-ui-peer-complete' -Passed $true -Detail $multiPcUiPeerMarkerPath
+        }
     }
 
-    $passed = ($steps | Where-Object { -not $_.Passed }).Count -eq 0
+    $passed = @($steps | Where-Object { -not $_.Passed }).Count -eq 0
 }
 catch {
     $errorText = $_.Exception.Message

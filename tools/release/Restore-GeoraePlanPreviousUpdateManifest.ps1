@@ -14,6 +14,27 @@ if ($Channel -cnotin @('stable', 'test', 'beta')) {
     throw 'Channel은 lowercase stable, test, beta만 허용됩니다.'
 }
 
+function Get-RollbackFileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [IO.FileStream]::new(
+        $Path,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read,
+        4096,
+        [IO.FileOptions]::SequentialScan)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        return [BitConverter]::ToString(
+            $sha256.ComputeHash($stream)).Replace('-', '')
+    }
+    finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Write-JsonFileAtomically {
     param(
         [Parameter(Mandatory = $true)][string]$TargetPath,
@@ -189,8 +210,7 @@ function Test-ManifestArtifact {
     ) {
         throw "$Platform $ArtifactLabel size/SHA-256 metadata가 유효하지 않습니다."
     }
-    $actualHash = (
-        Get-FileHash -Algorithm SHA256 -LiteralPath $artifactPath).Hash
+    $actualHash = Get-RollbackFileSha256 -Path $artifactPath
     if (-not [string]::Equals(
         $expectedHash,
         $actualHash,
@@ -303,7 +323,7 @@ function Get-VerifiedManifestFileEvidence {
         throw "$Label 파일을 찾을 수 없습니다: $Path"
     }
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-    $hash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    $hash = Get-RollbackFileSha256 -Path $Path
     if (
         $item.PSIsContainer -or
         ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
@@ -601,8 +621,7 @@ function Get-VerifiedRollbackGeneration {
     ) {
         throw '이전 runtime manifest 세대가 regular file이 아닙니다.'
     }
-    $runtimeHash =
-        (Get-FileHash -LiteralPath $runtimePath -Algorithm SHA256).Hash
+    $runtimeHash = Get-RollbackFileSha256 -Path $runtimePath
     $runtimeManifest =
         Get-Content -LiteralPath $runtimePath -Raw -Encoding UTF8 |
             ConvertFrom-Json
@@ -1058,8 +1077,7 @@ function New-RollbackStageEvidence {
     $item = Get-Item -LiteralPath $StagePath -Force
     return Get-VerifiedManifestFileEvidence `
         -Path $StagePath `
-        -ExpectedSha256 (
-            Get-FileHash -LiteralPath $StagePath -Algorithm SHA256).Hash `
+        -ExpectedSha256 (Get-RollbackFileSha256 -Path $StagePath) `
         -ExpectedFileSize ([long]$item.Length) `
         -Label $Label
 }
@@ -1091,10 +1109,7 @@ function Get-RollbackFileState {
     }
     return [pscustomobject]@{
         Exists = $true
-        Sha256 = (
-            Get-FileHash `
-                -LiteralPath $Path `
-                -Algorithm SHA256).Hash
+        Sha256 = Get-RollbackFileSha256 -Path $Path
         FileSize = [long]$item.Length
     }
 }
@@ -1933,10 +1948,8 @@ function New-RollbackTransactionJournal {
                     -LiteralPath ([string]$definition.SourcePath) `
                     -Force `
                     -ErrorAction Stop
-            $sourceHash = (
-                Get-FileHash `
-                    -LiteralPath ([string]$definition.SourcePath) `
-                    -Algorithm SHA256).Hash
+            $sourceHash = Get-RollbackFileSha256 `
+                -Path ([string]$definition.SourcePath)
             Copy-ManifestEvidenceAtomically `
                 -SourcePath ([string]$definition.SourcePath) `
                 -TargetPath $stagePath `

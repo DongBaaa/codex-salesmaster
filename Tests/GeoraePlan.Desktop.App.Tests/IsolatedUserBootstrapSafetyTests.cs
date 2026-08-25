@@ -14,7 +14,11 @@ public sealed class IsolatedUserBootstrapSafetyTests
     public async Task SourceUsersSnapshotAcl_AcceptsRestrictedRootAndRejectsUnsafeBoundaries()
     {
         var result = await RunPreparationFunctionsAsync(
-            ["Assert-SourceUsersSnapshotAcl"],
+            [
+                "Get-SourceUsersSnapshotFileSystemAcl",
+                "Set-SourceUsersSnapshotDirectoryAcl",
+                "Assert-SourceUsersSnapshotAcl"
+            ],
             """
             $allowedRoot = Join-Path $PSScriptRoot 'protected-snapshot-root'
             New-Item -ItemType Directory -Path $allowedRoot -Force |
@@ -33,11 +37,13 @@ public sealed class IsolatedUserBootstrapSafetyTests
                     [Security.AccessControl.PropagationFlags]::None,
                     [Security.AccessControl.AccessControlType]::Allow)
             $restrictedAcl =
-                [Security.AccessControl.DirectorySecurity]::new()
-            $restrictedAcl.SetOwner($currentSid)
+                Get-SourceUsersSnapshotFileSystemAcl `
+                    -Path $allowedRoot
             $restrictedAcl.SetAccessRuleProtection($true, $false)
             [void]$restrictedAcl.AddAccessRule($currentRule)
-            Set-Acl -LiteralPath $allowedRoot -AclObject $restrictedAcl
+            Set-SourceUsersSnapshotDirectoryAcl `
+                -Path $allowedRoot `
+                -Acl $restrictedAcl
 
             $snapshotPath = Join-Path $allowedRoot 'source-users.json'
             [IO.File]::WriteAllText($snapshotPath, '{}')
@@ -46,22 +52,22 @@ public sealed class IsolatedUserBootstrapSafetyTests
                 -AllowedRoot $allowedRoot
 
             $restrictedRootAcl =
-                Microsoft.PowerShell.Security\Get-Acl `
-                    -LiteralPath $allowedRoot
+                Get-SourceUsersSnapshotFileSystemAcl `
+                    -Path $allowedRoot
             $restrictedFileAcl =
-                Microsoft.PowerShell.Security\Get-Acl `
-                    -LiteralPath $snapshotPath
+                Get-SourceUsersSnapshotFileSystemAcl `
+                    -Path $snapshotPath
             $unprotectedAcl =
                 [Security.AccessControl.DirectorySecurity]::new()
             $unprotectedAcl.SetSecurityDescriptorBinaryForm(
                 $restrictedRootAcl.GetSecurityDescriptorBinaryForm())
             $unprotectedAcl.SetAccessRuleProtection($false, $false)
             $script:aclProbeMode = 'unprotected'
-            function Get-Acl {
-                param([string]$LiteralPath)
+            function Get-SourceUsersSnapshotFileSystemAcl {
+                param([string]$Path)
                 if (
                     [string]::Equals(
-                        $LiteralPath,
+                        $Path,
                         $allowedRoot,
                         [StringComparison]::OrdinalIgnoreCase)
                 ) {
@@ -1406,7 +1412,7 @@ public sealed class IsolatedUserBootstrapSafetyTests
             if (
                 $resolved.Count -ne 2 -or
                 @($resolved | Where-Object {
-                    [string]$_.Password -ne '1234' -or
+                    [string]$_.Password -ne '123456' -or
                     -not [bool]$_.PasswordWasReset
                 }).Count -ne 0
             ) {
@@ -4627,9 +4633,15 @@ public sealed class IsolatedUserBootstrapSafetyTests
             "WindowsPowerShell",
             "v1.0",
             "powershell.exe");
+        var windowsPowerShellHome = Path.GetDirectoryName(executablePath)
+            ?? throw new InvalidOperationException(
+                "The Windows PowerShell home directory was not found.");
         var startInfo = new ProcessStartInfo
         {
             FileName = executablePath,
+            WorkingDirectory = Path.GetDirectoryName(scriptPath)
+                ?? throw new InvalidOperationException(
+                    "The PowerShell harness directory was not found."),
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
@@ -4637,6 +4649,9 @@ public sealed class IsolatedUserBootstrapSafetyTests
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8
         };
+        startInfo.Environment["PSModulePath"] = Path.Combine(
+            windowsPowerShellHome,
+            "Modules");
         startInfo.ArgumentList.Add("-NoProfile");
         startInfo.ArgumentList.Add("-ExecutionPolicy");
         startInfo.ArgumentList.Add("Bypass");

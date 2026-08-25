@@ -22,6 +22,10 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("elseif ($AllowLegacyAndroidDebugSigning", source, StringComparison.Ordinal);
         Assert.Contains("android-signing.local.json", source, StringComparison.Ordinal);
         Assert.Contains("유료 납품용 Android release signing 설정이 없습니다", source, StringComparison.Ordinal);
+        Assert.Contains("storePassEnvironmentVariable", source, StringComparison.Ordinal);
+        Assert.Contains("keyPassEnvironmentVariable", source, StringComparison.Ordinal);
+        Assert.Contains("[Environment]::GetEnvironmentVariable", source, StringComparison.Ordinal);
+        Assert.Contains("inline Android signing passwords are forbidden", source, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2765,24 +2769,34 @@ public sealed class MobileReleaseConfigurationTests
     }
 
     [Fact]
-    public void MobileUpdateDownload_RedownloadsWhenCachedApkShaDoesNotMatch()
+    public void MobileUpdateDownload_UsesSharedResumableSizeAndShaContract()
     {
+        var root = FindRepositoryRoot();
         var source = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(),
+            root,
             "Mobile",
             "GeoraePlan.Mobile.App",
             "Services",
             "MobileAppUpdateService.cs"));
+        var transport = File.ReadAllText(Path.Combine(
+            root,
+            "Shared",
+            "GeoraePlan.UpdateTransport",
+            "ResumableUpdatePackageDownloader.cs"));
 
         Assert.Contains("if (string.IsNullOrWhiteSpace(package.Sha256))", source, StringComparison.Ordinal);
-        Assert.Contains("DownloadPackageAsync(packageUri.ToString(), downloadRoot, fileName, package.Sha256, ct)", source, StringComparison.Ordinal);
-        Assert.Contains("DownloadPackageAsync(string packageUrl, string downloadRoot, string fileName, string expectedSha256, CancellationToken ct)", source, StringComparison.Ordinal);
-        Assert.Contains("HasMatchingFileAsync(targetPath, expectedSha256, ct)", source, StringComparison.Ordinal);
+        Assert.Contains("_packageDownloader.DownloadAsync(", source, StringComparison.Ordinal);
+        Assert.Contains("package.FileSize,", source, StringComparison.Ordinal);
+        Assert.Contains("package.Sha256,", source, StringComparison.Ordinal);
+        Assert.Contains("expectedFileSize,", source, StringComparison.Ordinal);
+        Assert.Contains("expectedSha256,", source, StringComparison.Ordinal);
         Assert.DoesNotContain("HasMatchingFileAsync(targetPath, string.Empty, ct)", source, StringComparison.Ordinal);
-        Assert.Contains(".download", source, StringComparison.Ordinal);
-        Assert.Contains("HasMatchingFileAsync(temporaryPath, expectedSha256, ct)", source, StringComparison.Ordinal);
-        Assert.Contains("File.Move(temporaryPath, targetPath, overwrite: true)", source, StringComparison.Ordinal);
-        Assert.Contains("TryDeleteFile(temporaryPath)", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Guid.NewGuid():N}.download", source, StringComparison.Ordinal);
+
+        Assert.Contains("finalPath + \".partial\"", transport, StringComparison.Ordinal);
+        Assert.Contains("RangeHeaderValue", transport, StringComparison.Ordinal);
+        Assert.Contains("IsExactFileAsync(", transport, StringComparison.Ordinal);
+        Assert.Contains("File.Move(partialPath, finalPath, overwrite: true)", transport, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -3058,9 +3072,11 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("Content = detailCard", source, StringComparison.Ordinal);
         Assert.Contains("detailScrollView.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoicesViewModel.HasSelectedInvoice));", source, StringComparison.Ordinal);
         Assert.Contains("collectionView.SetBinding(VisualElement.IsVisibleProperty, new Binding(nameof(InvoicesViewModel.HasSelectedInvoice), converter: inverseBooleanConverter));", source, StringComparison.Ordinal);
+        Assert.Contains("new RowDefinition(GridLength.Auto)", source, StringComparison.Ordinal);
+        Assert.Contains("new RowDefinition(GridLength.Star)", source, StringComparison.Ordinal);
         Assert.Contains("contentGrid.Add(detailScrollView);", source, StringComparison.Ordinal);
-        Assert.Contains("Grid.SetRow(detailScrollView, 3);", source, StringComparison.Ordinal);
-        Assert.Contains("Grid.SetRow(collectionView, 3);", source, StringComparison.Ordinal);
+        Assert.Contains("Grid.SetRow(detailScrollView, 1);", source, StringComparison.Ordinal);
+        Assert.Contains("Grid.SetRow(collectionView, 1);", source, StringComparison.Ordinal);
         Assert.DoesNotContain("contentGrid.Add(detailCard);", source, StringComparison.Ordinal);
     }
 

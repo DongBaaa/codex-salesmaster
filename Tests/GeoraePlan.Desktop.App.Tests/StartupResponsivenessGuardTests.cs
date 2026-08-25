@@ -14,6 +14,27 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class StartupResponsivenessGuardTests
 {
     [Fact]
+    public void PeriodicIntegrityReportOpen_DoesNotReuseAReplacedInstallDirectory()
+    {
+        var desktopRoot = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "..", "..", "..", "..", "..",
+            "Desktop",
+            "거래플랜.Desktop.App"));
+        var source = File.ReadAllText(Path.Combine(desktopRoot, "MainWindow.xaml.cs"));
+        var body = ExtractSourceSection(
+            source,
+            "private void OpenPeriodicIntegrityReport(string path)",
+            "private async Task RunPassiveSyncRefreshAsync(");
+
+        Assert.Contains("var fullPath = Path.GetFullPath(path);", body, StringComparison.Ordinal);
+        Assert.Contains("WorkingDirectory = Directory.Exists(folder) ? folder : AppPaths.DiagnosticsDir", body, StringComparison.Ordinal);
+        Assert.Contains("WorkingDirectory = folder", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("WorkingDirectory = AppContext.BaseDirectory", body, StringComparison.Ordinal);
+        Assert.Contains("catch (Exception folderOpenException)", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task SyncStatusCompositionCoordinator_SerializesCallbacksAndRecoversAfterFault()
     {
         var coordinator = new SyncStatusCompositionCoordinator();

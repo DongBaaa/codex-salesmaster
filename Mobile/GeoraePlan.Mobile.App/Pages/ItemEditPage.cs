@@ -84,19 +84,10 @@ public sealed class ItemEditPage : ContentPage
         deleteButton.IsEnabled = canEditItems;
         deleteButton.Clicked += (_, _) => MobileErrorHandler.FireAndForget(DeleteAsync, "품목 삭제");
 
-        var actionGrid = new Grid
-        {
-            ColumnSpacing = 8,
-            ColumnDefinitions =
-            {
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Star),
-                new ColumnDefinition(GridLength.Star)
-            }
-        };
-        actionGrid.Add(saveButton, 0, 0);
-        actionGrid.Add(cancelButton, 1, 0);
-        actionGrid.Add(deleteButton, 2, 0);
+        var actionLayout = GeoraePlanTheme.CreateWrappingActions(
+            saveButton,
+            cancelButton,
+            deleteButton);
 
         var priceGrid = new Grid
         {
@@ -133,7 +124,7 @@ public sealed class ItemEditPage : ContentPage
                 priceGrid,
                 CreateField("메모", _memoEditor),
                 _statusLabel,
-                actionGrid
+                actionLayout
             }
         };
 

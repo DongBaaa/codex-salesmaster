@@ -18,7 +18,7 @@ public sealed class InvoiceDraftPage : ContentPage
     private readonly InvoiceDto? _editingInvoice;
     private bool _editingInvoiceLoaded;
     private readonly Grid _categoryButtonGrid;
-    private readonly FlexLayout _recentItemsLayout;
+    private readonly HorizontalStackLayout _recentItemsLayout;
 
     public InvoiceDraftPage()
         : this(VoucherType.Sales, null, null)
@@ -219,12 +219,12 @@ public sealed class InvoiceDraftPage : ContentPage
         var recentHeader = GeoraePlanTheme.CreateFieldLabel("최근 선택 품목");
         recentHeader.SetBinding(VisualElement.IsVisibleProperty, nameof(InvoiceDraftViewModel.HasVisibleRecentItems));
 
-        _recentItemsLayout = new FlexLayout
+        _recentItemsLayout = new HorizontalStackLayout
         {
-            Wrap = Microsoft.Maui.Layouts.FlexWrap.Wrap,
-            Direction = Microsoft.Maui.Layouts.FlexDirection.Row,
-            JustifyContent = Microsoft.Maui.Layouts.FlexJustify.Start,
-            AlignItems = Microsoft.Maui.Layouts.FlexAlignItems.Center
+            Spacing = 0,
+            HorizontalOptions = LayoutOptions.Start,
+            VerticalOptions = LayoutOptions.Start
+
         };
 
         var recentScroll = new ScrollView
@@ -626,26 +626,30 @@ public sealed class InvoiceDraftPage : ContentPage
             Padding = new Thickness(16, 14, 16, 18),
             Margin = new Thickness(12, 0, 12, 12),
             VerticalOptions = LayoutOptions.End,
-            Content = new VerticalStackLayout
+            Content = new ScrollView
             {
-                Spacing = 8,
-                Children =
+                VerticalScrollBarVisibility = ScrollBarVisibility.Default,
+                Content = new VerticalStackLayout
                 {
-                    sheetTitle,
-                    sheetSpec,
-                    sheetIdentity,
-                    sheetPrice,
-                    sheetStock,
-                    sheetMemo,
-                    branchStockLabel,
-                    branchStockView,
-                    numericGrid,
-                    new VerticalStackLayout
+                    Spacing = 8,
+                    Children =
                     {
-                        Spacing = 4,
-                        Children = { memoSheetLabel, remarkEntry }
-                    },
-                    actionGrid
+                        sheetTitle,
+                        sheetSpec,
+                        sheetIdentity,
+                        sheetPrice,
+                        sheetStock,
+                        sheetMemo,
+                        branchStockLabel,
+                        branchStockView,
+                        numericGrid,
+                        new VerticalStackLayout
+                        {
+                            Spacing = 4,
+                            Children = { memoSheetLabel, remarkEntry }
+                        },
+                        actionGrid
+                    }
                 }
             }
         };
@@ -849,14 +853,14 @@ try
                                          string.Equals(_viewModel.SelectedCategory.Name, recent.CategoryName, StringComparison.OrdinalIgnoreCase);
             var titleLabel = GeoraePlanTheme.CreateBodyText(recent.ItemNameOriginal, muted: false, fontSize: 13);
             titleLabel.FontAttributes = FontAttributes.Bold;
-            titleLabel.LineBreakMode = LineBreakMode.TailTruncation;
-            titleLabel.MaxLines = 2;
+            titleLabel.LineBreakMode = LineBreakMode.WordWrap;
+            titleLabel.HorizontalOptions = LayoutOptions.Fill;
             titleLabel.TextColor = matchesCurrentCategory ? Colors.White : GeoraePlanTheme.TextPrimary;
 
             var specText = recent.SecondaryText;
             var specLabel = GeoraePlanTheme.CreateBodyText(specText, true, 11);
-            specLabel.LineBreakMode = LineBreakMode.TailTruncation;
-            specLabel.MaxLines = 1;
+            specLabel.LineBreakMode = LineBreakMode.WordWrap;
+            specLabel.HorizontalOptions = LayoutOptions.Fill;
             specLabel.TextColor = matchesCurrentCategory ? Colors.White : GeoraePlanTheme.TextSecondary;
 
             var content = new VerticalStackLayout
@@ -872,7 +876,7 @@ try
                 StrokeShape = new RoundRectangle { CornerRadius = 10 },
                 Padding = new Thickness(10, 8),
                 Margin = new Thickness(0, 0, 10, 8),
-                MaximumWidthRequest = 210,
+                HorizontalOptions = LayoutOptions.Fill,
                 MinimumHeightRequest = 74,
                 Content = content
             };

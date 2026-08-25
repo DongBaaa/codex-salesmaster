@@ -1077,9 +1077,10 @@ namespace GeoraePlan.TestEnvironment
             SecurityIdentifier userSid = WindowsIdentity.GetCurrent().User;
             SecurityIdentifier systemSid =
                 new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
-            DirectorySecurity security = Directory.GetAccessControl(
-                fullPath,
-                AccessControlSections.Owner | AccessControlSections.Access);
+            DirectorySecurity security =
+                new DirectoryInfo(fullPath).GetAccessControl(
+                    AccessControlSections.Owner |
+                    AccessControlSections.Access);
             SecurityIdentifier owner =
                 (SecurityIdentifier)security.GetOwner(
                     typeof(SecurityIdentifier));
@@ -1138,12 +1139,11 @@ namespace GeoraePlan.TestEnvironment
                 FileAttributes attributes = File.GetAttributes(path);
                 FileSystemSecurity security =
                     (attributes & FileAttributes.Directory) != 0
-                        ? (FileSystemSecurity)Directory.GetAccessControl(
-                            path,
+                        ? (FileSystemSecurity)new DirectoryInfo(path)
+                            .GetAccessControl(
                             AccessControlSections.Owner |
                             AccessControlSections.Access)
-                        : File.GetAccessControl(
-                            path,
+                        : new FileInfo(path).GetAccessControl(
                             AccessControlSections.Owner |
                             AccessControlSections.Access);
                 SecurityIdentifier owner =
@@ -1324,6 +1324,85 @@ namespace GeoraePlan.TestEnvironment
             string root)
         {
             DeletePrivateTreeAndRootCore(rootHandle, root, false);
+        }
+
+        public static void WaitForExactPrivatePromotionRootRemoval(
+            string root,
+            uint expectedVolumeSerialNumber,
+            uint expectedFileIndexHigh,
+            uint expectedFileIndexLow,
+            int timeoutMilliseconds)
+        {
+            if (timeoutMilliseconds <= 0 || timeoutMilliseconds > 30000)
+                throw new ArgumentOutOfRangeException("timeoutMilliseconds");
+
+            string fullRoot = Path.GetFullPath(root);
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            int lastTransientError = 0;
+            while (true)
+            {
+                SafeFileHandle probe = CreateFileW(
+                    fullRoot,
+                    FileReadAttributes,
+                    FileShareRead | FileShareWrite | FileShareDelete,
+                    IntPtr.Zero,
+                    OpenExisting,
+                    FileFlagBackupSemantics | FileFlagOpenReparsePoint,
+                    IntPtr.Zero);
+                if (probe.IsInvalid)
+                {
+                    int error = Marshal.GetLastWin32Error();
+                    probe.Dispose();
+                    if (error == 2 || error == 3)
+                        return;
+                    if (error != 5 && error != 32 && error != 303)
+                    {
+                        throw new Win32Exception(
+                            error,
+                            "Unable to verify exact private root removal.");
+                    }
+                    lastTransientError = error;
+                }
+                else
+                {
+                    try
+                    {
+                        ByHandleFileInformation information =
+                            GetFileInformation(probe);
+                        FileAttributes attributes =
+                            (FileAttributes)information.FileAttributes;
+                        string finalPath = Path.GetFullPath(GetFinalPath(probe));
+                        if (
+                            !string.Equals(
+                                fullRoot,
+                                finalPath,
+                                StringComparison.OrdinalIgnoreCase) ||
+                            information.VolumeSerialNumber !=
+                                expectedVolumeSerialNumber ||
+                            information.FileIndexHigh != expectedFileIndexHigh ||
+                            information.FileIndexLow != expectedFileIndexLow ||
+                            (attributes & FileAttributes.Directory) == 0 ||
+                            (attributes & FileAttributes.ReparsePoint) != 0)
+                        {
+                            throw new InvalidOperationException(
+                                "The private root name was rebound during cleanup.");
+                        }
+                        lastTransientError = 145;
+                    }
+                    finally
+                    {
+                        probe.Dispose();
+                    }
+                }
+
+                if (stopwatch.ElapsedMilliseconds >= timeoutMilliseconds)
+                {
+                    throw new Win32Exception(
+                        lastTransientError,
+                        "The exact private root remained visible after cleanup.");
+                }
+                System.Threading.Thread.Sleep(50);
+            }
         }
 
         private static void DeletePrivateTreeAndRootCore(
@@ -2050,16 +2129,24 @@ namespace GeoraePlan.TestEnvironment
         {
             FileDispositionInformation disposition =
                 new FileDispositionInformation { DeleteFile = true };
-            if (!SetFileInformationByHandle(
-                handle,
-                FileDispositionInfoClass,
-                ref disposition,
-                (uint)Marshal.SizeOf(
-                    typeof(FileDispositionInformation))))
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            while (!SetFileInformationByHandle(
+                    handle,
+                    FileDispositionInfoClass,
+                    ref disposition,
+                    (uint)Marshal.SizeOf(
+                        typeof(FileDispositionInformation))))
             {
-                throw new Win32Exception(
-                    Marshal.GetLastWin32Error(),
-                    "Unable to delete an exact private tree handle.");
+                int error = Marshal.GetLastWin32Error();
+                if (
+                    (error != 5 && error != 32 && error != 145) ||
+                    stopwatch.ElapsedMilliseconds >= 10000)
+                {
+                    throw new Win32Exception(
+                        error,
+                        "Unable to delete an exact private tree handle.");
+                }
+                System.Threading.Thread.Sleep(50);
             }
         }
 
@@ -6876,6 +6963,90 @@ function Get-SourceUsersSnapshotScopeCounts {
     )
 }
 
+function Get-SourceUsersSnapshotFileSystemAcl {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $extensionsType = [type]::GetType(
+        (
+            'System.IO.FileSystemAclExtensions, ' +
+            'System.IO.FileSystem.AccessControl'
+        ),
+        $false)
+    if ($null -ne $extensionsType) {
+        if ([IO.Directory]::Exists($fullPath)) {
+            return $extensionsType::GetAccessControl(
+                [IO.DirectoryInfo]::new($fullPath))
+        }
+        if ([IO.File]::Exists($fullPath)) {
+            return $extensionsType::GetAccessControl(
+                [IO.FileInfo]::new($fullPath))
+        }
+        throw 'Source users snapshot ACL path does not exist.'
+    }
+
+    if ([IO.Directory]::Exists($fullPath)) {
+        $directoryInfo = [IO.DirectoryInfo]::new($fullPath)
+        if ($null -ne $directoryInfo.GetType().GetMethod(
+                'GetAccessControl',
+                [Type[]]@())) {
+            return $directoryInfo.GetAccessControl()
+        }
+    }
+    elseif ([IO.File]::Exists($fullPath)) {
+        $fileInfo = [IO.FileInfo]::new($fullPath)
+        if ($null -ne $fileInfo.GetType().GetMethod(
+                'GetAccessControl',
+                [Type[]]@())) {
+            return $fileInfo.GetAccessControl()
+        }
+    }
+    else {
+        throw 'Source users snapshot ACL path does not exist.'
+    }
+
+    return Microsoft.PowerShell.Security\Get-Acl -LiteralPath $fullPath
+}
+
+function Set-SourceUsersSnapshotDirectoryAcl {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]
+        [Security.AccessControl.DirectorySecurity]$Acl
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    if (-not [IO.Directory]::Exists($fullPath)) {
+        throw 'Source users snapshot ACL directory does not exist.'
+    }
+
+    $extensionsType = [type]::GetType(
+        (
+            'System.IO.FileSystemAclExtensions, ' +
+            'System.IO.FileSystem.AccessControl'
+        ),
+        $false)
+    if ($null -ne $extensionsType) {
+        $extensionsType::SetAccessControl(
+            [IO.DirectoryInfo]::new($fullPath),
+            $Acl)
+        return
+    }
+
+    $directoryInfo = [IO.DirectoryInfo]::new($fullPath)
+    if ($null -ne $directoryInfo.GetType().GetMethod(
+            'SetAccessControl',
+            [Type[]]@(
+                [Security.AccessControl.DirectorySecurity]))) {
+        $directoryInfo.SetAccessControl($Acl)
+        return
+    }
+
+    Microsoft.PowerShell.Security\Set-Acl `
+        -LiteralPath $fullPath `
+        -AclObject $Acl
+}
+
 function Assert-SourceUsersSnapshotAcl {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -6891,10 +7062,10 @@ function Assert-SourceUsersSnapshotAcl {
     [void]$allowedSids.Add('S-1-5-18')
     [void]$allowedSids.Add('S-1-5-32-544')
 
-    $rootAcl = Get-Acl -LiteralPath $AllowedRoot
-    $rootOwnerSid = (
-        New-Object Security.Principal.NTAccount($rootAcl.Owner)
-    ).Translate([Security.Principal.SecurityIdentifier]).Value
+    $rootAcl = Get-SourceUsersSnapshotFileSystemAcl `
+        -Path $AllowedRoot
+    $rootOwnerSid = $rootAcl.GetOwner(
+        [Security.Principal.SecurityIdentifier]).Value
     if (
         -not $rootAcl.AreAccessRulesProtected -or
         -not $allowedSids.Contains($rootOwnerSid)
@@ -6902,10 +7073,11 @@ function Assert-SourceUsersSnapshotAcl {
         throw 'Source users snapshot allowed root ACL is not protected.'
     }
 
-    foreach ($acl in @($rootAcl, (Get-Acl -LiteralPath $Path))) {
-        $ownerSid = (
-            New-Object Security.Principal.NTAccount($acl.Owner)
-        ).Translate([Security.Principal.SecurityIdentifier]).Value
+    foreach ($acl in @(
+            $rootAcl,
+            (Get-SourceUsersSnapshotFileSystemAcl -Path $Path))) {
+        $ownerSid = $acl.GetOwner(
+            [Security.Principal.SecurityIdentifier]).Value
         if (-not $allowedSids.Contains($ownerSid)) {
             throw 'Source users snapshot owner is not trusted.'
         }
@@ -7084,7 +7256,16 @@ function Import-SourceUsersSnapshot {
         }
         [GeoraePlan.TestEnvironment.FinalPathNativeMethods]::
             AssertNoDuplicateJsonObjectProperties($jsonText)
-        $snapshot = $jsonText | ConvertFrom-Json
+        $convertFromJsonCommand = Get-Command `
+            -Name ConvertFrom-Json `
+            -CommandType Cmdlet `
+            -ErrorAction Stop
+        if ($convertFromJsonCommand.Parameters.ContainsKey('DateKind')) {
+            $snapshot = $jsonText | ConvertFrom-Json -DateKind String
+        }
+        else {
+            $snapshot = $jsonText | ConvertFrom-Json
+        }
     }
     catch {
         throw 'Source users snapshot must be valid strict UTF-8 JSON with unique fields.'
@@ -7637,14 +7818,14 @@ function Resolve-IsolatedUserDefinitions {
         $passwordWasReset = $false
         $resolvedPassword = if ($ResetAllPasswords) {
             $passwordWasReset = $true
-            '1234'
+            '123456'
         }
         elseif ($passwordMap.ContainsKey($username)) {
             [string]$passwordMap[$username]
         }
         elseif ($ResetUnresolvedPasswords) {
             $passwordWasReset = $true
-            '1234'
+            '123456'
         }
         else {
             throw (
@@ -7702,7 +7883,7 @@ function Assert-IsolatedAllUserPasswordResetResult {
         $ResolvedUsers |
             Where-Object {
                 [bool]$_.PasswordWasReset -and
-                [string]$_.Password -ceq '1234'
+                [string]$_.Password -ceq '123456'
             }
     ).Count
     if (
@@ -11540,11 +11721,11 @@ __COMPONENT_LOCK_ONLY_PROBE_BLOCK__
     $env:Kestrel__Endpoints__Http__Url = $serverUrl
     $env:ERP_DB_FALLBACK_SQLITE = '1'
     $env:SeedUsers__EnableSeedUsers = 'false'
-    $env:SeedUsers__AdminPassword = '1234'
-    $env:SeedUsers__UserPassword = '1234'
-    $env:SeedUsers__ItwPassword = '1234'
+    $env:SeedUsers__AdminPassword = '123456'
+    $env:SeedUsers__UserPassword = '123456'
+    $env:SeedUsers__ItwPassword = '123456'
     $env:SeedUsers__UsenetUsername = 'usenet'
-    $env:SeedUsers__UsenetPassword = '1234'
+    $env:SeedUsers__UsenetPassword = '123456'
     $env:SeedUsers__UpdateExistingUsenetPassword = 'false'
     $env:Logging__LogLevel__Default = 'Warning'
     $env:Logging__LogLevel__Microsoft = 'Warning'
@@ -11590,6 +11771,41 @@ finally {
 param(__RUN_ALL_LOCK_PROBE_PARAMETER__)
 
 $ErrorActionPreference = 'Stop'
+
+function Get-FileHash {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LiteralPath,
+        [ValidateSet('SHA256')]
+        [string]$Algorithm = 'SHA256'
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($LiteralPath)
+    if (-not [IO.File]::Exists($fullPath)) {
+        throw "Hash input file is missing: $fullPath"
+    }
+    $stream = [IO.File]::Open(
+        $fullPath,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = [BitConverter]::ToString(
+            $sha256.ComputeHash($stream)).Replace('-', '')
+    }
+    finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+
+    return [pscustomobject][ordered]@{
+        Algorithm = 'SHA256'
+        Hash = $hash
+        Path = $fullPath
+    }
+}
 
 function Publish-TestFileAtomically {
     param(
@@ -11734,7 +11950,7 @@ function Repair-ProcessPathEnvironmentForChildProcess {
 }
 
 function New-LocalTestPassword {
-    return '1234'
+    return '123456'
 }
 
 function Assert-SafeRuntimeLogFilePath {
@@ -14086,6 +14302,10 @@ function Assert-LegacyInvoiceCanonicalizationReportProfile {
         'E98DF3E657205319F595AE61089F50E1B87F0BD272C650827AA123B4A8616916'
     $latestApprovedSourceDatabaseSha256 =
         '719380E811BB04DC364FB6D2E0BD4C4E04B3D3C12F4D56207233D600F80B9A5C'
+    $newestApprovedSourceDatabaseSha256 =
+        'F422BC337476CE0A6A47638A1CF6D1F1CE1103ED81EF02688C8382197BBD8BA1'
+    $securityResetApprovedSourceDatabaseSha256 =
+        '937B93127A721A16857403DE5B3B7DDD7669C1787AC0EAD9C32C83A413B37FE2'
     if ([string]::Equals(
             $ExpectedSourceDatabaseSha256,
             $originalApprovedSourceDatabaseSha256,
@@ -14107,6 +14327,24 @@ function Assert-LegacyInvoiceCanonicalizationReportProfile {
     elseif ([string]::Equals(
             $ExpectedSourceDatabaseSha256,
             $latestApprovedSourceDatabaseSha256,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        $expectedLatestInvoiceBusinessSha256 =
+            'EE5B6FC6E2C9D58B3FBC066E00C95693F8EBC63DFE1BC1FCE784EB80EDF85CE8'
+        $expectedDependencyReferencesSha256 =
+            'D5528F8C6750119E3D642C0953C8C2519CB88C1E6E37457C81868839649641F7'
+    }
+    elseif ([string]::Equals(
+            $ExpectedSourceDatabaseSha256,
+            $newestApprovedSourceDatabaseSha256,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        $expectedLatestInvoiceBusinessSha256 =
+            'EE5B6FC6E2C9D58B3FBC066E00C95693F8EBC63DFE1BC1FCE784EB80EDF85CE8'
+        $expectedDependencyReferencesSha256 =
+            'D5528F8C6750119E3D642C0953C8C2519CB88C1E6E37457C81868839649641F7'
+    }
+    elseif ([string]::Equals(
+            $ExpectedSourceDatabaseSha256,
+            $securityResetApprovedSourceDatabaseSha256,
             [StringComparison]::OrdinalIgnoreCase)) {
         $expectedLatestInvoiceBusinessSha256 =
             'EE5B6FC6E2C9D58B3FBC066E00C95693F8EBC63DFE1BC1FCE784EB80EDF85CE8'
@@ -15827,6 +16065,12 @@ function Complete-IsolatedRuntimePromotionTransaction {
             $identity.RootHandle,
             $privateRoot)
         $identity.RootHandle.Dispose()
+        $nativeType::WaitForExactPrivatePromotionRootRemoval(
+            $privateRoot,
+            [uint32]$identity.RootVolumeSerialNumber,
+            [uint32]$identity.RootFileIndexHigh,
+            [uint32]$identity.RootFileIndexLow,
+            10000)
         if (Test-Path -LiteralPath $privateRoot) {
             throw "The exact private promotion root was not deleted: $privateRoot"
         }
@@ -16031,7 +16275,9 @@ if ($CanonicalizeLegacyInvoiceSeed) {
     $approvedLegacyInvoiceSeedSourceDatabaseSha256Values = @(
         '795B5A6CA153B788C6272222D778D714DB10873541775493AB7B36EA091E2FBE',
         'E98DF3E657205319F595AE61089F50E1B87F0BD272C650827AA123B4A8616916',
-        '719380E811BB04DC364FB6D2E0BD4C4E04B3D3C12F4D56207233D600F80B9A5C'
+        '719380E811BB04DC364FB6D2E0BD4C4E04B3D3C12F4D56207233D600F80B9A5C',
+        'F422BC337476CE0A6A47638A1CF6D1F1CE1103ED81EF02688C8382197BBD8BA1',
+        '937B93127A721A16857403DE5B3B7DDD7669C1787AC0EAD9C32C83A413B37FE2'
     )
     $requestedLegacyInvoiceSeedSourceDatabaseSha256 =
         $CanonicalizeLegacyInvoiceSeedExpectedSourceDatabaseSha256.Trim()
@@ -16204,6 +16450,11 @@ try {
     }
     if (-not (Test-Path -LiteralPath $serverDll -PathType Leaf)) {
         throw "테스트 서버 DLL을 찾지 못했습니다: $serverOutput"
+    }
+    if ($SkipServerSeed) {
+        Write-Utf8File `
+            -Path (Join-Path $serverOutput '.georaeplan-isolated-server-root') `
+            -Content ([IO.Path]::GetFullPath($serverOutput))
     }
 
     $stagedSetApiPath = Join-Path $stageRoot 'Set-ApiBaseUrl.ps1'

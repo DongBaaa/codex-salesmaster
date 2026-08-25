@@ -14,6 +14,27 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+$powerShellUtilityModulePath = Join-Path `
+    $PSHOME `
+    'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1'
+if ($null -eq (Get-Command `
+        -Name 'Microsoft.PowerShell.Utility\Get-FileHash' `
+        -ErrorAction SilentlyContinue)) {
+    if (-not (Test-Path `
+            -LiteralPath $powerShellUtilityModulePath `
+            -PathType Leaf)) {
+        throw "Microsoft.PowerShell.Utility module was not found: $powerShellUtilityModulePath"
+    }
+    Import-Module `
+        -Name $powerShellUtilityModulePath `
+        -ErrorAction Stop
+}
+if ($null -eq (Get-Command `
+        -Name 'Microsoft.PowerShell.Utility\Get-FileHash' `
+        -ErrorAction SilentlyContinue)) {
+    throw 'Get-FileHash cmdlet is unavailable after importing Microsoft.PowerShell.Utility.'
+}
+
 function Assert-SingleFileName {
     param(
         [Parameter(Mandatory = $true)][string]$Name,

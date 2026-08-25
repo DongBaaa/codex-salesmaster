@@ -175,7 +175,10 @@ public sealed class UpdatesController : ControllerBase
             return StatusCode(StatusCodes.Status503ServiceUnavailable);
         }
         ApplyDownloadHeaders(safeFileName);
-        return File(stream, ResolveContentType(safeFileName));
+        return File(
+            stream,
+            ResolveContentType(safeFileName),
+            enableRangeProcessing: true);
     }
 
     [HttpHead("download/{platform}/{fileName}")]
@@ -230,6 +233,7 @@ public sealed class UpdatesController : ControllerBase
 
     private void ApplyDownloadHeaders(string safeFileName)
     {
+        Response.Headers.AcceptRanges = "bytes";
         Response.Headers.CacheControl = "no-store";
         Response.Headers["X-Update-FileName"] = Uri.EscapeDataString(safeFileName);
     }

@@ -55,7 +55,7 @@
             <Setter Property="BorderBrush" Value="#5D7593"/>
             <Setter Property="Background" Value="{StaticResource TradePlanSecondaryBrush}"/>
             <Setter Property="Padding" Value="14,0"/>
-            <Setter Property="Height" Value="38"/>
+            <Setter Property="MinHeight" Value="38"/>
             <Setter Property="MinWidth" Value="108"/>
             <Setter Property="FontFamily" Value="Malgun Gothic"/>
             <Setter Property="Cursor" Value="Hand"/>
@@ -1035,7 +1035,7 @@
                                      Margin="0,0,0,10"
                                      IsEnabled="{Binding CanManageUsers}"/>
 
-                            <TextBlock Text="신규 사용자는 비밀번호가 필수이고, 기존 사용자는 비워두면 변경하지 않습니다."
+                            <TextBlock Text="비밀번호는 6자 이상이며, 신규 사용자는 필수이고 기존 사용자는 비워두면 변경하지 않습니다."
                                        Foreground="#9FB3C8"
                                        TextWrapping="Wrap"
                                        Margin="0,6,0,0"/>
@@ -1045,22 +1045,27 @@
             </TabItem>
 
             <TabItem x:Name="SyncTab" Header="동기화">
-                <Grid Margin="10">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
+                <ScrollViewer x:Name="SyncTabScrollViewer"
+                              Margin="10"
+                              HorizontalScrollBarVisibility="Disabled"
+                              VerticalScrollBarVisibility="Auto"
+                              CanContentScroll="False">
+                    <Grid x:Name="SyncTabContentGrid" MinWidth="900">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="300"/>
+                        </Grid.RowDefinitions>
 
                     <Border Grid.Row="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="16">
                         <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
 
-                            <StackPanel Grid.Column="0">
+                            <StackPanel Grid.Row="0">
                                 <TextBlock Text="동기화 / 진단 / 무결성 / 백업" Foreground="#4FC3F7" FontWeight="Bold" FontSize="18"/>
                                 <TextBlock Text="동기화, 서버/로컬 무결성, sync outbox 재시도와 백업 기능을 한 곳에서 관리합니다."
                                            Foreground="#9FB3C8"
@@ -1068,7 +1073,7 @@
                                            TextWrapping="Wrap"/>
                             </StackPanel>
 
-                            <WrapPanel Grid.Column="1" VerticalAlignment="Top">
+                            <WrapPanel Grid.Row="1" Margin="0,12,0,0">
                                  <Button Content="동기화"
                                          Style="{StaticResource TradePlanSecondaryButtonStyle}"
                                         Margin="0,0,8,0"
@@ -1224,7 +1229,7 @@
                         </Border>
                     </Grid>
 
-                    <Grid Grid.Row="3" Margin="0,14,0,0">
+                        <Grid Grid.Row="3" Margin="0,14,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="1.05*"/>
                             <ColumnDefinition Width="12"/>
@@ -1291,8 +1296,9 @@
                                 </DataGrid>
                             </DockPanel>
                         </Border>
+                        </Grid>
                     </Grid>
-                </Grid>
+                </ScrollViewer>
             </TabItem>
 
             <TabItem x:Name="RecycleBinTab" Header="휴지통">
@@ -1380,7 +1386,7 @@
 
                     <Grid Grid.Row="2">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="2.2*"/>
+                            <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="12"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>

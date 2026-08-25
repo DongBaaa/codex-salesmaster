@@ -8,11 +8,43 @@
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="Themes/TradePlanDesignSystem.xaml"/>
             </ResourceDictionary.MergedDictionaries>
+        <DataTemplate x:Key="FullTextLeftContentTemplate">
+            <TextBlock Text="{Binding Mode=OneWay}"
+                       TextWrapping="Wrap"
+                       TextTrimming="None"
+                       TextAlignment="Left"/>
+        </DataTemplate>
+        <DataTemplate x:Key="FullTextCenterContentTemplate">
+            <TextBlock Text="{Binding Mode=OneWay}"
+                       TextWrapping="Wrap"
+                       TextTrimming="None"
+                       TextAlignment="Center"/>
+        </DataTemplate>
+        <DataTemplate x:Key="FullTextRightContentTemplate">
+            <TextBlock Text="{Binding Mode=OneWay}"
+                       TextWrapping="Wrap"
+                       TextTrimming="None"
+                       TextAlignment="Right"/>
+        </DataTemplate>
+        <infra:FullTextContentTemplateSelector x:Key="FullTextLeftContentTemplateSelector"
+                                               StringTemplate="{StaticResource FullTextLeftContentTemplate}"/>
+        <infra:FullTextContentTemplateSelector x:Key="FullTextCenterContentTemplateSelector"
+                                               StringTemplate="{StaticResource FullTextCenterContentTemplate}"/>
+        <infra:FullTextContentTemplateSelector x:Key="FullTextRightContentTemplateSelector"
+                                               StringTemplate="{StaticResource FullTextRightContentTemplate}"/>
         <conv:BoolToVisibilityConverter x:Key="BoolToVisibility"/>
         <conv:DecimalToStringConverter x:Key="DecimalToString"/>
         <conv:DateOnlyConverter x:Key="DateOnlyConverter"/>
         <Style TargetType="{x:Type Window}">
             <Setter Property="infra:ResponsiveWindowBehavior.IsEnabled" Value="True"/>
+            <Setter Property="infra:FullTextLayoutBehavior.IsEnabled" Value="True"/>
+        </Style>
+        <Style TargetType="TextBlock">
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="TextTrimming" Value="None"/>
+        </Style>
+        <Style TargetType="AccessText">
+            <Setter Property="TextWrapping" Value="Wrap"/>
         </Style>
         <Style TargetType="TextBox">
             <Setter Property="Foreground" Value="Black"/>
@@ -35,6 +67,7 @@
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="HorizontalContentAlignment" Value="Right"/>
+            <Setter Property="ContentTemplateSelector" Value="{StaticResource FullTextRightContentTemplateSelector}"/>
         </Style>
         <Style TargetType="ComboBox">
             <Setter Property="Foreground" Value="Black"/>
@@ -51,6 +84,32 @@
             <Setter Property="Padding" Value="8,4"/>
             <Setter Property="MinHeight" Value="28"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="ContentTemplateSelector" Value="{StaticResource FullTextLeftContentTemplateSelector}"/>
+        </Style>
+        <Style TargetType="ListBoxItem">
+            <Setter Property="ContentTemplateSelector" Value="{StaticResource FullTextLeftContentTemplateSelector}"/>
+        </Style>
+        <Style TargetType="TabItem">
+            <Setter Property="HeaderTemplateSelector" Value="{StaticResource FullTextCenterContentTemplateSelector}"/>
+        </Style>
+        <Style TargetType="GroupBox">
+            <Setter Property="HeaderTemplateSelector" Value="{StaticResource FullTextLeftContentTemplateSelector}"/>
+        </Style>
+        <Style TargetType="MenuItem">
+            <Setter Property="HeaderTemplateSelector" Value="{StaticResource FullTextLeftContentTemplateSelector}"/>
+        </Style>
+        <Style TargetType="ToolTip">
+            <Setter Property="ContentTemplateSelector" Value="{StaticResource FullTextLeftContentTemplateSelector}"/>
+            <Setter Property="MaxWidth" Value="640"/>
+        </Style>
+        <Style TargetType="DataGrid">
+            <Setter Property="RowHeight" Value="NaN"/>
+            <Setter Property="ColumnHeaderHeight" Value="NaN"/>
+            <Setter Property="MinRowHeight" Value="32"/>
+        </Style>
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="MinHeight" Value="36"/>
+            <Setter Property="ContentTemplateSelector" Value="{StaticResource FullTextCenterContentTemplateSelector}"/>
         </Style>
         <Style x:Key="GeoraePlanDatePickerCalendarStyle" TargetType="{x:Type Calendar}">
             <Setter Property="FontFamily" Value="Malgun Gothic"/>
@@ -140,10 +199,12 @@
         <Style TargetType="Button" BasedOn="{StaticResource TradePlanSecondaryButtonStyle}">
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="Padding" Value="14,0"/>
-            <Setter Property="Height" Value="38"/>
+            <Setter Property="MinHeight" Value="38"/>
             <Setter Property="MinWidth" Value="104"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+            <Setter Property="ContentTemplateSelector" Value="{StaticResource FullTextCenterContentTemplateSelector}"/>
         </Style>
         </ResourceDictionary>
     </Application.Resources>

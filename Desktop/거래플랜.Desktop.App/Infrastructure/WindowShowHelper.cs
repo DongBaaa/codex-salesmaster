@@ -21,7 +21,8 @@ internal static class WindowShowHelper
         string windowTitle,
         string failureMessage,
         Window? messageOwner = null,
-        Func<Task>? closedAsync = null)
+        Func<Task>? closedAsync = null,
+        bool blockWindowDuringLoad = true)
     {
         ArgumentNullException.ThrowIfNull(window);
         ArgumentNullException.ThrowIfNull(loadAsync);
@@ -38,13 +39,15 @@ internal static class WindowShowHelper
 
         void ApplyDeferredLoadState()
         {
-            window.IsEnabled = false;
+            if (blockWindowDuringLoad)
+                window.IsEnabled = false;
             window.Cursor = Cursors.Wait;
         }
 
         void RestoreDeferredLoadState()
         {
-            window.IsEnabled = wasEnabled;
+            if (blockWindowDuringLoad)
+                window.IsEnabled = wasEnabled;
             window.Cursor = previousCursor;
         }
 

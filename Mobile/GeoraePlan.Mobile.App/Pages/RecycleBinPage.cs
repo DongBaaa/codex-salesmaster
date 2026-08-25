@@ -135,31 +135,34 @@ public sealed class RecycleBinPage : ContentPage
         };
         collectionView.SetBinding(ItemsView.ItemsSourceProperty, nameof(RecycleBinViewModel.Entries));
 
+        var headerStack = new VerticalStackLayout
+        {
+            Spacing = 12,
+            Children = { searchBar, kindPicker, refreshButton, statusLabel }
+        };
+        var headerScrollView = new ScrollView
+        {
+            MaximumHeightRequest = 360,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Default,
+            Content = headerStack
+        };
         var contentGrid = new Grid
         {
             Padding = 16,
             RowDefinitions =
             {
                 new RowDefinition(GridLength.Auto),
-                new RowDefinition(GridLength.Auto),
-                new RowDefinition(GridLength.Auto),
-                new RowDefinition(GridLength.Auto),
                 new RowDefinition(GridLength.Star)
             },
             RowSpacing = 12
         };
-        contentGrid.Add(searchBar);
-        Grid.SetRow(searchBar, 0);
-        contentGrid.Add(kindPicker);
-        Grid.SetRow(kindPicker, 1);
-        contentGrid.Add(refreshButton);
-        Grid.SetRow(refreshButton, 2);
-        contentGrid.Add(statusLabel);
-        Grid.SetRow(statusLabel, 3);
+        contentGrid.Add(headerScrollView);
         contentGrid.Add(collectionView);
-        Grid.SetRow(collectionView, 4);
+        Grid.SetRow(collectionView, 1);
 
         Content = contentGrid;
+        contentGrid.SizeChanged += (_, _) =>
+            headerScrollView.MaximumHeightRequest = Math.Max(120, Math.Min(360, contentGrid.Height * 0.45));
     }
 
     protected override async void OnAppearing()
@@ -175,4 +178,3 @@ if (_viewModel.Entries.Count == 0)
             "휴지통 화면 초기화");
     }
 }
-

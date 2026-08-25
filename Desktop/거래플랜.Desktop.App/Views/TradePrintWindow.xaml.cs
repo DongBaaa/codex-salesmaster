@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.IO;
-using System.Printing;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
@@ -22,28 +21,27 @@ public partial class TradePrintWindow : Window
     private readonly int _pageCount;
     private readonly int? _currentPageNumber;
     private readonly string _defaultFileBaseName;
-    private readonly Func<(IReadOnlyList<PrintQueue> PrintQueues, PrintQueue? DefaultPrintQueue)>? _printerRefreshProvider;
+    private readonly Func<PrinterCatalogSnapshot>? _printerCatalogProvider;
     private bool _isRefreshingPrinters;
 
     public TradePrintDialogResult? PrintOptions { get; private set; }
 
     public TradePrintWindow(
-        IReadOnlyList<PrintQueue> printQueues,
-        PrintQueue? defaultPrintQueue,
+        PrinterCatalogSnapshot printerCatalog,
         int pageCount,
-        Func<(IReadOnlyList<PrintQueue> PrintQueues, PrintQueue? DefaultPrintQueue)>? printerRefreshProvider = null,
+        Func<PrinterCatalogSnapshot>? printerCatalogProvider = null,
         int? currentPageNumber = null,
         string? defaultFileBaseName = null)
     {
-        ArgumentNullException.ThrowIfNull(printQueues);
+        ArgumentNullException.ThrowIfNull(printerCatalog);
 
         InitializeComponent();
         _pageCount = Math.Max(0, pageCount);
         _currentPageNumber = NormalizeCurrentPageNumber(currentPageNumber, _pageCount);
         _defaultFileBaseName = NormalizeDefaultFileBaseName(defaultFileBaseName);
-        _printerRefreshProvider = printerRefreshProvider;
+        _printerCatalogProvider = printerCatalogProvider;
         ConfigureCurrentPageOption();
-        PopulatePrinters(printQueues, defaultPrintQueue);
+        PopulatePrinters(printerCatalog);
         PageCountTextBlock.Text = _pageCount > 0
             ? $"문서 총 {_pageCount:N0}쪽"
             : "문서 페이지 수를 아직 확인하지 못했습니다.";
@@ -65,21 +63,19 @@ public partial class TradePrintWindow : Window
     }
 
     private int PopulatePrinters(
-        IReadOnlyList<PrintQueue> printQueues,
-        PrintQueue? defaultPrintQueue,
+        PrinterCatalogSnapshot printerCatalog,
         string? preferredQueueName = null)
     {
-        var defaultName = SafeRead(defaultPrintQueue, q => q.FullName);
-        var items = printQueues
-            .Where(static queue => queue is not null)
-            .Select(queue => new PrinterListItem(queue, IsSameQueue(queue, defaultName)))
+        var items = printerCatalog.Printers
+            .Where(static printer => !string.IsNullOrWhiteSpace(printer.QueueName))
+            .Select(static printer => new PrinterListItem(printer))
             .OrderByDescending(static item => item.IsDefault)
             .ThenBy(static item => item.DisplayName, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
 
         PrinterListItem? preferredItem = null;
         if (!string.IsNullOrWhiteSpace(preferredQueueName))
-            preferredItem = items.FirstOrDefault(item => IsSameQueue(item.Queue, preferredQueueName));
+            preferredItem = items.FirstOrDefault(item => IsSameQueue(item.QueueName, preferredQueueName));
 
         PrinterComboBox.ItemsSource = items;
         PrinterComboBox.SelectedItem =
@@ -128,9 +124,7 @@ public partial class TradePrintWindow : Window
 
         try
         {
-            var printerName = SafeRead(item.Queue, static q => q.FullName);
-            if (string.IsNullOrWhiteSpace(printerName))
-                printerName = SafeRead(item.Queue, static q => q.Name);
+            var printerName = item.QueueName;
             if (string.IsNullOrWhiteSpace(printerName))
             {
                 SetStatus("프린터 이름을 확인할 수 없어 속성 창을 열 수 없습니다.", StatusTone.Error);
@@ -210,7 +204,7 @@ public partial class TradePrintWindow : Window
 
     private async Task RefreshPrintersAsync()
     {
-        if (_printerRefreshProvider is null)
+        if (_printerCatalogProvider is null)
         {
             SetStatus("현재 화면에서는 프린터 목록을 다시 불러올 수 없습니다. 인쇄창을 다시 열어 확인하세요.", StatusTone.Warning);
             return;
@@ -223,16 +217,15 @@ public partial class TradePrintWindow : Window
 
         try
         {
-            var snapshot = await Task.Run(_printerRefreshProvider);
-            var printQueues = snapshot.PrintQueues ?? Array.Empty<PrintQueue>();
-            var printerCount = PopulatePrinters(printQueues, snapshot.DefaultPrintQueue, selectedQueueName);
+            var snapshot = await Task.Run(_printerCatalogProvider);
+            var printerCount = PopulatePrinters(snapshot, selectedQueueName);
             SetStatus(
                 printerCount == 0
                     ? "새로고침 후에도 등록된 프린터를 찾지 못했습니다. PDF 저장 또는 파일 저장(XPS)으로 문서를 저장한 뒤 복합기에서 출력하세요."
                     : $"프린터 목록을 새로고침했습니다. {printerCount:N0}대 중 사용할 프린터를 선택하세요.",
                 printerCount == 0 ? StatusTone.Warning : StatusTone.Success);
         }
-        catch (Exception ex) when (ex is PrintSystemException or InvalidOperationException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or UnauthorizedAccessException)
         {
             SetStatus($"프린터 목록을 새로고침하지 못했습니다. PDF 저장 또는 파일 저장(XPS)을 사용하세요. ({ex.Message})", StatusTone.Error);
         }
@@ -345,7 +338,7 @@ public partial class TradePrintWindow : Window
         }
 
         SetStatus($"'{item.DisplayName}'으로 1쪽 테스트 인쇄를 보내는 중입니다...", StatusTone.Info);
-        if (TradePrintExecutor.TryPrintDiagnosticPage(item.Queue, out var errorMessage))
+        if (TradePrintExecutor.TryPrintDiagnosticPage(item.QueueName, out var errorMessage))
         {
             SetStatus($"'{item.DisplayName}'으로 1쪽 테스트 인쇄를 보냈습니다. 출력이 없으면 진단 복사 결과를 공유하거나 PDF/XPS fallback을 사용하세요.", StatusTone.Success);
             return;
@@ -453,7 +446,7 @@ public partial class TradePrintWindow : Window
         }
 
         options = new TradePrintDialogResult(
-            saveToFile ? null : item!.Queue,
+            saveToFile ? null : item!.QueueName,
             copyCount,
             CollateCheckBox.IsChecked == true,
             pageNumbers,
@@ -495,7 +488,7 @@ public partial class TradePrintWindow : Window
         PrintButton.IsEnabled = hasPrinter;
         PrintDiagnosticButton.IsEnabled = hasPrinter;
         CopyDiagnosticButton.IsEnabled = !_isRefreshingPrinters;
-        RefreshPrintersButton.IsEnabled = _printerRefreshProvider is not null && !_isRefreshingPrinters;
+        RefreshPrintersButton.IsEnabled = _printerCatalogProvider is not null && !_isRefreshingPrinters;
     }
 
     private PrinterListItem? GetSelectedPrinterItem()
@@ -506,46 +499,15 @@ public partial class TradePrintWindow : Window
         if (GetSelectedPrinterItem() is not PrinterListItem item)
             return string.Empty;
 
-        var queueName = SafeRead(item.Queue, static q => q.FullName);
-        if (string.IsNullOrWhiteSpace(queueName))
-            queueName = SafeRead(item.Queue, static q => q.Name);
-        return queueName;
+        return item.QueueName;
     }
 
-    private static bool IsSameQueue(PrintQueue queue, string? defaultFullName)
+    private static bool IsSameQueue(string queueName, string? expectedQueueName)
     {
-        if (string.IsNullOrWhiteSpace(defaultFullName))
+        if (string.IsNullOrWhiteSpace(queueName) || string.IsNullOrWhiteSpace(expectedQueueName))
             return false;
 
-        return string.Equals(SafeRead(queue, q => q.FullName), defaultFullName, StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(SafeRead(queue, q => q.Name), defaultFullName, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string SafeRead(PrintQueue? queue, Func<PrintQueue, string?> reader)
-    {
-        if (queue is null)
-            return string.Empty;
-
-        try
-        {
-            return reader(queue) ?? string.Empty;
-        }
-        catch (Exception)
-        {
-            return string.Empty;
-        }
-    }
-
-    private static bool SafeReadBool(PrintQueue queue, Func<PrintQueue, bool> reader)
-    {
-        try
-        {
-            return reader(queue);
-        }
-        catch (Exception)
-        {
-            return false;
-        }
+        return string.Equals(queueName, expectedQueueName, StringComparison.OrdinalIgnoreCase);
     }
 
     private static int? NormalizeCurrentPageNumber(int? currentPageNumber, int pageCount)
@@ -635,36 +597,18 @@ public partial class TradePrintWindow : Window
 
     private sealed class PrinterListItem
     {
-        public PrinterListItem(PrintQueue queue, bool isDefault)
+        public PrinterListItem(PrinterCatalogItem printer)
         {
-            Queue = queue;
-            IsDefault = isDefault;
-
-            var queueName = SafeRead(queue, static q => q.FullName);
-            if (string.IsNullOrWhiteSpace(queueName))
-                queueName = SafeRead(queue, static q => q.Name);
-
-            DisplayName = isDefault ? $"{queueName} (기본)" : queueName;
-
-            var shareName = SafeRead(queue, static q => q.ShareName);
-            TypeText = string.IsNullOrWhiteSpace(shareName)
-                ? queueName
-                : $"{queueName} / 공유명: {shareName}";
-
-            var location = SafeRead(queue, static q => q.Location);
-            var comment = SafeRead(queue, static q => q.Comment);
-            LocationText = string.IsNullOrWhiteSpace(location)
-                ? (string.IsNullOrWhiteSpace(comment) ? "-" : comment)
-                : location;
-
-            var status = SafeRead(queue, static q => q.QueueStatus.ToString());
-            IsOffline = SafeReadBool(queue, static q => q.IsOffline);
-            if (IsOffline)
-                status = string.IsNullOrWhiteSpace(status) ? "오프라인" : $"{status}, 오프라인";
-            StatusText = string.IsNullOrWhiteSpace(status) || status == "None" ? "준비" : status;
+            QueueName = printer.QueueName;
+            IsDefault = printer.IsDefault;
+            DisplayName = printer.DisplayName;
+            TypeText = printer.TypeText;
+            LocationText = printer.LocationText;
+            StatusText = printer.StatusText;
+            IsOffline = printer.IsOffline;
         }
 
-        public PrintQueue Queue { get; }
+        public string QueueName { get; }
         public bool IsDefault { get; }
         public string DisplayName { get; }
         public string TypeText { get; }

@@ -10,9 +10,10 @@ internal static class MainWindowResponsiveLayoutPolicy
     internal const double PreferredHeightDip = 860d;
     internal const double MinimumWidthDip = 640d;
     internal const double MinimumHeightDip = 320d;
-    internal const double MinimumContentWidthDip = 744d;
-    internal const double MinimumContentHeightDip = 400d;
+    internal const double MinimumContentWidthDip = 760d;
+    internal const double MinimumContentHeightDip = 560d;
     internal const double WorkAreaInsetDip = 16d;
+    internal const double CompactLayoutWidthThresholdDip = 1200d;
     internal const double CompactLayoutHeightThresholdDip = 600d;
 
     private const uint MonitorDefaultToNearest = 0x00000002;
@@ -84,7 +85,8 @@ internal static class MainWindowResponsiveLayoutPolicy
     internal static bool ShouldUseCompactLayout(Size clientSize) =>
         IsFinitePositive(clientSize.Width) &&
         IsFinitePositive(clientSize.Height) &&
-        clientSize.Height < CompactLayoutHeightThresholdDip;
+        (clientSize.Width < CompactLayoutWidthThresholdDip ||
+         clientSize.Height < CompactLayoutHeightThresholdDip);
 
     internal static bool ShouldUseContentScrollFallback(Size clientSize) =>
         IsFinitePositive(clientSize.Width) &&

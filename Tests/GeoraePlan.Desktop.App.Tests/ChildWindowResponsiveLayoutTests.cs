@@ -139,7 +139,7 @@ public sealed class ChildWindowResponsiveLayoutTests
             customer,
             xaml,
             "CustomerBodyScrollViewer",
-            horizontal: "Auto",
+            horizontal: "Disabled",
             vertical: "Auto");
         AssertNamedElementAttribute(
             customer,
@@ -154,7 +154,7 @@ public sealed class ChildWindowResponsiveLayoutTests
             inventory,
             xaml,
             "InventoryDetailScrollViewer",
-            horizontal: "Auto",
+            horizontal: "Disabled",
             vertical: "Auto");
         AssertNamedElementAttribute(
             inventory,
@@ -193,7 +193,7 @@ public sealed class ChildWindowResponsiveLayoutTests
             rentalAsset,
             xaml,
             "RentalAssetDetailScrollViewer",
-            horizontal: "Auto",
+            horizontal: "Disabled",
             vertical: "Auto");
         AssertNamedElementAttribute(
             rentalAsset,
@@ -213,18 +213,115 @@ public sealed class ChildWindowResponsiveLayoutTests
             "BillingCommandScrollViewer",
             horizontal: "Disabled",
             vertical: "Auto");
-        AssertScrollViewer(
+        Assert.DoesNotContain(
+            rentalBilling.Descendants(),
+            element => string.Equals(
+                (string?)element.Attribute(xaml + "Name"),
+                "BillingWorkspaceScrollViewer",
+                StringComparison.Ordinal));
+        var billingWorkspace = AssertNamedElement(
             rentalBilling,
             xaml,
-            "BillingWorkspaceScrollViewer",
-            horizontal: "Auto",
-            vertical: "Disabled");
-        AssertNamedElementAttribute(
-            rentalBilling,
-            xaml,
-            "BillingWorkspaceGrid",
-            "MinWidth",
-            "1050");
+            "BillingWorkspaceGrid");
+        Assert.Null((string?)billingWorkspace.Attribute("MinWidth"));
+    }
+
+    [Fact]
+    public void AllProductionWindowXaml_AvoidsCompetingScrollOwnersAndUnboundedFixedPanels()
+    {
+        var desktopAppDirectory = FindDesktopAppDirectory();
+        var scrollableControlNames = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "DataGrid", "ListBox", "ListView", "TreeView", "ScrollViewer"
+        };
+        var competingHorizontalOwners = new List<string>();
+        var nestedScrollOwners = new List<string>();
+        var unboundedFixedPanels = new List<string>();
+        var fixedHeightActionButtonStyles = new List<string>();
+
+        foreach (var path in Directory.EnumerateFiles(
+                     desktopAppDirectory,
+                     "*.xaml",
+                     SearchOption.AllDirectories))
+        {
+            var document = XDocument.Load(path);
+            if (!string.Equals(document.Root?.Name.LocalName, "Window", StringComparison.Ordinal))
+                continue;
+
+            var relativePath = Path.GetRelativePath(desktopAppDirectory, path);
+            foreach (var scrollViewer in document.Descendants().Where(
+                         element => element.Name.LocalName == "ScrollViewer"))
+            {
+                if (string.Equals(
+                        (string?)scrollViewer.Attribute("HorizontalScrollBarVisibility"),
+                        "Auto",
+                        StringComparison.Ordinal) &&
+                    scrollViewer.Descendants().Any(
+                        descendant => scrollableControlNames.Contains(descendant.Name.LocalName)))
+                {
+                    competingHorizontalOwners.Add(relativePath);
+                }
+
+                if (scrollViewer.Ancestors().Any(
+                        ancestor => ancestor.Name.LocalName == "ScrollViewer") &&
+                    !scrollViewer.Ancestors().Any(
+                        ancestor => ancestor.Name.LocalName == "Popup") &&
+                    !string.Equals(relativePath, "MainWindow.xaml", StringComparison.OrdinalIgnoreCase))
+                {
+                    nestedScrollOwners.Add(relativePath);
+                }
+            }
+
+            foreach (var panel in document.Descendants().Where(
+                         element => element.Name.LocalName is "Grid" or "StackPanel" or "DockPanel"))
+            {
+                if (!double.TryParse(
+                        (string?)panel.Attribute("MinWidth"),
+                        System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out var minWidth) ||
+                    minWidth < 600d ||
+                    panel.Ancestors().Any(ancestor => ancestor.Name.LocalName == "ScrollViewer"))
+                {
+                    continue;
+                }
+
+                unboundedFixedPanels.Add(relativePath);
+            }
+
+            foreach (var style in document.Descendants().Where(
+                         element => element.Name.LocalName == "Style"))
+            {
+                var targetType = (string?)style.Attribute("TargetType");
+                if (string.IsNullOrWhiteSpace(targetType) ||
+                    !targetType.Contains("Button", StringComparison.Ordinal) ||
+                    targetType.Contains("ToggleButton", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var styleKey = style.Attributes()
+                    .FirstOrDefault(attribute => attribute.Name.LocalName == "Key")
+                    ?.Value;
+                if (styleKey?.Contains("DatePicker", StringComparison.OrdinalIgnoreCase) is true)
+                    continue;
+
+                if (style.Elements().Any(setter =>
+                        setter.Name.LocalName == "Setter" &&
+                        string.Equals(
+                            (string?)setter.Attribute("Property"),
+                            "Height",
+                            StringComparison.Ordinal)))
+                {
+                    fixedHeightActionButtonStyles.Add(relativePath);
+                }
+            }
+        }
+
+        Assert.Empty(competingHorizontalOwners.Distinct(StringComparer.OrdinalIgnoreCase));
+        Assert.Empty(nestedScrollOwners.Distinct(StringComparer.OrdinalIgnoreCase));
+        Assert.Empty(unboundedFixedPanels.Distinct(StringComparer.OrdinalIgnoreCase));
+        Assert.Empty(fixedHeightActionButtonStyles.Distinct(StringComparer.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -487,7 +584,33 @@ public sealed class ChildWindowResponsiveLayoutTests
             xaml,
             "SalesLineEntryContent",
             "MinWidth",
-            "1180");
+            "1160");
+
+        var lineActionButtons = sales
+            .Descendants()
+            .Where(element =>
+                element.Name.LocalName == "Button" &&
+                ((string?)element.Attribute("Content") is
+                    "항목추가" or "항목수정" or "항목삭제"))
+            .ToArray();
+        Assert.Equal(3, lineActionButtons.Length);
+        Assert.All(
+            lineActionButtons,
+            button =>
+            {
+                Assert.Equal("72", (string?)button.Attribute("Width"));
+                Assert.Equal("72", (string?)button.Attribute("MinWidth"));
+                Assert.Equal("4,0", (string?)button.Attribute("Padding"));
+            });
+        var lineMoveButtons = sales
+            .Descendants()
+            .Where(element =>
+                element.Name.LocalName == "Button" &&
+                ((string?)element.Attribute("Content") is "▲" or "▼"))
+            .ToArray();
+        Assert.Equal(2, lineMoveButtons.Length);
+        Assert.All(lineMoveButtons, button =>
+            Assert.Equal("30", (string?)button.Attribute("Width")));
 
         AssertNamedElementType(sales, xaml, "SalesHeaderActions", "WrapPanel");
         AssertNamedElementType(sales, xaml, "SalesItemSearchToolbar", "WrapPanel");
@@ -549,9 +672,9 @@ public sealed class ChildWindowResponsiveLayoutTests
                  })
         {
             var text = AssertNamedElement(payment, xaml, textName);
-            Assert.Equal("NoWrap", (string?)text.Attribute("TextWrapping"));
+            Assert.Equal("Wrap", (string?)text.Attribute("TextWrapping"));
             Assert.Equal(
-                "CharacterEllipsis",
+                "None",
                 (string?)text.Attribute("TextTrimming"));
             Assert.False(
                 string.IsNullOrWhiteSpace(
@@ -1264,6 +1387,10 @@ public sealed class ChildWindowResponsiveLayoutTests
             salesSource,
             StringComparison.Ordinal);
         Assert.Contains(
+            "!ResponsiveWindowBehavior.GetIsEnabled(this)",
+            salesSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
             "SalesCompactSectionSwitcher.Visibility = useCompactLayout",
             salesSource,
             StringComparison.Ordinal);
@@ -1276,6 +1403,10 @@ public sealed class ChildWindowResponsiveLayoutTests
             StringComparison.Ordinal);
         Assert.Contains(
             "SizeChanged += (_, _) => ApplyResponsiveWorkspaceLayout();",
+            paymentSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "!ResponsiveWindowBehavior.GetIsEnabled(this)",
             paymentSource,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -1297,6 +1428,155 @@ public sealed class ChildWindowResponsiveLayoutTests
     }
 
     [Fact]
+    public void EnvironmentSettingsSyncTab_ExposesEverySectionThroughDefaultSizeOverflowNavigation()
+    {
+        var desktopAppDirectory = FindDesktopAppDirectory();
+        var document = LoadWindow(
+            desktopAppDirectory,
+            "EnvironmentSettingsWindow.xaml");
+        XNamespace xamlNamespace = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        var syncTab = AssertNamedElement(
+            document,
+            xamlNamespace,
+            "SyncTab");
+        var scrollViewer = Assert.Single(
+            syncTab.Elements(),
+            element => element.Name.LocalName == "ScrollViewer");
+
+        Assert.Equal(
+            "SyncTabScrollViewer",
+            (string?)scrollViewer.Attribute(xamlNamespace + "Name"));
+        Assert.Equal(
+            "Disabled",
+            (string?)scrollViewer.Attribute("HorizontalScrollBarVisibility"));
+        Assert.Equal(
+            "Auto",
+            (string?)scrollViewer.Attribute("VerticalScrollBarVisibility"));
+        Assert.Equal(
+            "False",
+            (string?)scrollViewer.Attribute("CanContentScroll"));
+
+        var contentGrid = Assert.Single(
+            scrollViewer.Elements(),
+            element => element.Name.LocalName == "Grid");
+        Assert.Equal(
+            "SyncTabContentGrid",
+            (string?)contentGrid.Attribute(xamlNamespace + "Name"));
+        Assert.Equal("900", (string?)contentGrid.Attribute("MinWidth"));
+
+        var rowDefinitions = Assert.Single(
+                contentGrid.Elements(),
+                element => element.Name.LocalName == "Grid.RowDefinitions")
+            .Elements()
+            .Where(element => element.Name.LocalName == "RowDefinition")
+            .Select(element => (string?)element.Attribute("Height"))
+            .ToArray();
+        Assert.Equal(new[] { "Auto", "Auto", "Auto", "300" }, rowDefinitions);
+
+        var actionHeader = Assert.Single(
+            contentGrid.Elements(),
+            element =>
+                element.Name.LocalName == "Border" &&
+                string.Equals(
+                    (string?)element.Attribute("Grid.Row"),
+                    "0",
+                    StringComparison.Ordinal));
+        var actionPanel = Assert.Single(
+            actionHeader.Descendants(),
+            element =>
+                element.Name.LocalName == "WrapPanel" &&
+                string.Equals(
+                    (string?)element.Attribute("Grid.Row"),
+                    "1",
+                    StringComparison.Ordinal));
+        Assert.Equal("0,12,0,0", (string?)actionPanel.Attribute("Margin"));
+
+        var lowerStatusTableBindings = contentGrid
+            .Descendants()
+            .Where(element => element.Name.LocalName == "DataGrid")
+            .Select(element => (string?)element.Attribute("ItemsSource"))
+            .Where(value => value is not null)
+            .ToArray();
+        Assert.Contains("{Binding StoredSyncCredentials}", lowerStatusTableBindings);
+        Assert.Contains("{Binding SyncScopeStatuses}", lowerStatusTableBindings);
+    }
+
+    [Fact]
+    public void SyncDiagnosticsWindow_KeepsHeaderExplanationAndActionsReachableAtMinimumWidth()
+    {
+        var desktopAppDirectory = FindDesktopAppDirectory();
+        var document = LoadWindow(
+            desktopAppDirectory,
+            "SyncDiagnosticsWindow.xaml");
+
+        var rootGrid = Assert.Single(
+            document.Root!.Elements(),
+            element => element.Name.LocalName == "Grid");
+        var header = Assert.Single(
+            rootGrid.Elements(),
+            element =>
+                element.Name.LocalName == "Border" &&
+                string.Equals(
+                    (string?)element.Attribute("Grid.Row"),
+                    "0",
+                    StringComparison.Ordinal));
+        var headerGrid = Assert.Single(
+            header.Elements(),
+            element => element.Name.LocalName == "Grid");
+        var rowDefinitions = Assert.Single(
+                headerGrid.Elements(),
+                element => element.Name.LocalName == "Grid.RowDefinitions")
+            .Elements()
+            .Where(element => element.Name.LocalName == "RowDefinition")
+            .Select(element => (string?)element.Attribute("Height"))
+            .ToArray();
+        Assert.Equal(new[] { "Auto", "Auto" }, rowDefinitions);
+
+        var explanationPanel = Assert.Single(
+            headerGrid.Elements(),
+            element =>
+                element.Name.LocalName == "StackPanel" &&
+                string.Equals(
+                    (string?)element.Attribute("Grid.Row"),
+                    "0",
+                    StringComparison.Ordinal));
+        var explanation = Assert.Single(
+            explanationPanel.Elements(),
+            element =>
+                element.Name.LocalName == "TextBlock" &&
+                ((string?)element.Attribute("Text"))?.Contains(
+                    "sync outbox 재시도 상태",
+                    StringComparison.Ordinal) == true);
+        Assert.Equal("Wrap", (string?)explanation.Attribute("TextWrapping"));
+
+        var actionPanel = Assert.Single(
+            headerGrid.Elements(),
+            element =>
+                element.Name.LocalName == "WrapPanel" &&
+                string.Equals(
+                    (string?)element.Attribute("Grid.Row"),
+                    "1",
+                    StringComparison.Ordinal));
+        Assert.Equal("0,12,0,0", (string?)actionPanel.Attribute("Margin"));
+        Assert.Equal(
+            new[]
+            {
+                "새로고침(F5)",
+                "동기화 재시도",
+                "공유 캐시 다시 만들기",
+                "선택 항목 복구",
+                "복구 가능 항목 전체 처리",
+                "닫기(F12)"
+            },
+            actionPanel
+                .Elements()
+                .Where(element => element.Name.LocalName == "Button")
+                .Select(element => (string?)element.Attribute("Content"))
+                .ToArray());
+    }
+
+    [Fact]
     public void AllProductionWindows_UseGlobalResponsiveSizingAndExposeOverflowNavigation()
     {
         var desktopAppDirectory = FindDesktopAppDirectory();
@@ -1310,7 +1590,7 @@ public sealed class ChildWindowResponsiveLayoutTests
             "<Setter Property=\"infra:ResponsiveWindowBehavior.IsEnabled\" Value=\"True\"/>",
             appXaml,
             StringComparison.Ordinal);
-        Assert.Contains(
+        Assert.DoesNotContain(
             "window is global::거래플랜.Desktop.App.MainWindow",
             behaviorCode,
             StringComparison.Ordinal);
@@ -1318,13 +1598,164 @@ public sealed class ChildWindowResponsiveLayoutTests
             "ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(window);",
             behaviorCode,
             StringComparison.Ordinal);
+        Assert.Contains(
+            "EnsureOverflowNavigation(window);",
+            behaviorCode,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "HorizontalScrollBarVisibility = ScrollBarVisibility.Auto",
+            behaviorCode,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "VerticalScrollBarVisibility = ScrollBarVisibility.Auto",
+            behaviorCode,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "content.LayoutUpdated += (_, _) => RefreshContentHostSize();",
+            behaviorCode,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ChildWindowResponsiveLayoutPolicy.MinimumContentWidthDip - chromeWidth",
+            behaviorCode,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ChildWindowResponsiveLayoutPolicy.MinimumContentHeightDip - chromeHeight",
+            behaviorCode,
+            StringComparison.Ordinal);
+        var childPolicyCode = File.ReadAllText(Path.Combine(
+            desktopAppDirectory,
+            "Infrastructure",
+            "ChildWindowResponsiveLayoutPolicy.cs"));
+        Assert.Contains("MinimumContentWidthDip = 760d", childPolicyCode, StringComparison.Ordinal);
+        Assert.Contains("MinimumContentHeightDip = 560d", childPolicyCode, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "content.DesiredSize.Width",
+            behaviorCode,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "content.DesiredSize.Height",
+            behaviorCode,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "ResolveDesignDimension(",
+            behaviorCode,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "MeasureDescendantExtent(content)",
+            behaviorCode,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "IsNestedOverflowNavigationBoundary(descendant)",
+            behaviorCode,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "element is ScrollViewer or DataGrid or ListBox or ListView or TreeView",
+            behaviorCode,
+            StringComparison.Ordinal);
         Assert.Contains("window.Initialized += OnWindowInitialized;", behaviorCode, StringComparison.Ordinal);
 
         var appCode = File.ReadAllText(Path.Combine(desktopAppDirectory, "App.xaml.cs"));
+        Assert.Contains("EventManager.RegisterClassHandler(", appCode, StringComparison.Ordinal);
+        Assert.Contains("typeof(Window)", appCode, StringComparison.Ordinal);
+        Assert.Contains("FrameworkElement.LoadedEvent", appCode, StringComparison.Ordinal);
+        Assert.Contains("ResponsiveWindowBehavior.SetIsEnabled(window, true);", appCode, StringComparison.Ordinal);
+        Assert.Contains("FullTextLayoutBehavior.SetIsEnabled(window, true);", appCode, StringComparison.Ordinal);
         Assert.Contains("var popupScrollViewer = new ScrollViewer", appCode, StringComparison.Ordinal);
         Assert.Contains("Content = popupScrollViewer", appCode, StringComparison.Ordinal);
         Assert.Contains("VerticalScrollBarVisibility = ScrollBarVisibility.Auto", appCode, StringComparison.Ordinal);
         Assert.Contains("ResponsiveWindowBehavior.SetIsEnabled(popup, false);", appCode, StringComparison.Ordinal);
+
+        var rentalSettings = LoadWindow(desktopAppDirectory, "RentalSettingsWindow.xaml");
+        var normalizeCustomerLinksButton = Assert.Single(
+            rentalSettings.Descendants(),
+            element =>
+                element.Name.LocalName == "Button" &&
+                string.Equals(
+                    (string?)element.Attribute("Content"),
+                    "메인 거래처명 동기화",
+                    StringComparison.Ordinal));
+        var rentalCleanupHeader = Assert.IsType<XElement>(normalizeCustomerLinksButton.Parent?.Parent);
+        Assert.Equal("Grid", rentalCleanupHeader.Name.LocalName);
+        Assert.Equal(
+            new[] { "*", "Auto" },
+            rentalCleanupHeader
+                .Elements()
+                .Single(element => element.Name.LocalName == "Grid.ColumnDefinitions")
+                .Elements()
+                .Select(element => (string?)element.Attribute("Width"))
+                .ToArray());
+
+        var environmentSettings = LoadWindow(desktopAppDirectory, "EnvironmentSettingsWindow.xaml");
+        var recycleBinDetailTitle = Assert.Single(
+            environmentSettings.Descendants(),
+            element =>
+                element.Name.LocalName == "TextBlock" &&
+                string.Equals(
+                    (string?)element.Attribute("Text"),
+                    "복원 / 영구삭제 상세",
+                    StringComparison.Ordinal));
+        var recycleBinDetailGrid = recycleBinDetailTitle
+            .Ancestors()
+            .First(element =>
+                element.Name.LocalName == "Grid" &&
+                element.Elements().Any(child =>
+                    child.Name.LocalName == "Grid.ColumnDefinitions"));
+        Assert.Equal(
+            new[] { "*", "12", "*" },
+            recycleBinDetailGrid
+                .Elements()
+                .Single(element => element.Name.LocalName == "Grid.ColumnDefinitions")
+                .Elements()
+                .Select(element => (string?)element.Attribute("Width"))
+                .ToArray());
+
+        var mainWindow = XDocument.Load(Path.Combine(desktopAppDirectory, "MainWindow.xaml"));
+        var mainPrintButton = Assert.Single(
+            mainWindow.Descendants(),
+            element =>
+                element.Name.LocalName == "Button" &&
+                string.Equals(
+                    (string?)element.Attribute("Content"),
+                    "전표 인쇄[F9]",
+                    StringComparison.Ordinal));
+        var mainToolbarGrid = Assert.IsType<XElement>(mainPrintButton.Parent);
+        var mainToolbarColumns = mainToolbarGrid
+            .Elements()
+            .Single(element => element.Name.LocalName == "Grid.ColumnDefinitions")
+            .Elements()
+            .ToArray();
+        Assert.Equal("128", (string?)mainToolbarColumns[1].Attribute("Width"));
+
+        var tradePrint = LoadWindow(desktopAppDirectory, "TradePrintWindow.xaml");
+        var copyCountButtons = tradePrint
+            .Descendants()
+            .Where(element =>
+                element.Name.LocalName == "Button" &&
+                ((string?)element.Attribute("Content") is "▲" or "▼"))
+            .ToArray();
+        Assert.Equal(2, copyCountButtons.Length);
+        var copyCountButtonPanel = Assert.IsType<XElement>(copyCountButtons[0].Parent);
+        Assert.Same(copyCountButtonPanel, copyCountButtons[1].Parent);
+        Assert.Equal("Horizontal", (string?)copyCountButtonPanel.Attribute("Orientation"));
+        Assert.All(
+            copyCountButtons,
+            button =>
+            {
+                Assert.Equal("24", (string?)button.Attribute("Height"));
+                Assert.False(string.IsNullOrWhiteSpace(
+                    (string?)button.Attribute("AutomationProperties.Name")));
+            });
+
+        XNamespace xamlNamespace = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var syncDiagnostics = LoadWindow(desktopAppDirectory, "SyncDiagnosticsWindow.xaml");
+        var syncEventsDataGrid = Assert.Single(
+            syncDiagnostics.Descendants(),
+            element => string.Equals(
+                (string?)element.Attribute(xamlNamespace + "Name"),
+                "SyncEventsDataGrid",
+                StringComparison.Ordinal));
+        Assert.Equal("DataGrid", syncEventsDataGrid.Name.LocalName);
+        Assert.Equal("180", (string?)syncEventsDataGrid.Attribute("MinHeight"));
 
         var viewDirectory = Path.Combine(desktopAppDirectory, "Views");
         var windows = Directory
@@ -1392,7 +1823,6 @@ public sealed class ChildWindowResponsiveLayoutTests
         var customerManagement = LoadWindow(
             desktopAppDirectory,
             "CustomerManagementWindow.xaml");
-        XNamespace xamlNamespace = "http://schemas.microsoft.com/winfx/2006/xaml";
         AssertScrollViewer(
             customerManagement,
             xamlNamespace,
@@ -1425,7 +1855,14 @@ public sealed class ChildWindowResponsiveLayoutTests
         {
             try
             {
-                var window = new StartupLoadingWindow();
+                var window = new Window
+                {
+                    Width = 440d,
+                    Height = 190d,
+                    MinWidth = 360d,
+                    MinHeight = 160d,
+                    SizeToContent = SizeToContent.Manual
+                };
                 ResponsiveWindowBehavior.SetIsEnabled(window, true);
 
                 Assert.Equal(SizeToContent.Manual, window.SizeToContent);
@@ -1617,8 +2054,9 @@ public sealed class ChildWindowResponsiveLayoutTests
                 (string?)element.Attribute(xaml + "Name"),
                 "InventoryTransferHistoryDataGrid",
                 StringComparison.Ordinal));
-        Assert.Equal("22", (string?)historyDataGrid.Attribute("ColumnHeaderHeight"));
-        Assert.Equal("22", (string?)historyDataGrid.Attribute("RowHeight"));
+        Assert.Equal("NaN", (string?)historyDataGrid.Attribute("ColumnHeaderHeight"));
+        Assert.Equal("NaN", (string?)historyDataGrid.Attribute("RowHeight"));
+        Assert.Equal("32", (string?)historyDataGrid.Attribute("MinRowHeight"));
     }
 
     private static void AssertSalesWorkspaceRows(
@@ -1692,8 +2130,9 @@ public sealed class ChildWindowResponsiveLayoutTests
             Assert.DoesNotContain(
                 dataGrid.Ancestors(),
                 ancestor => ancestor.Name.LocalName == "ScrollViewer");
-            Assert.Equal("22", (string?)dataGrid.Attribute("ColumnHeaderHeight"));
-            Assert.Equal("22", (string?)dataGrid.Attribute("RowHeight"));
+            Assert.Equal("NaN", (string?)dataGrid.Attribute("ColumnHeaderHeight"));
+            Assert.Equal("NaN", (string?)dataGrid.Attribute("RowHeight"));
+            Assert.Equal("32", (string?)dataGrid.Attribute("MinRowHeight"));
         }
 
         var mainWorkspace = AssertNamedElement(
@@ -1980,17 +2419,17 @@ public sealed class ChildWindowResponsiveLayoutTests
             document,
             xaml,
             "SalesAutoSaveNoticeText");
-        Assert.Equal("NoWrap", (string?)notice.Attribute("TextWrapping"));
-        Assert.Equal("CharacterEllipsis", (string?)notice.Attribute("TextTrimming"));
+        Assert.Equal("Wrap", (string?)notice.Attribute("TextWrapping"));
+        Assert.Equal("None", (string?)notice.Attribute("TextTrimming"));
         Assert.False(string.IsNullOrWhiteSpace((string?)notice.Attribute("ToolTip")));
 
         var rentalNotice = AssertNamedElement(
             document,
             xaml,
             "SalesRentalLinkedNoticeText");
-        Assert.Equal("NoWrap", (string?)rentalNotice.Attribute("TextWrapping"));
+        Assert.Equal("Wrap", (string?)rentalNotice.Attribute("TextWrapping"));
         Assert.Equal(
-            "CharacterEllipsis",
+            "None",
             (string?)rentalNotice.Attribute("TextTrimming"));
         Assert.False(
             string.IsNullOrWhiteSpace(
@@ -2001,7 +2440,7 @@ public sealed class ChildWindowResponsiveLayoutTests
             xaml,
             "SalesRentalLinkedReferenceText");
         Assert.Equal(
-            "CharacterEllipsis",
+            "None",
             (string?)rentalReference.Attribute("TextTrimming"));
         Assert.False(
             string.IsNullOrWhiteSpace(

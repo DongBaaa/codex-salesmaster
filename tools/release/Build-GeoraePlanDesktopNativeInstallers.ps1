@@ -825,27 +825,26 @@ function Invoke-WindowsArtifactSigning {
         throw "Windows Authenticode signing script not found: $signingScript"
     }
 
-    $arguments = @(
-        '-NoProfile',
-        '-ExecutionPolicy', 'Bypass',
-        '-File', $signingScript,
-        '-ProjectRoot', $ProjectRoot
-    )
+    foreach ($pathToSign in @($Paths)) {
+        $arguments = @(
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-File', $signingScript,
+            '-ProjectRoot', $ProjectRoot,
+            '-Paths', $pathToSign
+        )
 
-    if (-not [string]::IsNullOrWhiteSpace($WindowsSigningConfigPath)) {
-        $arguments += @('-WindowsSigningConfigPath', $WindowsSigningConfigPath)
-    }
-    if ($Paths.Count -gt 0) {
-        $arguments += '-Paths'
-        $arguments += $Paths
-    }
-    if ($RequireSigning) {
-        $arguments += '-RequireSigning'
-    }
+        if (-not [string]::IsNullOrWhiteSpace($WindowsSigningConfigPath)) {
+            $arguments += @('-WindowsSigningConfigPath', $WindowsSigningConfigPath)
+        }
+        if ($RequireSigning) {
+            $arguments += '-RequireSigning'
+        }
 
-    & powershell @arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Windows Authenticode signing failed.'
+        & powershell @arguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "Windows Authenticode signing failed: $pathToSign"
+        }
     }
 }
 

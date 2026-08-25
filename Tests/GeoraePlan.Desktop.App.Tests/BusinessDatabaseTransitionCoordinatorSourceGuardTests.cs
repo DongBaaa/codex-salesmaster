@@ -177,7 +177,7 @@ public sealed class BusinessDatabaseTransitionCoordinatorSourceGuardTests
     }
 
     [Fact]
-    public void EnvironmentSettingsWindow_DisablesCommandsAndRejectsCloseWhileBusy()
+    public void EnvironmentSettingsWindow_DisablesCommandsAndRejectsCloseDuringMutatingBusyWork()
     {
         var appRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Desktop", "거래플랜.Desktop.App"));
         var viewModelSource = File.ReadAllText(Path.Combine(appRoot, "ViewModels", "EnvironmentSettingsViewModel.cs"));
@@ -185,12 +185,16 @@ public sealed class BusinessDatabaseTransitionCoordinatorSourceGuardTests
         var codeBehindSource = File.ReadAllText(Path.Combine(appRoot, "Views", "EnvironmentSettingsWindow.xaml.cs"));
 
         Assert.Contains("public bool CanInteract => !IsBusy;", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "public bool IsCloseBlocked => IsBusy && !IsInitialLoadInProgress;",
+            viewModelSource,
+            StringComparison.Ordinal);
         Assert.Contains("IsEnabled=\"{Binding CanInteract}\"", xamlSource, StringComparison.Ordinal);
         Assert.Contains("Closing += EnvironmentSettingsWindow_Closing;", codeBehindSource, StringComparison.Ordinal);
         var closingBody = ExtractMethodBody(
             codeBehindSource,
             "private void EnvironmentSettingsWindow_Closing(");
-        Assert.Contains("if (!_viewModel.IsBusy)", closingBody, StringComparison.Ordinal);
+        Assert.Contains("if (!_viewModel.IsCloseBlocked)", closingBody, StringComparison.Ordinal);
         Assert.Contains("e.Cancel = true;", closingBody, StringComparison.Ordinal);
     }
 

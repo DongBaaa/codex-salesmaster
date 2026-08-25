@@ -14,7 +14,7 @@ public sealed class ItemsPage : ContentPage
     private readonly ItemsViewModel _viewModel;
     private readonly MobileRefreshCoordinator _refreshCoordinator;
     private readonly SessionStore _sessionStore;
-    private readonly Grid _categoryButtonGrid;
+    private readonly FlexLayout _categoryButtonLayout;
     private int _seenItemsVersion;
 
     public ItemsPage()
@@ -41,15 +41,10 @@ public sealed class ItemsPage : ContentPage
         newItemFromCategoryButton.Clicked += (_, _) =>
             MobileErrorHandler.FireAndForget(OpenNewItemAsync, "품목 신규등록");
 
-        _categoryButtonGrid = new Grid
-        {
-            ColumnSpacing = 10,
-            RowSpacing = 10,
-            IsVisible = true
-        };
-        _categoryButtonGrid.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.IsCategoryChooserVisible));
+        _categoryButtonLayout = GeoraePlanTheme.CreateWrappingActions();
+        _categoryButtonLayout.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.IsCategoryChooserVisible));
 
-        var categoryCard = GeoraePlanTheme.CreateCompactCard(categoryTitle, categoryGuide, newItemFromCategoryButton, _categoryButtonGrid);
+        var categoryCard = GeoraePlanTheme.CreateCompactCard(categoryTitle, categoryGuide, newItemFromCategoryButton, _categoryButtonLayout);
         categoryCard.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.IsCategoryChooserVisible));
 
         var selectedCategoryLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false, fontSize: 13);
@@ -375,13 +370,7 @@ public sealed class ItemsPage : ContentPage
 
     private void RebuildCategoryButtons()
     {
-        _categoryButtonGrid.Children.Clear();
-        _categoryButtonGrid.RowDefinitions.Clear();
-        _categoryButtonGrid.ColumnDefinitions.Clear();
-
-        const int columnCount = 3;
-        for (var column = 0; column < columnCount; column++)
-            _categoryButtonGrid.ColumnDefinitions.Add(new ColumnDefinition(GridLength.Star));
+        _categoryButtonLayout.Children.Clear();
 
         var categories = _viewModel.ItemCategories.ToList();
         if (categories.Count == 0)
@@ -389,11 +378,6 @@ public sealed class ItemsPage : ContentPage
 
         for (var index = 0; index < categories.Count; index++)
         {
-            var row = index / columnCount;
-            var column = index % columnCount;
-            while (_categoryButtonGrid.RowDefinitions.Count <= row)
-                _categoryButtonGrid.RowDefinitions.Add(new RowDefinition(GridLength.Auto));
-
             var category = categories[index];
             var isSelected = _viewModel.SelectedCategory is not null &&
                              string.Equals(_viewModel.SelectedCategory.Name, category.Name, StringComparison.OrdinalIgnoreCase);
@@ -405,7 +389,10 @@ public sealed class ItemsPage : ContentPage
                 MobileErrorHandler.FireAndForget(
                     async () => await _viewModel.SelectCategoryAsync(category),
                     "품목 작업");
-            _categoryButtonGrid.Add(button, column, row);
+            button.MinimumWidthRequest = Math.Max(button.MinimumWidthRequest, 76);
+            button.Margin = new Thickness(0, 0, 8, 8);
+            FlexLayout.SetGrow(button, 1);
+            _categoryButtonLayout.Children.Add(button);
         }
     }
 

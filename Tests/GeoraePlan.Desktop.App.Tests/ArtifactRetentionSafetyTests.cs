@@ -14,7 +14,7 @@ namespace GeoraePlan.Desktop.App.Tests;
 
 public sealed class ArtifactRetentionSafetyTests
 {
-    private const string SelfSourceSha256 = "037A20702248CC4ECAB13DE2F772919B91D3E08DA65660E87610B8AE095587DF";
+    private const string SelfSourceSha256 = "587E181B03DE1EFE4C154B49281AA4AFFE48D9AB5D7FAC77A030A049E286224D";
 
     [Fact]
     public async Task OwnedGateInventoryAndNormalizedSourceHashAreExact()
@@ -76,6 +76,9 @@ public sealed class ArtifactRetentionSafetyTests
         Assert.Contains(".georaeplan-retention-parent.lease", source, StringComparison.Ordinal);
         Assert.Contains("OpenParentDirectoryLease", source, StringComparison.Ordinal);
         Assert.Contains("OpenCoordinatorLease", source, StringComparison.Ordinal);
+        Assert.Contains("function Get-RetentionFileSha256", source, StringComparison.Ordinal);
+        Assert.Contains("[Security.Cryptography.SHA256]::Create()", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Get-FileHash", source, StringComparison.Ordinal);
         Assert.Contains("Assert-NoProtectedRootOverlap", source, StringComparison.Ordinal);
         Assert.Contains("Assert-EvidenceOutsideAllPlannedRoots", source, StringComparison.Ordinal);
         Assert.Contains("another planned artifact root", source, StringComparison.Ordinal);

@@ -85,7 +85,7 @@
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="MinWidth" Value="108"/>
-            <Setter Property="Height" Value="38"/>
+            <Setter Property="MinHeight" Value="38"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
         <Style TargetType="Label">
@@ -133,8 +133,8 @@
                            Grid.Column="0"
                            Text="내부 재고이동 - 저장 시 출발창고 재고가 차감되고, 도착창고 재고는 수령확정 후 반영됩니다."
                            ToolTip="내부 재고이동 - 저장 시 출발창고 재고가 차감되고, 도착창고 재고는 수령확정 후 반영됩니다."
-                           TextWrapping="NoWrap"
-                           TextTrimming="CharacterEllipsis"
+                           TextWrapping="Wrap"
+                           TextTrimming="None"
                            Margin="0,0,10,0"
                            FontSize="14"
                            FontWeight="Bold"
@@ -195,15 +195,15 @@
                 <TextBlock Text="{Binding StatusMessage}"
                            AutomationProperties.AutomationId="TransferStatusMessageText"
                            ToolTip="{Binding StatusMessage}"
-                           TextWrapping="NoWrap"
-                           TextTrimming="CharacterEllipsis"
+                           TextWrapping="Wrap"
+                           TextTrimming="None"
                            FontSize="11"
                            Foreground="#90CAF9"/>
                 <TextBlock DockPanel.Dock="Right"
                            Text="수령대기 상태에서는 출고만 반영되고, 수령확정 시 도착 재고와 입고내역이 확정됩니다."
                            ToolTip="수령대기 상태에서는 출고만 반영되고, 수령확정 시 도착 재고와 입고내역이 확정됩니다."
-                           TextWrapping="NoWrap"
-                           TextTrimming="CharacterEllipsis"
+                           TextWrapping="Wrap"
+                           TextTrimming="None"
                            FontSize="11"
                            Foreground="#9FB3C8"/>
             </DockPanel>
@@ -525,7 +525,8 @@
                                                Margin="0,0,0,0"
                                                FontSize="13"
                                                VerticalAlignment="Center"
-                                               TextTrimming="CharacterEllipsis"/>
+                                               TextWrapping="Wrap"
+                                               TextTrimming="None"/>
                                 </Grid>
 
                                 <Grid Grid.Row="2">

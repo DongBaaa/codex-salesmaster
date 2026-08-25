@@ -10,6 +10,8 @@ param(
     [string]$KeyAlias,
     [string]$StorePass,
     [string]$KeyPass,
+    [string]$StorePassEnvironmentVariable,
+    [string]$KeyPassEnvironmentVariable,
     [string]$Configuration = 'Release',
     [string]$Framework = 'net8.0-android',
     [string]$OutputRoot,
@@ -25,7 +27,8 @@ param(
     [switch]$SkipEnvironmentCheck,
     [switch]$SkipArtifactPrune,
     [switch]$SkipDeploymentCopy,
-    [switch]$NoRestore
+    [switch]$NoRestore,
+    [switch]$DetailedBuildLog
 )
 
 function Get-Utf8String {
@@ -354,22 +357,53 @@ function Get-ResolvedDotNetPath {
     return $null
 }
 
+function Get-JavaSdkMajorVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$CandidatePath
+    )
+
+    $releasePath = Join-Path $CandidatePath 'release'
+    if (-not (Test-Path -LiteralPath $releasePath -PathType Leaf)) {
+        return $null
+    }
+
+    $versionLine = Get-Content -LiteralPath $releasePath -Encoding ASCII |
+        Where-Object { $_ -match '^JAVA_VERSION=' } |
+        Select-Object -First 1
+    if ($versionLine -match '^JAVA_VERSION="(?<major>\d+)(?:[._]|")') {
+        return [int]$Matches.major
+    }
+
+    return $null
+}
+
 function Get-ResolvedJavaSdkDirectory {
     param(
         [string]$RequestedPath
     )
 
-    $candidates = [System.Collections.Generic.List[string]]::new()
-
     if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
-        $candidates.Add($RequestedPath) | Out-Null
+        if (-not (Test-Path -LiteralPath $RequestedPath -PathType Container)) {
+            throw "Requested JavaSdkDirectory does not exist: $RequestedPath"
+        }
+
+        $resolvedRequestedPath = (Resolve-Path -LiteralPath $RequestedPath).Path
+        if ((Get-JavaSdkMajorVersion -CandidatePath $resolvedRequestedPath) -ne 17 -or
+            -not (Test-Path -LiteralPath (Join-Path $resolvedRequestedPath 'bin\java.exe') -PathType Leaf) -or
+            -not (Test-Path -LiteralPath (Join-Path $resolvedRequestedPath 'bin\javac.exe') -PathType Leaf) -or
+            -not (Test-Path -LiteralPath (Join-Path $resolvedRequestedPath 'bin\keytool.exe') -PathType Leaf)) {
+            throw "Requested JavaSdkDirectory must be a complete JDK 17: $resolvedRequestedPath"
+        }
+
+        return $resolvedRequestedPath
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($env:JAVA_HOME)) {
-        $candidates.Add($env:JAVA_HOME) | Out-Null
-    }
-
+    $candidates = [System.Collections.Generic.List[string]]::new()
     foreach ($directCandidate in @(
+        $env:GEORAEPLAN_ANDROID_JAVA_SDK,
+        'D:\DevCaches\georaeplan-android-jdk\microsoft-jdk-17.0.20',
+        (Join-Path $env:LOCALAPPDATA 'GeoraePlan.Android\microsoft-jdk-17.0.20'),
+        $env:JAVA_HOME,
         (Join-Path $env:ProgramFiles 'Android\Android Studio\jbr'),
         (Join-Path ${env:ProgramFiles(x86)} 'Android\Android Studio\jbr'),
         (Join-Path $env:LOCALAPPDATA 'Programs\Android Studio\jbr')
@@ -387,22 +421,29 @@ function Get-ResolvedJavaSdkDirectory {
     }
 
     foreach ($pattern in @(
-        (Join-Path $env:USERPROFILE '.antigravity\extensions\*\jre\*\bin\javac.exe'),
-        'C:\Program Files\Microsoft\jdk*\bin\javac.exe',
-        'C:\Program Files\Java\*\bin\javac.exe',
-        'C:\Deployment Tool\jre8\bin\javac.exe'
+        'C:\Program Files\Microsoft\jdk-17*\bin\javac.exe',
+        'C:\Program Files\Java\jdk-17*\bin\javac.exe',
+        (Join-Path $env:USERPROFILE '.antigravity\extensions\*\jre\*\bin\javac.exe')
     )) {
-        $match = Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($null -ne $match) {
+        foreach ($match in Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | Sort-Object FullName -Descending) {
             $candidates.Add((Split-Path -Parent (Split-Path -Parent $match.FullName))) | Out-Null
         }
     }
 
     foreach ($candidate in $candidates | Select-Object -Unique) {
-        if (-not [string]::IsNullOrWhiteSpace($candidate) -and
-            (Test-Path -LiteralPath (Join-Path $candidate 'bin\java.exe')) -and
-            (Test-Path -LiteralPath (Join-Path $candidate 'bin\keytool.exe'))) {
-            return (Resolve-Path -LiteralPath $candidate).Path
+        if ([string]::IsNullOrWhiteSpace($candidate) -or -not (Test-Path -LiteralPath $candidate -PathType Container)) {
+            continue
+        }
+
+        $resolvedCandidate = (Resolve-Path -LiteralPath $candidate).Path
+        if ((Get-JavaSdkMajorVersion -CandidatePath $resolvedCandidate) -ne 17) {
+            continue
+        }
+
+        if ((Test-Path -LiteralPath (Join-Path $resolvedCandidate 'bin\java.exe') -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $resolvedCandidate 'bin\javac.exe') -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $resolvedCandidate 'bin\keytool.exe') -PathType Leaf)) {
+            return $resolvedCandidate
         }
     }
 
@@ -432,6 +473,28 @@ function Get-ResolvedAndroidSdkDirectory {
 }
 
 $ErrorActionPreference = 'Stop'
+$storePassProvidedDirectly = -not [string]::IsNullOrWhiteSpace($StorePass)
+$keyPassProvidedDirectly = -not [string]::IsNullOrWhiteSpace($KeyPass)
+$isReleaseBuild = $Configuration.Equals('Release', [System.StringComparison]::OrdinalIgnoreCase)
+$isProductionAndroidSigning = $isReleaseBuild -and -not $LocalTest.IsPresent -and -not $AllowDebugSigning.IsPresent
+
+function Get-AndroidSigningSecretFromEnvironment {
+    param(
+        [Parameter(Mandatory = $true)][string]$EnvironmentVariableName,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if ($EnvironmentVariableName -cnotmatch '^[A-Za-z_][A-Za-z0-9_]{0,127}$') {
+        throw "$Label environment variable name is invalid."
+    }
+
+    $value = [Environment]::GetEnvironmentVariable($EnvironmentVariableName, 'Process')
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        throw "$Label environment variable is not available in the current process."
+    }
+
+    return $value
+}
 
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = Resolve-DefaultProjectRoot -ScriptPath $MyInvocation.MyCommand.Path
@@ -484,6 +547,9 @@ if ([string]::IsNullOrWhiteSpace($resolvedAndroidSdkDirectory)) {
     throw 'AndroidSdkDirectory not found.'
 }
 
+$signingConfig = $null
+$inlineStorePass = $null
+$inlineKeyPass = $null
 $signingConfigDirectory = $ProjectRoot
 if (-not [string]::IsNullOrWhiteSpace($SigningConfigPath)) {
     if (-not (Test-Path -LiteralPath $SigningConfigPath)) {
@@ -501,14 +567,55 @@ if (-not [string]::IsNullOrWhiteSpace($SigningConfigPath)) {
         $KeyAlias = [string]$signingConfig.keyAlias
     }
 
-    if ([string]::IsNullOrWhiteSpace($StorePass) -and -not [string]::IsNullOrWhiteSpace($signingConfig.storePass)) {
-        $StorePass = [string]$signingConfig.storePass
+    $inlineStorePass = [string]$signingConfig.storePass
+    $inlineKeyPass = [string]$signingConfig.keyPass
+
+    if ([string]::IsNullOrWhiteSpace($StorePassEnvironmentVariable) -and -not [string]::IsNullOrWhiteSpace($signingConfig.storePassEnvironmentVariable)) {
+        $StorePassEnvironmentVariable = [string]$signingConfig.storePassEnvironmentVariable
     }
 
-    if ([string]::IsNullOrWhiteSpace($KeyPass) -and -not [string]::IsNullOrWhiteSpace($signingConfig.keyPass)) {
-        $KeyPass = [string]$signingConfig.keyPass
+    if ([string]::IsNullOrWhiteSpace($KeyPassEnvironmentVariable) -and -not [string]::IsNullOrWhiteSpace($signingConfig.keyPassEnvironmentVariable)) {
+        $KeyPassEnvironmentVariable = [string]$signingConfig.keyPassEnvironmentVariable
     }
 }
+
+$hasInlineStorePass = -not [string]::IsNullOrWhiteSpace($inlineStorePass)
+$hasInlineKeyPass = -not [string]::IsNullOrWhiteSpace($inlineKeyPass)
+if ($isProductionAndroidSigning -and ($storePassProvidedDirectly -or $keyPassProvidedDirectly -or $hasInlineStorePass -or $hasInlineKeyPass)) {
+    throw 'Production Android signing passwords must be supplied through storePassEnvironmentVariable/keyPassEnvironmentVariable; inline config and command-line secret values are forbidden.'
+}
+
+if ((-not [string]::IsNullOrWhiteSpace($StorePassEnvironmentVariable)) -and ($storePassProvidedDirectly -or $hasInlineStorePass)) {
+    throw 'Android store password input is ambiguous. Use exactly one secret source.'
+}
+
+if ((-not [string]::IsNullOrWhiteSpace($KeyPassEnvironmentVariable)) -and ($keyPassProvidedDirectly -or $hasInlineKeyPass)) {
+    throw 'Android key password input is ambiguous. Use exactly one secret source.'
+}
+
+if ($isProductionAndroidSigning -and ([string]::IsNullOrWhiteSpace($StorePassEnvironmentVariable) -or [string]::IsNullOrWhiteSpace($KeyPassEnvironmentVariable))) {
+    throw 'Production Android signing passwords must be supplied through storePassEnvironmentVariable/keyPassEnvironmentVariable; inline config and command-line secret values are forbidden.'
+}
+
+if (-not [string]::IsNullOrWhiteSpace($StorePassEnvironmentVariable)) {
+    $StorePass = Get-AndroidSigningSecretFromEnvironment -EnvironmentVariableName $StorePassEnvironmentVariable -Label 'Android store password'
+}
+elseif (-not $storePassProvidedDirectly -and $hasInlineStorePass) {
+    $StorePass = $inlineStorePass
+}
+
+if (-not [string]::IsNullOrWhiteSpace($KeyPassEnvironmentVariable)) {
+    $KeyPass = Get-AndroidSigningSecretFromEnvironment -EnvironmentVariableName $KeyPassEnvironmentVariable -Label 'Android key password'
+}
+elseif (-not $keyPassProvidedDirectly -and $hasInlineKeyPass) {
+    $KeyPass = $inlineKeyPass
+}
+
+foreach ($environmentVariableName in @($StorePassEnvironmentVariable, $KeyPassEnvironmentVariable) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique) {
+    [Environment]::SetEnvironmentVariable($environmentVariableName, $null, 'Process')
+}
+$inlineStorePass = $null
+$inlineKeyPass = $null
 
 if ([string]::IsNullOrWhiteSpace($KeystorePath)) {
     throw 'KeystorePath is required. Pass it directly or via -SigningConfigPath.'
@@ -580,7 +687,8 @@ function New-AndroidSigningSecretFile {
         $stream = [IO.FileStream]::new(
             $secretPath,
             [IO.FileMode]::CreateNew,
-            [Security.AccessControl.FileSystemRights]::FullControl,
+            ([Security.AccessControl.FileSystemRights]::Read -bor
+                [Security.AccessControl.FileSystemRights]::Write),
             [IO.FileShare]::Read,
             4096,
             [IO.FileOptions]::WriteThrough,
@@ -652,7 +760,6 @@ function Remove-AndroidSigningSecretPair {
     }
 }
 
-$isReleaseBuild = $Configuration.Equals('Release', [System.StringComparison]::OrdinalIgnoreCase)
 $isDebugKeystorePath = [System.IO.Path]::GetFileName($KeystorePath).Equals('debug.keystore', [System.StringComparison]::OrdinalIgnoreCase)
 $isDebugKeyAlias = $KeyAlias.Equals('androiddebugkey', [System.StringComparison]::OrdinalIgnoreCase)
 if ($isReleaseBuild -and -not $LocalTest.IsPresent -and -not $AllowDebugSigning.IsPresent -and ($isDebugKeystorePath -or $isDebugKeyAlias)) {
@@ -698,6 +805,12 @@ $arguments = @(
     "-p:JavaSdkDirectory=$resolvedJavaSdkDirectory"
     '-p:ArchiveOnBuild=true'
 )
+
+if ($DetailedBuildLog.IsPresent) {
+    $arguments += '--verbosity'
+    $arguments += 'normal'
+    Write-Host 'android_build_verbosity=normal'
+}
 
 if ($shouldEnableAot) {
     $arguments += '-p:RunAOTCompilation=true'
@@ -834,8 +947,12 @@ try {
     $StorePass = $null
     $KeyPass = $null
     if ($null -ne $signingConfig) {
-        $signingConfig.storePass = $null
-        $signingConfig.keyPass = $null
+        if ($null -ne $signingConfig.PSObject.Properties['storePass']) {
+            $signingConfig.storePass = $null
+        }
+        if ($null -ne $signingConfig.PSObject.Properties['keyPass']) {
+            $signingConfig.keyPass = $null
+        }
     }
     $arguments = [string[]]@($arguments | ForEach-Object {
         if ($_ -ceq '-p:AndroidSigningStorePass=__GEORAEPLAN_STORE_SECRET_FILE__') {

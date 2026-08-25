@@ -174,7 +174,7 @@
             <Setter Property="BorderBrush" Value="#5D7593"/>
             <Setter Property="Background" Value="{StaticResource TradePlanSecondaryBrush}"/>
             <Setter Property="Padding" Value="14,0"/>
-            <Setter Property="Height" Value="38"/>
+            <Setter Property="MinHeight" Value="38"/>
             <Setter Property="MinWidth" Value="108"/>
             <Setter Property="Cursor" Value="Hand"/>
         </Style>
@@ -188,7 +188,8 @@
             <Setter Property="CanUserAddRows" Value="False"/>
             <Setter Property="AlternatingRowBackground" Value="#223754"/>
             <Setter Property="RowBackground" Value="#1E2D40"/>
-            <Setter Property="RowHeight" Value="34"/>
+            <Setter Property="RowHeight" Value="NaN"/>
+            <Setter Property="MinRowHeight" Value="34"/>
             <Setter Property="HeadersVisibility" Value="Column"/>
             <Setter Property="EnableRowVirtualization" Value="True"/>
             <Setter Property="EnableColumnVirtualization" Value="True"/>
@@ -385,13 +386,9 @@
         </StackPanel>
         </ScrollViewer>
 
-        <ScrollViewer x:Name="BillingWorkspaceScrollViewer"
-                      Grid.Row="1"
-                      Margin="0,10,0,0"
-                      HorizontalScrollBarVisibility="Auto"
-                      VerticalScrollBarVisibility="Disabled"
-                      CanContentScroll="True">
-        <Grid x:Name="BillingWorkspaceGrid" MinWidth="1050">
+        <Grid x:Name="BillingWorkspaceGrid"
+              Grid.Row="1"
+              Margin="0,10,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition x:Name="BillingListColumn" Width="2.2*" MinWidth="420"/>
                 <ColumnDefinition x:Name="BillingWorkspaceSplitterColumn" Width="10"/>
@@ -865,7 +862,8 @@
                                 <DataGridTextColumn Header="청구명" Binding="{Binding DisplayItemName}" Width="*" MinWidth="110">
                                     <DataGridTextColumn.ElementStyle>
                                         <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
-                                            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                                            <Setter Property="TextTrimming" Value="None"/>
+                                            <Setter Property="TextWrapping" Value="Wrap"/>
                                             <Setter Property="ToolTip" Value="{Binding DisplayItemName}"/>
                                         </Style>
                                     </DataGridTextColumn.ElementStyle>
@@ -873,7 +871,8 @@
                                 <DataGridTextColumn Header="전표 품명" Binding="{Binding InvoiceItemNamePreview}" Width="1.35*" MinWidth="160">
                                     <DataGridTextColumn.ElementStyle>
                                         <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
-                                            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+                                            <Setter Property="TextTrimming" Value="None"/>
+                                            <Setter Property="TextWrapping" Value="Wrap"/>
                                             <Setter Property="ToolTip" Value="{Binding InvoiceItemNamePreview}"/>
                                         </Style>
                                     </DataGridTextColumn.ElementStyle>
@@ -1028,7 +1027,6 @@
                 </ScrollViewer>
             </Border>
         </Grid>
-        </ScrollViewer>
 
         <Border Grid.Row="2" Margin="0,10,0,0" Background="#122038" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="10">
             <DockPanel LastChildFill="False">

@@ -8,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Markup;
 using System.Windows.Media;
+using 거래플랜.Desktop.App.Printing;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.Views;
 using Xunit;
@@ -204,11 +205,11 @@ public sealed class TradePrintDialogSourceGuardTests
 
         Assert.Contains("x:Name=\"RefreshPrintersButton\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Click=\"OnRefreshPrintersClick\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("_printerRefreshProvider", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("_printerCatalogProvider", codeBehind, StringComparison.Ordinal);
         Assert.Contains("OnRefreshPrintersClick", codeBehind, StringComparison.Ordinal);
         Assert.Contains("GetSelectedQueueName()", codeBehind, StringComparison.Ordinal);
         Assert.Contains("프린터 목록을 새로고침했습니다", codeBehind, StringComparison.Ordinal);
-        Assert.Contains("LoadPrinterSnapshotSafely", executor, StringComparison.Ordinal);
+        Assert.Contains("TradePrinterCatalog.LoadSnapshot()", executor, StringComparison.Ordinal);
         Assert.Contains("LoadPrinterSnapshotSafely,", executor, StringComparison.Ordinal);
         Assert.Contains("currentPageNumber", executor, StringComparison.Ordinal);
     }
@@ -321,75 +322,137 @@ public sealed class TradePrintDialogSourceGuardTests
     }
 
     [Fact]
-    public void TradePrintExecutor_LoadsDirectAndDeployedPrinterQueuesForCopierConnections()
+    public void TradePrintCatalog_LoadsAllNativeLocalAndConnectedPrintersWithoutPrintQueueObjects()
     {
         var repoRoot = FindRepositoryRoot();
-        var executor = File.ReadAllText(Path.Combine(
+        var catalog = File.ReadAllText(Path.Combine(
             repoRoot,
             "Desktop",
             "거래플랜.Desktop.App",
-            "Services",
-            "TradePrintExecutor.cs"));
+            "Printing",
+            "TradePrinterCatalog.cs"));
 
-        Assert.Contains("InstalledPrinterQueueTypes", executor, StringComparison.Ordinal);
-        Assert.Contains("printServer.GetPrintQueues(InstalledPrinterQueueTypes)", executor, StringComparison.Ordinal);
-        Assert.Contains("EnumeratedPrintQueueTypes.Local", executor, StringComparison.Ordinal);
-        Assert.Contains("EnumeratedPrintQueueTypes.Connections", executor, StringComparison.Ordinal);
-        Assert.Contains("EnumeratedPrintQueueTypes.Shared", executor, StringComparison.Ordinal);
-        Assert.Contains("EnumeratedPrintQueueTypes.DirectPrinting", executor, StringComparison.Ordinal);
-        Assert.Contains("EnumeratedPrintQueueTypes.PushedMachineConnection", executor, StringComparison.Ordinal);
-        Assert.Contains("EnumeratedPrintQueueTypes.PushedUserConnection", executor, StringComparison.Ordinal);
-        Assert.Contains("EnumeratedPrintQueueTypes.WorkOffline", executor, StringComparison.Ordinal);
-        Assert.Contains("EnumeratedPrintQueueTypes.Queued", executor, StringComparison.Ordinal);
-        Assert.Contains("EnumeratedPrintQueueTypes.PublishedInDirectoryServices", executor, StringComparison.Ordinal);
-        Assert.Contains("EnumeratedPrintQueueTypes.Fax", executor, StringComparison.Ordinal);
-        Assert.Contains("EntryPoint = \"EnumPrintersW\"", executor, StringComparison.Ordinal);
-        Assert.Contains("PrinterEnumLocal | PrinterEnumConnections", executor, StringComparison.Ordinal);
-        Assert.Contains("printServer.GetPrintQueue(printerName)", executor, StringComparison.Ordinal);
-        Assert.Contains("LoadWindowsInstalledPrinterNames", executor, StringComparison.Ordinal);
-        Assert.Contains("프린터 전체 목록 확인 실패", executor, StringComparison.Ordinal);
+        Assert.Contains("EntryPoint = \"EnumPrintersW\"", catalog, StringComparison.Ordinal);
+        Assert.Contains("EntryPoint = \"GetDefaultPrinterW\"", catalog, StringComparison.Ordinal);
+        Assert.Contains("PrinterEnumLocal | PrinterEnumConnections", catalog, StringComparison.Ordinal);
+        Assert.Contains("PrinterInfoLevel = 2", catalog, StringComparison.Ordinal);
+        Assert.Contains("ErrorInsufficientBuffer = 122", catalog, StringComparison.Ordinal);
+        Assert.Contains("MaxEnumerationAttempts = 3", catalog, StringComparison.Ordinal);
+        Assert.Contains("attempt <= MaxEnumerationAttempts", catalog, StringComparison.Ordinal);
+        Assert.Contains("requiredBytesAfterRead", catalog, StringComparison.Ordinal);
+        Assert.Contains("bufferSize = Math.Max(bufferSize, requiredBytesAfterRead);", catalog, StringComparison.Ordinal);
+        Assert.Contains("ReadPrinterInfo(buffer, returnedCount)", catalog, StringComparison.Ordinal);
+        Assert.Contains("PrinterInfoSnapshot", catalog, StringComparison.Ordinal);
+        Assert.DoesNotContain("System.Printing", catalog, StringComparison.Ordinal);
+        Assert.DoesNotContain("PrintQueue", catalog, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void TradePrintExecutor_NativeInstalledCatalogIsMergedIntoVisibleQueues()
+    public void TradePrintCatalog_NativeSnapshotContainsEveryInstalledNameAndRichStatus()
     {
         if (!OperatingSystem.IsWindows())
             return;
 
-        var catalogMethod = typeof(TradePrintExecutor).GetMethod(
-            "LoadWindowsInstalledPrinterNames",
-            BindingFlags.NonPublic | BindingFlags.Static);
-        var queueMethod = typeof(TradePrintExecutor).GetMethod(
-            "LoadInstalledPrintQueues",
-            BindingFlags.NonPublic | BindingFlags.Static);
-        Assert.NotNull(catalogMethod);
-        Assert.NotNull(queueMethod);
+        var installedNames = TradePrinterCatalog.LoadWindowsInstalledPrinterNames();
+        var snapshot = TradePrinterCatalog.LoadSnapshot();
+        var visibleNames = snapshot.Printers
+            .Select(static printer => printer.QueueName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        var installedNames = Assert.IsAssignableFrom<IReadOnlyList<string>>(
-            catalogMethod.Invoke(null, null));
-        using var server = new LocalPrintServer();
-        var queues = Assert.IsAssignableFrom<IReadOnlyList<PrintQueue>>(
-            queueMethod.Invoke(null, [server]));
-
-        try
+        Assert.Equal(
+            installedNames.OrderBy(static name => name, StringComparer.OrdinalIgnoreCase),
+            visibleNames.OrderBy(static name => name, StringComparer.OrdinalIgnoreCase),
+            StringComparer.OrdinalIgnoreCase);
+        Assert.Equal(
+            installedNames.Count,
+            installedNames.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.All(snapshot.Printers, printer =>
         {
-            var visibleNames = queues
-                .SelectMany(queue => new[] { queue.FullName, queue.Name })
-                .Where(name => !string.IsNullOrWhiteSpace(name))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            Assert.False(string.IsNullOrWhiteSpace(printer.QueueName));
+            Assert.False(string.IsNullOrWhiteSpace(printer.DisplayName));
+            Assert.False(string.IsNullOrWhiteSpace(printer.TypeText));
+            Assert.False(string.IsNullOrWhiteSpace(printer.LocationText));
+            Assert.False(string.IsNullOrWhiteSpace(printer.StatusText));
+        });
+        Console.WriteLine($"NativeInstalledPrinterCount={installedNames.Count}");
+        Console.WriteLine($"VisiblePrinterCatalogCount={snapshot.Printers.Count}");
+    }
 
-            Assert.All(installedNames, name => Assert.Contains(name, visibleNames));
-            Assert.Equal(
-                installedNames.Count,
-                installedNames.Distinct(StringComparer.OrdinalIgnoreCase).Count());
-            Console.WriteLine($"NativeInstalledPrinterCount={installedNames.Count}");
-            Console.WriteLine($"VisiblePrintQueueCount={queues.Count}");
-        }
-        finally
+    [Fact]
+    public void TradePrintWindow_PrinterSelectorUsesFullTextNonVirtualizedItems()
+    {
+        var repoRoot = FindRepositoryRoot();
+        var xaml = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Views",
+            "TradePrintWindow.xaml"));
+
+        Assert.DoesNotContain("DisplayMemberPath=\"DisplayName\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("VirtualizingStackPanel.IsVirtualizing=\"False\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("ScrollViewer.CanContentScroll=\"False\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{Binding DisplayName, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{Binding TypeText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{Binding LocationText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Text=\"{Binding StatusText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("TextWrapping=\"Wrap\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("TextTrimming=\"None\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TradePrintWindow_RealNativeSnapshotRealizesEveryFullPrinterItem()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        RunOnSta(() =>
         {
-            foreach (var queue in queues)
-                queue.Dispose();
-        }
+            var snapshot = TradePrinterCatalog.LoadSnapshot();
+            Assert.NotEmpty(snapshot.Printers);
+            var window = new TradePrintWindow(snapshot, pageCount: 1);
+            try
+            {
+                window.Show();
+
+                var combo = Assert.IsType<ComboBox>(window.FindName("PrinterComboBox"));
+                combo.IsDropDownOpen = true;
+                combo.Dispatcher.Invoke(
+                    static () => { },
+                    System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                combo.UpdateLayout();
+
+                Assert.Equal(snapshot.Printers.Count, combo.Items.Count);
+                for (var index = 0; index < combo.Items.Count; index++)
+                {
+                    var item = Assert.IsType<ComboBoxItem>(
+                        combo.ItemContainerGenerator.ContainerFromIndex(index));
+                    item.ApplyTemplate();
+                    item.UpdateLayout();
+
+                    var textBlocks = FindVisualDescendants<TextBlock>(item).ToArray();
+                    Assert.NotEmpty(textBlocks);
+                    Assert.All(textBlocks, textBlock =>
+                    {
+                        Assert.Equal(TextWrapping.Wrap, textBlock.TextWrapping);
+                        Assert.Equal(TextTrimming.None, textBlock.TextTrimming);
+                    });
+
+                    var displayName = combo.Items[index]
+                        .GetType()
+                        .GetProperty("DisplayName", BindingFlags.Public | BindingFlags.Instance)
+                        ?.GetValue(combo.Items[index]) as string;
+                    Assert.False(string.IsNullOrWhiteSpace(displayName));
+                    Assert.Contains(
+                        textBlocks.Select(ReadTextBlockText),
+                        text => string.Equals(text, displayName, StringComparison.Ordinal));
+                }
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
     }
 
     [Fact]
@@ -413,12 +476,17 @@ public sealed class TradePrintDialogSourceGuardTests
         Assert.Contains("[switch]$FailOnWarnings", script, StringComparison.Ordinal);
         Assert.Contains("System.Printing.LocalPrintServer", script, StringComparison.Ordinal);
         Assert.Contains("DefaultPrintQueue", script, StringComparison.Ordinal);
-        Assert.Contains("EnumeratedPrintQueueTypes.DirectPrinting", script, StringComparison.Ordinal);
+        Assert.Contains("[System.Printing.EnumeratedPrintQueueTypes]::DirectPrinting", script, StringComparison.Ordinal);
         Assert.Contains("PushedMachineConnection", script, StringComparison.Ordinal);
         Assert.Contains("PushedUserConnection", script, StringComparison.Ordinal);
         Assert.Contains("WorkOffline", script, StringComparison.Ordinal);
         Assert.Contains("System.Drawing.Printing.PrinterSettings", script, StringComparison.Ordinal);
         Assert.Contains("GetPrintQueue([string]$printerName)", script, StringComparison.Ordinal);
+        Assert.Contains("TradePrinterCatalog.cs", script, StringComparison.Ordinal);
+        Assert.Contains("PrinterEnumLocal | PrinterEnumConnections", script, StringComparison.Ordinal);
+        Assert.Contains("EnumPrinters(", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("Needle = 'LoadInstalledPrintQueues'", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("Needle = 'EnumeratedPrintQueueTypes.DirectPrinting'", script, StringComparison.Ordinal);
         Assert.Contains("거래플랜 전용 인쇄", script, StringComparison.Ordinal);
         Assert.Contains("PDF 저장", script, StringComparison.Ordinal);
         Assert.Contains("파일 저장(XPS)", script, StringComparison.Ordinal);
@@ -466,11 +534,13 @@ public sealed class TradePrintDialogSourceGuardTests
     }
 
     [Fact]
-    public void TradePrintWindow_KeepsDiagnosticButtonsInExistingPrinterRowAt780MinWidth()
+    public void TradePrintWindow_KeepsFullWidthPrinterSelectorAndActionsVisibleAt780MinWidth()
     {
         RunOnSta(() =>
         {
-            var window = new TradePrintWindow(Array.Empty<PrintQueue>(), null, pageCount: 1);
+            var window = new TradePrintWindow(
+                new PrinterCatalogSnapshot(Array.Empty<PrinterCatalogItem>(), null),
+                pageCount: 1);
             try
             {
                 var root = Assert.IsAssignableFrom<FrameworkElement>(window.Content);
@@ -479,15 +549,22 @@ public sealed class TradePrintDialogSourceGuardTests
                 root.UpdateLayout();
 
                 var printerCombo = Assert.IsAssignableFrom<FrameworkElement>(window.FindName("PrinterComboBox"));
+                var printerActionGrid = Assert.IsAssignableFrom<FrameworkElement>(window.FindName("PrinterActionGrid"));
+                var propertiesButton = Assert.IsAssignableFrom<FrameworkElement>(window.FindName("PropertiesButton"));
                 var copyDiagnosticButton = Assert.IsAssignableFrom<FrameworkElement>(window.FindName("CopyDiagnosticButton"));
                 var printDiagnosticButton = Assert.IsAssignableFrom<FrameworkElement>(window.FindName("PrintDiagnosticButton"));
 
                 var comboOrigin = printerCombo.TranslatePoint(new Point(0, 0), root);
+                var actionOrigin = printerActionGrid.TranslatePoint(new Point(0, 0), root);
+                var propertiesLeft = propertiesButton.TranslatePoint(new Point(0, 0), root).X;
                 var copyOrigin = copyDiagnosticButton.TranslatePoint(new Point(0, 0), root);
                 var printRight = printDiagnosticButton.TranslatePoint(new Point(printDiagnosticButton.ActualWidth, 0), root).X;
 
-                Assert.True(Math.Abs(comboOrigin.Y - copyOrigin.Y) < 1, "진단 버튼은 기존 프린터 선택 행 안에 있어야 합니다.");
-                Assert.True(printerCombo.ActualWidth >= 220, $"780px 최소폭에서도 프린터 콤보박스가 너무 좁아지면 안 됩니다. ActualWidth={printerCombo.ActualWidth}");
+                Assert.True(actionOrigin.Y >= comboOrigin.Y + printerCombo.ActualHeight + 7, "프린터 작업 버튼은 전체 폭 선택 상자 아래에 있어야 합니다.");
+                Assert.True(Math.Abs(actionOrigin.Y - copyOrigin.Y) < 1, "모든 프린터 작업 버튼은 같은 행에 있어야 합니다.");
+                Assert.True(printerCombo.ActualWidth >= 600, $"780px 최소폭에서도 긴 프린터 이름을 표시할 전체 폭을 확보해야 합니다. ActualWidth={printerCombo.ActualWidth}");
+                Assert.True(Math.Abs(printerActionGrid.ActualWidth - printerCombo.ActualWidth) < 1, "프린터 선택 상자와 작업 버튼 행은 같은 전체 폭을 사용해야 합니다.");
+                Assert.True(propertiesLeft >= comboOrigin.X - 1, $"첫 프린터 작업 버튼이 왼쪽에서 잘리면 안 됩니다. Left={propertiesLeft}, ComboLeft={comboOrigin.X}");
                 Assert.True(printRight <= root.ActualWidth + 1, $"780px 최소폭에서 1쪽 테스트 버튼이 잘리면 안 됩니다. Right={printRight}, RootWidth={root.ActualWidth}");
             }
             finally
@@ -782,6 +859,21 @@ public sealed class TradePrintDialogSourceGuardTests
         }
 
         return builder.ToString();
+    }
+
+    private static IEnumerable<T> FindVisualDescendants<T>(DependencyObject root)
+        where T : DependencyObject
+    {
+        var childCount = VisualTreeHelper.GetChildrenCount(root);
+        for (var index = 0; index < childCount; index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            if (child is T match)
+                yield return match;
+
+            foreach (var descendant in FindVisualDescendants<T>(child))
+                yield return descendant;
+        }
     }
 
     private static string NormalizeText(string text)

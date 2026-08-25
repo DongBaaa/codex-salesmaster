@@ -342,6 +342,25 @@ public sealed class EnvironmentSettingsUserSaveRevisionTests
     }
 
     [Fact]
+    public async Task SaveUserCommand_FiveCharacterPassword_IsRejectedBeforeAnyApiMutation()
+    {
+        var handler = new UserSaveHandler();
+        await using var fixture = await ViewModelFixture.CreateAsync(handler);
+        await fixture.SelectExistingUserAsync(revision: 90);
+        fixture.ViewModel.EditingPassword = "12345";
+        fixture.ViewModel.EditingPasswordConfirm = "12345";
+
+        await fixture.ViewModel.SaveUserCommand.ExecuteAsync(null);
+
+        Assert.Equal("비밀번호는 6자 이상 입력하세요.", fixture.ViewModel.StatusMessage);
+        Assert.Equal(0, handler.CreateCalls);
+        Assert.Equal(0, handler.UpdateCalls);
+        Assert.Equal(0, handler.PasswordCalls);
+        Assert.Equal("12345", fixture.ViewModel.EditingPassword);
+        Assert.Equal("12345", fixture.ViewModel.EditingPasswordConfirm);
+    }
+
+    [Fact]
     public async Task SaveUserCommand_DefinitivePasswordFailure_ReloadsAndPreservesExplicitPartialSuccess()
     {
         var handler = new UserSaveHandler

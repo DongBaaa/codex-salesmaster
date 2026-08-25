@@ -11,6 +11,7 @@ param(
     [string]$DesktopMsiInstallerPath,
     [string]$AndroidPackagePath,
     [switch]$SkipAndroid,
+    [switch]$PreserveExistingAndroid,
     [string]$DesktopVersion,
     [string]$AndroidVersion,
     [string]$ApkAnalyzerPath,
@@ -1852,6 +1853,7 @@ function Write-JsonFileAtomically {
     $tempPath = Join-Path $directory ($fileName + '.' + [Guid]::NewGuid().ToString('N') + '.tmp')
     $backupPath = Join-Path $directory ($fileName + '.' + [Guid]::NewGuid().ToString('N') + '.bak')
     $json = $InputObject | ConvertTo-Json -Depth 10
+    $json = $json.Replace("`r`n", "`n").Replace("`r", "`n")
     $jsonBytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($json)
 
     $operationError = $null
@@ -1927,6 +1929,7 @@ function Get-GeoraePlanReleaseRequestFingerprint {
         [string]$DesktopMinimumSupportedVersion = '',
         [string]$AndroidMinimumSupportedVersion = '',
         [bool]$SkipAndroid,
+        [bool]$PreserveExistingAndroid,
         [bool]$SkipPackagePrune,
         [int]$KeepDesktopPackageCount,
         [int]$KeepAndroidPackageCount,
@@ -2040,6 +2043,7 @@ function Get-GeoraePlanReleaseRequestFingerprint {
         [ordered]@{
             present = $true
             skipAndroid = $false
+            preserveExistingAndroid = $false
             applicationId = [string]$AndroidPackageSnapshot.ApplicationId
             version = $AndroidVersion
             build =
@@ -2060,7 +2064,8 @@ function Get-GeoraePlanReleaseRequestFingerprint {
     else {
         [ordered]@{
             present = $false
-            skipAndroid = $false
+            skipAndroid = $SkipAndroid
+            preserveExistingAndroid = $PreserveExistingAndroid
             applicationId = ''
             version = ''
             build = ''
@@ -2107,7 +2112,7 @@ function Initialize-GeoraePlanReleaseJournalTypes {
     if ($null -ne ('GeoraePlan.ReleaseTransaction.Journal' -as [type])) {
         return
     }
-    Add-Type -ReferencedAssemblies System.Runtime.Serialization -TypeDefinition @'
+    $releaseJournalTypeDefinition = @'
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -2998,6 +3003,14 @@ namespace GeoraePlan.ReleaseTransaction
     }
 }
 '@
+    if ($PSVersionTable.PSEdition -eq 'Core') {
+        Add-Type -TypeDefinition $releaseJournalTypeDefinition
+    }
+    else {
+        Add-Type `
+            -ReferencedAssemblies System.Runtime.Serialization `
+            -TypeDefinition $releaseJournalTypeDefinition
+    }
 }
 
 function Open-GeoraePlanReleaseDirectoryChainLease {
@@ -4921,10 +4934,21 @@ function Get-GeoraePlanManifestAssetBindings {
         Sha256 = ([string]$PlatformNode.sha256).Trim()
         FileSize = [string]$PlatformNode.fileSize
     }) | Out-Null
-    $installersProperty =
-        $PlatformNode.PSObject.Properties['installers']
-    if ($null -ne $installersProperty) {
-        foreach ($installer in @($installersProperty.Value)) {
+    $installers = $null
+    if ($PlatformNode -is [Collections.IDictionary]) {
+        if ($PlatformNode.Contains('installers')) {
+            $installers = $PlatformNode['installers']
+        }
+    }
+    else {
+        $installersProperty =
+            $PlatformNode.PSObject.Properties['installers']
+        if ($null -ne $installersProperty) {
+            $installers = $installersProperty.Value
+        }
+    }
+    if ($null -ne $installers) {
+        foreach ($installer in @($installers)) {
             if ($null -eq $installer) {
                 throw 'Release manifest has a null installer binding.'
             }
@@ -5649,7 +5673,29 @@ if (
     throw '-SkipAndroid cannot be combined with -AndroidPackagePath.'
 }
 
-if (-not $SkipAndroid) {
+if ($SkipAndroid -and $PreserveExistingAndroid) {
+    throw '-SkipAndroid cannot be combined with -PreserveExistingAndroid.'
+}
+if ($PreserveExistingAndroid) {
+    foreach ($androidParameterName in @(
+        'AndroidPackagePath',
+        'AndroidVersion',
+        'AndroidMinimumSupportedVersion',
+        'AndroidNotes',
+        'MandatoryAndroid',
+        'ApkAnalyzerPath',
+        'JavaSdkDirectory'
+    )) {
+        if ($PSBoundParameters.ContainsKey($androidParameterName)) {
+            throw (
+                '-PreserveExistingAndroid cannot be combined with -' +
+                $androidParameterName + '.')
+        }
+    }
+}
+$publishNewAndroid = -not $SkipAndroid -and -not $PreserveExistingAndroid
+
+if ($publishNewAndroid) {
     $androidMetadataHelper =
         Join-Path $ProjectRoot 'tools\mobile\AndroidApkMetadata.ps1'
     if (-not (Test-Path -LiteralPath $androidMetadataHelper -PathType Leaf)) {
@@ -5676,7 +5722,7 @@ if ([string]::IsNullOrWhiteSpace($DesktopPackagePath)) {
     $DesktopPackagePath = $desktopCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 }
 
-if (-not $SkipAndroid -and [string]::IsNullOrWhiteSpace($AndroidPackagePath)) {
+if ($publishNewAndroid -and [string]::IsNullOrWhiteSpace($AndroidPackagePath)) {
     $androidCandidates = @(
         (Get-ChildItem -Path (Join-Path $ProjectRoot '배포') -File -Filter '거래플랜-안드로이드-v*-signed.apk' -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending |
@@ -5692,7 +5738,7 @@ if (-not $SkipAndroid -and [string]::IsNullOrWhiteSpace($AndroidPackagePath)) {
     }
 }
 elseif (
-    -not $SkipAndroid -and
+    $publishNewAndroid -and
     -not [IO.Path]::IsPathRooted($AndroidPackagePath)
 ) {
     $AndroidPackagePath = Join-Path $ProjectRoot $AndroidPackagePath
@@ -5708,7 +5754,7 @@ if ([string]::IsNullOrWhiteSpace($DesktopVersion)) {
 $expectedAndroidApplicationId = ''
 $expectedAndroidVersion = ''
 $expectedAndroidVersionCode = ''
-if (-not $SkipAndroid) {
+if ($publishNewAndroid) {
     $expectedAndroidApplicationId =
         Get-CsprojPropertyValue `
             -ProjectFile $androidProject `
@@ -5763,7 +5809,7 @@ $deliveryPublishLease = $null
 $script:releaseDirectoryLease = $null
 $script:releaseTransactionStageLeases = $null
 $transactionPreparedByThisRun = $false
-if (-not $SkipAndroid) {
+if ($publishNewAndroid) {
     if ([string]::IsNullOrWhiteSpace($AndroidPackagePath)) {
         throw (
             'Android package was not found. Pass -AndroidPackagePath or use ' +
@@ -5905,6 +5951,7 @@ $requestFingerprint =
         -AndroidMinimumSupportedVersion (
             [string]$AndroidMinimumSupportedVersion) `
         -SkipAndroid ([bool]$SkipAndroid) `
+        -PreserveExistingAndroid ([bool]$PreserveExistingAndroid) `
         -SkipPackagePrune ([bool]$SkipPackagePrune) `
         -KeepDesktopPackageCount $KeepDesktopPackageCount `
         -KeepAndroidPackageCount $KeepAndroidPackageCount `
@@ -6286,6 +6333,24 @@ if (-not $SkipPackagePrune) {
             -Platform 'android'
 }
 
+if ($PreserveExistingAndroid) {
+    if ($null -eq $existingManifest -or $null -eq $existingManifest.android) {
+        throw (
+            '-PreserveExistingAndroid requires an authenticated existing ' +
+            "Android manifest and package in OutputRoot: $OutputRoot")
+    }
+    Assert-GeoraePlanManifestAssetsPresent `
+        -Manifest ([pscustomobject]@{
+            desktop = $null
+            android = $existingManifest.android
+        }) `
+        -DownloadsRoot $downloadsRoot
+    Write-Host (
+        'android_update_preserved=existing-manifest ' +
+        "version=$($existingManifest.android.version) " +
+        "file=$($existingManifest.android.fileName)")
+}
+
 if ($null -ne $androidPackageSnapshot) {
     $androidDestinationDirectory = Join-Path $downloadsRoot 'android'
     $canonicalAndroidDestination =
@@ -6432,7 +6497,12 @@ $manifest = [ordered]@{
     generationId = $generationId
     generatedAtUtc = [DateTime]::UtcNow.ToString('o')
     desktop = $null
-    android = $null
+    android = if ($PreserveExistingAndroid) {
+        $existingManifest.android
+    }
+    else {
+        $null
+    }
 }
 $androidStagedPath = $null
 $desktopStagedPath = $null

@@ -15,7 +15,7 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'GeoraePlanArtifactRetentionProducer.Common.ps1')
-$script:GeoraePlanArtifactRetentionTestClosureManifestSha256='EA327D558446BC298863C6F2EC38FB577B91A1DC5A0115813DEB512A396AADB9'
+$script:GeoraePlanArtifactRetentionTestClosureManifestSha256='070DD8294DA82DF9E2DF12A9A49104808472EB2AF4B60A54AF25095A01F8F1A4'
 
 function Invoke-GeoraePlanArtifactRetentionCheckedProcess {
  param([string]$Executable,[string[]]$Arguments,[string]$WorkingDirectory,[string]$Label,[switch]$AllowFailure)
@@ -48,7 +48,7 @@ function Assert-GeoraePlanArtifactRetentionTrustedTestClosure {
  param($Manifest,$ClosureItems,$SourceLease,$ConsumerLease)
  Assert-GeoraePlanArtifactRetentionExactProperties $Manifest @('schemaVersion','kind','outputFileCount','outputDirectoryCount','entries') 'trusted test closure manifest'
  Assert-GeoraePlanArtifactRetentionJsonNonNegativeInteger $Manifest.schemaVersion 'trusted test closure schemaVersion';Assert-GeoraePlanArtifactRetentionJsonString $Manifest.kind 'trusted test closure kind';Assert-GeoraePlanArtifactRetentionJsonNonNegativeInteger $Manifest.outputFileCount 'trusted test closure outputFileCount';Assert-GeoraePlanArtifactRetentionJsonNonNegativeInteger $Manifest.outputDirectoryCount 'trusted test closure outputDirectoryCount';Assert-GeoraePlanArtifactRetentionJsonArray $Manifest.entries 'trusted test closure entries'
- if([int64]$Manifest.schemaVersion-ne1-or$Manifest.kind-cne'georaeplan-artifact-retention-test-closure-v1'-or[int64]$Manifest.outputFileCount-ne207-or[int64]$Manifest.outputDirectoryCount-ne65-or@($Manifest.entries).Count-ne274){throw 'Trusted test closure manifest inventory is invalid.'}
+ if([int64]$Manifest.schemaVersion-ne1-or$Manifest.kind-cne'georaeplan-artifact-retention-test-closure-v1'-or[int64]$Manifest.outputFileCount-ne209-or[int64]$Manifest.outputDirectoryCount-ne65-or@($Manifest.entries).Count-ne276){throw 'Trusted test closure manifest inventory is invalid.'}
  $actual=New-Object 'Collections.Generic.Dictionary[string,object]' ([StringComparer]::Ordinal)
  $releaseFileCount=0;$releaseDirectoryCount=0
  foreach($item in @($ClosureItems)){$relative='release/'+([string]$item.relativePath).Replace('\','/');$entry=if($item.kind-ceq'directory'){$releaseDirectoryCount++;[pscustomobject][ordered]@{relativePath=$relative;kind='directory';length=$null;sha256=$null}}else{$releaseFileCount++;[pscustomobject][ordered]@{relativePath=$relative;kind='file';length=[int64]$item.length;sha256=[string]$item.sha256}};if($actual.ContainsKey($relative)){throw 'Test closure contains duplicate paths.'};$actual.Add($relative,$entry)}

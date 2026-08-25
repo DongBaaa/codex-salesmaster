@@ -379,7 +379,8 @@ public sealed class WpfGlobalUiGuardTests
         var syncService = File.ReadAllText(syncServicePath);
 
         Assert.Contains("ToolTip=\"{Binding CustomerName}\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("TextTrimming=\"CharacterEllipsis\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("TextTrimming=\"None\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("TextWrapping=\"Wrap\"", xaml, StringComparison.Ordinal);
         Assert.Contains("MinWidth=\"260\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Content=\"수금구분\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Content=\"지급구분\"", xaml, StringComparison.Ordinal);

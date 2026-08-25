@@ -79,17 +79,36 @@ public partial class PeriodLedgerWindow : Window
 
     private static string? ShowMemoEditDialog(string title, string label, string currentValue)
     {
+        var (dialog, input) = CreateMemoEditDialog(
+            title,
+            label,
+            currentValue,
+            Application.Current.Windows.OfType<PeriodLedgerWindow>().FirstOrDefault(w => w.IsActive));
+        input.SelectAll();
+        input.Focus();
+
+        return DialogWindowCloseHelper.ShowDialog(dialog) == true ? input.Text : null;
+    }
+
+    internal static (Window Dialog, TextBox Input) CreateMemoEditDialog(
+        string title,
+        string label,
+        string currentValue,
+        Window? owner = null)
+    {
         var dialog = new Window
         {
             Title = title,
-            Width = 520,
-            Height = 300,
-            MinWidth = 440,
-            MinHeight = 240,
+            Width = 560,
+            Height = 360,
+            MinWidth = 360,
+            MinHeight = 280,
+            MaxWidth = Math.Max(360, SystemParameters.WorkArea.Width - 48),
+            MaxHeight = Math.Max(280, SystemParameters.WorkArea.Height - 48),
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            ResizeMode = ResizeMode.CanResize,
+            ResizeMode = ResizeMode.CanResizeWithGrip,
             Background = new SolidColorBrush(Color.FromRgb(21, 31, 46)),
-            Owner = Application.Current.Windows.OfType<PeriodLedgerWindow>().FirstOrDefault(w => w.IsActive)
+            Owner = owner
         };
 
         var root = new Grid { Margin = new Thickness(14) };
@@ -102,6 +121,8 @@ public partial class PeriodLedgerWindow : Window
             Text = label,
             Foreground = new SolidColorBrush(Color.FromRgb(234, 242, 255)),
             FontWeight = FontWeights.Bold,
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.None,
             Margin = new Thickness(0, 0, 0, 8)
         };
         Grid.SetRow(caption, 0);
@@ -121,14 +142,15 @@ public partial class PeriodLedgerWindow : Window
         Grid.SetRow(input, 1);
         root.Children.Add(input);
 
-        var buttons = new StackPanel
+        var buttons = new WrapPanel
         {
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(0, 12, 0, 0)
         };
-        var okButton = new Button { Content = "저장", Width = 90, Height = 32, Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
-        var cancelButton = new Button { Content = "취소", Width = 90, Height = 32, IsCancel = true };
+        var okButton = CreateMemoDialogButton("저장", isDefault: true, isCancel: false);
+        okButton.Margin = new Thickness(0, 0, 8, 0);
+        var cancelButton = CreateMemoDialogButton("취소", isDefault: false, isCancel: true);
         okButton.Click += (_, _) => dialog.DialogResult = true;
         buttons.Children.Add(okButton);
         buttons.Children.Add(cancelButton);
@@ -136,11 +158,26 @@ public partial class PeriodLedgerWindow : Window
         root.Children.Add(buttons);
 
         dialog.Content = root;
-        input.SelectAll();
-        input.Focus();
-
-        return DialogWindowCloseHelper.ShowDialog(dialog) == true ? input.Text : null;
+        FullTextLayoutBehavior.SetIsEnabled(dialog, true);
+        return (dialog, input);
     }
+
+    private static Button CreateMemoDialogButton(string text, bool isDefault, bool isCancel)
+        => new()
+        {
+            Content = new TextBlock
+            {
+                Text = text,
+                TextWrapping = TextWrapping.Wrap,
+                TextTrimming = TextTrimming.None,
+                TextAlignment = TextAlignment.Center
+            },
+            MinWidth = 90,
+            MinHeight = 38,
+            Padding = new Thickness(12, 6, 12, 6),
+            IsDefault = isDefault,
+            IsCancel = isCancel
+        };
 
     private static T? FindVisualParent<T>(DependencyObject? source)
         where T : DependencyObject
