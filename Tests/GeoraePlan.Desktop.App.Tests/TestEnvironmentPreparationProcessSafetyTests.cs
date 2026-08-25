@@ -7193,6 +7193,7 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
             RedirectStandardError = true,
             CreateNoWindow = true
         };
+        ConfigureWindowsPowerShellModulePath(startInfo, powerShellPath);
         foreach (var argument in new[]
                  {
                      "-NoProfile",
@@ -11098,7 +11099,8 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
                     [Parameter(Mandatory = $true)][string]$ServerDataRoot,
                     [Parameter(Mandatory = $true)][string]$SourceApiBaseUrl,
                     [AllowNull()][object]$SourceUsersSnapshot,
-                    [switch]$ResetAllUserPasswords
+                    [switch]$ResetAllUserPasswords,
+                    [switch]$ResetUnresolvedPasswords
                 )
 
                 $stagePreparationLock =
@@ -12204,6 +12206,7 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
             WorkingDirectory = Path.GetDirectoryName(scriptPath)
                                ?? TestProcessIsolation.TempRoot
         };
+        ConfigureWindowsPowerShellModulePath(startInfo, executablePath);
         startInfo.ArgumentList.Add("-NoProfile");
         startInfo.ArgumentList.Add("-NonInteractive");
         startInfo.ArgumentList.Add("-ExecutionPolicy");
@@ -12213,6 +12216,32 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
         foreach (var argument in arguments)
             startInfo.ArgumentList.Add(argument);
         return startInfo;
+    }
+
+    private static void ConfigureWindowsPowerShellModulePath(
+        ProcessStartInfo startInfo,
+        string executablePath)
+    {
+        if (!string.Equals(
+                Path.GetFileName(executablePath),
+                "powershell.exe",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var windowsPowerShellHome = Path.GetDirectoryName(
+            Path.GetFullPath(executablePath));
+        Assert.False(
+            string.IsNullOrWhiteSpace(windowsPowerShellHome),
+            $"Windows PowerShell home could not be resolved: {executablePath}");
+        var modulePath = Path.Combine(
+            windowsPowerShellHome!,
+            "Modules");
+        Assert.True(
+            Directory.Exists(modulePath),
+            $"Windows PowerShell module directory was not found: {modulePath}");
+        startInfo.Environment["PSModulePath"] = modulePath;
     }
 
     private static async Task WaitForFileAsync(string path, TimeSpan timeout)

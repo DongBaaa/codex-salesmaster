@@ -7168,15 +7168,29 @@ public sealed class ReleaseTempPathGuardTests
         string scriptPath,
         params (string Name, string? Value)[] argumentsAndEnvironment)
     {
+        var windowsPowerShellHome = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.System),
+            "WindowsPowerShell",
+            "v1.0");
+        var windowsPowerShellPath = Path.Combine(
+            windowsPowerShellHome,
+            "powershell.exe");
+        Assert.True(
+            File.Exists(windowsPowerShellPath),
+            $"Windows PowerShell was not found: {windowsPowerShellPath}");
+
         using var process = new Process();
         process.StartInfo = new ProcessStartInfo
         {
-            FileName = "powershell",
+            FileName = windowsPowerShellPath,
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true
         };
+        process.StartInfo.Environment["PSModulePath"] = Path.Combine(
+            windowsPowerShellHome,
+            "Modules");
         process.StartInfo.ArgumentList.Add("-NoProfile");
         process.StartInfo.ArgumentList.Add("-ExecutionPolicy");
         process.StartInfo.ArgumentList.Add("Bypass");
