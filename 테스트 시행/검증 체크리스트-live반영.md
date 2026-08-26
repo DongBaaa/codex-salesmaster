@@ -9,7 +9,7 @@
 - [x] `D:\거래플랜\테스트 시행\검증 체크리스트.md` 기준 테스트를 먼저 완료했다.
 
 ## 2. 버전 / 업데이트 정책
-- [x] 데스크톱 버전이 현재 live manifest 보다 높다.
+- [x] 반영 전 데스크톱 버전이 기존 live manifest보다 높았고, 반영 후 `1.1.696`으로 일치한다.
 - [ ] 필수 업데이트로 배포할 경우 `minimumSupportedVersion` 정책을 함께 정했다.
 - [x] `Invoke-LiveReleaseReadinessCheck.ps1 -Mode Pre` 를 통과했다.
 
@@ -33,9 +33,11 @@
 - [x] 반영 직후 `Invoke-LiveObservationCheck.ps1` 로 live 서버 healthz/manifest/package 응답을 관찰했다.
 
 ## 메모
-- release id: 배포 스크립트 생성값 사용 예정
-- 반영 예정 desktop.version: `1.1.696` / 반영 전 public stable: `1.1.695`
-- public healthz/readyz 확인 시각: `2026-08-26 21:27 KST` / 응답 `ok` / `ready`
+- release id: `desktop-1.1.696-20260826-2200-r2`
+- 반영 desktop.version: `1.1.696` / 반영 전 public stable: `1.1.695`
+- public healthz/readyz 확인 시각: `2026-08-26 22:08 KST` / 응답 `ok` / `ready`
 - 이번 배포는 mandatory 업데이트 아님 상태를 유지해 `minimumSupportedVersion` 은 빈 값으로 남겼습니다.
 - Android는 이번 변경 범위가 아니므로 public stable `0.2.82` 자산을 보존합니다.
 - 기존 운영 데이터 경고 `rental_profile_customer_unlinked(1)`, `rental_asset_template_monthly_mismatch(1)`만 명시 허용하고 신규 경고는 차단합니다.
+- public ZIP SHA-256: `919A3759139AB4F3EF10183E14F8AC9B17E33877E5530CA4D792FC3AFEBAF591`; 로컬·manifest·Linux live 일치.
+- Windows Authenticode 인증서 환경변수가 없어 EXE/MSI는 `NotSigned`; 버전·내용·SHA와 업데이트 경로는 검증 완료했습니다.

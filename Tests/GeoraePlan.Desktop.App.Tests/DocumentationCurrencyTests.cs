@@ -149,7 +149,7 @@ public sealed class DocumentationCurrencyTests
     }
 
     [Fact]
-    public void RootReadme_DoesNotClaimApprovalGatedGoalActionsAsCompleted()
+    public void RootReadme_SeparatesCompletedDesktopReleaseFromRemainingExternalGates()
     {
         var root = FindRepositoryRoot();
         var readme = File.ReadAllText(Path.Combine(root, "README.md"));
@@ -166,11 +166,15 @@ public sealed class DocumentationCurrencyTests
         }
 
         Assert.Contains(
-            "정식 패키지 생성, Linux PC live 반영, 버전 게시, 서명, 실제 기기 설치, Git stage/commit/push는 수행하지 않았습니다.",
+            "현재 소스 `1.1.696`의 정식 패키지 생성과 Linux PC live 반영을 완료했습니다.",
             readme,
             StringComparison.Ordinal);
         Assert.Contains(
-            "[승인대기]` 현재 Goal 변경의 선택 Git stage/commit/push와 원격 SHA 확인",
+            "Windows Authenticode 공개 신뢰 서명과 실제 기기 설치는 수행하지 않았습니다.",
+            readme,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "[공개]` 현재 Goal 변경의 선택 Git stage/commit/push와 원격 SHA 확인을 완료했습니다.",
             readme,
             StringComparison.Ordinal);
     }

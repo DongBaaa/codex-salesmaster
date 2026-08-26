@@ -12,29 +12,29 @@
 
 ## 현재 버전 상태
 ### 공개 stable
-- `[공개]` Windows PC `1.1.695`
+- `[공개]` Windows PC `1.1.696`
 - `[공개]` Android 표시 버전은 `0.2.82`입니다. APK 내부 versionCode는 공개 매니페스트에 없으므로 공개값으로 단정하지 않습니다.
-- `[공개]` 2026-08-22 확인에서 `trade.2884.kr/healthz`와 stable manifest는 HTTP 200·redirect 0이며 `fileDeletionLeaseProtocol=shared-flock-v1`입니다.
+- `[공개]` 2026-08-26 확인에서 `trade.2884.kr/healthz`와 stable manifest는 HTTP 200·redirect 0이며 `fileDeletionLeaseProtocol=shared-flock-v1`입니다.
 - 저장소에서 재현 가능한 공개 버전·파일명·SHA-256 기준은 `D:\거래플랜\배포\stable.json`입니다. `배포\업데이트\manifest\stable.json`은 게시 과정의 로컬 산출물이며 live manifest와는 별도로 확인합니다.
 
 ### 현재 소스·테스트판
-- `[로컬검증]` Windows PC 소스 `1.1.696`, FileVersion `1.1.696.0` (공개 stable `1.1.695`보다 높은 다음 업데이트 후보)
+- `[공개/로컬검증]` Windows PC 소스 `1.1.696`, FileVersion `1.1.696.0`은 공개 stable과 일치합니다.
 - `[로컬검증]` Android 소스 `0.2.83`, versionCode `194`
 - `[로컬검증]` 서버 전체 1,478건 통과, PostgreSQL 전용 20건 건너뜀, 실패 0
 - `[로컬검증]` 별도 ephemeral PostgreSQL 업무 회귀 22/22, 데스크톱 전체 3,568/3,568 통과
 - `[로컬검증]` 격리 `Run-All.cmd`, 우선 업무 창 7/7, Multi-PC 24/24, 제한 계정 허용 11/11·차단 2/2 통과
 - `[로컬검증]` WPF 36개 창 768/768, Windows native/앱 프린터 목록 11/11 exact, Android 실제 에뮬레이터 18개 화면 1,044/1,044 통과
-- 현재 소스 `1.1.696`은 테스트판 승인 후 정식 패키지 생성과 Linux PC live 반영 절차를 진행합니다. 공개 신뢰 서명과 실제 기기·운영 서명은 별도 외부 경계입니다.
-- 정식 패키지 생성, Linux PC live 반영, 버전 게시, 서명, 실제 기기 설치, Git stage/commit/push는 수행하지 않았습니다. 실제 결과는 배포 완료 증거로 별도 갱신합니다.
+- 현재 소스 `1.1.696`의 정식 패키지 생성과 Linux PC live 반영을 완료했습니다. 공개 stable ZIP SHA-256은 `919A3759139AB4F3EF10183E14F8AC9B17E33877E5530CA4D792FC3AFEBAF591`입니다.
+- 버전 게시와 Git stage/commit/push는 수행했습니다. Windows Authenticode 공개 신뢰 서명과 실제 기기 설치는 수행하지 않았습니다.
 
 ### 승인·실사용 검증 대기
 - `[승인대기]` Windows Authenticode/RFC3161 정식 서명과 기존 설치본 덮어쓰기·롤백 설치
 - `[승인대기]` 현재 Android 후보의 버전 게시, production Release signing, 기존 설치본 update-in-place, 실제 기기 설치·회전·권한·ANR 확인
 - `[로컬검증]` Linux PC 거래플랜 전용 자동 백업 schedule 설치·활성화와 complete set 상태는 확인했으며, 외부 replica restore drill은 승인·실행 증거가 필요합니다.
 - `[로컬검증/실사용확인대기]` PDF 생성·Excel 왕복·계정 scope·100~200% WPF 렌더링 감사는 통과했습니다. 거래플랜 화면에서의 실제 종이 출력 결과는 사용자 확인이 필요합니다.
-- `[승인대기]` 현재 Goal 변경의 선택 Git stage/commit/push와 원격 SHA 확인
-- `[검증필요]` 공개 응답의 HSTS가 현재 두 값으로 중복됩니다. 현재 소스는 API의 중복 헤더를 제거해 공개 프록시 단일 소유로 교정했으며, 실제 단일 헤더 확인은 승인된 live 반영 뒤 수행합니다.
-- `[검증필요]` 공개 PC 패키지는 현재 정상·범위초과 Range 요청을 모두 `200`으로 반환하고, PC·Android HEAD에도 `Accept-Ranges`가 없습니다. 현재 소스는 GET `206/416`과 HEAD/GET `Accept-Ranges: bytes`를 활성화했으며 실제 공개 확인은 승인된 live 반영 뒤 수행합니다.
+- `[공개]` 현재 Goal 변경의 선택 Git stage/commit/push와 원격 SHA 확인을 완료했습니다.
+- `[공개]` HSTS는 `max-age=15768000; includeSubdomains; preload` 단일 값으로 확인했습니다.
+- `[공개]` PC 패키지는 `Accept-Ranges: bytes`, 유효 Range `206`, 범위 초과 `416`을 반환합니다.
 
 ## Windows PC와 Android 기능 경계
 
