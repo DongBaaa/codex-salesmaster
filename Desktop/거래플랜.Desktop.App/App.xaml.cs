@@ -65,7 +65,10 @@ public partial class App : Application
             return;
         }
 
-        ResponsiveWindowBehavior.SetIsEnabled(window, true);
+        if (ResponsiveWindowBehavior.GetIsGlobalLayoutExcluded(window))
+            ResponsiveWindowBehavior.SetIsEnabled(window, false);
+        else
+            ResponsiveWindowBehavior.SetIsEnabled(window, true);
         FullTextLayoutBehavior.SetIsEnabled(window, true);
     }
 
@@ -3327,7 +3330,7 @@ public partial class App : Application
 
             TextTrimming = TextTrimming.None,
 
-            Margin = new Thickness(0, 0, 0, 10)
+            Margin = new Thickness(0, 0, 0, 6)
 
         };
 
@@ -3351,7 +3354,7 @@ public partial class App : Application
 
             TextTrimming = TextTrimming.None,
 
-            Margin = new Thickness(0, 0, 0, 14)
+            Margin = new Thickness(0, 0, 0, 10)
 
         };
 
@@ -3361,7 +3364,7 @@ public partial class App : Application
 
         {
 
-            Height = 16,
+            Height = 12,
 
             IsIndeterminate = true,
 
@@ -3391,7 +3394,7 @@ public partial class App : Application
 
             TextTrimming = TextTrimming.None,
 
-            Margin = new Thickness(0, 12, 0, 0)
+            Margin = new Thickness(0, 8, 0, 0)
 
         };
 
@@ -3427,7 +3430,7 @@ public partial class App : Application
 
             CornerRadius = new CornerRadius(12),
 
-            Padding = new Thickness(24, 22, 24, 20),
+            Padding = new Thickness(20, 14, 20, 12),
 
             Width = 420,
 
@@ -3458,6 +3461,7 @@ public partial class App : Application
         var popup = new Window
 
         {
+            Style = new Style(typeof(Window)),
 
             Title = title,
 
@@ -3485,7 +3489,8 @@ public partial class App : Application
 
         };
 
-        ResponsiveWindowBehavior.SetIsEnabled(popup, false);
+        PreserveContentSizedActivityPopup(popup);
+        popup.Loaded += (_, _) => PreserveContentSizedActivityPopup(popup);
 
         FullTextLayoutBehavior.SetIsEnabled(popup, true);
 
@@ -3495,6 +3500,19 @@ public partial class App : Application
 
         return popup;
 
+    }
+
+    private static void PreserveContentSizedActivityPopup(Window popup)
+    {
+        ResponsiveWindowBehavior.SetIsGlobalLayoutExcluded(popup, true);
+        ResponsiveWindowBehavior.SetIsEnabled(popup, false);
+        popup.MinWidth = 0;
+        popup.MinHeight = 0;
+        popup.MaxWidth = Math.Max(1d, SystemParameters.WorkArea.Width - 16d);
+        popup.MaxHeight = Math.Max(1d, SystemParameters.WorkArea.Height - 16d);
+        popup.ClearValue(FrameworkElement.WidthProperty);
+        popup.ClearValue(FrameworkElement.HeightProperty);
+        popup.SizeToContent = SizeToContent.WidthAndHeight;
     }
 
 

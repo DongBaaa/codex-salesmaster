@@ -232,16 +232,13 @@
 
     <Grid Margin="14">
         <Grid.RowDefinitions>
-            <RowDefinition Height="2*" MinHeight="120" MaxHeight="300"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="3*" MinHeight="140"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <ScrollViewer x:Name="BillingCommandScrollViewer"
-                      Grid.Row="0"
-                      HorizontalScrollBarVisibility="Disabled"
-                      VerticalScrollBarVisibility="Auto">
-        <StackPanel>
+        <StackPanel x:Name="BillingCommandPanel"
+                    Grid.Row="0">
         <Border Style="{StaticResource TradePlanHeaderPanelStyle}">
             <Grid>
                 <Grid.RowDefinitions>
@@ -266,11 +263,9 @@
                         <Button Content="저장" Style="{StaticResource TradePlanPrimaryButtonStyle}" Margin="0,0,6,6" Command="{Binding SaveCommand}" IsEnabled="{Binding CanSave}" ToolTip="청구설정 필요 장비를 선택한 뒤 저장하면 청구 프로필이 생성됩니다."/>
                         <Button Content="청구서 만들기" Style="{StaticResource TradePlanPrimaryButtonStyle}" Margin="0,0,6,6" Click="StartBillingButton_Click" IsEnabled="{Binding CanStartBillingSelected}"
                                 ToolTip="청구일 전후와 관계없이 조회/작성 기준일에 해당하는 전표를 생성하거나 기존 청구서를 엽니다."/>
-                        <Button Content="청구 보류" Style="{StaticResource TradePlanEditButtonStyle}" Margin="0,0,6,6" Command="{Binding HoldBillingCommand}" IsEnabled="{Binding CanHoldSelected}"/>
                         <Button Content="청구 취소" Style="{StaticResource TradePlanEditButtonStyle}" Margin="0,0,6,6" Command="{Binding CancelBillingCommand}" IsEnabled="{Binding CanCancelSelected}"
                                 ToolTip="현재 청구 주기를 취소 상태로 변경합니다. 청구 프로필과 기존 전표·입금 내역은 삭제하지 않습니다."/>
                         <Button Content="입금 등록" Style="{StaticResource TradePlanEditButtonStyle}" Margin="0,0,6,6" Click="RegisterSettlementButton_Click" IsEnabled="{Binding CanRegisterSettlementSelected}"/>
-                        <Button Content="완료 처리" Style="{StaticResource TradePlanEditButtonStyle}" Margin="0,0,6,6" Command="{Binding MarkCompletedCommand}" IsEnabled="{Binding CanMarkCompletedSelected}"/>
                         <Button Content="선택 청구 삭제" Style="{StaticResource TradePlanDangerButtonStyle}" Margin="0,0,6,6" Command="{Binding DeleteCommand}" IsEnabled="{Binding CanDeleteSelected}"/>
                         <Button Content="닫기 (F12)" Style="{StaticResource TradePlanSecondaryButtonStyle}" Click="CloseButton_Click" Margin="0,0,0,6"/>
                     </WrapPanel>
@@ -384,7 +379,6 @@
             </StackPanel>
         </Border>
         </StackPanel>
-        </ScrollViewer>
 
         <Grid x:Name="BillingWorkspaceGrid"
               Grid.Row="1"
@@ -645,7 +639,8 @@
                                   PreviewMouseRightButtonDown="BillingHistoryDataGrid_PreviewMouseRightButtonDown"
                                   MouseDoubleClick="BillingHistoryDataGrid_MouseDoubleClick"
                                   ToolTip="행을 더블클릭하면 입력된 연결 전표 창을 엽니다."
-                                  Height="155"
+                                  MinHeight="72"
+                                  MaxHeight="155"
                                   Margin="0,0,0,10"
                                   IsReadOnly="True">
                             <DataGrid.ContextMenu>
@@ -735,7 +730,7 @@
                                      Text="{Binding EditBillingStatus, Mode=OneWay}"
                                      IsReadOnly="True"
                                      Margin="0,0,0,6"
-                                     ToolTip="청구 상태는 상단의 청구서 만들기·청구 보류·청구 취소·완료 처리 명령으로 변경합니다."/>
+                                     ToolTip="청구 상태는 청구서 만들기·청구 취소·입금 등록 결과와 기존 청구 이력에 따라 표시됩니다."/>
 
                             <TextBlock Grid.Row="1" Grid.Column="0" Text="설치위치"/>
                             <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding EditInstallLocation, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6"/>
@@ -945,7 +940,7 @@
                         <TextBlock Text="청구유형이 묶음/개별이면 표시품목 라인유형이 같은 값으로 고정됩니다. 실제 청구/전표 대상 자산은 아래 목록에서만 결정됩니다."
                                    Foreground="#90CAF9" Margin="0,0,0,8" TextWrapping="Wrap"/>
 
-                        <Expander Header="거래처 임대 자산 (렌탈 자산연결과 연동)" IsExpanded="True" Margin="0,0,0,10">
+                        <Expander Header="거래처 임대 자산 (렌탈 자산연결과 연동)" IsExpanded="False" Margin="0,0,0,10">
                             <StackPanel>
                                 <WrapPanel Margin="0,8,0,8">
                                     <Button Content="대표자산 지정"

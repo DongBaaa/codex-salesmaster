@@ -183,16 +183,13 @@
 
     <Grid Margin="14">
         <Grid.RowDefinitions>
-            <RowDefinition Height="2*" MinHeight="120" MaxHeight="300"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="3*" MinHeight="140"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <ScrollViewer x:Name="RentalAssetCommandScrollViewer"
-                      Grid.Row="0"
-                      HorizontalScrollBarVisibility="Disabled"
-                      VerticalScrollBarVisibility="Auto">
-        <StackPanel>
+        <StackPanel x:Name="RentalAssetCommandPanel"
+                    Grid.Row="0">
         <Border Style="{StaticResource TradePlanHeaderPanelStyle}">
             <Grid>
                 <Grid.RowDefinitions>
@@ -318,7 +315,6 @@
             </WrapPanel>
         </Border>
         </StackPanel>
-        </ScrollViewer>
 
         <Grid Grid.Row="1" Margin="0,10,0,0">
             <Grid.ColumnDefinitions>

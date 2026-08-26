@@ -11,6 +11,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using 거래플랜.Desktop.App;
+using 거래플랜.Desktop.App.Infrastructure;
 
 internal static class Program
 {
@@ -69,22 +70,39 @@ internal static class Program
             96,
             ShowUpdateBanner: true,
             AllowRootScrolling: true),
-        new("minimum-window-776x456-100", 776, 456, 96),
+        new(
+            "minimum-window-776x456-100",
+            776,
+            456,
+            96,
+            AllowRootScrolling: true),
         new(
             "minimum-window-776x456-100-update",
             776,
             456,
             96,
-            ShowUpdateBanner: true),
+            ShowUpdateBanner: true,
+            AllowRootScrolling: true),
         new("low-resolution-1366x768-100", 1366, 728, 96),
-        new("low-resolution-1366x768-125", 1366, 728, 120),
-        new("low-resolution-1366x768-150", 1366, 728, 144),
+        new(
+            "low-resolution-1366x768-125",
+            1366,
+            728,
+            120,
+            AllowRootScrolling: true),
+        new(
+            "low-resolution-1366x768-150",
+            1366,
+            728,
+            144,
+            AllowRootScrolling: true),
         new(
             "low-resolution-1366x768-150-update",
             1366,
             728,
             144,
-            ShowUpdateBanner: true),
+            ShowUpdateBanner: true,
+            AllowRootScrolling: true),
         new(
             "low-resolution-1366x768-175",
             1366,
@@ -133,6 +151,9 @@ internal static class Program
             };
             app.InitializeComponent();
 
+            var shutdownPopupResult =
+                AuditShutdownActivityPopup(evidenceDirectory);
+
             var results = Profiles
                 .Select(
                     profile =>
@@ -152,11 +173,13 @@ internal static class Program
                     })
                 .ToArray();
 
-            var passed = results.All(result => result.Passed);
+            var passed =
+                results.All(result => result.Passed) &&
+                shutdownPopupResult.Passed;
             var payload = new AuditPayload(
                 DateTimeOffset.Now,
                 passed ? "PASS" : "FAIL",
-                "실제 MainWindow XAML/BAML visual tree를 target logical work area로 Measure/Arrange하고 target DPI RenderTargetBitmap으로 캡처한 결정적 offscreen audit입니다. 물리 모니터 촬영이 아니며 SourceInitialized/HWND 배치, WM_DPICHANGED, Popup·ContextMenu 입력은 이 감사에서 실행하지 않습니다.",
+                "실제 MainWindow XAML/BAML visual tree를 target logical work area로 Measure/Arrange하고 target DPI RenderTargetBitmap으로 캡처한 결정적 offscreen audit입니다. 물리 모니터 촬영이 아니며 SourceInitialized/HWND 배치와 WM_DPICHANGED는 실행하지 않습니다. 종료 동기화 팝업은 같은 실행에서 제품 생성 함수를 직접 호출해 별도 PNG·측정 보고서로 검증합니다.",
                 provenance,
                 NonClientWidthAllowanceDip,
                 NonClientHeightAllowanceDip,
@@ -183,6 +206,8 @@ internal static class Program
             Console.WriteLine($"result={payload.Result}");
             Console.WriteLine($"json={jsonPath}");
             Console.WriteLine($"markdown={markdownPath}");
+            Console.WriteLine(
+                $"shutdown_popup_markdown={shutdownPopupResult.MarkdownPath}");
             return passed ? 0 : 1;
         }
         catch (Exception ex)
@@ -207,6 +232,211 @@ internal static class Program
             diagnostics: null!,
             dataIntegrity: null!,
             serviceScopeFactory: null!);
+
+    private static ShutdownPopupAuditResult AuditShutdownActivityPopup(
+        string evidenceDirectory)
+    {
+        var owner = new Window
+        {
+            Width = 1000,
+            Height = 700,
+            Left = -20000,
+            Top = -20000,
+            WindowStartupLocation = WindowStartupLocation.Manual,
+            ShowInTaskbar = false,
+            ShowActivated = false
+        };
+
+        Window? popup = null;
+        try
+        {
+            owner.Show();
+            var method = typeof(App).GetMethod(
+                "ShowShutdownSavingPopup",
+                BindingFlags.NonPublic | BindingFlags.Static)
+                ?? throw new MissingMethodException(
+                    typeof(App).FullName,
+                    "ShowShutdownSavingPopup");
+
+            popup = method.Invoke(null, [owner]) as Window
+                ?? throw new InvalidOperationException(
+                    "ShowShutdownSavingPopup did not return a Window.");
+            var content = popup.Content as FrameworkElement
+                ?? throw new InvalidOperationException(
+                    "Shutdown popup content was not a FrameworkElement.");
+            var scrollViewer = content as ScrollViewer
+                ?? throw new InvalidOperationException(
+                    "Shutdown popup root was not a ScrollViewer.");
+            var popupBody = scrollViewer.Content as FrameworkElement
+                ?? throw new InvalidOperationException(
+                    "Shutdown popup body was not a FrameworkElement.");
+            var popupBorder = popupBody as Border
+                ?? throw new InvalidOperationException(
+                    "Shutdown popup body was not a Border.");
+            var popupStack = popupBorder.Child as StackPanel
+                ?? throw new InvalidOperationException(
+                    "Shutdown popup stack was not a StackPanel.");
+            var sizeToContent = popup.SizeToContent;
+            var isGlobalLayoutExcluded =
+                ResponsiveWindowBehavior.GetIsGlobalLayoutExcluded(popup);
+            var responsiveBehaviorEnabled =
+                ResponsiveWindowBehavior.GetIsEnabled(popup);
+            popup.UpdateLayout();
+            var actualWindowWidth = popup.ActualWidth;
+            var actualWindowHeight = popup.ActualHeight;
+            var actualBodyWidth = popupBorder.ActualWidth;
+            var actualBodyHeight = popupBorder.ActualHeight;
+            var actualWindowScreenshotPath = Path.Combine(
+                evidenceDirectory,
+                "shutdown-sync-popup-actual-window-runtime.png");
+            CapturePng(
+                scrollViewer,
+                new Size(scrollViewer.ActualWidth, scrollViewer.ActualHeight),
+                96,
+                actualWindowScreenshotPath);
+            popup.Content = null;
+            popup.Close();
+            popup = null;
+
+            scrollViewer.Content = null;
+            popupBorder.Child = null;
+            var freshStack = new StackPanel
+            {
+                Orientation = popupStack.Orientation
+            };
+            while (popupStack.Children.Count > 0)
+            {
+                var child = popupStack.Children[0];
+                popupStack.Children.RemoveAt(0);
+                freshStack.Children.Add(child);
+            }
+
+            popupBody = new Border
+            {
+                Background = popupBorder.Background,
+                BorderBrush = popupBorder.BorderBrush,
+                BorderThickness = popupBorder.BorderThickness,
+                CornerRadius = popupBorder.CornerRadius,
+                Padding = popupBorder.Padding,
+                Width = popupBorder.Width,
+                Child = freshStack
+            };
+            InvalidateLayoutTree(popupBody);
+            popupBody.Measure(
+                new Size(
+                    double.PositiveInfinity,
+                    double.PositiveInfinity));
+            var naturalSize = popupBody.DesiredSize;
+            popupBody.Arrange(new Rect(naturalSize));
+            popupBody.UpdateLayout();
+
+            var contentWidth = popupBody.ActualWidth;
+            var contentHeight = popupBody.ActualHeight;
+            var actualBottomBlankSpace = Math.Max(
+                0d,
+                actualWindowHeight - contentHeight);
+            var popupDpis = new[] { 96, 120, 144, 192 };
+            var popupScreenshots = popupDpis
+                .Select(
+                    dpi =>
+                    {
+                        var scalePercent = (int)Math.Round(dpi / 96d * 100d);
+                        var screenshotPath = Path.Combine(
+                            evidenceDirectory,
+                            dpi == 96
+                                ? "shutdown-sync-popup-runtime.png"
+                                : $"shutdown-sync-popup-runtime-{scalePercent}.png");
+                        CapturePng(
+                            popupBody,
+                            new Size(contentWidth, contentHeight),
+                            dpi,
+                            screenshotPath);
+                        return new PopupScreenshotEvidence(
+                            scalePercent,
+                            dpi,
+                            screenshotPath,
+                            (int)Math.Ceiling(contentWidth * dpi / 96d),
+                            (int)Math.Ceiling(contentHeight * dpi / 96d),
+                            ComputeSha256(screenshotPath));
+                    })
+                .ToArray();
+
+            var passed =
+                sizeToContent == SizeToContent.WidthAndHeight &&
+                isGlobalLayoutExcluded &&
+                !responsiveBehaviorEnabled &&
+                contentWidth is >= 400d and <= 440d &&
+                contentHeight is >= 110d and <= 165d &&
+                actualWindowWidth is >= 400d and <= 440d &&
+                actualWindowHeight is >= 110d and <= 165d &&
+                actualBottomBlankSpace <= 1d &&
+                File.Exists(actualWindowScreenshotPath) &&
+                popupScreenshots.Length == popupDpis.Length &&
+                popupScreenshots.All(
+                    screenshot => File.Exists(screenshot.Path)) &&
+                scrollViewer.ComputedHorizontalScrollBarVisibility ==
+                    Visibility.Collapsed &&
+                scrollViewer.ComputedVerticalScrollBarVisibility ==
+                    Visibility.Collapsed;
+            var markdownPath = Path.Combine(
+                evidenceDirectory,
+                "shutdown-sync-popup-runtime-audit.md");
+            var markdownLines = new List<string>
+            {
+                "# 종료 동기화 팝업 WPF 런타임 감사",
+                "",
+                $"- 결과: `{(passed ? "PASS" : "FAIL")}`",
+                "- evidence: 제품의 ShowShutdownSavingPopup을 직접 호출한 뒤 SizeToContent 자연 크기로 Measure/Arrange하고 100%·125%·150%·200% target DPI로 렌더링한 WPF 증거",
+                $"- natural popup content size: `{contentWidth:N1}×{contentHeight:N1} DIP`",
+                $"- actual window / body size: `{actualWindowWidth:N1}×{actualWindowHeight:N1}` / `{actualBodyWidth:N1}×{actualBodyHeight:N1} DIP`",
+                $"- actual bottom blank space: `{actualBottomBlankSpace:N1} DIP`",
+                $"- SizeToContent: `{sizeToContent}`",
+                $"- global responsive layout excluded: `{isGlobalLayoutExcluded}`",
+                $"- responsive behavior enabled: `{responsiveBehaviorEnabled}`",
+                $"- horizontal scrollbar: `{scrollViewer.ComputedHorizontalScrollBarVisibility}`",
+                $"- vertical scrollbar: `{scrollViewer.ComputedVerticalScrollBarVisibility}`",
+                $"- actual window screenshot: `{actualWindowScreenshotPath}`",
+                $"- actual window screenshot SHA-256: `{ComputeSha256(actualWindowScreenshotPath)}`",
+                "",
+                "## DPI render evidence"
+            };
+            markdownLines.AddRange(
+                popupScreenshots.Select(
+                    screenshot =>
+                        $"- {screenshot.ScalePercent}% ({screenshot.Dpi} DPI): " +
+                        $"`{screenshot.PixelWidth}×{screenshot.PixelHeight}px`, " +
+                        $"`{screenshot.Path}`, SHA-256 `{screenshot.Sha256}`"));
+            File.WriteAllLines(
+                markdownPath,
+                markdownLines,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+
+            return new ShutdownPopupAuditResult(
+                passed,
+                markdownPath);
+        }
+        finally
+        {
+            popup?.Close();
+            owner.Close();
+        }
+    }
+
+    private static void InvalidateLayoutTree(DependencyObject root)
+    {
+        if (root is UIElement element)
+        {
+            element.InvalidateMeasure();
+            element.InvalidateArrange();
+        }
+
+        var childCount = VisualTreeHelper.GetChildrenCount(root);
+        for (var index = 0; index < childCount; index++)
+        {
+            InvalidateLayoutTree(
+                VisualTreeHelper.GetChild(root, index));
+        }
+    }
 
     private static ProfileResult AuditProfile(
         MainWindow mainWindow,
@@ -338,9 +568,9 @@ internal static class Program
         var alertPanel = FindNamedElement(
             root,
             "DashboardContractAlertsPanel");
-        var filterScroller = FindNamedElement(
+        var filterPanel = FindNamedElement(
             root,
-            "InvoiceFilterScrollViewer");
+            "InvoiceFilterPanel");
         var desktopUpdateBannerHost = FindNamedElement(
             root,
             "DesktopUpdateBannerResponsiveHost");
@@ -349,7 +579,7 @@ internal static class Program
         var workspaceBounds = GetBounds(root, workspace);
         var summaryBounds = GetBounds(root, summaryPanel);
         var alertBounds = GetBounds(root, alertPanel);
-        var filterScrollerBounds = GetBounds(root, filterScroller);
+        var filterPanelBounds = GetBounds(root, filterPanel);
         var compactLayoutApplied =
             compactToggleButton.Visibility == Visibility.Visible &&
             summaryPanel.Visibility == Visibility.Collapsed &&
@@ -379,7 +609,7 @@ internal static class Program
         var namedElementsWithinBounds =
             IsWithin(requiredBoundsSize, navigationBounds) &&
             IsWithin(requiredBoundsSize, workspaceBounds) &&
-            IsWithin(requiredBoundsSize, filterScrollerBounds) &&
+            IsWithin(requiredBoundsSize, filterPanelBounds) &&
             (compactLayoutExpected ||
              (IsWithin(requiredBoundsSize, summaryBounds) &&
               IsWithin(requiredBoundsSize, alertBounds))) &&
@@ -470,6 +700,10 @@ internal static class Program
             updateSurfaceMatches,
             rootScrollFallbackExpected,
             rootScrollFallbackStateMatches,
+            rootScrollViewer.HorizontalScrollBarVisibility.ToString(),
+            rootScrollViewer.VerticalScrollBarVisibility.ToString(),
+            rootScrollViewer.ScrollableWidth,
+            rootScrollViewer.ScrollableHeight,
             rootScrollViewer.ViewportWidth,
             rootScrollViewer.ViewportHeight,
             contentExtentSize.Width,
@@ -1370,6 +1604,8 @@ internal static class Program
             yield return
                 $"- root scroll fallback expected / state: {profile.RootScrollFallbackExpected} / {profile.RootScrollFallbackStateMatches}";
             yield return
+                $"- root scroll visibility / scrollable: {profile.RootHorizontalScrollBarVisibility} / {profile.RootVerticalScrollBarVisibility} / {profile.RootScrollableWidthDip:N1}×{profile.RootScrollableHeightDip:N1} DIP";
+            yield return
                 $"- root viewport / content extent: {profile.ViewportWidthDip:N1}×{profile.ViewportHeightDip:N1} / {profile.ContentExtentWidthDip:N1}×{profile.ContentExtentHeightDip:N1} DIP";
             yield return
                 $"- root scroll offset: {profile.HorizontalOffsetDip:N1}, {profile.VerticalOffsetDip:N1} DIP";
@@ -1404,6 +1640,18 @@ internal static class Program
         int Dpi,
         bool ShowUpdateBanner = false,
         bool AllowRootScrolling = false);
+
+    private sealed record ShutdownPopupAuditResult(
+        bool Passed,
+        string MarkdownPath);
+
+    private sealed record PopupScreenshotEvidence(
+        int ScalePercent,
+        int Dpi,
+        string Path,
+        int PixelWidth,
+        int PixelHeight,
+        string Sha256);
 
     private sealed record ButtonMetric(
         string Name,
@@ -1445,6 +1693,10 @@ internal static class Program
         bool UpdateSurfaceMatches,
         bool RootScrollFallbackExpected,
         bool RootScrollFallbackStateMatches,
+        string RootHorizontalScrollBarVisibility,
+        string RootVerticalScrollBarVisibility,
+        double RootScrollableWidthDip,
+        double RootScrollableHeightDip,
         double ViewportWidthDip,
         double ViewportHeightDip,
         double ContentExtentWidthDip,

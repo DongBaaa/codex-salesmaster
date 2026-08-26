@@ -177,18 +177,35 @@ public sealed class ChildWindowResponsiveLayoutTests
                         (string?)button.Attribute("Content"),
                         "품목 저장",
                         StringComparison.Ordinal)));
+        var inventoryMemo = Assert.Single(
+            inventory.Descendants(),
+            element =>
+                element.Name.LocalName == "TextBox" &&
+                ((string?)element.Attribute("Text"))?.Contains(
+                    "EditSimpleMemo",
+                    StringComparison.Ordinal) == true);
+        Assert.Equal("4", (string?)inventoryMemo.Attribute("Grid.Row"));
+        Assert.Equal("1", (string?)inventoryMemo.Attribute("Grid.Column"));
+        Assert.Equal("3", (string?)inventoryMemo.Attribute("Grid.ColumnSpan"));
+        Assert.Equal("64", (string?)inventoryMemo.Attribute("Height"));
+        Assert.Equal("64", (string?)inventoryMemo.Attribute("MinHeight"));
+        Assert.Equal("True", (string?)inventoryMemo.Attribute("AcceptsReturn"));
+        Assert.Equal("Wrap", (string?)inventoryMemo.Attribute("TextWrapping"));
+        Assert.Equal("Auto", (string?)inventoryMemo.Attribute("VerticalScrollBarVisibility"));
 
         var rentalAsset = LoadWindow(
             desktopAppDirectory,
             "RentalAssetWindow.xaml");
         AssertResponsiveMinimum(rentalAsset.Root);
         AssertCommandAndWorkspaceRows(rentalAsset);
-        AssertScrollViewer(
+        var rentalAssetCommandPanel = AssertNamedElement(
             rentalAsset,
             xaml,
-            "RentalAssetCommandScrollViewer",
-            horizontal: "Disabled",
-            vertical: "Auto");
+            "RentalAssetCommandPanel");
+        Assert.Equal("StackPanel", rentalAssetCommandPanel.Name.LocalName);
+        Assert.DoesNotContain(
+            rentalAssetCommandPanel.Ancestors(),
+            ancestor => ancestor.Name.LocalName == "ScrollViewer");
         AssertScrollViewer(
             rentalAsset,
             xaml,
@@ -207,12 +224,14 @@ public sealed class ChildWindowResponsiveLayoutTests
             "RentalBillingWindow.xaml");
         AssertResponsiveMinimum(rentalBilling.Root);
         AssertCommandAndWorkspaceRows(rentalBilling);
-        AssertScrollViewer(
+        var billingCommandPanel = AssertNamedElement(
             rentalBilling,
             xaml,
-            "BillingCommandScrollViewer",
-            horizontal: "Disabled",
-            vertical: "Auto");
+            "BillingCommandPanel");
+        Assert.Equal("StackPanel", billingCommandPanel.Name.LocalName);
+        Assert.DoesNotContain(
+            billingCommandPanel.Ancestors(),
+            ancestor => ancestor.Name.LocalName == "ScrollViewer");
         Assert.DoesNotContain(
             rentalBilling.Descendants(),
             element => string.Equals(
@@ -1823,28 +1842,87 @@ public sealed class ChildWindowResponsiveLayoutTests
         var customerManagement = LoadWindow(
             desktopAppDirectory,
             "CustomerManagementWindow.xaml");
-        AssertScrollViewer(
+        var customerManagementFilterPanel = AssertNamedElement(
             customerManagement,
             xamlNamespace,
-            "CustomerManagementFilterScrollViewer",
-            horizontal: "Auto",
-            vertical: "Disabled");
+            "CustomerManagementFilterPanel");
+        Assert.Equal("Grid", customerManagementFilterPanel.Name.LocalName);
+        Assert.DoesNotContain(
+            customerManagementFilterPanel.Ancestors(),
+            ancestor => ancestor.Name.LocalName == "ScrollViewer");
 
         var yeonsuDelivery = LoadWindow(
             desktopAppDirectory,
             "YeonsuDeliveryWindow.xaml");
-        AssertScrollViewer(
+        var yeonsuSummaryPanel = AssertNamedElement(
             yeonsuDelivery,
             xamlNamespace,
-            "YeonsuSummaryScrollViewer",
-            horizontal: "Auto",
-            vertical: "Disabled");
-        AssertScrollViewer(
+            "YeonsuSummaryPanel");
+        Assert.Equal("UniformGrid", yeonsuSummaryPanel.Name.LocalName);
+        Assert.DoesNotContain(
+            yeonsuSummaryPanel.Ancestors(),
+            ancestor => ancestor.Name.LocalName == "ScrollViewer");
+        var yeonsuFilterPanel = AssertNamedElement(
             yeonsuDelivery,
             xamlNamespace,
-            "YeonsuFilterScrollViewer",
-            horizontal: "Auto",
-            vertical: "Disabled");
+            "YeonsuFilterPanel");
+        Assert.Equal("WrapPanel", yeonsuFilterPanel.Name.LocalName);
+        Assert.DoesNotContain(
+            yeonsuFilterPanel.Ancestors(),
+            ancestor => ancestor.Name.LocalName == "ScrollViewer");
+    }
+
+    [Fact]
+    public void ContentSizedActivityPopup_OptsOutOfGlobalResponsiveMinimums()
+    {
+        var desktopAppDirectory = FindDesktopAppDirectory();
+        var appCode = File.ReadAllText(Path.Combine(desktopAppDirectory, "App.xaml.cs"));
+        var responsiveBehaviorCode = File.ReadAllText(
+            Path.Combine(
+                desktopAppDirectory,
+                "Infrastructure",
+                "ResponsiveWindowBehavior.cs"));
+
+        Assert.Contains(
+            "ResponsiveWindowBehavior.GetIsGlobalLayoutExcluded(window)",
+            appCode,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "PreserveContentSizedActivityPopup(popup);",
+            appCode,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "popup.Loaded += (_, _) => PreserveContentSizedActivityPopup(popup);",
+            appCode,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "SizeToContent = SizeToContent.WidthAndHeight",
+            appCode,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Padding = new Thickness(20, 14, 20, 12)",
+            appCode,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Style = new Style(typeof(Window))",
+            appCode,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "popup.MinHeight = 0;",
+            appCode,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "popup.ClearValue(FrameworkElement.HeightProperty);",
+            appCode,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "IsGlobalLayoutExcludedProperty",
+            responsiveBehaviorCode,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Height = 400",
+            appCode,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1922,9 +2000,9 @@ public sealed class ChildWindowResponsiveLayoutTests
             rowDefinitions,
             commandRow =>
             {
-                Assert.Equal("2*", (string?)commandRow.Attribute("Height"));
-                Assert.Equal("120", (string?)commandRow.Attribute("MinHeight"));
-                Assert.Equal("300", (string?)commandRow.Attribute("MaxHeight"));
+                Assert.Equal("Auto", (string?)commandRow.Attribute("Height"));
+                Assert.Null((string?)commandRow.Attribute("MinHeight"));
+                Assert.Null((string?)commandRow.Attribute("MaxHeight"));
             },
             workspaceRow =>
             {

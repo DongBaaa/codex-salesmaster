@@ -369,6 +369,7 @@
                                         <RowDefinition Height="32"/>
                                         <RowDefinition Height="32"/>
                                         <RowDefinition Height="32"/>
+                                        <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
 
                                     <Label Grid.Row="0" Grid.Column="0" Content="품명"/>
@@ -405,6 +406,25 @@
                                              ToolTip="일반 수량 기준으로 입력하세요. 현재고 표시는 선택 지점의 실제 재고 수량을 기준으로 합니다."/>
                                     <Label Grid.Row="3" Grid.Column="2" Content="보관위치"/>
                                     <TextBox Grid.Row="3" Grid.Column="3" Text="{Binding EditStorageLocation, UpdateSourceTrigger=PropertyChanged}"/>
+
+                                    <Label Grid.Row="4"
+                                           Grid.Column="0"
+                                           Content="품목 메모"
+                                           VerticalAlignment="Top"
+                                           Padding="0,14,8,0"
+                                           ToolTip="선택한 품목에 대한 내부 메모입니다. 재고 초기화 기능과는 별도이며 저장 시 품목 메모로 보관됩니다."/>
+                                    <TextBox Grid.Row="4"
+                                             Grid.Column="1"
+                                             Grid.ColumnSpan="3"
+                                             Margin="0,8,0,0"
+                                             Height="64"
+                                             MinHeight="64"
+                                             Text="{Binding EditSimpleMemo, UpdateSourceTrigger=PropertyChanged}"
+                                             AcceptsReturn="True"
+                                             TextWrapping="Wrap"
+                                             VerticalContentAlignment="Top"
+                                             VerticalScrollBarVisibility="Auto"
+                                             ToolTip="선택한 품목의 내부 메모를 입력합니다. 이 내용은 전표 계산이나 재고 수량에는 영향을 주지 않습니다."/>
                                 </Grid>
 
                                 <Separator Background="#2E4060" Margin="0,8,0,8"/>
@@ -647,50 +667,6 @@
                                     </Grid>
                                 </Border>
 
-                                <Grid Margin="0,14,0,0">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" SharedSizeGroup="InventoryMemoLabel"/>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="180"/>
-                                    </Grid.ColumnDefinitions>
-
-                                    <Label Grid.Column="0"
-                                           Content="품목 메모"
-                                           VerticalAlignment="Top"
-                                           Padding="0,8,8,0"
-                                           ToolTip="선택한 품목에 대한 내부 메모입니다. 재고 초기화 기능과는 별도이며 저장 시 품목 메모로 보관됩니다."/>
-                                    <TextBox Grid.Column="1"
-                                             Text="{Binding EditSimpleMemo, UpdateSourceTrigger=PropertyChanged}"
-                                             Height="148"
-                                             MinHeight="148"
-                                             AcceptsReturn="True"
-                                             TextWrapping="Wrap"
-                                             VerticalContentAlignment="Top"
-                                             VerticalScrollBarVisibility="Auto"
-                                             ToolTip="선택한 품목의 내부 메모를 입력합니다. 이 내용은 전표 계산이나 재고 수량에는 영향을 주지 않습니다."/>
-                                    <Border Grid.Column="2"
-                                            Margin="16,0,0,0"
-                                            Style="{StaticResource MetricCardBorderStyle}"
-                                            Padding="14,12"
-                                            VerticalAlignment="Top">
-                                        <StackPanel>
-                                            <TextBlock Text="{Binding EditTrackingType, StringFormat='재고방식: {0}'}"
-                                                       Style="{StaticResource MetricCaptionStyle}"/>
-                                            <TextBlock Text="{Binding EditItemKind}"
-                                                       Style="{StaticResource MetricValueTextStyle}"
-                                                       Margin="0,8,0,0"/>
-                                            <TextBlock Text="재고 = 입출고/재고이동 대상"
-                                                       Foreground="#9FB3C8"
-                                                       Margin="0,10,0,0"/>
-                                            <TextBlock Text="자산 = 렌탈 자산/설치현황용"
-                                                       Foreground="#9FB3C8"
-                                                       Margin="0,6,0,0"/>
-                                            <TextBlock Text="비재고 = 렌탈료/설치비 청구용"
-                                                       Foreground="#9FB3C8"
-                                                       Margin="0,6,0,0"/>
-                                        </StackPanel>
-                                    </Border>
-                                </Grid>
                             </StackPanel>
                         </Border>
                     </StackPanel>

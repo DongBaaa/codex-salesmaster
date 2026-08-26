@@ -136,106 +136,90 @@
                 CornerRadius="6"
                 BorderBrush="#2E4060"
                 BorderThickness="1">
-            <ScrollViewer x:Name="CustomerManagementFilterScrollViewer"
-                          HorizontalScrollBarVisibility="Auto"
-                          VerticalScrollBarVisibility="Disabled">
-            <Grid Grid.IsSharedSizeScope="True">
+            <Grid x:Name="CustomerManagementFilterPanel"
+                  Grid.IsSharedSizeScope="True">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <Grid Grid.Row="0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" SharedSizeGroup="CustomerFilterLabel"/>
-                        <ColumnDefinition Width="280"/>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="Auto" SharedSizeGroup="CustomerFilterLabel"/>
-                        <ColumnDefinition Width="150"/>
-                        <ColumnDefinition Width="Auto" SharedSizeGroup="CustomerFilterLabel"/>
-                        <ColumnDefinition Width="150"/>
-                        <ColumnDefinition Width="Auto" SharedSizeGroup="CustomerFilterLabel"/>
-                        <ColumnDefinition Width="150"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
+                <WrapPanel Grid.Row="0"
+                           VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal" Margin="0,0,12,8">
+                        <TextBlock Text="검색어"
+                                   Margin="0,0,8,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="#9FB3C8"/>
+                        <TextBox Width="280"
+                                 Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                                 VerticalAlignment="Center"
+                                 Margin="0,0,8,0"/>
+                        <Button Content="찾기"
+                                Command="{Binding SearchCommand}"
+                                VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,12,8">
+                        <TextBlock Text="고객분류"
+                                   Margin="0,0,8,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="#9FB3C8"/>
+                        <ComboBox Width="150"
+                                  MinWidth="150"
+                                  ItemsSource="{Binding CategoryFilters}"
+                                  SelectedItem="{Binding SelectedCategoryFilter}"
+                                  VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,12,8">
+                        <TextBlock Text="담당지점"
+                                   Margin="0,0,8,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="#9FB3C8"/>
+                        <ComboBox Width="150"
+                                  MinWidth="150"
+                                  ItemsSource="{Binding OfficeFilters}"
+                                  SelectedItem="{Binding SelectedOfficeFilter}"
+                                  VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="정렬"
+                                   Margin="0,0,8,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="#9FB3C8"/>
+                        <ComboBox Width="150"
+                                  MinWidth="150"
+                                  ItemsSource="{Binding SortOptions}"
+                                  SelectedItem="{Binding SelectedSortOption}"
+                                  VerticalAlignment="Center"/>
+                    </StackPanel>
+                </WrapPanel>
 
-                    <TextBlock Grid.Column="0"
-                               Text="검색어"
-                               Margin="0,0,4,0"
-                               VerticalAlignment="Center"
-                               Foreground="#9FB3C8"/>
-                    <TextBox Grid.Column="1"
-                             Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
-                             VerticalAlignment="Center"
-                             Margin="0,0,8,0"/>
-                    <Button Grid.Column="2"
-                            Content="찾기"
-                            Margin="0,0,12,0"
-                            Command="{Binding SearchCommand}"
-                            VerticalAlignment="Center"/>
-                    <TextBlock Grid.Column="3"
-                               Text="고객분류"
-                               Margin="0,0,4,0"
-                               VerticalAlignment="Center"
-                               Foreground="#9FB3C8"/>
-                    <ComboBox Grid.Column="4"
-                              ItemsSource="{Binding CategoryFilters}"
-                              SelectedItem="{Binding SelectedCategoryFilter}"
-                              VerticalAlignment="Center"/>
-                    <TextBlock Grid.Column="5"
-                               Text="담당지점"
-                               Margin="12,0,10,0"
-                               VerticalAlignment="Center"
-                               Foreground="#9FB3C8"/>
-                    <ComboBox Grid.Column="6"
-                              ItemsSource="{Binding OfficeFilters}"
-                              SelectedItem="{Binding SelectedOfficeFilter}"
-                              VerticalAlignment="Center"/>
-                    <TextBlock Grid.Column="7"
-                               Text="정렬"
-                               Margin="12,0,10,0"
-                               VerticalAlignment="Center"
-                               Foreground="#9FB3C8"/>
-                    <ComboBox Grid.Column="8"
-                              ItemsSource="{Binding SortOptions}"
-                              SelectedItem="{Binding SelectedSortOption}"
-                              VerticalAlignment="Center"/>
-                </Grid>
-
-                <StackPanel Grid.Row="1"
-                            Orientation="Horizontal"
-                            HorizontalAlignment="Right"
-                            Margin="0,8,0,0">
+                <WrapPanel Grid.Row="1"
+                           HorizontalAlignment="Right">
                     <Button Content="새 거래처 등록"
                             Style="{StaticResource TradePlanEditButtonStyle}"
-                            Margin="0,0,6,0"
+                            Margin="0,0,6,6"
                             Click="CreateCustomerButton_Click"/>
                     <Button Content="선택 거래처 수정"
                             Style="{StaticResource TradePlanEditButtonStyle}"
-                            Margin="0,0,6,0"
+                            Margin="0,0,6,6"
                             Click="EditCustomerButton_Click"/>
                     <Button Content="선택 거래처 삭제"
                             Style="{StaticResource TradePlanDangerButtonStyle}"
-                            Margin="0,0,6,0"
+                            Margin="0,0,6,6"
                             Click="DeleteCustomerButton_Click"/>
-                    <Rectangle Width="1"
-                               Height="18"
-                               Fill="#3E5875"
-                               Margin="4,0,10,0"
-                               VerticalAlignment="Center"/>
                     <Button Content="담당지점 저장"
                             Style="{StaticResource TradePlanPrimaryButtonStyle}"
-                            Margin="0,0,6,0"
+                            Margin="0,0,6,6"
                             ToolTip="담당지점 변경은 즉시 저장됩니다. 저장 실패로 남은 변경만 다시 저장합니다."
                             Command="{Binding SaveOfficeChangesCommand}"/>
                     <Button Content="새로고침"
-                            Margin="0,0,6,0"
+                            Margin="0,0,6,6"
                             Command="{Binding ReloadCommand}"/>
                     <Button Content="닫기"
+                            Margin="0,0,0,6"
                             Click="CloseButton_Click"/>
-                </StackPanel>
+                </WrapPanel>
             </Grid>
-            </ScrollViewer>
         </Border>
 
         <Border Grid.Row="2"

@@ -178,156 +178,87 @@
                 BorderBrush="#2E4060"
                 BorderThickness="1">
             <StackPanel>
-                <ScrollViewer x:Name="YeonsuSummaryScrollViewer"
-                              HorizontalScrollBarVisibility="Auto"
-                              VerticalScrollBarVisibility="Disabled"
-                              Margin="0,0,0,10">
-                <Grid MinWidth="720">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-
-                    <Border Grid.Column="0" Style="{StaticResource SummaryCardStyle}">
+                <UniformGrid x:Name="YeonsuSummaryPanel"
+                             Columns="5"
+                             Margin="0,0,0,10">
+                    <Border Style="{StaticResource SummaryCardStyle}">
                         <StackPanel>
                             <TextBlock Text="거래건수" Style="{StaticResource SummaryLabelStyle}"/>
                             <TextBlock Text="{Binding SummaryCount, StringFormat={}{0:N0}건}" Style="{StaticResource SummaryValueStyle}"/>
                         </StackPanel>
                     </Border>
-                    <Border Grid.Column="1" Style="{StaticResource SummaryCardStyle}">
+                    <Border Style="{StaticResource SummaryCardStyle}">
                         <StackPanel>
                             <TextBlock Text="매입금액 합계" Style="{StaticResource SummaryLabelStyle}"/>
                             <TextBlock Text="{Binding SummaryPurchaseAmount, StringFormat={}{0:N0}원}" Style="{StaticResource SummaryValueStyle}"/>
                         </StackPanel>
                     </Border>
-                    <Border Grid.Column="2" Style="{StaticResource SummaryCardStyle}">
+                    <Border Style="{StaticResource SummaryCardStyle}">
                         <StackPanel>
                             <TextBlock Text="매출금액 합계" Style="{StaticResource SummaryLabelStyle}"/>
                             <TextBlock Text="{Binding SummarySalesAmount, StringFormat={}{0:N0}원}" Style="{StaticResource SummaryValueStyle}"/>
                         </StackPanel>
                     </Border>
-                    <Border Grid.Column="3" Style="{StaticResource SummaryCardStyle}">
+                    <Border Style="{StaticResource SummaryCardStyle}">
                         <StackPanel>
                             <TextBlock Text="수익금액 합계" Style="{StaticResource SummaryLabelStyle}"/>
                             <TextBlock Text="{Binding SummaryProfitAmount, StringFormat={}{0:N0}원}" Style="{StaticResource SummaryValueStyle}"/>
                         </StackPanel>
                     </Border>
-                    <Border Grid.Column="4" Style="{StaticResource SummaryCardStyle}" Margin="0">
+                    <Border Style="{StaticResource SummaryCardStyle}" Margin="0">
                         <StackPanel>
                             <TextBlock Text="수수료 합계" Style="{StaticResource SummaryLabelStyle}"/>
                             <TextBlock Text="{Binding SummaryFeeAmount, StringFormat={}{0:N0}원}" Style="{StaticResource SummaryValueStyle}"/>
                         </StackPanel>
                     </Border>
-                </Grid>
-                </ScrollViewer>
+                </UniformGrid>
 
-                <ScrollViewer x:Name="YeonsuFilterScrollViewer"
-                              HorizontalScrollBarVisibility="Auto"
-                              VerticalScrollBarVisibility="Disabled">
-                <Grid MinWidth="1120">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="250"/>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="130"/>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="160"/>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="90"/>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-
-                    <TextBlock Grid.Row="0" Grid.Column="0"
-                               Text="거래처명"
-                               VerticalAlignment="Center"
-                               Margin="0,0,12,0"/>
-                    <TextBox Grid.Row="0" Grid.Column="1"
-                             Text="{Binding CustomerSearchText, UpdateSourceTrigger=PropertyChanged}"
-                             Margin="0,0,16,0"/>
-                    <TextBlock Grid.Row="0" Grid.Column="2"
-                               Text="매입/매출"
-                               VerticalAlignment="Center"
-                               Margin="0,0,12,0"/>
-                    <ComboBox Grid.Row="0" Grid.Column="3"
-                              ItemsSource="{Binding ViewTargetOptions}"
-                              SelectedItem="{Binding SelectedViewTarget}"
-                              Margin="0,0,16,0"/>
-                    <TextBlock Grid.Row="0" Grid.Column="4"
-                               Text="세부유형"
-                               VerticalAlignment="Center"
-                               Margin="0,0,12,0"/>
-                    <ComboBox Grid.Row="0" Grid.Column="5"
-                              ItemsSource="{Binding EntryCategoryOptions}"
-                              SelectedItem="{Binding SelectedEntryCategory}"
-                              Margin="0,0,16,0"/>
-                    <TextBlock Grid.Row="0" Grid.Column="6"
-                               Text="수수료율"
-                               VerticalAlignment="Center"
-                               Margin="0,0,12,0"/>
-                    <TextBox Grid.Row="0" Grid.Column="7"
-                             HorizontalContentAlignment="Right"
-                             Text="{Binding FeeRatePercentText, UpdateSourceTrigger=LostFocus}"
-                             Margin="0,0,6,0"/>
-                    <TextBlock Grid.Row="0" Grid.Column="8"
-                               Text="%"
-                               VerticalAlignment="Center"
-                               Margin="0,0,16,0"/>
-                    <Button Grid.Row="0" Grid.Column="9"
-                            Content="조회"
+                <WrapPanel x:Name="YeonsuFilterPanel"
+                           VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal" Margin="0,0,16,8">
+                        <TextBlock Text="거래처명" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <TextBox Width="250" Text="{Binding CustomerSearchText, UpdateSourceTrigger=PropertyChanged}"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,16,8">
+                        <TextBlock Text="매입/매출" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <ComboBox Width="130" MinWidth="130" ItemsSource="{Binding ViewTargetOptions}" SelectedItem="{Binding SelectedViewTarget}"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,16,8">
+                        <TextBlock Text="세부유형" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <ComboBox Width="160" MinWidth="160" ItemsSource="{Binding EntryCategoryOptions}" SelectedItem="{Binding SelectedEntryCategory}"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,16,8">
+                        <TextBlock Text="수수료율" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <TextBox Width="90" MinWidth="90" HorizontalContentAlignment="Right" Text="{Binding FeeRatePercentText, UpdateSourceTrigger=LostFocus}"/>
+                        <TextBlock Text="%" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,16,8">
+                        <TextBlock Text="기간" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <DatePicker Width="150" MinWidth="150" SelectedDate="{Binding FromDate, Converter={StaticResource DateOnlyConverter}}" SelectedDateFormat="Short">
+                            <DatePicker.Resources>
+                                <Style TargetType="{x:Type Button}" BasedOn="{StaticResource FilterDatePickerButtonStyle}"/>
+                            </DatePicker.Resources>
+                        </DatePicker>
+                        <TextBlock Text="~" VerticalAlignment="Center" Margin="8,0"/>
+                        <DatePicker Width="150" MinWidth="150" SelectedDate="{Binding ToDate, Converter={StaticResource DateOnlyConverter}}" SelectedDateFormat="Short">
+                            <DatePicker.Resources>
+                                <Style TargetType="{x:Type Button}" BasedOn="{StaticResource FilterDatePickerButtonStyle}"/>
+                            </DatePicker.Resources>
+                        </DatePicker>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,16,8">
+                        <TextBlock Text="창고" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <ComboBox Width="160" MinWidth="160" ItemsSource="{Binding WarehouseOptions}" SelectedItem="{Binding SelectedWarehouseOption}"/>
+                    </StackPanel>
+                    <Button Content="조회"
                             Style="{StaticResource TradePlanSecondaryButtonStyle}"
                             Command="{Binding LoadDeliveriesCommand}"
-                            Margin="0,0,8,0"/>
-                    <Button Grid.Row="0" Grid.Column="10"
-                            Style="{StaticResource TradePlanSecondaryButtonStyle}"
+                            Margin="0,0,8,8"/>
+                    <Button Style="{StaticResource TradePlanSecondaryButtonStyle}"
                             Content="초기화"
-                            Command="{Binding ResetFiltersCommand}"/>
-
-                    <TextBlock Grid.Row="1" Grid.Column="0"
-                               Text="기간"
-                               VerticalAlignment="Center"
-                               Margin="0,8,12,0"/>
-                    <DatePicker Grid.Row="1" Grid.Column="1"
-                                SelectedDate="{Binding FromDate, Converter={StaticResource DateOnlyConverter}}"
-                                SelectedDateFormat="Short"
-                                Margin="0,8,16,0"
-                                VerticalAlignment="Center">
-                        <DatePicker.Resources>
-                            <Style TargetType="{x:Type Button}" BasedOn="{StaticResource FilterDatePickerButtonStyle}"/>
-                        </DatePicker.Resources>
-                    </DatePicker>
-                    <TextBlock Grid.Row="1" Grid.Column="2"
-                               Text="~"
-                               VerticalAlignment="Center"
-                               Margin="0,8,12,0"/>
-                    <DatePicker Grid.Row="1" Grid.Column="3"
-                                SelectedDate="{Binding ToDate, Converter={StaticResource DateOnlyConverter}}"
-                                SelectedDateFormat="Short"
-                                Margin="0,8,16,0"
-                                VerticalAlignment="Center">
-                        <DatePicker.Resources>
-                            <Style TargetType="{x:Type Button}" BasedOn="{StaticResource FilterDatePickerButtonStyle}"/>
-                        </DatePicker.Resources>
-                    </DatePicker>
-                    <TextBlock Grid.Row="1" Grid.Column="4"
-                               Text="창고"
-                               VerticalAlignment="Center"
-                               Margin="0,8,12,0"/>
-                    <ComboBox Grid.Row="1" Grid.Column="5"
-                              ItemsSource="{Binding WarehouseOptions}"
-                              SelectedItem="{Binding SelectedWarehouseOption}"
-                              Margin="0,8,16,0"
-                              VerticalAlignment="Center"/>
-                </Grid>
-                </ScrollViewer>
+                            Command="{Binding ResetFiltersCommand}"
+                            Margin="0,0,0,8"/>
+                </WrapPanel>
             </StackPanel>
         </Border>
 

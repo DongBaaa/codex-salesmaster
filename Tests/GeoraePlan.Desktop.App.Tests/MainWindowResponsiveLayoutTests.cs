@@ -355,22 +355,15 @@ public sealed class MainWindowResponsiveLayoutTests
                     StringComparison.Ordinal));
         Assert.NotNull(summaryPanel);
 
-        var filterScrollViewer = Assert.Single(
+        var filterPanel = Assert.Single(
             document.Descendants(),
             element =>
-                element.Name.LocalName == "ScrollViewer" &&
+                element.Name.LocalName == "WrapPanel" &&
                 string.Equals(
                     (string?)element.Attribute(xaml + "Name"),
-                    "InvoiceFilterScrollViewer",
+                    "InvoiceFilterPanel",
                     StringComparison.Ordinal));
-        Assert.Equal(
-            "Auto",
-            (string?)filterScrollViewer.Attribute(
-                "HorizontalScrollBarVisibility"));
-        Assert.Equal(
-            "Disabled",
-            (string?)filterScrollViewer.Attribute(
-                "VerticalScrollBarVisibility"));
+        Assert.NotEqual("ScrollViewer", filterPanel.Parent?.Name.LocalName);
 
         var compactDashboardPopup = Assert.Single(
             document.Descendants(),
@@ -627,7 +620,7 @@ public sealed class MainWindowResponsiveLayoutTests
             source,
             StringComparison.Ordinal);
         Assert.Contains(
-            "new(\"minimum-window-776x456-100\", 776, 456, 96)",
+            "\"minimum-window-776x456-100\"",
             source,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -647,11 +640,11 @@ public sealed class MainWindowResponsiveLayoutTests
             source,
             StringComparison.Ordinal);
         Assert.Contains(
-            "new(\"low-resolution-1366x768-125\", 1366, 728, 120)",
+            "\"low-resolution-1366x768-125\"",
             source,
             StringComparison.Ordinal);
         Assert.Contains(
-            "new(\"low-resolution-1366x768-150\", 1366, 728, 144)",
+            "\"low-resolution-1366x768-150\"",
             source,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -767,7 +760,27 @@ public sealed class MainWindowResponsiveLayoutTests
             source,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Popup·ContextMenu 입력은 이 감사에서 실행하지 않습니다.",
+            "SourceInitialized/HWND 배치와 WM_DPICHANGED는 실행하지 않습니다.",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "AuditShutdownActivityPopup",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ShowShutdownSavingPopup",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "shutdown-sync-popup-runtime.png",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "actual window / body size",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "actual bottom blank space",
             source,
             StringComparison.Ordinal);
     }

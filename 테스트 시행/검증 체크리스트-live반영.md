@@ -33,7 +33,9 @@
 - [x] 반영 직후 `Invoke-LiveObservationCheck.ps1` 로 live 서버 healthz/manifest/package 응답을 관찰했다.
 
 ## 메모
-- release id: `20260421-000534`
-- public stable manifest 기준 desktop.version: `1.1.152`
-- public healthz 확인 시각: `2026-04-21 00:09:08 KST` / 응답 `ok`
+- release id: 배포 스크립트 생성값 사용 예정
+- 반영 예정 desktop.version: `1.1.696` / 반영 전 public stable: `1.1.695`
+- public healthz/readyz 확인 시각: `2026-08-26 21:27 KST` / 응답 `ok` / `ready`
 - 이번 배포는 mandatory 업데이트 아님 상태를 유지해 `minimumSupportedVersion` 은 빈 값으로 남겼습니다.
+- Android는 이번 변경 범위가 아니므로 public stable `0.2.82` 자산을 보존합니다.
+- 기존 운영 데이터 경고 `rental_profile_customer_unlinked(1)`, `rental_asset_template_monthly_mismatch(1)`만 명시 허용하고 신규 경고는 차단합니다.

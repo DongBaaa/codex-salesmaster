@@ -6,6 +6,19 @@ namespace 거래플랜.Desktop.App.Infrastructure;
 
 public static class ResponsiveWindowBehavior
 {
+    public static readonly DependencyProperty IsGlobalLayoutExcludedProperty =
+        DependencyProperty.RegisterAttached(
+            "IsGlobalLayoutExcluded",
+            typeof(bool),
+            typeof(ResponsiveWindowBehavior),
+            new PropertyMetadata(false));
+
+    public static bool GetIsGlobalLayoutExcluded(DependencyObject element) =>
+        (bool)element.GetValue(IsGlobalLayoutExcludedProperty);
+
+    public static void SetIsGlobalLayoutExcluded(DependencyObject element, bool value) =>
+        element.SetValue(IsGlobalLayoutExcludedProperty, value);
+
     public static readonly DependencyProperty IsEnabledProperty =
         DependencyProperty.RegisterAttached(
             "IsEnabled",

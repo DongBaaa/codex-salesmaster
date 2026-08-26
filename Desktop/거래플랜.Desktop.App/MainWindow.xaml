@@ -755,29 +755,30 @@
                                 </Grid>
                             </Border>
 
-                            <ScrollViewer x:Name="InvoiceFilterScrollViewer"
-                                          HorizontalScrollBarVisibility="Auto"
-                                          VerticalScrollBarVisibility="Disabled">
-                                <WrapPanel VerticalAlignment="Center">
-                                    <TextBlock Text="유형" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                                    <ComboBox ItemsSource="{Binding VoucherTypeFilterOptions}" SelectedItem="{Binding SelectedVoucherTypeFilter}" Width="100" Margin="0,0,10,0"/>
+                            <WrapPanel x:Name="InvoiceFilterPanel"
+                                       VerticalAlignment="Center">
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,10,6">
+                                        <TextBlock Text="유형" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                        <ComboBox ItemsSource="{Binding VoucherTypeFilterOptions}" SelectedItem="{Binding SelectedVoucherTypeFilter}" Width="100" MinWidth="100"/>
+                                    </StackPanel>
 
-                                    <TextBlock Text="담당지점" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                                    <ComboBox ItemsSource="{Binding InvoiceOfficeFilterOptions}"
-                                              SelectedValue="{Binding SelectedInvoiceOfficeFilterCode}"
-                                              SelectedValuePath="Code"
-                                              DisplayMemberPath="DisplayName"
-                                              Width="120"
-                                              Margin="0,0,10,0"/>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,10,6">
+                                        <TextBlock Text="담당지점" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                        <ComboBox ItemsSource="{Binding InvoiceOfficeFilterOptions}"
+                                                  SelectedValue="{Binding SelectedInvoiceOfficeFilterCode}"
+                                                  SelectedValuePath="Code"
+                                                  DisplayMemberPath="DisplayName"
+                                                  Width="120"
+                                                  MinWidth="120"/>
+                                    </StackPanel>
 
-                                    <Button Content="조회" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding LoadInvoiceListCommand}" Margin="0,0,6,0"/>
-                                    <Button Content="필터초기화" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding ResetInvoiceFiltersCommand}" Margin="0,0,6,0"/>
-                                    <Button Content="거래내역 새창" Style="{StaticResource TradePlanSecondaryButtonStyle}" Click="CustomerInvoiceLookupButton_Click" Margin="0,0,6,0"/>
-                                    <ComboBox ItemsSource="{Binding FavoriteInvoices}" SelectedItem="{Binding SelectedFavoriteInvoice}" DisplayMemberPath="DisplayText" Width="380" Margin="0,0,6,0"/>
-                                    <Button Content="즐겨찾기 이동" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding OpenFavoriteInvoiceCommand}" Margin="0,0,6,0"/>
-                                    <Button Content="즐겨찾기 추가/해제" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding ToggleInvoiceFavoriteCommand}" Margin="0,0,6,0"/>
-                                </WrapPanel>
-                            </ScrollViewer>
+                                    <Button Content="조회" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding LoadInvoiceListCommand}" Margin="0,0,6,6"/>
+                                    <Button Content="필터초기화" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding ResetInvoiceFiltersCommand}" Margin="0,0,6,6"/>
+                                    <Button Content="거래내역 새창" Style="{StaticResource TradePlanSecondaryButtonStyle}" Click="CustomerInvoiceLookupButton_Click" Margin="0,0,6,6"/>
+                                    <ComboBox ItemsSource="{Binding FavoriteInvoices}" SelectedItem="{Binding SelectedFavoriteInvoice}" DisplayMemberPath="DisplayText" Width="320" MinWidth="220" Margin="0,0,6,6"/>
+                                    <Button Content="즐겨찾기 이동" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding OpenFavoriteInvoiceCommand}" Margin="0,0,6,6"/>
+                                    <Button Content="즐겨찾기 추가/해제" Style="{StaticResource TradePlanSecondaryButtonStyle}" Command="{Binding ToggleInvoiceFavoriteCommand}" Margin="0,0,6,6"/>
+                            </WrapPanel>
                         </DockPanel>
                     </Border>
 

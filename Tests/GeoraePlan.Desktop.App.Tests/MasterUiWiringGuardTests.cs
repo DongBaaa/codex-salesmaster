@@ -116,16 +116,12 @@ public sealed class MasterUiWiringGuardTests
             xaml,
             "청구서 표시 품목(거래명세서 출력 라인)과 거래처 임대 자산(실제 청구/전표 대상 자산)을 분리 관리합니다.",
             "청구서 표시 품목",
-            "Command=\"{Binding HoldBillingCommand}\"",
-            "IsEnabled=\"{Binding CanHoldSelected}\"",
             "Command=\"{Binding CancelBillingCommand}\"",
             "IsEnabled=\"{Binding CanCancelSelected}\"",
             "현재 청구 주기를 취소 상태로 변경합니다. 청구 프로필과 기존 전표·입금 내역은 삭제하지 않습니다.",
-            "Command=\"{Binding MarkCompletedCommand}\"",
-            "IsEnabled=\"{Binding CanMarkCompletedSelected}\"",
             "Text=\"{Binding EditBillingStatus, Mode=OneWay}\"",
             "IsReadOnly=\"True\"",
-            "청구 상태는 상단의 청구서 만들기·청구 보류·청구 취소·완료 처리 명령으로 변경합니다.",
+            "청구 상태는 청구서 만들기·청구 취소·입금 등록 결과와 기존 청구 이력에 따라 표시됩니다.",
             "전표/거래명세서 출력 라인을 먼저 확인하고, 선택한 행의 세부값은 아래에서 편집합니다.",
             "선택 표시품목 상세",
             "연결대수",
@@ -160,19 +156,15 @@ public sealed class MasterUiWiringGuardTests
 
         var saveActionIndex = xaml.IndexOf("Content=\"저장\"", StringComparison.Ordinal);
         var startActionIndex = xaml.IndexOf("Content=\"청구서 만들기\"", StringComparison.Ordinal);
-        var holdActionIndex = xaml.IndexOf("Content=\"청구 보류\"", StringComparison.Ordinal);
         var cancelActionIndex = xaml.IndexOf("Content=\"청구 취소\"", StringComparison.Ordinal);
         var settlementActionIndex = xaml.IndexOf("Content=\"입금 등록\"", StringComparison.Ordinal);
-        var completeActionIndex = xaml.IndexOf("Content=\"완료 처리\"", StringComparison.Ordinal);
         var deleteActionIndex = xaml.IndexOf("Content=\"선택 청구 삭제\"", StringComparison.Ordinal);
         Assert.True(
             saveActionIndex < startActionIndex &&
-            startActionIndex < holdActionIndex &&
-            holdActionIndex < cancelActionIndex &&
+            startActionIndex < cancelActionIndex &&
             cancelActionIndex < settlementActionIndex &&
-            settlementActionIndex < completeActionIndex &&
-            completeActionIndex < deleteActionIndex,
-            "렌탈 청구 작업 버튼은 저장 → 청구서 만들기 → 청구 보류 → 청구 취소 → 입금 등록 → 완료 처리 → 삭제 순서를 유지해야 합니다.");
+            settlementActionIndex < deleteActionIndex,
+            "렌탈 청구 작업 버튼은 저장 → 청구서 만들기 → 청구 취소 → 입금 등록 → 삭제 순서를 유지해야 합니다.");
 
         Assert.DoesNotContain("청구항목 요약", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("그룹을 개별 청구건으로 보기", xaml, StringComparison.Ordinal);
@@ -180,6 +172,9 @@ public sealed class MasterUiWiringGuardTests
         Assert.DoesNotContain("Content=\"선택 품목 삭제\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Content=\"새 장비연결\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Content=\"선택 청구 보류\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Content=\"청구 보류\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Content=\"완료 처리\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("청구 보류·청구 취소·완료 처리", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Content=\"완납 처리\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Content=\"수정할 청구건 선택\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Content=\"체크 청구 일괄삭제\"", xaml, StringComparison.Ordinal);
@@ -598,19 +593,19 @@ public sealed class MasterUiWiringGuardTests
             "LocalMutationResult? result = null;",
             "result = await _rental.SaveBillingProfileAsync(",
             "BuildPendingAssetLinkEdits(),",
-            "var result = await _rental.StartBillingAsync(targetId, ReferenceDate, _session, expectedRevision: expectedRevision);",
-            "var result = await _rental.HoldBillingAsync(targetId, ReferenceDate, string.Empty, _session, expectedRevision: expectedRevision);",
-            "var result = await _rental.CancelBillingAsync(targetId, ReferenceDate, string.Empty, _session, expectedRevision: expectedRevision);",
-            "var result = await _rental.RegisterBillingSettlementAsync(targetId, ReferenceDate, settledAmount, string.Empty, _session, expectedRevision: expectedRevision);",
-            "var result = await _rental.DeleteBillingHistoryAsync(",
+            "_ => _rental.StartBillingAsync(targetId, ReferenceDate, _session, expectedRevision: expectedRevision)",
+            "_ => _rental.HoldBillingAsync(targetId, ReferenceDate, string.Empty, _session, expectedRevision: expectedRevision)",
+            "_ => _rental.CancelBillingAsync(targetId, ReferenceDate, string.Empty, _session, expectedRevision: expectedRevision)",
+            "_ => _rental.RegisterBillingSettlementAsync(targetId, ReferenceDate, settledAmount, string.Empty, _session, expectedRevision: expectedRevision)",
+            "_ => _rental.DeleteBillingHistoryAsync(",
             "expectedRevision: SelectedRow.Source.Revision,",
-            "expectedInvoiceRevision: history.InvoiceRevision);",
-            "? await _rental.DeleteBillingProfileAsync(targetProfileId, _session, SelectedRow.Source.Revision)",
-            "await _rental.DeleteBillingProfileAsync(row.Source.Id, _session, row.Source.Revision);",
+            "expectedInvoiceRevision: history.InvoiceRevision),",
+            "? _rental.DeleteBillingProfileAsync(targetProfileId, _session, SelectedRow.Source.Revision)",
+            "_ => _rental.DeleteBillingProfileAsync(row.Source.Id, _session, row.Source.Revision)",
             "자산 자체는 삭제되지 않지만 프로필 연결은 해제되고 청구 상태는 '청구제외'로 변경됩니다.",
             "휴지통에서 프로필을 복원해도 자산 연결은 자동 복구되지 않으므로 필요한 자산을 다시 연결해야 합니다.",
             "confirmationMessage + persistedProfileDeleteNotice",
-            "var result = await _rental.MarkBillingCompletedAsync(");
+            "_ => _rental.MarkBillingCompletedAsync(");
 
         AssertContainsAll(
             rentalAssetViewModel,
