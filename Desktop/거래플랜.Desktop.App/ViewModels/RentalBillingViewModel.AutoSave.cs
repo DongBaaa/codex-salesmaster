@@ -69,7 +69,8 @@ public sealed partial class RentalBillingViewModel
 
     public async Task<bool> RestoreAutoSaveDraftAsync()
     {
-        var draft = await _rental.GetBillingEditorDraftAsync(_session);
+        var draft = await RunOwnerScopeDataOperationAsync(
+            ct => _rental.GetBillingEditorDraftAsync(_session, ct));
         if (draft is null)
             return false;
 
@@ -85,13 +86,15 @@ public sealed partial class RentalBillingViewModel
 
         if (!string.IsNullOrWhiteSpace(EditCustomerName) || TemplateItems.Any(item => item.IncludedAssetIds.Count > 0))
         {
-            await LoadCandidateAssetsAsync(
-                EditId == Guid.Empty ? null : EditId,
-                EditCustomerId,
-                EditCustomerName,
-                EditOfficeCode,
-                preserveSelection: true,
-                autoIncludeAllCandidates: false);
+            await RunOwnerScopeDataOperationAsync(
+                ct => LoadCandidateAssetsAsync(
+                    EditId == Guid.Empty ? null : EditId,
+                    EditCustomerId,
+                    EditCustomerName,
+                    EditOfficeCode,
+                    preserveSelection: true,
+                    autoIncludeAllCandidates: false,
+                    ct: ct));
         }
 
         StatusMessage = "자동저장된 렌탈 청구 편집 내역을 불러왔습니다.";
@@ -126,26 +129,11 @@ public sealed partial class RentalBillingViewModel
     public async Task ClearAutoSaveDraftAsync(CancellationToken ct = default)
     {
         _autoSaveCts?.Cancel();
-        await _rental.ClearBillingEditorDraftAsync(_session, ct);
+        await RunOwnerScopeDataOperationAsync(ClearAutoSaveDraftCoreAsync, ct);
     }
 
-    public void DiscardAutoSaveDraft()
-    {
-        _autoSaveCts?.Cancel();
-        _ = SafeClearDraftAsync();
-    }
-
-    private async Task SafeClearDraftAsync()
-    {
-        try
-        {
-            await _rental.ClearBillingEditorDraftAsync(_session);
-        }
-        catch (Exception ex)
-        {
-            AppLogger.Warn("RENTAL-AUTOSAVE", $"렌탈 청구 자동저장 임시본 삭제 실패: {ex.Message}");
-        }
-    }
+    private Task ClearAutoSaveDraftCoreAsync(CancellationToken ct)
+        => _rental.ClearBillingEditorDraftAsync(_session, ct);
 
     private void HandleAutoSavePropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
@@ -245,11 +233,13 @@ public sealed partial class RentalBillingViewModel
             if (HasMeaningfulDraftState() &&
                 (string.IsNullOrWhiteSpace(_selectedRowBaselineSignature) || HasUnsavedEditorChangesAgainstBaseline()))
             {
-                await _rental.SaveBillingEditorDraftAsync(BuildBillingEditorDraft(), _session, ct);
+                await RunOwnerScopeDataOperationAsync(
+                    token => _rental.SaveBillingEditorDraftAsync(BuildBillingEditorDraft(), _session, token),
+                    ct);
                 return true;
             }
 
-            await _rental.ClearBillingEditorDraftAsync(_session, ct);
+            await RunOwnerScopeDataOperationAsync(ClearAutoSaveDraftCoreAsync, ct);
             return false;
         }
         finally
@@ -450,7 +440,13 @@ public sealed partial class RentalBillingViewModel
     {
         try
         {
-            await _rental.SaveBillingEditorDraftAsync(snapshot, _session);
+            await RunOwnerScopeDataOperationAsync(
+                ct => _rental.SaveBillingEditorDraftAsync(snapshot, _session, ct),
+                _lifetimeCts.Token);
+        }
+        catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
+        {
+            // The window is closing; a stale editor snapshot must not outlive it.
         }
         catch (Exception ex)
         {

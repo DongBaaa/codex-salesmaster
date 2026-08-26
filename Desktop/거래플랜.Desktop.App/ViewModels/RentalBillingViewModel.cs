@@ -18,10 +18,16 @@ internal sealed class SelectionPipelineCoordinator : IDisposable
 {
     private readonly object _sync = new();
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly SemaphoreSlim? _ownerScopeDataGate;
     private readonly CancellationTokenSource _lifetimeCts = new();
     private CancellationTokenSource? _currentCts;
     private Task? _currentTask;
     private int _version;
+
+    internal SelectionPipelineCoordinator(SemaphoreSlim? ownerScopeDataGate = null)
+    {
+        _ownerScopeDataGate = ownerScopeDataGate;
+    }
 
     internal Task StartAsync(Func<int, CancellationToken, Task> operation)
     {
@@ -78,14 +84,23 @@ internal sealed class SelectionPipelineCoordinator : IDisposable
     {
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token, ct);
         await _gate.WaitAsync(linkedCts.Token);
+        var ownerScopeDataGateEntered = false;
         try
         {
             linkedCts.Token.ThrowIfCancellationRequested();
+            if (_ownerScopeDataGate is not null)
+            {
+                await _ownerScopeDataGate.WaitAsync(linkedCts.Token);
+                ownerScopeDataGateEntered = true;
+            }
+
             await operation(linkedCts.Token);
             linkedCts.Token.ThrowIfCancellationRequested();
         }
         finally
         {
+            if (ownerScopeDataGateEntered)
+                _ownerScopeDataGate!.Release();
             _gate.Release();
         }
     }
@@ -102,14 +117,23 @@ internal sealed class SelectionPipelineCoordinator : IDisposable
             await ObserveCompletionAsync(previousTask);
             cts.Token.ThrowIfCancellationRequested();
             await _gate.WaitAsync(cts.Token);
+            var ownerScopeDataGateEntered = false;
             try
             {
                 cts.Token.ThrowIfCancellationRequested();
+                if (_ownerScopeDataGate is not null)
+                {
+                    await _ownerScopeDataGate.WaitAsync(cts.Token);
+                    ownerScopeDataGateEntered = true;
+                }
+
                 await operation(version, cts.Token);
                 cts.Token.ThrowIfCancellationRequested();
             }
             finally
             {
+                if (ownerScopeDataGateEntered)
+                    _ownerScopeDataGate!.Release();
                 _gate.Release();
             }
         }
@@ -172,9 +196,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     private readonly LocalStateService _local;
     private readonly SessionState _session;
     private readonly ErpApiClient? _api;
+    private readonly SemaphoreSlim _ownerScopeDataGate;
     private readonly UiDebouncer _searchDebouncer = new();
     private readonly SemaphoreSlim _filterReloadGate = new(1, 1);
-    private readonly SelectionPipelineCoordinator _selectionPipelineCoordinator = new();
+    private readonly SelectionPipelineCoordinator _selectionPipelineCoordinator;
     private readonly CancellationTokenSource _lifetimeCts = new();
     private CancellationTokenSource? _filterReloadCts;
     private CancellationTokenSource? _candidateAssetsLoadCts;
@@ -493,6 +518,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         _local = local;
         _session = session;
         _api = api ?? App.TryGetService<ErpApiClient>();
+        _ownerScopeDataGate = local?.OwnerScopeDataGate ?? new SemaphoreSlim(1, 1);
+        _selectionPipelineCoordinator = new SelectionPipelineCoordinator(_ownerScopeDataGate);
         _externalStateRefresh = new UiAsyncRefreshCoalescer(
             RefreshAfterRentalStateChangedAsync,
             task => UiTaskHelper.Forget(
@@ -556,6 +583,40 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         InitializeAutoSave();
         if (rental is not null)
             rental.StateChanged += HandleRentalStateChanged;
+    }
+
+    private async Task<TResult> RunOwnerScopeDataOperationAsync<TResult>(
+        Func<CancellationToken, Task<TResult>> operation,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+
+        await _ownerScopeDataGate.WaitAsync(ct);
+        try
+        {
+            return await operation(ct);
+        }
+        finally
+        {
+            _ownerScopeDataGate.Release();
+        }
+    }
+
+    private async Task RunOwnerScopeDataOperationAsync(
+        Func<CancellationToken, Task> operation,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+
+        await _ownerScopeDataGate.WaitAsync(ct);
+        try
+        {
+            await operation(ct);
+        }
+        finally
+        {
+            _ownerScopeDataGate.Release();
+        }
     }
 
     partial void OnSearchTextChanged(string value) => RequestFilterReload();
@@ -855,7 +916,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         var stepStopwatch = Stopwatch.StartNew();
 
         StatusMessage = "렌탈 청구관리 화면을 준비하는 중입니다. 필터와 임시 저장값을 먼저 불러옵니다.";
-        await ReloadFiltersAsync();
+        await RunOwnerScopeDataOperationAsync(
+            _ => ReloadFiltersAsync(),
+            _lifetimeCts.Token);
         LogRentalBillingViewModelLoadStep("Rental billing filters load", stepStopwatch);
 
         stepStopwatch.Restart();
@@ -865,7 +928,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             StatusMessage = "이전 작성 중인 청구 설정을 확인하는 중입니다.";
             var restoredDraft = await RestoreAutoSaveDraftAsync();
             if (!restoredDraft)
-                NewProfile();
+                ResetNewProfileEditor();
 
             StatusMessage = restoredDraft
                 ? "이전 작성 중인 청구 설정을 복원했습니다. 청구 목록은 백그라운드에서 조회 중입니다."
@@ -1304,7 +1367,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                     }
                     else
                     {
-                        NewProfile();
+                        await ClearAutoSaveDraftCoreAsync(ct);
+                        ResetNewProfileEditor();
                     }
                 }
             }
@@ -1590,7 +1654,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         BillingCreatedSinceLastConsume = false;
         var targetId = SelectedRow.Source.Id;
         var expectedRevision = SelectedRow.Source.Revision;
-        var result = await _rental.StartBillingAsync(targetId, ReferenceDate, _session, expectedRevision: expectedRevision);
+        var result = await RunOwnerScopeDataOperationAsync(
+            _ => _rental.StartBillingAsync(targetId, ReferenceDate, _session, expectedRevision: expectedRevision),
+            _lifetimeCts.Token);
         StatusMessage = result.Message;
         if (!result.Success)
         {
@@ -1642,7 +1708,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             var expectedRevision = aggregateRow.GroupedProfileRevisions.TryGetValue(targetId, out var revision)
                 ? revision
                 : (long?)null;
-            var result = await _rental.StartBillingAsync(targetId, ReferenceDate, _session, expectedRevision: expectedRevision);
+            var result = await RunOwnerScopeDataOperationAsync(
+                _ => _rental.StartBillingAsync(targetId, ReferenceDate, _session, expectedRevision: expectedRevision),
+                _lifetimeCts.Token);
             if (result.Success)
             {
                 successCount++;
@@ -1712,7 +1780,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         var targetId = SelectedRow.Source.Id;
         var expectedRevision = SelectedRow.Source.Revision;
-        var result = await _rental.HoldBillingAsync(targetId, ReferenceDate, string.Empty, _session, expectedRevision: expectedRevision);
+        var result = await RunOwnerScopeDataOperationAsync(
+            _ => _rental.HoldBillingAsync(targetId, ReferenceDate, string.Empty, _session, expectedRevision: expectedRevision),
+            _lifetimeCts.Token);
         StatusMessage = result.Message;
         if (!result.Success)
         {
@@ -1754,7 +1824,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         var targetId = SelectedRow.Source.Id;
         var expectedRevision = SelectedRow.Source.Revision;
-        var result = await _rental.CancelBillingAsync(targetId, ReferenceDate, string.Empty, _session, expectedRevision: expectedRevision);
+        var result = await RunOwnerScopeDataOperationAsync(
+            _ => _rental.CancelBillingAsync(targetId, ReferenceDate, string.Empty, _session, expectedRevision: expectedRevision),
+            _lifetimeCts.Token);
         StatusMessage = result.Message;
         if (!result.Success)
         {
@@ -1797,7 +1869,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         var targetId = SelectedRow.Source.Id;
         var settledAmount = EditSettledAmount > 0m ? EditSettledAmount : (decimal?)null;
         var expectedRevision = SelectedRow.Source.Revision;
-        var result = await _rental.RegisterBillingSettlementAsync(targetId, ReferenceDate, settledAmount, string.Empty, _session, expectedRevision: expectedRevision);
+        var result = await RunOwnerScopeDataOperationAsync(
+            _ => _rental.RegisterBillingSettlementAsync(targetId, ReferenceDate, settledAmount, string.Empty, _session, expectedRevision: expectedRevision),
+            _lifetimeCts.Token);
         StatusMessage = result.Message;
         if (!result.Success)
         {
@@ -1869,12 +1943,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         IsBusy = true;
         try
         {
-            var result = await _rental.DeleteBillingHistoryAsync(
-                targetId,
-                history.BillingRunId,
-                _session,
-                expectedRevision: SelectedRow.Source.Revision,
-                expectedInvoiceRevision: history.InvoiceRevision);
+            var result = await RunOwnerScopeDataOperationAsync(
+                _ => _rental.DeleteBillingHistoryAsync(
+                    targetId,
+                    history.BillingRunId,
+                    _session,
+                    expectedRevision: SelectedRow.Source.Revision,
+                    expectedInvoiceRevision: history.InvoiceRevision),
+                _lifetimeCts.Token);
             StatusMessage = result.Message;
             if (!result.Success)
             {
@@ -1933,9 +2009,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         var targetProfileId = SelectedRow.Source.Id;
         var targetSelectionId = SelectedRow.SelectionId;
-        var result = SelectedRow.HasPersistedProfile
-            ? await _rental.DeleteBillingProfileAsync(targetProfileId, _session, SelectedRow.Source.Revision)
-            : await _rental.ExcludeUnlinkedBillingAssetFromBillingListAsync(targetSelectionId, _session);
+        var result = await RunOwnerScopeDataOperationAsync(
+            _ => SelectedRow.HasPersistedProfile
+                ? _rental.DeleteBillingProfileAsync(targetProfileId, _session, SelectedRow.Source.Revision)
+                : _rental.ExcludeUnlinkedBillingAssetFromBillingListAsync(targetSelectionId, _session),
+            _lifetimeCts.Token);
         if (!result.Success)
         {
             StatusMessage = result.Message;
@@ -1954,7 +2032,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
 
         await ReloadAsync();
-        NewProfile();
+        await ClearAutoSaveDraftAsync();
+        ResetNewProfileEditor();
         StatusMessage = result.Message;
     }
 
@@ -2006,7 +2085,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         var failureMessages = new List<string>();
         foreach (var row in persistedTargets)
         {
-            var result = await _rental.DeleteBillingProfileAsync(row.Source.Id, _session, row.Source.Revision);
+            var result = await RunOwnerScopeDataOperationAsync(
+                _ => _rental.DeleteBillingProfileAsync(row.Source.Id, _session, row.Source.Revision),
+                _lifetimeCts.Token);
             if (result.Success)
             {
                 successCount++;
@@ -2022,7 +2103,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         var excludedUnlinkedCount = 0;
         foreach (var row in unlinkedTargets)
         {
-            var result = await _rental.ExcludeUnlinkedBillingAssetFromBillingListAsync(row.SelectionId, _session);
+            var result = await RunOwnerScopeDataOperationAsync(
+                _ => _rental.ExcludeUnlinkedBillingAssetFromBillingListAsync(row.SelectionId, _session),
+                _lifetimeCts.Token);
             if (result.Success)
             {
                 excludedUnlinkedCount++;
@@ -2036,7 +2119,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
 
         await ReloadAsync();
-        NewProfile();
+        await ClearAutoSaveDraftAsync();
+        ResetNewProfileEditor();
 
         var skippedPermissionMessage = skippedPermissionCount > 0
             ? $" / 권한/담당지점 제외 {skippedPermissionCount:N0}건"
@@ -2135,14 +2219,16 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         var targetId = SelectedRow.Source.Id;
         var expectedRevision = SelectedRow.Source.Revision;
-        var result = await _rental.MarkBillingCompletedAsync(
-            targetId,
-            ReferenceDate,
-            "완료",
-            string.Empty,
-            _session,
-            expectedRevision: expectedRevision,
-            billingRunId: SelectedRow.CurrentBillingRunId);
+        var result = await RunOwnerScopeDataOperationAsync(
+            _ => _rental.MarkBillingCompletedAsync(
+                targetId,
+                ReferenceDate,
+                "완료",
+                string.Empty,
+                _session,
+                expectedRevision: expectedRevision,
+                billingRunId: SelectedRow.CurrentBillingRunId),
+            _lifetimeCts.Token);
         StatusMessage = result.Message;
         if (!result.Success)
         {
@@ -2165,9 +2251,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void NewProfile()
+    private async Task NewProfile()
     {
-        DiscardAutoSaveDraft();
+        await ClearAutoSaveDraftAsync(_lifetimeCts.Token);
+        ResetNewProfileEditor();
+    }
+
+    private void ResetNewProfileEditor()
+    {
         _hasOrphanedEditorDraft = false;
         _pendingAssetLinkEdits.Clear();
         _editRevision = 0;
@@ -2305,10 +2396,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return;
 
         var groupKey = aggregateRow.CustomerGroupKey;
-        var result = await _rental.UpdateBillingProfileCyclesAsync(
-            aggregateRow.GroupedProfileRevisions,
-            targetCycleMonths,
-            _session);
+        var result = await RunOwnerScopeDataOperationAsync(
+            _ => _rental.UpdateBillingProfileCyclesAsync(
+                aggregateRow.GroupedProfileRevisions,
+                targetCycleMonths,
+                _session),
+            _lifetimeCts.Token);
         StatusMessage = result.Message;
         if (!result.Success)
         {
@@ -2606,7 +2699,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return;
         }
 
-        var request = await _rental.CreateAssetAssignmentHistoryEditRequestAsync(SelectedIncludedAsset.AssetId, _session);
+        var request = await RunOwnerScopeDataOperationAsync(
+            _ => _rental.CreateAssetAssignmentHistoryEditRequestAsync(SelectedIncludedAsset.AssetId, _session),
+            _lifetimeCts.Token);
         if (request is null)
         {
             StatusMessage = "임대이력 추가 정보를 만들 수 없습니다.";
@@ -2628,10 +2723,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return;
         }
 
-        var request = await _rental.CreateAssetAssignmentHistoryEditRequestAsync(
-            SelectedIncludedAsset.AssetId,
-            _session,
-            SelectedIncludedAssetAssignmentHistory.HistoryId);
+        var request = await RunOwnerScopeDataOperationAsync(
+            _ => _rental.CreateAssetAssignmentHistoryEditRequestAsync(
+                SelectedIncludedAsset.AssetId,
+                _session,
+                SelectedIncludedAssetAssignmentHistory.HistoryId),
+            _lifetimeCts.Token);
         if (request is null)
         {
             StatusMessage = "수정할 임대이력을 찾을 수 없습니다.";
@@ -2666,7 +2763,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         IsBusy = true;
         try
         {
-            var result = await _rental.DeleteAssetAssignmentHistoryAsync(SelectedIncludedAssetAssignmentHistory.HistoryId, _session);
+            var result = await RunOwnerScopeDataOperationAsync(
+                _ => _rental.DeleteAssetAssignmentHistoryAsync(SelectedIncludedAssetAssignmentHistory.HistoryId, _session),
+                _lifetimeCts.Token);
             StatusMessage = result.Message;
             if (!result.Success)
             {
@@ -2674,7 +2773,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 return;
             }
 
-            await LoadIncludedAssetAssignmentHistoriesAsync(assetId);
+            await RunOwnerScopeDataOperationAsync(
+                ct => LoadIncludedAssetAssignmentHistoriesAsync(assetId, ct),
+                _lifetimeCts.Token);
         }
         finally
         {
@@ -2697,7 +2798,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         IsBusy = true;
         try
         {
-            var result = await _rental.SaveAssetAssignmentHistoryAsync(request, _session);
+            var result = await RunOwnerScopeDataOperationAsync(
+                _ => _rental.SaveAssetAssignmentHistoryAsync(request, _session),
+                _lifetimeCts.Token);
             StatusMessage = result.Message;
             if (!result.Success)
             {
@@ -2705,7 +2808,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 return;
             }
 
-            await LoadIncludedAssetAssignmentHistoriesAsync(request.AssetId);
+            await RunOwnerScopeDataOperationAsync(
+                ct => LoadIncludedAssetAssignmentHistoriesAsync(request.AssetId, ct),
+                _lifetimeCts.Token);
             SelectedIncludedAssetAssignmentHistory = IncludedAssetAssignmentHistories
                 .FirstOrDefault(history => history.HistoryId == result.EntityId)
                 ?? IncludedAssetAssignmentHistories.FirstOrDefault();
@@ -3060,12 +3165,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             .Where(assetId => assetId != Guid.Empty)
             .Distinct()
             .ToList();
-        var assets = await _rental.GetIncludedBillingAssetsAsync(
-            null,
-            assetIds,
-            EditCustomerId,
-            EditOfficeCode,
-            _session);
+        var assets = await RunOwnerScopeDataOperationAsync(
+            _ => _rental.GetIncludedBillingAssetsAsync(
+                null,
+                assetIds,
+                EditCustomerId,
+                EditOfficeCode,
+                _session),
+            _lifetimeCts.Token);
         var assetsById = assets.ToDictionary(asset => asset.Id);
         if (assetIds.Any(assetId => !assetsById.ContainsKey(assetId)))
             return null;
@@ -3146,7 +3253,9 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return;
         }
 
-        var contract = await _local.GetPreferredCustomerContractAsync(EditCustomerId.Value, _session);
+        var contract = await RunOwnerScopeDataOperationAsync(
+            _ => _local.GetPreferredCustomerContractAsync(EditCustomerId.Value, _session),
+            _lifetimeCts.Token);
         if (contract is null)
         {
             StatusMessage = "해당 거래처에 등록된 계약서가 없습니다.";
@@ -3563,12 +3672,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return;
 
         var stopwatch = Stopwatch.StartNew();
-        var histories = await _rental.GetBillingHistoryRowsAsync(
-            profileIds,
-            _session,
-            ReferenceDate,
-            BillingHistoryDisplayLimit,
-            CancellationToken.None);
+        var histories = await RunOwnerScopeDataOperationAsync(
+            ct => _rental.GetBillingHistoryRowsAsync(
+                profileIds,
+                _session,
+                ReferenceDate,
+                BillingHistoryDisplayLimit,
+                ct),
+            _lifetimeCts.Token);
         if (SelectedRow is null || !ResolveBillingHistoryProfileIds(SelectedRow).Contains(profileId))
             return;
 

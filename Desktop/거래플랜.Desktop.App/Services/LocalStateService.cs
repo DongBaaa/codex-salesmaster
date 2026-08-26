@@ -10,6 +10,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -5059,7 +5060,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task SetSettingAsync(string key, string value, CancellationToken ct = default(CancellationToken))
 	{
-		for (int attempt = 0; attempt < 2; attempt++)
+		const int maximumAttempts = 4;
+		for (int attempt = 0; attempt < maximumAttempts; attempt++)
 		{
 			try
 			{
@@ -5083,9 +5085,16 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				await _db.SaveChangesAsync(ct);
 				break;
 			}
-			catch (DbUpdateConcurrencyException) when (attempt == 0)
+			catch (DbUpdateConcurrencyException) when (attempt < maximumAttempts - 1)
 			{
 				_db.ChangeTracker.Clear();
+			}
+			catch (DbUpdateException ex) when (
+				attempt < maximumAttempts - 1 &&
+				ex.InnerException is SqliteException sqliteException &&
+				sqliteException.SqliteErrorCode is 5 or 6)
+			{
+				await Task.Delay(TimeSpan.FromMilliseconds(50 * (attempt + 1)), ct);
 			}
 		}
 	}

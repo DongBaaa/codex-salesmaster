@@ -1,6 +1,6 @@
 ﻿# 거래플랜
 
-- 문서 기준시점: 2026-08-22
+- 문서 기준시점: 2026-08-26
 - 반영 범위: 현재 작업트리의 소스·테스트 상태와 `trade.2884.kr` 공개 stable manifest를 분리해 기록
 - 상태 태그: `[공개]`, `[로컬검증]`, `[검증필요]`, `[승인대기]`
 - 상세 진행 상태와 검증 증거: `D:\거래플랜\tasks\거래플랜-전체-품질화-Goal-현황.md`
@@ -12,19 +12,20 @@
 
 ## 현재 버전 상태
 ### 공개 stable
-- `[공개]` Windows PC `1.1.692`
+- `[공개]` Windows PC `1.1.694`
 - `[공개]` Android 표시 버전은 `0.2.82`입니다. APK 내부 versionCode는 공개 매니페스트에 없으므로 공개값으로 단정하지 않습니다.
 - `[공개]` 2026-08-22 확인에서 `trade.2884.kr/healthz`와 stable manifest는 HTTP 200·redirect 0이며 `fileDeletionLeaseProtocol=shared-flock-v1`입니다.
 - 저장소에서 재현 가능한 공개 버전·파일명·SHA-256 기준은 `D:\거래플랜\배포\stable.json`입니다. `배포\업데이트\manifest\stable.json`은 게시 과정의 로컬 산출물이며 live manifest와는 별도로 확인합니다.
 
 ### 현재 소스·테스트판
-- `[로컬검증]` Windows PC 소스 `1.1.693`, FileVersion `1.1.693.0` (공개 stable `1.1.692`보다 높은 다음 업데이트 후보)
+- `[로컬검증]` Windows PC 소스 `1.1.695`, FileVersion `1.1.695.0` (공개 stable `1.1.694`보다 높은 다음 업데이트 후보)
 - `[로컬검증]` Android 소스 `0.2.83`, versionCode `194`
 - `[로컬검증]` 서버 전체 1,478건 통과, PostgreSQL 전용 20건 건너뜀, 실패 0
 - `[로컬검증]` 별도 ephemeral PostgreSQL 업무 회귀 22/22, 데스크톱 전체 3,568/3,568 통과
 - `[로컬검증]` 격리 `Run-All.cmd`, 우선 업무 창 7/7, Multi-PC 24/24, 제한 계정 허용 11/11·차단 2/2 통과
 - `[로컬검증]` WPF 36개 창 768/768, Windows native/앱 프린터 목록 11/11 exact, Android 실제 에뮬레이터 18개 화면 1,044/1,044 통과
-- 이번 품질화 Goal의 현재 소스에 대한 정식 패키지 생성, Linux PC live 반영, 버전 게시, 서명, 실제 기기 설치, Git stage/commit/push는 수행하지 않았습니다.
+- 현재 소스 `1.1.695`의 정식 패키지 생성과 Linux PC live 반영은 이번 수정 검증 완료 뒤 진행합니다. 공개 신뢰 서명과 실제 기기·운영 서명은 별도 외부 경계입니다.
+- 이 문서 갱신만으로 정식 패키지 생성, Linux PC live 반영, 버전 게시, 서명, 실제 기기 설치, Git stage/commit/push는 수행하지 않았습니다.
 
 ### 승인·실사용 검증 대기
 - `[승인대기]` Windows Authenticode/RFC3161 정식 서명과 기존 설치본 덮어쓰기·롤백 설치

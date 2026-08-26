@@ -504,6 +504,38 @@ public sealed class RentalBillingSelectionCacheTests
     }
 
     [Fact]
+    public async Task SelectionPipelineCoordinator_WaitsForOwnerScopeDataGateBeforeDatabaseWork()
+    {
+        using var ownerScopeDataGate = new SemaphoreSlim(1, 1);
+        await ownerScopeDataGate.WaitAsync();
+        var ownerGateReleased = false;
+        using var coordinator = new SelectionPipelineCoordinator(ownerScopeDataGate);
+        var operationEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        try
+        {
+            var operationTask = coordinator.RunExclusiveAsync(_ =>
+            {
+                operationEntered.SetResult();
+                return Task.CompletedTask;
+            }, CancellationToken.None);
+
+            await Task.Delay(50);
+            Assert.False(operationEntered.Task.IsCompleted);
+
+            ownerScopeDataGate.Release();
+            ownerGateReleased = true;
+            await operationTask.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(operationEntered.Task.IsCompleted);
+        }
+        finally
+        {
+            if (!ownerGateReleased)
+                ownerScopeDataGate.Release();
+        }
+    }
+
+    [Fact]
     public async Task SelectionPipelineCoordinator_ExclusiveAfterCurrent_WaitsWithoutCancelingCurrentSelection()
     {
         using var coordinator = new SelectionPipelineCoordinator();
@@ -1253,6 +1285,21 @@ public sealed class RentalBillingSelectionCacheTests
     }
 
     [Fact]
+    public void RentalBillingViewModel_LoadAndAutoSave_UseOwnerScopeGateWithoutFireAndForgetDraftClear()
+    {
+        var source = ReadRentalBillingViewModelSource();
+        var autoSaveSource = ReadRentalBillingViewModelAutoSaveSource();
+
+        Assert.Contains("local?.OwnerScopeDataGate", source, StringComparison.Ordinal);
+        Assert.Contains("new SelectionPipelineCoordinator(_ownerScopeDataGate)", source, StringComparison.Ordinal);
+        Assert.Contains("await ClearAutoSaveDraftCoreAsync(ct);", source, StringComparison.Ordinal);
+        Assert.Contains("ResetNewProfileEditor();", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("DiscardAutoSaveDraft();", source, StringComparison.Ordinal);
+        Assert.Contains("RunOwnerScopeDataOperationAsync(ClearAutoSaveDraftCoreAsync", autoSaveSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("_ = SafeClearDraftAsync()", autoSaveSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RentalStateService_LegacyColumnProbe_DoesNotDisposeDbContextOwnedConnection()
     {
         var appRoot = Path.Combine(
@@ -1415,6 +1462,18 @@ public sealed class RentalBillingSelectionCacheTests
             "\uAC70\uB798\uD50C\uB79C.Desktop.App",
             "ViewModels",
             "RentalBillingViewModel.cs");
+        return File.ReadAllText(sourcePath);
+    }
+
+    private static string ReadRentalBillingViewModelAutoSaveSource()
+    {
+        var root = FindRepositoryRoot();
+        var sourcePath = Path.Combine(
+            root,
+            "Desktop",
+            "\uAC70\uB798\uD50C\uB79C.Desktop.App",
+            "ViewModels",
+            "RentalBillingViewModel.AutoSave.cs");
         return File.ReadAllText(sourcePath);
     }
 
