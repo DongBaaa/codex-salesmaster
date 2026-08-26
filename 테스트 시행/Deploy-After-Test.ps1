@@ -680,8 +680,9 @@ if (-not $SkipLinuxPc) {
         $linuxArgs += @('-PreDeployOutputDirectory', $PreDeployOutputDirectory)
     }
     if ($PreDeployAllowedIntegrityWarningCodes.Count -gt 0) {
-        $linuxArgs += '-PreDeployAllowedIntegrityWarningCodes'
-        $linuxArgs += $PreDeployAllowedIntegrityWarningCodes
+        $linuxArgs += @(
+            '-PreDeployAllowedIntegrityWarningCodes',
+            ($PreDeployAllowedIntegrityWarningCodes -join ','))
     }
     if (-not [string]::IsNullOrWhiteSpace($PostDeployBaseUrl)) {
         $linuxArgs += @('-PostDeployBaseUrl', $PostDeployBaseUrl)
@@ -693,8 +694,9 @@ if (-not $SkipLinuxPc) {
         $linuxArgs += @('-PostDeployOutputDirectory', $PostDeployOutputDirectory)
     }
     if ($PostDeployAllowedIntegrityWarningCodes.Count -gt 0) {
-        $linuxArgs += '-PostDeployAllowedIntegrityWarningCodes'
-        $linuxArgs += $PostDeployAllowedIntegrityWarningCodes
+        $linuxArgs += @(
+            '-PostDeployAllowedIntegrityWarningCodes',
+            ($PostDeployAllowedIntegrityWarningCodes -join ','))
     }
 
     Write-Info '메인(live) stable 배포본의 Linux PC 반영을 진행합니다.'

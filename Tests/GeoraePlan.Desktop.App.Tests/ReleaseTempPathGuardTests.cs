@@ -5912,6 +5912,27 @@ public sealed class ReleaseTempPathGuardTests
             "$arguments += $AllowedIntegrityWarningCodes",
             source,
             StringComparison.Ordinal);
+
+        AssertInOrder(
+            source,
+            "if ($PreDeployAllowedIntegrityWarningCodes.Count -gt 0)",
+            "$linuxArgs += @(",
+            "'-PreDeployAllowedIntegrityWarningCodes',",
+            "($PreDeployAllowedIntegrityWarningCodes -join ','))");
+        AssertInOrder(
+            source,
+            "if ($PostDeployAllowedIntegrityWarningCodes.Count -gt 0)",
+            "$linuxArgs += @(",
+            "'-PostDeployAllowedIntegrityWarningCodes',",
+            "($PostDeployAllowedIntegrityWarningCodes -join ','))");
+        Assert.DoesNotContain(
+            "$linuxArgs += $PreDeployAllowedIntegrityWarningCodes",
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "$linuxArgs += $PostDeployAllowedIntegrityWarningCodes",
+            source,
+            StringComparison.Ordinal);
     }
 
     [Fact]
