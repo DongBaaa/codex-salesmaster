@@ -1610,7 +1610,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         if (result.RelatedEntityId != Guid.Empty)
             InvoiceToOpenAfterClose = result.RelatedEntityId;
-        BillingCreatedSinceLastConsume = true;
+        BillingCreatedSinceLastConsume = !result.RelatedEntityAlreadyExisted;
 
         await ClearAutoSaveDraftAsync();
         await ReloadAsync();
@@ -1633,6 +1633,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         InvoiceToOpenAfterClose = null;
         BillingCreatedSinceLastConsume = false;
         var successCount = 0;
+        var existingCount = 0;
         var relatedInvoiceIds = new List<Guid>();
         var failureMessages = new List<string>();
 
@@ -1645,6 +1646,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             if (result.Success)
             {
                 successCount++;
+                if (result.RelatedEntityAlreadyExisted)
+                    existingCount++;
                 if (result.RelatedEntityId != Guid.Empty)
                     relatedInvoiceIds.Add(result.RelatedEntityId);
                 continue;
@@ -1659,7 +1662,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (distinctInvoiceIds.Count == 1)
             InvoiceToOpenAfterClose = distinctInvoiceIds[0];
 
-        if (successCount > 0)
+        if (successCount > existingCount)
         {
             BillingCreatedSinceLastConsume = true;
             await ClearAutoSaveDraftAsync();
@@ -1676,7 +1679,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         if (failureMessages.Count == 0)
         {
-            StatusMessage = $"거래처별 요약에 포함된 개별 청구 프로필 {successCount:N0}건을 청구 시작했습니다.{skippedUnlinkedText}";
+            var createdCount = successCount - existingCount;
+            StatusMessage = existingCount > 0
+                ? $"거래처별 요약 청구 처리: 새 청구 {createdCount:N0}건 / 기존 청구 불러오기 {existingCount:N0}건.{skippedUnlinkedText}"
+                : $"거래처별 요약에 포함된 개별 청구 프로필 {successCount:N0}건을 청구 시작했습니다.{skippedUnlinkedText}";
             return;
         }
 

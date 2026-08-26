@@ -7462,6 +7462,10 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
             resetEmptyCredentials >= 0 &&
             resetEmptyCredentials < seedCredentialRead,
             "Fresh preparation does not assign an empty credential set before the read branch.");
+        Assert.Contains(
+            ",@()",
+            seedFunction[resetEmptyCredentials..seedCredentialRead],
+            StringComparison.Ordinal);
         Assert.True(
             resetVerification > seedCredentialRead &&
             resetVerification < firstUserMutation,

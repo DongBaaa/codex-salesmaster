@@ -1236,6 +1236,67 @@ public sealed class RentalBillingRunStateTests
     }
 
     [Fact]
+    public async Task StartBilling_DuplicateConfiguredPeriodLoadsExistingInvoiceWithoutCreatingNextPeriod()
+    {
+        PrepareAppRoot("georaeplan-rental-start-duplicate-load-existing");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Duplicate billing period customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            db.RentalBillingProfiles.Add(CreateBillingProfile(profileId, assetId, customerName, customerId));
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+            var referenceDate = new DateOnly(2026, 5, 25);
+
+            var first = await service.StartBillingAsync(profileId, referenceDate, session);
+            Assert.True(first.Success, first.Message);
+
+            var profile = await db.RentalBillingProfiles.SingleAsync(current => current.Id == profileId);
+            var runs = DeserializeRuns(profile.BillingRunsJson);
+            var existingRun = Assert.Single(runs);
+            existingRun.Status = PaymentFlowConstants.BillingStatusCompleted;
+            profile.BillingRunsJson = JsonSerializer.Serialize(runs);
+            profile.LastBilledDate = existingRun.ScheduledDate;
+            await db.SaveChangesAsync();
+            var runsJsonBeforeDuplicateClick = profile.BillingRunsJson;
+            db.ChangeTracker.Clear();
+
+            var duplicate = await service.StartBillingAsync(profileId, referenceDate, session);
+
+            Assert.True(duplicate.Success, duplicate.Message);
+            Assert.True(duplicate.RelatedEntityAlreadyExisted);
+            Assert.Equal(first.RelatedEntityId, duplicate.RelatedEntityId);
+            Assert.Contains("불러왔습니다", duplicate.Message, StringComparison.Ordinal);
+            Assert.Equal(1, await db.Invoices.IgnoreQueryFilters()
+                .CountAsync(current => current.LinkedRentalBillingProfileId == profileId));
+
+            var persisted = await db.RentalBillingProfiles.AsNoTracking()
+                .SingleAsync(current => current.Id == profileId);
+            Assert.Equal(runsJsonBeforeDuplicateClick, persisted.BillingRunsJson);
+            Assert.Single(DeserializeRuns(persisted.BillingRunsJson));
+            Assert.DoesNotContain(
+                db.ChangeTracker.Entries(),
+                entry => entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task StartBilling_DoesNotCarryPreviousRunSettlementIntoNextRun()
     {
         PrepareAppRoot("georaeplan-rental-start-no-settlement-carryover");

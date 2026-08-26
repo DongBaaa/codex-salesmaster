@@ -5898,6 +5898,41 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
+    public void DeployAfterTest_ForwardsIntegrityWarningCodesAsOneNormalizedArgument()
+    {
+        var source = ReadRepositoryFile("테스트 시행", "Deploy-After-Test.ps1");
+
+        AssertInOrder(
+            source,
+            "if ($AllowedIntegrityWarningCodes.Count -gt 0)",
+            "$arguments += @(",
+            "'-AllowedIntegrityWarningCodes',",
+            "($AllowedIntegrityWarningCodes -join ','))");
+        Assert.DoesNotContain(
+            "$arguments += $AllowedIntegrityWarningCodes",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OperationalGate_RequiresCurrentTenantIntegrityAccountsButTreatsLegacyAdminAsOptional()
+    {
+        var source = ReadRepositoryFile("tools", "ops", "Invoke-GeoraePlanOperationalGate.ps1");
+        var function = ExtractPowerShellScriptSection(
+            source,
+            "function Test-RequiredIntegrityAccount",
+            "$resolvedRoot = Resolve-ProjectRoot");
+
+        Assert.Contains("'ITWORLD'", function, StringComparison.Ordinal);
+        Assert.Contains("'USENET'", function, StringComparison.Ordinal);
+        Assert.DoesNotContain("'ADMIN'", function, StringComparison.Ordinal);
+        Assert.Contains(
+            "$status = if (Test-RequiredIntegrityAccount -Alias $alias) { 'FAIL' } else { 'SKIP' }",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void RentalTemplateCandidateExportScript_IsSelectOnlyAndRedactsSensitiveRowsByDefault()
     {
         var source = ReadRepositoryFile(

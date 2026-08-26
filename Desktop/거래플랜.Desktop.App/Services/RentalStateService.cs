@@ -6754,113 +6754,97 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var invoiceDate = NormalizeReferenceDate(referenceDate);
         // 청구일/청구일 유형은 미청구 알림과 예정 기준일 계산에만 사용합니다.
         // 실제 전표 작성일은 사용자가 선택한 조회/작성 기준일(작성 당일)로 저장합니다.
-        var currentRun = GetOrCreateBillingRun(profile, referenceDate, persistChanges: true);
+        // 같은 기준기간에 이미 전표가 있으면 다음 기간으로 넘기거나 기존 전표를 다시 저장하지 않고
+        // 해당 전표를 그대로 엽니다. 실제 생성이 필요할 때만 청구 실행 목록을 변경합니다.
+        var currentRun = GetOrCreateBillingRun(
+            profile,
+            referenceDate,
+            persistChanges: false,
+            preferConfiguredExistingRun: true);
+        if (currentRun is null)
+            return LocalMutationResult.Denied("선택한 조회/작성 기준일의 청구 정보를 만들 수 없습니다.");
+
+        var linkedInvoice = await GetActiveBillingInvoiceAsync(profile, currentRun.RunId, ct);
+        if (linkedInvoice is not null)
+        {
+            // 미리보기 계산은 정규화된 일정 값을 추적 엔터티에 반영할 수 있습니다.
+            // 기존 전표를 여는 경로는 완전한 읽기 동작이어야 하므로 저장값으로 되돌립니다.
+            await _db.Entry(profile).ReloadAsync(ct);
+            return LocalMutationResult.Ok(
+                billingProfileId,
+                $"이미 생성된 {currentRun.PeriodLabel} 렌탈 청구 전표를 불러왔습니다.",
+                linkedInvoice.Id,
+                relatedEntityAlreadyExisted: true);
+        }
+
+        currentRun = GetOrCreateBillingRun(
+            profile,
+            referenceDate,
+            persistChanges: true,
+            preferConfiguredExistingRun: true);
         if (currentRun is null)
             return LocalMutationResult.Denied("선택한 조회/작성 기준일의 청구 정보를 만들 수 없습니다.");
 
         var templateItems = GetBillingTemplateItems(profile);
-        var linkedInvoice = await GetActiveBillingInvoiceAsync(profile, currentRun.RunId, ct);
-        var reusedExistingInvoice = linkedInvoice is not null;
         Guid invoiceId;
         decimal billedAmount;
-        if (linkedInvoice is not null)
+        var customerId = profile.CustomerId;
+        if (!customerId.HasValue || customerId.Value == Guid.Empty)
+            customerId = await ResolveCustomerIdAsync(
+                profile.CustomerName,
+                profile.BusinessNumber,
+                ct,
+                preferredOfficeCode: profile.ResponsibleOfficeCode,
+                preferredTenantCode: profile.TenantCode);
+        if (!customerId.HasValue || customerId.Value == Guid.Empty)
+            return LocalMutationResult.Denied("렌탈 청구 전표를 만들 거래처를 찾을 수 없습니다.");
+
+        profile.CustomerId = customerId;
+
+        templateItems = currentRun.Items.Count > 0
+            ? currentRun.Items
+            : GetBillingTemplateItems(profile);
+        var lineBuildResult = await BuildRentalBillingInvoiceLinesAsync(profile, currentRun, templateItems, session, ct);
+        if (!lineBuildResult.Success)
+            return LocalMutationResult.Denied(lineBuildResult.Message);
+
+        var serializedTemplateItems = SerializeBillingTemplateItems(templateItems);
+        if (!string.Equals(serializedTemplateItems, profile.BillingTemplateJson ?? string.Empty, StringComparison.Ordinal))
         {
-            var lineBuildResult = await BuildRentalBillingInvoiceLinesAsync(profile, currentRun, templateItems, session, ct);
-            if (!lineBuildResult.Success)
-                return LocalMutationResult.Denied(lineBuildResult.Message);
-
-            if (ShouldRebuildRentalBillingInvoiceLines(linkedInvoice, lineBuildResult.Lines))
-            {
-                if (HasRentalInvoiceSettlement(linkedInvoice))
-                {
-                    return LocalMutationResult.Denied("이미 수금 또는 세금계산서 처리된 렌탈 청구 전표는 자동으로 다시 만들 수 없습니다. 기존 전표를 확인한 뒤 필요한 경우 새 청구로 처리하세요.");
-                }
-
-                linkedInvoice.Lines = lineBuildResult.Lines;
-                var rebuiltInvoiceResult = await SaveRentalBillingInvoiceAsync(linkedInvoice, session, ct);
-                if (!rebuiltInvoiceResult.Success || rebuiltInvoiceResult.Invoice is null)
-                    return LocalMutationResult.Denied(rebuiltInvoiceResult.Message);
-                var rebuiltInvoice = rebuiltInvoiceResult.Invoice;
-                invoiceId = rebuiltInvoice.Id;
-                billedAmount = rebuiltInvoice.TotalAmount;
-                currentRun.Items = CloneTemplateItemsForRun(templateItems, Math.Max(1, currentRun.CycleMonths));
-                currentRun.BilledAmount = billedAmount;
-            }
-            else if (NormalizeRentalBillingInvoiceLineItemNames(linkedInvoice, currentRun))
-            {
-                var normalizedInvoiceResult = await SaveRentalBillingInvoiceAsync(linkedInvoice, session, ct);
-                if (!normalizedInvoiceResult.Success || normalizedInvoiceResult.Invoice is null)
-                    return LocalMutationResult.Denied(normalizedInvoiceResult.Message);
-                var normalizedInvoice = normalizedInvoiceResult.Invoice;
-                invoiceId = normalizedInvoice.Id;
-                billedAmount = normalizedInvoice.TotalAmount;
-            }
-            else
-            {
-                invoiceId = linkedInvoice.Id;
-                billedAmount = linkedInvoice.TotalAmount;
-            }
+            profile.BillingTemplateJson = serializedTemplateItems;
+            profile.MonthlyAmount = templateItems.Sum(ResolveTemplateMonthlyAmount);
+            profile.ItemName = BuildProfileItemName(profile, templateItems);
+            await SyncBillingProfileAssetsAsync(
+                profile,
+                templateItems,
+                null,
+                session,
+                HasExplicitIncludedAssetIds(templateItems),
+                ct);
         }
-        else
+
+        var officeCode = NormalizeOfficeCode(profile.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
+        var invoice = new LocalInvoice
         {
-            var customerId = profile.CustomerId;
-            if (!customerId.HasValue || customerId.Value == Guid.Empty)
-                customerId = await ResolveCustomerIdAsync(
-                    profile.CustomerName,
-                    profile.BusinessNumber,
-                    ct,
-                    preferredOfficeCode: profile.ResponsibleOfficeCode,
-                    preferredTenantCode: profile.TenantCode);
-            if (!customerId.HasValue || customerId.Value == Guid.Empty)
-                return LocalMutationResult.Denied("렌탈 청구 전표를 만들 거래처를 찾을 수 없습니다.");
+            Id = Guid.NewGuid(),
+            CustomerId = customerId.Value,
+            VoucherType = VoucherType.Sales,
+            InvoiceDate = invoiceDate,
+            Memo = string.Empty,
+            ResponsibleOfficeCode = officeCode,
+            SourceWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(null, officeCode, officeCode),
+            TaxInvoiceIssued = false,
+            LinkedRentalBillingProfileId = profile.Id,
+            LinkedRentalBillingRunId = currentRun.RunId,
+            Lines = lineBuildResult.Lines
+        };
 
-            profile.CustomerId = customerId;
-
-            templateItems = currentRun.Items.Count > 0
-                ? currentRun.Items
-                : GetBillingTemplateItems(profile);
-            var lineBuildResult = await BuildRentalBillingInvoiceLinesAsync(profile, currentRun, templateItems, session, ct);
-            if (!lineBuildResult.Success)
-                return LocalMutationResult.Denied(lineBuildResult.Message);
-
-            var serializedTemplateItems = SerializeBillingTemplateItems(templateItems);
-            if (!string.Equals(serializedTemplateItems, profile.BillingTemplateJson ?? string.Empty, StringComparison.Ordinal))
-            {
-                profile.BillingTemplateJson = serializedTemplateItems;
-                profile.MonthlyAmount = templateItems.Sum(ResolveTemplateMonthlyAmount);
-                profile.ItemName = BuildProfileItemName(profile, templateItems);
-                await SyncBillingProfileAssetsAsync(
-                    profile,
-                    templateItems,
-                    null,
-                    session,
-                    HasExplicitIncludedAssetIds(templateItems),
-                    ct);
-            }
-
-            var officeCode = NormalizeOfficeCode(profile.ResponsibleOfficeCode, DomainConstants.OfficeUsenet);
-            var invoice = new LocalInvoice
-            {
-                Id = Guid.NewGuid(),
-                CustomerId = customerId.Value,
-                VoucherType = VoucherType.Sales,
-                InvoiceDate = invoiceDate,
-                Memo = string.Empty,
-                ResponsibleOfficeCode = officeCode,
-                SourceWarehouseCode = OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(null, officeCode, officeCode),
-                TaxInvoiceIssued = false,
-                LinkedRentalBillingProfileId = profile.Id,
-                LinkedRentalBillingRunId = currentRun.RunId,
-                Lines = lineBuildResult.Lines
-            };
-
-            var savedInvoiceResult = await SaveRentalBillingInvoiceAsync(invoice, session, ct);
-            if (!savedInvoiceResult.Success || savedInvoiceResult.Invoice is null)
-                return LocalMutationResult.Denied(savedInvoiceResult.Message);
-            var savedInvoice = savedInvoiceResult.Invoice;
-            invoiceId = savedInvoice.Id;
-            billedAmount = savedInvoice.TotalAmount;
-        }
+        var savedInvoiceResult = await SaveRentalBillingInvoiceAsync(invoice, session, ct);
+        if (!savedInvoiceResult.Success || savedInvoiceResult.Invoice is null)
+            return LocalMutationResult.Denied(savedInvoiceResult.Message);
+        var savedInvoice = savedInvoiceResult.Invoice;
+        invoiceId = savedInvoice.Id;
+        billedAmount = savedInvoice.TotalAmount;
 
         // LocalStateService.SaveInvoiceAsync rebuilds inventory snapshots and clears the EF change tracker.
         // Reload the billing profile before writing the post-invoice status/run fields; otherwise the first
@@ -6894,7 +6878,7 @@ WHERE ""AssignedUsername"" <> '';", ct);
             return saveConflict;
         return LocalMutationResult.Ok(
             billingProfileId,
-            reusedExistingInvoice ? "이미 생성된 렌탈 청구 전표를 열었습니다." : "렌탈 청구를 시작했습니다.",
+            "렌탈 청구를 시작했습니다.",
             invoiceId);
     }
 
@@ -12939,8 +12923,22 @@ WHERE ""AssignedUsername"" <> '';", ct);
         LocalRentalBillingProfile profile,
         DateOnly referenceDate,
         bool persistChanges,
+        bool preferConfiguredExistingRun)
+        => GetOrCreateBillingRun(
+            profile,
+            referenceDate,
+            persistChanges,
+            null,
+            null,
+            preferConfiguredExistingRun);
+
+    private RentalBillingRunModel? GetOrCreateBillingRun(
+        LocalRentalBillingProfile profile,
+        DateOnly referenceDate,
+        bool persistChanges,
         IReadOnlyList<RentalBillingTemplateItemModel>? templateItemsOverride,
-        List<RentalBillingRunModel>? runsOverride)
+        List<RentalBillingRunModel>? runsOverride,
+        bool preferConfiguredExistingRun = false)
     {
         ArgumentNullException.ThrowIfNull(profile);
         NormalizeBillingSchedule(profile, referenceDate);
@@ -12977,7 +12975,8 @@ WHERE ""AssignedUsername"" <> '';", ct);
         var applicableRunKey = $"{applicablePeriod.StartDate:yyyyMMdd}-{applicablePeriod.EndDate:yyyyMMdd}";
         var applicableExisting = FindBillingRunByNormalizedKey(runs, applicableRunKey)
                                 ?? FindBillingRunByNormalizedKey(allRuns, applicableRunKey);
-        var useApplicableSchedule = !string.Equals(
+        var useApplicableSchedule = !(preferConfiguredExistingRun && configuredExisting is not null) &&
+                                    !string.Equals(
                                         SyncIdentityGenerator.NormalizeKey(configuredRunKey),
                                         SyncIdentityGenerator.NormalizeKey(applicableRunKey),
                                         StringComparison.Ordinal) &&

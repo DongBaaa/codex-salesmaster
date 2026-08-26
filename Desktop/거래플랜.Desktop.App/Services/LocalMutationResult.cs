@@ -8,13 +8,19 @@ public sealed class LocalMutationResult
     public bool NotFound { get; init; }
     public Guid EntityId { get; init; }
     public Guid RelatedEntityId { get; init; }
+    public bool RelatedEntityAlreadyExisted { get; init; }
     public string Message { get; init; } = string.Empty;
 
-    public static LocalMutationResult Ok(Guid entityId = default, string message = "", Guid relatedEntityId = default) => new()
+    public static LocalMutationResult Ok(
+        Guid entityId = default,
+        string message = "",
+        Guid relatedEntityId = default,
+        bool relatedEntityAlreadyExisted = false) => new()
     {
         Success = true,
         EntityId = entityId,
         RelatedEntityId = relatedEntityId,
+        RelatedEntityAlreadyExisted = relatedEntityAlreadyExisted,
         Message = message
     };
 

@@ -1073,8 +1073,7 @@ function Get-NormalizedIntegrityWarningCodes {
 function Test-RequiredIntegrityAccount {
     param([string]$Alias)
 
-    return [string]::Equals($Alias, 'ADMIN', [System.StringComparison]::OrdinalIgnoreCase) -or
-        [string]::Equals($Alias, 'ITWORLD', [System.StringComparison]::OrdinalIgnoreCase) -or
+    return [string]::Equals($Alias, 'ITWORLD', [System.StringComparison]::OrdinalIgnoreCase) -or
         [string]::Equals($Alias, 'USENET', [System.StringComparison]::OrdinalIgnoreCase)
 }
 

@@ -1429,7 +1429,7 @@ public sealed class RentalBillingDeletionFlowTests
     }
 
     [Fact]
-    public async Task StartBilling_RebuildsUnpaidExistingInvoiceWhenTemplateChanges()
+    public async Task StartBilling_LoadsExistingInvoiceWithoutRebuildingWhenTemplateChanges()
     {
         PrepareAppRoot("georaeplan-rental-start-idempotent");
 
@@ -1478,22 +1478,23 @@ public sealed class RentalBillingDeletionFlowTests
 
             var second = await service.StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
             Assert.True(second.Success, second.Message);
-            Assert.NotEqual(first.RelatedEntityId, second.RelatedEntityId);
+            Assert.True(second.RelatedEntityAlreadyExisted);
+            Assert.Equal(first.RelatedEntityId, second.RelatedEntityId);
+            Assert.Contains("불러왔습니다", second.Message, StringComparison.Ordinal);
 
             var invoices = await db.Invoices
                 .Where(current => current.LinkedRentalBillingProfileId == profileId)
                 .ToListAsync();
-            Assert.Equal(2, invoices.Count);
-            Assert.Contains(invoices, current => current.Id == first.RelatedEntityId && !current.IsLatestVersion);
-            var secondInvoice = Assert.Single(invoices, current => current.Id == second.RelatedEntityId && current.IsLatestVersion);
-            Assert.Equal(200_000m, secondInvoice.TotalAmount);
+            var existingInvoice = Assert.Single(invoices);
+            Assert.True(existingInvoice.IsLatestVersion);
+            Assert.Equal(100_000m, existingInvoice.TotalAmount);
 
             var rows = await service.GetBillingRowsAsync(
                 new RentalBillingFilter { ReferenceDate = new DateOnly(2026, 5, 25), ExpandCustomerSummaryRows = true },
                 session);
             var row = Assert.Single(rows, current => current.Source.Id == profileId);
-            Assert.Equal(200_000m, row.CurrentBilledAmount);
-            Assert.Equal(200_000m, row.OutstandingAmount);
+            Assert.Equal(100_000m, row.CurrentBilledAmount);
+            Assert.Equal(100_000m, row.OutstandingAmount);
         }
         finally
         {

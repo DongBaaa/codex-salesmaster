@@ -33,6 +33,8 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
         "937B93127A721A16857403DE5B3B7DDD7669C1787AC0EAD9C32C83A413B37FE2";
     private const string CurrentLiveSourceSha256 =
         "D7D83F5970542AAADD37491E4CE79CB63C7044E776802AD52B02BC5CA27D8CAB";
+    private const string LatestLiveSourceSha256 =
+        "73D294E643379C1808AFF89842AA899EF5107C1B269F6B07ACCEE6E59E10B636";
     private const string GuidPattern =
         @"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b";
     private static readonly IsolatedLegacyInvoiceSeedCanonicalizationProfile
@@ -473,6 +475,30 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
         Assert.Equal(
             "996447F6331780A5A6E15C1387979C945542E7739E49610399AC2998652EAD58",
             currentLive.DependencyReferencesSha256);
+
+        var latestLive = IsolatedLegacyInvoiceSeedCanonicalizer
+            .ApprovedProfileForSourceDatabaseSha256ForTests(
+                LatestLiveSourceSha256);
+        Assert.Equal(LatestLiveSourceSha256, latestLive.SourceDatabaseSha256);
+        Assert.Equal(0, latestLive.AuthorizedNonAcknowledgedOutboxCount);
+        Assert.Equal(
+            currentLive.AuthorizedNonAcknowledgedOutboxSha256,
+            latestLive.AuthorizedNonAcknowledgedOutboxSha256);
+        Assert.Equal(
+            currentLive.BeforeMetadataSha256,
+            latestLive.BeforeMetadataSha256);
+        Assert.Equal(
+            currentLive.AfterMetadataSha256,
+            latestLive.AfterMetadataSha256);
+        Assert.Equal(
+            currentLive.ActiveInvoiceIdsSha256,
+            latestLive.ActiveInvoiceIdsSha256);
+        Assert.Equal(
+            "BDBE73992A6E5560DD02827BB3B3D99E57BF2D886BB0163D585D1F9DF6E45043",
+            latestLive.LatestInvoiceBusinessSha256);
+        Assert.Equal(
+            "2C20069BE6B04423A6E7F007428DAC20CDCE0E097B80D908FBD02C91981FE605",
+            latestLive.DependencyReferencesSha256);
     }
 
     [Fact]
@@ -1151,6 +1177,9 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
         IsolatedLegacyInvoiceSeedCanonicalizer
             .AssertApprovedSourceDatabaseSha256ForTests(
                 CurrentLiveSourceSha256.ToLowerInvariant());
+        IsolatedLegacyInvoiceSeedCanonicalizer
+            .AssertApprovedSourceDatabaseSha256ForTests(
+                LatestLiveSourceSha256.ToLowerInvariant());
         var error = Assert.Throws<
             IsolatedLegacyInvoiceSeedCanonicalizationException>(
             () => IsolatedLegacyInvoiceSeedCanonicalizer
@@ -1671,6 +1700,13 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
         Assert.True(
             CountOccurrences(preparation, CurrentLiveSourceSha256) >= 2,
             "The current live snapshot must be bound in both preflight and report validation.");
+        Assert.Contains(
+            LatestLiveSourceSha256,
+            canonicalizer,
+            StringComparison.Ordinal);
+        Assert.True(
+            CountOccurrences(preparation, LatestLiveSourceSha256) >= 2,
+            "The latest live snapshot must be bound in both preflight and report validation.");
 
         var updateSql = Between(
             canonicalizer,

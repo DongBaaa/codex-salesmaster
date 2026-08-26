@@ -228,8 +228,9 @@ function Invoke-PreDeployOperationalGate {
         $arguments += @('-SecretPath', $SecretPath)
     }
     if ($AllowedIntegrityWarningCodes.Count -gt 0) {
-        $arguments += '-AllowedIntegrityWarningCodes'
-        $arguments += $AllowedIntegrityWarningCodes
+        $arguments += @(
+            '-AllowedIntegrityWarningCodes',
+            ($AllowedIntegrityWarningCodes -join ','))
     }
 
     Invoke-PowerShellFile -FilePath $OperationalGateScript -Arguments $arguments
