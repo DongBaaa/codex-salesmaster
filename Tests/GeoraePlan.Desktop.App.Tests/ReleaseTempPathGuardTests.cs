@@ -6282,6 +6282,22 @@ public sealed class ReleaseTempPathGuardTests
             "-MaximumRedirection 0",
             source,
             StringComparison.Ordinal);
+        Assert.Contains(
+            "$baseResponse.RequestMessage.RequestUri",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Live readiness request URI could not be determined.",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "$contentLengthHeader = @(",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "$downloadLengthParsed = [long]::TryParse(",
+            source,
+            StringComparison.Ordinal);
         AssertInOrder(
             source,
             "else {",

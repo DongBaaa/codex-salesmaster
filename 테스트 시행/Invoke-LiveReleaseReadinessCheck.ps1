@@ -130,7 +130,24 @@ function Invoke-ExactLiveRequest {
         -UseBasicParsing `
         -MaximumRedirection 0 `
         -TimeoutSec 30
-    $responseUri = [Uri]$response.BaseResponse.ResponseUri
+    $baseResponse = $response.BaseResponse
+    $responseUriValue = $null
+    $responseUriProperty = $baseResponse.PSObject.Properties['ResponseUri']
+    if ($null -ne $responseUriProperty -and
+        $null -ne $responseUriProperty.Value) {
+        $responseUriValue = $responseUriProperty.Value
+    }
+    elseif ($null -ne $baseResponse.RequestMessage -and
+        $null -ne $baseResponse.RequestMessage.RequestUri) {
+        # PowerShell 7 exposes the effective request URI through HttpResponseMessage.
+        $responseUriValue = $baseResponse.RequestMessage.RequestUri
+    }
+
+    if ($null -eq $responseUriValue) {
+        throw 'Live readiness request URI could not be determined.'
+    }
+
+    $responseUri = [Uri]$responseUriValue
     $requestedUri = [Uri]$Uri
     if (-not [string]::Equals(
             $responseUri.AbsoluteUri,
@@ -281,8 +298,17 @@ else {
                 Invoke-ExactLiveRequest `
                     -Uri $downloadUri.AbsoluteUri `
                     -Method Head
-            $downloadLength = [long]$downloadResponse.Headers['Content-Length']
+            $downloadLength = 0L
+            $contentLengthHeader = @(
+                $downloadResponse.Headers['Content-Length']
+            ) | Select-Object -First 1
+            $downloadLengthParsed = [long]::TryParse(
+                [string]$contentLengthHeader,
+                [Globalization.NumberStyles]::Integer,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [ref]$downloadLength)
             $downloadValid =
+                $downloadLengthParsed -and
                 $downloadLength -eq [long]$manifestDesktop.fileSize -and
                 $downloadLength -gt 0
         }
