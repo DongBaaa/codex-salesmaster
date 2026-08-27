@@ -1687,7 +1687,10 @@ public sealed partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void ClearCustomerFilter()
     {
+        CustomerFilterText = string.Empty;
+        _customerFilterDebouncer.Cancel();
         SelectedCustomerFilter = null;
+        ApplyCustomerFilter();
     }
 
     [RelayCommand]

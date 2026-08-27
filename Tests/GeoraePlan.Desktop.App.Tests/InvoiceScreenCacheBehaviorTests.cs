@@ -388,6 +388,59 @@ public sealed class InvoiceScreenCacheBehaviorTests
         }
     }
 
+    [Fact]
+    public async Task MainViewModel_ClearCustomerFilterCommand_ClearsSearchAndRestoresAllCustomersImmediately()
+    {
+        var dbRoot = PrepareDatabaseRoot("main-clear-customer-filter");
+
+        try
+        {
+            await using var db = CreateDbContext(dbRoot);
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var alphaCustomer = CreateCustomer("Alpha customer");
+            var betaCustomer = CreateCustomer("Beta customer");
+            db.Customers.AddRange(alphaCustomer, betaCustomer);
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var dispatcher = new SyncRequestDispatcher();
+            var local = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
+            var rental = new RentalStateService(db, local);
+            var diagnostics = new SyncDiagnosticsService(session);
+            var api = new ErpApiClient(new HttpClient(new StubHttpMessageHandler()) { BaseAddress = new Uri("http://localhost/") }, session);
+            var sync = new SyncService(db, local, rental, api, session, dispatcher, diagnostics);
+            var viewModel = new MainViewModel(local, sync, new BackupService(), rental, diagnostics, api, session);
+
+            try
+            {
+                await viewModel.LoadAsync();
+                Assert.Equal(2, viewModel.FilteredCustomers.Count);
+
+                viewModel.CustomerFilterText = "Alpha";
+                await InvokeNonPublicTaskAsync(viewModel, "ApplyCustomerFilter");
+                viewModel.SelectedCustomerFilter = Assert.Single(viewModel.FilteredCustomers);
+
+                viewModel.ClearCustomerFilterCommand.Execute(null);
+
+                Assert.Equal(string.Empty, viewModel.CustomerFilterText);
+                Assert.Null(viewModel.SelectedCustomerFilter);
+                Assert.Equal(2, viewModel.FilteredCustomers.Count);
+                Assert.Contains(viewModel.FilteredCustomers, customer => customer.Id == alphaCustomer.Id);
+                Assert.Contains(viewModel.FilteredCustomers, customer => customer.Id == betaCustomer.Id);
+            }
+            finally
+            {
+                await viewModel.DrainPendingBackgroundWorkForShutdownAsync();
+            }
+        }
+        finally
+        {
+            CleanupDatabaseRoot(dbRoot);
+        }
+    }
+
     private static async Task InvokeNonPublicTaskAsync(object target, string methodName, params object[] args)
     {
         var method = target.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);

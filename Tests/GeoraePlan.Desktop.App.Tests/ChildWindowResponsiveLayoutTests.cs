@@ -2171,7 +2171,7 @@ public sealed class ChildWindowResponsiveLayoutTests
                 Assert.Equal("Auto", (string?)splitterRow.Attribute("Height")),
             itemSearchRow =>
             {
-                Assert.Equal("2*", (string?)itemSearchRow.Attribute("Height"));
+                Assert.Equal("91", (string?)itemSearchRow.Attribute("Height"));
                 Assert.Equal("81", (string?)itemSearchRow.Attribute("MinHeight"));
                 Assert.Equal("184", (string?)itemSearchRow.Attribute("MaxHeight"));
             });
@@ -2225,6 +2225,20 @@ public sealed class ChildWindowResponsiveLayoutTests
             xaml,
             "SalesItemSearchWorkspace");
         Assert.Equal("3", (string?)itemSearchWorkspace.Attribute("Grid.Row"));
+        Assert.Contains(
+            itemSearchWorkspace.Descendants(),
+            element =>
+                element.Name.LocalName == "TextBlock" &&
+                string.Equals(
+                    (string?)element.Attribute("Text"),
+                    "품목 검색 목록",
+                    StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            itemSearchWorkspace.Descendants(),
+            element => string.Equals(
+                (string?)element.Attribute("Text"),
+                "[전표 입력 가능 품목 - 재고/비재고 청구항목]",
+                StringComparison.Ordinal));
     }
 
     private static void AssertPaymentBodyRows(

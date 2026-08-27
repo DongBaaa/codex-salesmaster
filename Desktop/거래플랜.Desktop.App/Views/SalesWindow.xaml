@@ -291,7 +291,7 @@
                 <RowDefinition Height="3*" MinHeight="40" MaxHeight="210"/>
                 <RowDefinition Height="6*" MinHeight="152"/>
                 <RowDefinition Height="Auto"/>
-                <RowDefinition Height="2*" MinHeight="81" MaxHeight="184"/>
+                <RowDefinition Height="91" MinHeight="81" MaxHeight="184"/>
             </Grid.RowDefinitions>
 
             <ScrollViewer x:Name="SalesCustomerHeaderScrollViewer"
@@ -756,7 +756,7 @@
                     </Grid.ColumnDefinitions>
 
                     <WrapPanel x:Name="SalesItemSearchToolbar" Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,3">
-                        <TextBlock Text="[전표 입력 가능 품목 - 재고/비재고 청구항목]" FontWeight="Bold" Margin="0,0,12,0"/>
+                        <TextBlock Text="품목 검색 목록" FontWeight="Bold" Margin="0,0,12,0"/>
                         <TextBlock Text="검색" Margin="0,0,6,0"/>
                         <TextBox Width="320" Text="{Binding ItemSearchText, UpdateSourceTrigger=PropertyChanged}"/>
                     </WrapPanel>
