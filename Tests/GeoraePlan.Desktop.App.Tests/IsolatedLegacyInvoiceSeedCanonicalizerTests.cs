@@ -35,6 +35,8 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
         "D7D83F5970542AAADD37491E4CE79CB63C7044E776802AD52B02BC5CA27D8CAB";
     private const string LatestLiveSourceSha256 =
         "73D294E643379C1808AFF89842AA899EF5107C1B269F6B07ACCEE6E59E10B636";
+    private const string CurrentOperationalSourceSha256 =
+        "1DE40C0FA21FE662EAECFA7ED3B654EA1271076FE1F69029919A3295525EBEC6";
     private const string GuidPattern =
         @"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b";
     private static readonly IsolatedLegacyInvoiceSeedCanonicalizationProfile
@@ -499,6 +501,32 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
         Assert.Equal(
             "2C20069BE6B04423A6E7F007428DAC20CDCE0E097B80D908FBD02C91981FE605",
             latestLive.DependencyReferencesSha256);
+
+        var currentOperational = IsolatedLegacyInvoiceSeedCanonicalizer
+            .ApprovedProfileForSourceDatabaseSha256ForTests(
+                CurrentOperationalSourceSha256);
+        Assert.Equal(
+            CurrentOperationalSourceSha256,
+            currentOperational.SourceDatabaseSha256);
+        Assert.Equal(8, currentOperational.AuthorizedNonAcknowledgedOutboxCount);
+        Assert.Equal(
+            "A9D9717B32186F8EEE3A635AF06F393AC278080D11F27B5131BB0C52C317411A",
+            currentOperational.AuthorizedNonAcknowledgedOutboxSha256);
+        Assert.Equal(
+            currentLive.BeforeMetadataSha256,
+            currentOperational.BeforeMetadataSha256);
+        Assert.Equal(
+            currentLive.AfterMetadataSha256,
+            currentOperational.AfterMetadataSha256);
+        Assert.Equal(
+            currentLive.ActiveInvoiceIdsSha256,
+            currentOperational.ActiveInvoiceIdsSha256);
+        Assert.Equal(
+            "49AD13A712746B8AA6C38BB8ED069053B4C9305A320E117864F2DB8040CB4AA0",
+            currentOperational.LatestInvoiceBusinessSha256);
+        Assert.Equal(
+            "AC560B78FA943CFF1934C84BAB2ED37EC16E260ACA923CF94CE0FBB9E69F2C1F",
+            currentOperational.DependencyReferencesSha256);
     }
 
     [Fact]
@@ -1180,6 +1208,9 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
         IsolatedLegacyInvoiceSeedCanonicalizer
             .AssertApprovedSourceDatabaseSha256ForTests(
                 LatestLiveSourceSha256.ToLowerInvariant());
+        IsolatedLegacyInvoiceSeedCanonicalizer
+            .AssertApprovedSourceDatabaseSha256ForTests(
+                CurrentOperationalSourceSha256.ToLowerInvariant());
         var error = Assert.Throws<
             IsolatedLegacyInvoiceSeedCanonicalizationException>(
             () => IsolatedLegacyInvoiceSeedCanonicalizer

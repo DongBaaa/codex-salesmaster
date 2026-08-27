@@ -1548,7 +1548,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return false;
 
         if (!saveContextStayedCurrent)
-            return result.Success;
+        {
+            StatusMessage = result.Success
+                ? "렌탈 청구 설정은 저장했지만 작업 중 선택 대상이 변경되어 후속 작업을 중단했습니다. 청구 대상을 다시 선택하세요."
+                : result.Message;
+            return false;
+        }
 
         if (!result.Success)
         {
@@ -1633,26 +1638,47 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             return;
         }
 
+        var requestedProfileId = SelectedRow.Source.Id;
         if (HasUnsavedSelectedRowChanges())
         {
             StatusMessage = "현재 청구 설정 변경 내용을 저장한 뒤 청구서를 만듭니다.";
-            await SaveAsync();
+            var saved = await SaveCoreAsync();
 
-            if (SelectedRow is null ||
-                SelectedRow.IsAggregateRow ||
-                !SelectedRow.HasPersistedProfile ||
-                HasUnsavedSelectedRowChanges())
+            if (!saved)
             {
-                if (string.IsNullOrWhiteSpace(StatusMessage))
+                if (string.IsNullOrWhiteSpace(StatusMessage) ||
+                    string.Equals(StatusMessage, "현재 청구 설정 변경 내용을 저장한 뒤 청구서를 만듭니다.", StringComparison.Ordinal))
+                {
                     StatusMessage = "청구 설정 저장이 완료되지 않아 청구서를 만들지 않았습니다.";
+                }
+
+                MessageBox.Show(
+                    StatusMessage,
+                    "렌탈 청구서 만들기",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            var savedRow = FindRow(requestedProfileId);
+            if (savedRow is null || savedRow.IsAggregateRow || !savedRow.HasPersistedProfile)
+            {
+                StatusMessage = "청구 설정은 저장했지만 최신 목록에서 청구 대상을 다시 찾지 못했습니다. 목록을 새로고침한 뒤 다시 선택하세요.";
+                MessageBox.Show(
+                    StatusMessage,
+                    "렌탈 청구서 만들기",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
 
                 return;
             }
+
+            SelectedRow = savedRow;
         }
 
         InvoiceToOpenAfterClose = null;
         BillingCreatedSinceLastConsume = false;
-        var targetId = SelectedRow.Source.Id;
+        var targetId = requestedProfileId;
         var expectedRevision = SelectedRow.Source.Revision;
         var result = await RunOwnerScopeDataOperationAsync(
             _ => _rental.StartBillingAsync(targetId, ReferenceDate, _session, expectedRevision: expectedRevision),
@@ -1670,6 +1696,16 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
             }
+            else
+            {
+                MessageBox.Show(
+                    string.IsNullOrWhiteSpace(result.Message)
+                        ? "렌탈 청구서를 만들지 못했습니다. 청구 설정과 선택 대상을 확인하세요."
+                        : result.Message,
+                    "렌탈 청구서 만들기 실패",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
 
             return;
         }
@@ -1681,6 +1717,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         await ClearAutoSaveDraftAsync();
         await ReloadAsync();
         SelectRow(targetId);
+        StatusMessage = result.Message;
     }
 
     private async Task StartAggregateBillingAsync(RentalBillingViewRow aggregateRow)

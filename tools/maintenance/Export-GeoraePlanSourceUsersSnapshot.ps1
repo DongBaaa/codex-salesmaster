@@ -303,7 +303,7 @@ function ConvertFrom-StoredCredentialEnvelopeOutput {
         Initialize-TestEnvironmentFinalPathNativeMethods
         [GeoraePlan.TestEnvironment.FinalPathNativeMethods]::
             AssertNoDuplicateJsonObjectPropertiesAndDepth($line, 12)
-        $envelope = $line | ConvertFrom-Json
+        $envelope = $line | ConvertFrom-Json -DateKind String
     }
     catch {
         throw 'The local credential reader returned invalid JSON.'

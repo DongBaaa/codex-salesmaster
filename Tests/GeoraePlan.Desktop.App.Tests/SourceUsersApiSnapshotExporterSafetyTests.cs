@@ -5,6 +5,17 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class SourceUsersApiSnapshotExporterSafetyTests
 {
     [Fact]
+    public void StoredCredentialEnvelope_PreservesUtcTimestampAsText()
+    {
+        var source = File.ReadAllText(FindExporter());
+
+        Assert.Contains(
+            "$envelope = $line | ConvertFrom-Json -DateKind String",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PromptedCredential_IsCollectedInTheVisibleConsoleAndPasswordIsMasked()
     {
         var source = File.ReadAllText(FindExporter());

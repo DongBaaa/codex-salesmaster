@@ -15,7 +15,7 @@ using 거래플랜.Shared.Contracts;
 
 var command = args.FirstOrDefault()?.Trim().ToLowerInvariant();
 var canonicalizationCommitted = false;
-const string usage = "usage: SyncDiag <prepare-test-seed|inspect-legacy-invoice-test-seed-profile|inspect-read-only-legacy-invoice-seed-profile <database-path>|preview-legacy-invoice-test-seed|canonicalize-legacy-invoice-test-seed|prepare-test-seed-retry|preseed-sync|mark-all-dirty|sync|maintenance-sync|inspect|stored-credential-envelopes|source-credential-envelopes|read-only-summary <database-path>|read-only-integrity-report <database-path> <tenant-code> <office-code> [--include-details]|snapshot-sqlite <source-db> <target-db>|finalize-test-app-sqlite|finalize-test-server-sqlite <database-path>>";
+const string usage = "usage: SyncDiag <prepare-test-seed|inspect-legacy-invoice-test-seed-profile|inspect-read-only-legacy-invoice-seed-profile <database-path>|preview-legacy-invoice-test-seed|canonicalize-legacy-invoice-test-seed|prepare-test-seed-retry|preseed-sync|mark-all-dirty|sync|maintenance-sync|inspect|stored-credential-envelopes|source-credential-envelopes|read-only-summary <database-path>|read-only-integrity-report <database-path> <tenant-code> <office-code> [--include-details]|audit-rental-workbook <database-path> <workbook-path> <report-json-path>|preview-rt-rental-delta <plan-json-path> <source-csv-path> <credential-database-path>|apply-rt-rental-delta <plan-json-path> <source-csv-path> <credential-database-path>|snapshot-sqlite <source-db> <target-db>|finalize-test-app-sqlite|finalize-test-server-sqlite <database-path>>";
 if (string.IsNullOrWhiteSpace(command))
 {
     Console.Error.WriteLine(usage);
@@ -85,6 +85,80 @@ if (string.Equals(
 
 try
 {
+    if (string.Equals(command, "preview-rt-rental-delta", StringComparison.Ordinal))
+    {
+        if (args.Length != 4 ||
+            string.IsNullOrWhiteSpace(args[1]) ||
+            string.IsNullOrWhiteSpace(args[2]) ||
+            string.IsNullOrWhiteSpace(args[3]))
+        {
+            Console.Error.WriteLine(
+                "usage: SyncDiag preview-rt-rental-delta <plan-json-path> <source-csv-path> <credential-database-path>");
+            return 2;
+        }
+
+        var preview = await RtRentalDeltaApplier.PreviewAsync(
+            args[1],
+            args[2],
+            args[3]);
+        Console.WriteLine("rt_rental_delta_preview_succeeded=True");
+        Console.WriteLine($"plan_sha256={preview.PlanSha256}");
+        Console.WriteLine($"source_sha256={preview.SourceSha256}");
+        Console.WriteLine($"business_database={preview.BusinessDatabaseName}");
+        Console.WriteLine($"planned_count={preview.PlannedCount}");
+        Console.WriteLine($"would_submit_count={preview.SubmittedCount}");
+        Console.WriteLine($"skipped_no_change_count={preview.SkippedNoChangeCount}");
+        Console.WriteLine($"server_revision={preview.ServerRevisionBefore}");
+        return 0;
+    }
+
+    if (string.Equals(command, "apply-rt-rental-delta", StringComparison.Ordinal))
+    {
+        if (args.Length != 4 ||
+            string.IsNullOrWhiteSpace(args[1]) ||
+            string.IsNullOrWhiteSpace(args[2]) ||
+            string.IsNullOrWhiteSpace(args[3]))
+        {
+            Console.Error.WriteLine(
+                "usage: SyncDiag apply-rt-rental-delta <plan-json-path> <source-csv-path> <credential-database-path>");
+            return 2;
+        }
+
+        var applied = await RtRentalDeltaApplier.ApplyAsync(
+            args[1],
+            args[2],
+            args[3]);
+        Console.WriteLine("rt_rental_delta_apply_succeeded=True");
+        Console.WriteLine($"plan_sha256={applied.PlanSha256}");
+        Console.WriteLine($"source_sha256={applied.SourceSha256}");
+        Console.WriteLine($"business_database={applied.BusinessDatabaseName}");
+        Console.WriteLine($"planned_count={applied.PlannedCount}");
+        Console.WriteLine($"submitted_count={applied.SubmittedCount}");
+        Console.WriteLine($"accepted_count={applied.AcceptedCount}");
+        Console.WriteLine($"skipped_no_change_count={applied.SkippedNoChangeCount}");
+        Console.WriteLine($"server_revision_before={applied.ServerRevisionBefore}");
+        Console.WriteLine($"server_revision_after={applied.ServerRevisionAfter}");
+        return 0;
+    }
+
+    if (string.Equals(command, "audit-rental-workbook", StringComparison.Ordinal))
+    {
+        if (args.Length != 4 ||
+            string.IsNullOrWhiteSpace(args[1]) ||
+            string.IsNullOrWhiteSpace(args[2]) ||
+            string.IsNullOrWhiteSpace(args[3]))
+        {
+            Console.Error.WriteLine(
+                "usage: SyncDiag audit-rental-workbook <database-path> <workbook-path> <report-json-path>");
+            return 2;
+        }
+
+        return await AuditRentalWorkbookReadOnlyAsync(
+            args[1],
+            args[2],
+            args[3]);
+    }
+
     if (string.Equals(command, "snapshot-sqlite", StringComparison.Ordinal))
     {
         if (args.Length != 3 ||
@@ -393,6 +467,7 @@ try
             return 2;
     }
 }
+
 catch (Exception ex) when (
     string.Equals(
         command,
@@ -427,6 +502,77 @@ catch (Exception ex)
 {
     Console.Error.WriteLine(ex);
     return 1;
+}
+
+static async Task<int> AuditRentalWorkbookReadOnlyAsync(
+    string databasePath,
+    string workbookPath,
+    string reportJsonPath)
+{
+    var fullDatabasePath = Path.GetFullPath(databasePath);
+    var fullWorkbookPath = Path.GetFullPath(workbookPath);
+    var fullReportPath = Path.GetFullPath(reportJsonPath);
+    if (!File.Exists(fullDatabasePath))
+        throw new FileNotFoundException("Rental workbook audit database was not found.", fullDatabasePath);
+    if (!File.Exists(fullWorkbookPath))
+        throw new FileNotFoundException("Rental workbook was not found.", fullWorkbookPath);
+    if (string.Equals(fullDatabasePath, fullReportPath, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(fullWorkbookPath, fullReportPath, StringComparison.OrdinalIgnoreCase))
+    {
+        throw new InvalidOperationException("Rental workbook audit report path must be separate from its inputs.");
+    }
+
+    var connectionString = new SqliteConnectionStringBuilder
+    {
+        DataSource = fullDatabasePath,
+        Mode = SqliteOpenMode.ReadOnly,
+        Cache = SqliteCacheMode.Private,
+        Pooling = false
+    }.ToString();
+    var options = new DbContextOptionsBuilder<LocalDbContext>()
+        .UseSqlite(connectionString)
+        .Options;
+    await using var db = new LocalDbContext(options);
+    var rental = new RentalStateService(db);
+    var result = await rental.AuditAssetWorkbookAsync(fullWorkbookPath);
+
+    var reportDirectory = Path.GetDirectoryName(fullReportPath);
+    if (!string.IsNullOrWhiteSpace(reportDirectory))
+        Directory.CreateDirectory(reportDirectory);
+    var reportJson = JsonSerializer.Serialize(
+        result,
+        new JsonSerializerOptions
+        {
+            WriteIndented = true
+        });
+    await File.WriteAllTextAsync(fullReportPath, reportJson, Encoding.UTF8);
+
+    var actionCounts = result.Entries
+        .GroupBy(entry => entry.Action, StringComparer.Ordinal)
+        .OrderBy(group => group.Key, StringComparer.Ordinal)
+        .Select(group => $"{group.Key}:{group.Count()}");
+    var differenceCounts = result.Entries
+        .SelectMany(entry => entry.Differences)
+        .GroupBy(value => value, StringComparer.Ordinal)
+        .OrderByDescending(group => group.Count())
+        .ThenBy(group => group.Key, StringComparer.Ordinal)
+        .Take(20)
+        .Select(group => $"{group.Key}:{group.Count()}");
+    var warningRows = result.Entries.Count(entry => entry.Warnings.Count > 0);
+
+    Console.WriteLine("rental_workbook_audit_succeeded=True");
+    Console.WriteLine($"processed_rows={result.ProcessedRowCount}");
+    Console.WriteLine($"exact_match_count={result.ExactMatchCount}");
+    Console.WriteLine($"update_safe_count={result.UpdateSafeCount}");
+    Console.WriteLine($"create_new_count={result.CreateNewCount}");
+    Console.WriteLine($"ambiguous_count={result.AmbiguousCount}");
+    Console.WriteLine($"unresolved_customer_count={result.UnresolvedCustomerCount}");
+    Console.WriteLine($"warning_row_count={warningRows}");
+    Console.WriteLine($"missing_in_workbook_count={result.MissingInWorkbookCount}");
+    Console.WriteLine($"action_counts={string.Join(',', actionCounts)}");
+    Console.WriteLine($"top_difference_counts={string.Join(',', differenceCounts)}");
+    Console.WriteLine($"report_sha256={Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(fullReportPath)))}");
+    return 0;
 }
 
 static string BuildSanitizedCanonicalizationError(Exception exception)

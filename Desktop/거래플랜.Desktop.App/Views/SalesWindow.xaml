@@ -123,7 +123,7 @@
             <Setter Property="Background" Value="#DCE9F8"/>
             <Setter Property="BorderBrush" Value="#AFC2D8"/>
             <Setter Property="BorderThickness" Value="0,0,1,1"/>
-            <Setter Property="Padding" Value="4,2"/>
+            <Setter Property="Padding" Value="4,0"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Style.Triggers>
                 <Trigger Property="IsSelected" Value="True">
@@ -289,9 +289,10 @@
         <Grid x:Name="SalesWorkspaceGrid" Margin="6" Grid.IsSharedSizeScope="True">
             <Grid.RowDefinitions>
                 <RowDefinition Height="3*" MinHeight="40" MaxHeight="210"/>
-                <RowDefinition Height="6*" MinHeight="152"/>
+                <RowDefinition Height="4*" MinHeight="152"/>
                 <RowDefinition Height="Auto"/>
-                <RowDefinition Height="91" MinHeight="81" MaxHeight="184"/>
+                <!-- 검색줄 31 + 헤더 36 + 데이터 6행(32x6) + 테두리/안쪽 여백 8 = 267 -->
+                <RowDefinition Height="2*" MinHeight="267"/>
             </Grid.RowDefinitions>
 
             <ScrollViewer x:Name="SalesCustomerHeaderScrollViewer"

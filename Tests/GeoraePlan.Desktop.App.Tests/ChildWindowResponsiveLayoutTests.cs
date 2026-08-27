@@ -2164,17 +2164,35 @@ public sealed class ChildWindowResponsiveLayoutTests
             },
             salesLinesRow =>
             {
-                Assert.Equal("6*", (string?)salesLinesRow.Attribute("Height"));
+                Assert.Equal("4*", (string?)salesLinesRow.Attribute("Height"));
                 Assert.Equal("152", (string?)salesLinesRow.Attribute("MinHeight"));
             },
             splitterRow =>
                 Assert.Equal("Auto", (string?)splitterRow.Attribute("Height")),
             itemSearchRow =>
             {
-                Assert.Equal("91", (string?)itemSearchRow.Attribute("Height"));
-                Assert.Equal("81", (string?)itemSearchRow.Attribute("MinHeight"));
-                Assert.Equal("184", (string?)itemSearchRow.Attribute("MaxHeight"));
+                Assert.Equal("2*", (string?)itemSearchRow.Attribute("Height"));
+                Assert.Equal("267", (string?)itemSearchRow.Attribute("MinHeight"));
+                Assert.Null(itemSearchRow.Attribute("MaxHeight"));
             });
+
+        var dataGridCellStyle = Assert.Single(
+            document.Descendants(),
+            element =>
+                element.Name.LocalName == "Style" &&
+                string.Equals(
+                    (string?)element.Attribute("TargetType"),
+                    "DataGridCell",
+                    StringComparison.Ordinal));
+        var dataGridCellPadding = Assert.Single(
+            dataGridCellStyle.Elements(),
+            element =>
+                element.Name.LocalName == "Setter" &&
+                string.Equals(
+                    (string?)element.Attribute("Property"),
+                    "Padding",
+                    StringComparison.Ordinal));
+        Assert.Equal("4,0", (string?)dataGridCellPadding.Attribute("Value"));
 
         var splitter = Assert.Single(
             workspace.Descendants(),

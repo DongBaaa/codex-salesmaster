@@ -25,12 +25,20 @@ public sealed class RentalBillingStartBillingRevisionTests
             "private async Task StartBillingAsync()",
             "private async Task StartAggregateBillingAsync");
 
-        var saveIndex = startBilling.IndexOf("await SaveAsync();", StringComparison.Ordinal);
+        var captureProfileIndex = startBilling.IndexOf("var requestedProfileId = SelectedRow.Source.Id;", StringComparison.Ordinal);
+        var saveIndex = startBilling.IndexOf("var saved = await SaveCoreAsync();", StringComparison.Ordinal);
+        var saveFailureIndex = startBilling.IndexOf("if (!saved)", StringComparison.Ordinal);
+        var savedRowIndex = startBilling.IndexOf("var savedRow = FindRow(requestedProfileId);", StringComparison.Ordinal);
         var startIndex = startBilling.IndexOf("_rental.StartBillingAsync", StringComparison.Ordinal);
 
         Assert.Contains("HasUnsavedSelectedRowChanges()", startBilling, StringComparison.Ordinal);
+        Assert.True(captureProfileIndex >= 0 && captureProfileIndex < saveIndex);
         Assert.True(saveIndex >= 0, "StartBillingAsync must save pending editor changes before creating a billing invoice.");
-        Assert.True(startIndex > saveIndex, "StartBillingAsync must save before calling RentalStateService.StartBillingAsync.");
+        Assert.True(saveIndex < saveFailureIndex && saveFailureIndex < savedRowIndex && savedRowIndex < startIndex);
+        Assert.DoesNotContain("await SaveAsync();", startBilling, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(startBilling, "HasUnsavedSelectedRowChanges()"));
+        Assert.Contains("var targetId = requestedProfileId;", startBilling, StringComparison.Ordinal);
+        Assert.Contains("렌탈 청구서 만들기 실패", startBilling, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -171,6 +179,19 @@ public sealed class RentalBillingStartBillingRevisionTests
         var end = normalized.IndexOf(endMarker, start, StringComparison.Ordinal);
         Assert.True(end > start, $"End marker not found: {endMarker}");
         return normalized[start..end];
+    }
+
+    private static int CountOccurrences(string value, string search)
+    {
+        var count = 0;
+        var offset = 0;
+        while ((offset = value.IndexOf(search, offset, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            offset += search.Length;
+        }
+
+        return count;
     }
 
     private static string FindRepositoryRoot()

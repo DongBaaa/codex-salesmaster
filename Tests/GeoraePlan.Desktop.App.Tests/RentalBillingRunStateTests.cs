@@ -3,6 +3,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using \uAC70\uB798\uD50C\uB79C.Desktop.App.Data;
 using \uAC70\uB798\uD50C\uB79C.Desktop.App.Services;
+using \uAC70\uB798\uD50C\uB79C.Desktop.App.ViewModels;
 using \uAC70\uB798\uD50C\uB79C.Shared.Contracts;
 using Xunit;
 
@@ -975,6 +976,60 @@ public sealed class RentalBillingRunStateTests
         }
         finally
         {
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task RentalBillingViewModel_StartBillingAfterUnsavedSave_CreatesInvoiceWithoutTransientDirtyRecheck()
+    {
+        PrepareAppRoot("georaeplan-rental-viewmodel-save-then-start");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var customerName = "Save then start billing customer";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName, customerId);
+            profile.BillingStartDate = new DateOnly(2026, 8, 1);
+            profile.ContractDate = new DateOnly(2026, 8, 1);
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId));
+            await db.SaveChangesAsync();
+
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+            var viewModel = new RentalBillingViewModel(service, local, session)
+            {
+                ReferenceDate = new DateOnly(2026, 8, 27)
+            };
+            await viewModel.LoadAndSelectProfileAsync(profileId);
+            Assert.NotNull(viewModel.SelectedRow);
+            viewModel.EditNotes = "청구서 만들기 직전 저장할 메모";
+
+            await viewModel.StartBillingCommand.ExecuteAsync(null);
+
+            var invoice = await db.Invoices
+                .Include(current => current.Lines)
+                .AsNoTracking()
+                .SingleAsync(current => current.LinkedRentalBillingProfileId == profileId);
+            Assert.Equal(invoice.Id, viewModel.ConsumeInvoiceToOpenAfterClose());
+            Assert.True(viewModel.ConsumeBillingCreatedSinceLastConsume());
+            Assert.Contains("렌탈 청구를 시작했습니다", viewModel.StatusMessage, StringComparison.Ordinal);
+            Assert.Equal("청구서 만들기 직전 저장할 메모", (await db.RentalBillingProfiles
+                .AsNoTracking()
+                .SingleAsync(current => current.Id == profileId)).Notes);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
             SqliteConnection.ClearAllPools();
         }
     }
