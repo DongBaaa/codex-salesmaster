@@ -4,7 +4,7 @@
 - 앱 ID: `kr.georaeplan.mobile`
 - Android 현재 소스: `0.2.83`, versionCode `194`
 - 공개 stable 표시 버전: `0.2.82`; APK 내부 versionCode는 매니페스트에 없으며 게시 연속성 게이트 증거로 별도 확인
-- 연동 Windows 기준: 현재 소스 `1.1.697` / FileVersion `1.1.697.0` / 공개 stable `1.1.697`
+- 연동 Windows 기준: 현재 소스 `1.1.698` / FileVersion `1.1.698.0` / 공개 stable `1.1.698`
 
 Android 현재 소스 versionCode는 `194`입니다.
 공개 APK의 내부 versionCode는 게시 연속성 게이트에서 검사하며, 새 후보는 그 값보다 큰 versionCode, Release signing, 기존 stable과 서명 연속성, emulator/실기기 `adb install -r` 검증이 필요합니다.
