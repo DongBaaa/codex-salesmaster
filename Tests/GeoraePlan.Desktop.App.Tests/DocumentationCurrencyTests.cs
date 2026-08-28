@@ -166,7 +166,7 @@ public sealed class DocumentationCurrencyTests
         }
 
         Assert.Contains(
-            "이전 소스 `1.1.698`의 정식 패키지 생성과 Linux PC live 반영을 완료했습니다.",
+            "현재 소스 `1.1.699`의 정식 패키지 생성과 Linux PC live 반영을 완료했습니다.",
             readme,
             StringComparison.Ordinal);
         Assert.Contains(

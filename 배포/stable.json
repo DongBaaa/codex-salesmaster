@@ -1,36 +1,36 @@
 {
   "channel": "stable",
-  "generationId": "b2374fb36a08465785c3670f5a0ae1a1",
-  "generatedAtUtc": "2026-08-27T09:50:51.4980229Z",
+  "generationId": "359b79af3ade488687928107eb9ceba5",
+  "generatedAtUtc": "2026-08-28T04:27:42.2880627Z",
   "desktop": {
     "platform": "desktop",
-    "version": "1.1.698",
+    "version": "1.1.699",
     "mandatory": false,
     "minimumSupportedVersion": "",
-    "packageUrl": "/updates/download/desktop/tradeplan-pc-installer-v1.1.698.zip",
-    "fileName": "tradeplan-pc-installer-v1.1.698.zip",
-    "sha256": "BAC67D8286044F7B093805742B2A98A635438EA9CEFDA0A9D33FD8D39B01009A",
-    "fileSize": 234168667,
+    "packageUrl": "/updates/download/desktop/tradeplan-pc-installer-v1.1.699.zip",
+    "fileName": "tradeplan-pc-installer-v1.1.699.zip",
+    "sha256": "961F99BAFD8F8F66084CF74E7173171D7A627CE896DDF90385F27741182690C6",
+    "fileSize": 234168890,
     "notes": "내부 업데이트 패키지/동기화 안정화 개선 반영",
-    "releasedAtUtc": "2026-08-27T09:51:01.5485163Z",
+    "releasedAtUtc": "2026-08-28T04:27:54.7405493Z",
     "installers": [
       {
         "audience": "user",
         "format": "exe",
-        "version": "1.1.698",
-        "packageUrl": "/updates/download/desktop/tradeplan-pc-setup-v1.1.698.exe",
-        "fileName": "tradeplan-pc-setup-v1.1.698.exe",
-        "sha256": "B26CE5E05BD67E4AB1C97A537D4479E73962FB0056F83B908A1C1C632EC5AD7D",
-        "fileSize": 250365536
+        "version": "1.1.699",
+        "packageUrl": "/updates/download/desktop/tradeplan-pc-setup-v1.1.699.exe",
+        "fileName": "tradeplan-pc-setup-v1.1.699.exe",
+        "sha256": "342131DD3D96D7E3ED13C1D7714B7AB734EB2585B5165E88E578142568856724",
+        "fileSize": 250345056
       },
       {
         "audience": "administrator",
         "format": "msi",
-        "version": "1.1.698",
-        "packageUrl": "/updates/download/desktop/tradeplan-pc-admin-v1.1.698.msi",
-        "fileName": "tradeplan-pc-admin-v1.1.698.msi",
-        "sha256": "15DB32A2683E1499FA525E0E834C4171D87518F4347ED5DE513CDB129A06847E",
-        "fileSize": 187961344
+        "version": "1.1.699",
+        "packageUrl": "/updates/download/desktop/tradeplan-pc-admin-v1.1.699.msi",
+        "fileName": "tradeplan-pc-admin-v1.1.699.msi",
+        "sha256": "980D3E00DD2F926E4E786A84965C4269EECA69C8A3B3DCE38DA0909BEE5C25AD",
+        "fileSize": 187940864
       }
     ]
   },
