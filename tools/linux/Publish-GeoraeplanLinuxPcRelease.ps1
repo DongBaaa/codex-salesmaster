@@ -137,6 +137,14 @@ function Resolve-SshExecutable {
 }
 
 function Resolve-TarExecutable {
+    # Windows inbox bsdtar can corrupt large redirected stdout streams used by
+    # the SSH upload pipeline. Prefer Git for Windows GNU tar when available;
+    # keep the existing command lookup as a portable fallback.
+    $preferredGnuTar = 'C:\Program Files\Git\usr\bin\tar.exe'
+    if (Test-Path -LiteralPath $preferredGnuTar -PathType Leaf) {
+        return $preferredGnuTar
+    }
+
     $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
     if ($null -ne $tar) {
         return $tar.Source

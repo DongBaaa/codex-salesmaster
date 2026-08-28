@@ -806,6 +806,12 @@ public sealed class ReleaseTempPathGuardTests
             "Publish-GeoraeplanLinuxPcRelease.ps1");
 
         Assert.Contains("function Get-GeoraePlanLinuxFileSha256", source, StringComparison.Ordinal);
+        Assert.Contains("$preferredGnuTar = 'C:\\Program Files\\Git\\usr\\bin\\tar.exe'", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "if (Test-Path -LiteralPath $preferredGnuTar -PathType Leaf)",
+            "return $preferredGnuTar",
+            "Get-Command tar.exe -ErrorAction SilentlyContinue");
         Assert.Contains("[Security.Cryptography.SHA256]::Create()", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Get-FileHash", source, StringComparison.Ordinal);
         Assert.Contains("$null = $copyTask.GetAwaiter().GetResult()", source, StringComparison.Ordinal);
