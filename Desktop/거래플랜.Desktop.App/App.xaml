@@ -107,6 +107,18 @@
             <Setter Property="ColumnHeaderHeight" Value="NaN"/>
             <Setter Property="MinRowHeight" Value="32"/>
         </Style>
+        <!-- 메인 거래내역의 실제 DataGrid 행 크기 계약입니다.
+             메인 창의 로컬 DataGrid 스타일이 사용하던 WPF 기본 최소값(0)을 명시해
+             판매 세부내역과 품목 검색 목록도 같은 Auto 계산 결과를 공유합니다. -->
+        <Style x:Key="MainTransactionDataGridStyle" TargetType="DataGrid">
+            <Setter Property="RowHeight" Value="NaN"/>
+            <Setter Property="MinRowHeight" Value="0"/>
+        </Style>
+        <!-- 메인 거래내역처럼 행 높이를 콘텐츠의 한 줄 높이로 자동 계산한다.
+             고정 Height/MinHeight를 두지 않아 판매 표도 동일한 기준을 사용한다. -->
+        <Style x:Key="MainTransactionDataRowStyle" TargetType="DataGridRow">
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
         <Style TargetType="DataGridColumnHeader">
             <Setter Property="MinHeight" Value="36"/>
             <Setter Property="ContentTemplateSelector" Value="{StaticResource FullTextCenterContentTemplateSelector}"/>

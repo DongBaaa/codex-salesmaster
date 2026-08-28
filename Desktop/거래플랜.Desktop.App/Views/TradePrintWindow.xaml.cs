@@ -1,9 +1,6 @@
 using System.Diagnostics;
 using System.IO;
-using System.Runtime.InteropServices;
-using System.Text;
 using System.Windows;
-using System.Windows.Media;
 using Microsoft.Win32;
 using 거래플랜.Desktop.App.Infrastructure;
 using 거래플랜.Desktop.App.Printing;
@@ -13,11 +10,6 @@ namespace 거래플랜.Desktop.App.Views;
 
 public partial class TradePrintWindow : Window
 {
-    private static readonly Brush InfoStatusBrush = CreateFrozenBrush("#90CAF9");
-    private static readonly Brush SuccessStatusBrush = CreateFrozenBrush("#A5D6A7");
-    private static readonly Brush WarningStatusBrush = CreateFrozenBrush("#FFCC80");
-    private static readonly Brush ErrorStatusBrush = CreateFrozenBrush("#EF9A9A");
-
     private readonly int _pageCount;
     private readonly int? _currentPageNumber;
     private readonly string _defaultFileBaseName;
@@ -94,9 +86,6 @@ public partial class TradePrintWindow : Window
     {
         if (GetSelectedPrinterItem() is not PrinterListItem item)
         {
-            PrinterTypeTextBlock.Text = string.Empty;
-            PrinterLocationTextBlock.Text = string.Empty;
-            PrinterStatusTextBlock.Text = string.Empty;
             SetStatus(
                 PrinterComboBox.Items.Count == 0
                     ? "등록된 프린터를 찾지 못했습니다. PDF 저장 또는 파일 저장(XPS)으로 문서를 저장한 뒤 복합기에서 출력하세요."
@@ -106,9 +95,6 @@ public partial class TradePrintWindow : Window
             return;
         }
 
-        PrinterTypeTextBlock.Text = item.TypeText;
-        PrinterLocationTextBlock.Text = item.LocationText;
-        PrinterStatusTextBlock.Text = item.StatusText;
         SetStatus(
             item.IsOffline
                 ? "선택한 프린터가 오프라인입니다. 프린터 상태를 확인하거나 PDF 저장으로 대체 출력하세요."
@@ -267,86 +253,6 @@ public partial class TradePrintWindow : Window
     private void OnSavePdfClick(object sender, RoutedEventArgs e)
         => SaveToFile(TradePrintFileFormat.Pdf);
 
-    private void OnCopyDiagnosticClick(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            SetClipboardTextWithRetry(BuildPrinterDiagnosticReport());
-            if (GetSelectedPrinterItem() is not PrinterListItem item)
-            {
-                SetStatus(
-                    PrinterComboBox.Items.Count == 0
-                        ? "프린터 진단 정보를 복사했습니다. 현재 PC에 등록된 프린터가 없어 PDF/XPS fallback 안내도 함께 포함했습니다."
-                        : "프린터 진단 정보를 복사했습니다. 프린터를 아직 선택하지 않은 상태도 함께 기록했습니다.",
-                    StatusTone.Warning);
-                return;
-            }
-
-            SetStatus(
-                item.IsOffline
-                    ? $"프린터 진단 정보를 복사했습니다. '{item.DisplayName}'은(는) 오프라인으로 기록되었습니다."
-                    : $"프린터 진단 정보를 클립보드에 복사했습니다. '{item.DisplayName}' 상태를 문의에 그대로 붙여넣으세요.",
-                item.IsOffline ? StatusTone.Warning : StatusTone.Success);
-        }
-        catch (Exception ex) when (ex is COMException or ExternalException or InvalidOperationException)
-        {
-            AppLogger.Warn("PRINT", $"프린터 진단 복사 실패: {ex.Message}");
-            SetStatus($"프린터 진단 정보를 클립보드에 복사하지 못했습니다: {ex.Message}", StatusTone.Error);
-            MessageBox.Show(
-                this,
-                $"프린터 진단 정보를 클립보드에 복사하지 못했습니다.{Environment.NewLine}{ex.Message}",
-                "프린터 진단 복사",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-        }
-    }
-
-    private static void SetClipboardTextWithRetry(string text)
-    {
-        const int maxAttempts = 5;
-        const int retryDelayMilliseconds = 80;
-
-        for (var attempt = 1; ; attempt++)
-        {
-            try
-            {
-                Clipboard.SetDataObject(text, copy: true);
-                return;
-            }
-            catch (Exception ex) when (
-                (ex is COMException or ExternalException or InvalidOperationException) &&
-                attempt < maxAttempts)
-            {
-                Thread.Sleep(retryDelayMilliseconds);
-            }
-        }
-    }
-
-    private void OnPrintDiagnosticClick(object sender, RoutedEventArgs e)
-    {
-        var item = GetSelectedPrinterItem();
-        if (item is null)
-        {
-            SetStatus("1쪽 테스트 인쇄를 보낼 프린터가 없습니다. 프린터 연결 후 새로고침하거나 PDF 저장/파일 저장(XPS)을 사용하세요.", StatusTone.Warning);
-            return;
-        }
-
-        if (item.IsOffline)
-        {
-            SetStatus($"선택한 프린터 '{item.DisplayName}'이(가) 오프라인이라 1쪽 테스트 인쇄를 보내지 않았습니다. 프린터 전원/네트워크/드라이버를 확인하세요.", StatusTone.Warning);
-            return;
-        }
-
-        SetStatus($"'{item.DisplayName}'으로 1쪽 테스트 인쇄를 보내는 중입니다...", StatusTone.Info);
-        if (TradePrintExecutor.TryPrintDiagnosticPage(item.QueueName, out var errorMessage))
-        {
-            SetStatus($"'{item.DisplayName}'으로 1쪽 테스트 인쇄를 보냈습니다. 출력이 없으면 진단 복사 결과를 공유하거나 PDF/XPS fallback을 사용하세요.", StatusTone.Success);
-            return;
-        }
-
-        SetStatus($"1쪽 테스트 인쇄를 보내지 못했습니다. {errorMessage}", StatusTone.Error);
-    }
-
     private void SaveToFile(TradePrintFileFormat fileFormat)
     {
         var extension = fileFormat == TradePrintFileFormat.Pdf ? ".pdf" : ".xps";
@@ -439,18 +345,12 @@ public partial class TradePrintWindow : Window
             pageNumbers = parsedPages;
         }
 
-        if (ReverseOrderCheckBox.IsChecked == true && _pageCount <= 0)
-        {
-            ShowValidationError("문서 페이지 수를 확인할 수 없어 역방향 인쇄를 사용할 수 없습니다.");
-            return false;
-        }
-
         options = new TradePrintDialogResult(
             saveToFile ? null : item!.QueueName,
             copyCount,
             CollateCheckBox.IsChecked == true,
             pageNumbers,
-            ReverseOrderCheckBox.IsChecked == true,
+            false,
             _currentPageNumber,
             saveToFile,
             outputFilePath,
@@ -486,8 +386,6 @@ public partial class TradePrintWindow : Window
         var hasPrinter = GetSelectedPrinterItem() is not null;
         PropertiesButton.IsEnabled = hasPrinter;
         PrintButton.IsEnabled = hasPrinter;
-        PrintDiagnosticButton.IsEnabled = hasPrinter;
-        CopyDiagnosticButton.IsEnabled = !_isRefreshingPrinters;
         RefreshPrintersButton.IsEnabled = _printerCatalogProvider is not null && !_isRefreshingPrinters;
     }
 
@@ -536,63 +434,20 @@ public partial class TradePrintWindow : Window
         return fileName;
     }
 
-    private string BuildPrinterDiagnosticReport()
+    private static void SetStatus(string message, StatusTone tone)
     {
-        var selectedItem = GetSelectedPrinterItem();
-        var pageMode = GetPageModeSummary();
-        var report = new StringBuilder();
-        report.AppendLine("거래플랜 인쇄 진단");
-        report.AppendLine($"생성 시각: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-        report.AppendLine($"PC 이름: {Environment.MachineName}");
-        report.AppendLine($"사용자: {Environment.UserName}");
-        report.AppendLine($"등록 프린터 수: {PrinterComboBox.Items.Count:N0}");
-        report.AppendLine($"선택 프린터: {selectedItem?.DisplayName ?? (PrinterComboBox.Items.Count == 0 ? "등록된 프린터 없음" : "선택 안 함")}");
-        report.AppendLine($"선택 프린터 상태: {selectedItem?.StatusText ?? (PrinterComboBox.Items.Count == 0 ? "등록된 프린터 없음" : "선택 안 함")}");
-        report.AppendLine($"선택 프린터 위치: {selectedItem?.LocationText ?? "-"}");
-        report.AppendLine($"선택 프린터 종류: {selectedItem?.TypeText ?? "-"}");
-        report.AppendLine($"선택 프린터 오프라인: {(selectedItem?.IsOffline == true ? "예" : "아니오")}");
-        report.AppendLine($"문서 페이지 수: {(_pageCount > 0 ? $"{_pageCount:N0}쪽" : "확인 불가")}");
-        report.AppendLine($"현재 페이지: {(_currentPageNumber.HasValue ? $"{_currentPageNumber.Value:N0}쪽" : "확인 불가")}");
-        report.AppendLine($"페이지 선택: {pageMode}");
-        report.AppendLine($"인쇄 매수: {ReadCopyCountOrDefault():N0}");
-        report.AppendLine($"한 부씩 인쇄: {(CollateCheckBox.IsChecked == true ? "예" : "아니오")}");
-        report.AppendLine($"역방향 인쇄: {(ReverseOrderCheckBox.IsChecked == true ? "예" : "아니오")}");
-        report.AppendLine($"현재 안내 메시지: {StatusTextBlock.Text}");
-        report.AppendLine("fallback: PDF 저장 / 파일 저장(XPS)");
-        return report.ToString().TrimEnd();
-    }
-
-    private string GetPageModeSummary()
-    {
-        if (CurrentPageRadioButton.IsChecked == true)
-            return _currentPageNumber.HasValue ? $"현재 페이지 {_currentPageNumber.Value:N0}쪽" : "현재 페이지 (확인 불가)";
-
-        if (PageRangeRadioButton.IsChecked == true)
+        switch (tone)
         {
-            var pageRange = PageRangeTextBox.Text.Trim();
-            return string.IsNullOrWhiteSpace(pageRange) ? "페이지 범위 (입력 없음)" : $"페이지 범위 {pageRange}";
+            case StatusTone.Error:
+                AppLogger.Error("PRINT", message);
+                break;
+            case StatusTone.Warning:
+                AppLogger.Warn("PRINT", message);
+                break;
+            default:
+                AppLogger.Info("PRINT", message);
+                break;
         }
-
-        return "모든 페이지";
-    }
-
-    private void SetStatus(string message, StatusTone tone)
-    {
-        StatusTextBlock.Text = message;
-        StatusTextBlock.Foreground = tone switch
-        {
-            StatusTone.Success => SuccessStatusBrush,
-            StatusTone.Warning => WarningStatusBrush,
-            StatusTone.Error => ErrorStatusBrush,
-            _ => InfoStatusBrush
-        };
-    }
-
-    private static Brush CreateFrozenBrush(string colorCode)
-    {
-        var brush = (SolidColorBrush)new BrushConverter().ConvertFromString(colorCode)!;
-        brush.Freeze();
-        return brush;
     }
 
     private sealed class PrinterListItem

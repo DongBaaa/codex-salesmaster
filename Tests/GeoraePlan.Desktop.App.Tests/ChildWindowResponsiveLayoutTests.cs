@@ -640,6 +640,99 @@ public sealed class ChildWindowResponsiveLayoutTests
     }
 
     [Fact]
+    public void MainTransactionAndSalesItemGrids_ReuseTheSameDataRowStyle()
+    {
+        var desktopAppDirectory = FindDesktopAppDirectory();
+        XNamespace xaml = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var app = XDocument.Load(Path.Combine(desktopAppDirectory, "App.xaml"));
+        var main = XDocument.Load(Path.Combine(desktopAppDirectory, "MainWindow.xaml"));
+        var sales = LoadWindow(desktopAppDirectory, "SalesWindow.xaml");
+
+        var sharedRowStyle = Assert.Single(
+            app.Descendants(),
+            element =>
+                element.Name.LocalName == "Style" &&
+                string.Equals(
+                    (string?)element.Attribute(xaml + "Key"),
+                    "MainTransactionDataRowStyle",
+                    StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            sharedRowStyle.Elements(),
+            element =>
+                element.Name.LocalName == "Setter" &&
+                ((string?)element.Attribute("Property") is "Height" or "MinHeight"));
+
+        var sharedGridStyle = Assert.Single(
+            app.Descendants(),
+            element =>
+                element.Name.LocalName == "Style" &&
+                string.Equals(
+                    (string?)element.Attribute(xaml + "Key"),
+                    "MainTransactionDataGridStyle",
+                    StringComparison.Ordinal));
+        Assert.Contains(
+            sharedGridStyle.Elements(),
+            element =>
+                element.Name.LocalName == "Setter" &&
+                string.Equals((string?)element.Attribute("Property"), "RowHeight", StringComparison.Ordinal) &&
+                string.Equals((string?)element.Attribute("Value"), "NaN", StringComparison.Ordinal));
+        Assert.Contains(
+            sharedGridStyle.Elements(),
+            element =>
+                element.Name.LocalName == "Setter" &&
+                string.Equals((string?)element.Attribute("Property"), "MinRowHeight", StringComparison.Ordinal) &&
+                string.Equals((string?)element.Attribute("Value"), "0", StringComparison.Ordinal));
+
+        foreach (var window in new[] { main, sales })
+        {
+            var localGridStyle = Assert.Single(
+                window.Descendants().First(element => element.Name.LocalName == "Window.Resources").Elements(),
+                element =>
+                    element.Name.LocalName == "Style" &&
+                    string.Equals((string?)element.Attribute("TargetType"), "DataGrid", StringComparison.Ordinal) &&
+                    element.Attribute(xaml + "Key") is null);
+            Assert.Equal(
+                "{StaticResource MainTransactionDataGridStyle}",
+                (string?)localGridStyle.Attribute("BasedOn"));
+        }
+
+        var mainGrid = AssertNamedElement(main, xaml, "InvoiceRowsDataGrid");
+        var mainRowStyle = Assert.Single(
+            mainGrid.Descendants(),
+            element => element.Name.LocalName == "Style" &&
+                       string.Equals((string?)element.Attribute("TargetType"), "DataGridRow", StringComparison.Ordinal));
+        Assert.Equal(
+            "{StaticResource MainTransactionDataRowStyle}",
+            (string?)mainRowStyle.Attribute("BasedOn"));
+
+        foreach (var dataGridName in new[] { "SalesLinesDataGrid", "ItemSearchResultsDataGrid" })
+        {
+            var dataGrid = AssertNamedElement(sales, xaml, dataGridName);
+            Assert.Equal(
+                "{StaticResource MainTransactionDataRowStyle}",
+                (string?)dataGrid.Attribute("RowStyle"));
+            Assert.Contains(
+                dataGrid.Attributes(),
+                attribute =>
+                    attribute.Name.LocalName.EndsWith(".PreserveSingleLine", StringComparison.Ordinal) &&
+                    string.Equals(attribute.Value, "True", StringComparison.Ordinal));
+        }
+
+        var salesCellStyle = Assert.Single(
+            sales.Descendants(),
+            element =>
+                element.Name.LocalName == "Style" &&
+                string.Equals((string?)element.Attribute("TargetType"), "DataGridCell", StringComparison.Ordinal) &&
+                element.Attribute(xaml + "Key") is null);
+        Assert.Contains(
+            salesCellStyle.Elements(),
+            element =>
+                element.Name.LocalName == "Setter" &&
+                string.Equals((string?)element.Attribute("Property"), "BorderThickness", StringComparison.Ordinal) &&
+                string.Equals((string?)element.Attribute("Value"), "0,0,1,0", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void PaymentWindow_KeepsFixedActionsAndVirtualizedTabbedWorkspace()
     {
         var desktopAppDirectory = FindDesktopAppDirectory();
@@ -1807,7 +1900,10 @@ public sealed class ChildWindowResponsiveLayoutTests
                     "ListBox" or
                     "ListView" or
                     "TreeView");
-            Assert.True(hasOverflowNavigation, fileName);
+            if (string.Equals(fileName, "TradePrintWindow.xaml", StringComparison.Ordinal))
+                Assert.False(hasOverflowNavigation, "인쇄창 본문에는 메인 스크롤 컨테이너가 없어야 합니다.");
+            else
+                Assert.True(hasOverflowNavigation, fileName);
 
             var preferredWidth = ReadPositiveDimension(root, "Width", 640d);
             var preferredHeight = ReadPositiveDimension(
@@ -2228,7 +2324,10 @@ public sealed class ChildWindowResponsiveLayoutTests
                 ancestor => ancestor.Name.LocalName == "ScrollViewer");
             Assert.Equal("NaN", (string?)dataGrid.Attribute("ColumnHeaderHeight"));
             Assert.Equal("NaN", (string?)dataGrid.Attribute("RowHeight"));
-            Assert.Equal("32", (string?)dataGrid.Attribute("MinRowHeight"));
+            Assert.Null(dataGrid.Attribute("MinRowHeight"));
+            Assert.Equal(
+                "{StaticResource MainTransactionDataRowStyle}",
+                (string?)dataGrid.Attribute("RowStyle"));
         }
 
         var mainWorkspace = AssertNamedElement(

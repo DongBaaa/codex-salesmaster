@@ -40,6 +40,19 @@ public static class FullTextLayoutBehavior
     public static void SetIsEnabled(DependencyObject element, bool value) =>
         element.SetValue(IsEnabledProperty, value);
 
+    public static readonly DependencyProperty PreserveSingleLineProperty =
+        DependencyProperty.RegisterAttached(
+            "PreserveSingleLine",
+            typeof(bool),
+            typeof(FullTextLayoutBehavior),
+            new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.Inherits));
+
+    public static bool GetPreserveSingleLine(DependencyObject element) =>
+        (bool)element.GetValue(PreserveSingleLineProperty);
+
+    public static void SetPreserveSingleLine(DependencyObject element, bool value) =>
+        element.SetValue(PreserveSingleLineProperty, value);
+
     private static void OnIsEnabledChanged(
         DependencyObject dependencyObject,
         DependencyPropertyChangedEventArgs eventArgs)
@@ -101,17 +114,18 @@ public static class FullTextLayoutBehavior
 
     private static void ApplyFullTextContract(DependencyObject element)
     {
-        if (element is TextBlock textBlock)
+        var preserveSingleLine = GetPreserveSingleLine(element);
+        if (!preserveSingleLine && element is TextBlock textBlock)
         {
             textBlock.SetCurrentValue(TextBlock.TextTrimmingProperty, TextTrimming.None);
             textBlock.SetCurrentValue(TextBlock.TextWrappingProperty, TextWrapping.Wrap);
         }
-        else if (element is AccessText accessText)
+        else if (!preserveSingleLine && element is AccessText accessText)
         {
             accessText.SetCurrentValue(AccessText.TextWrappingProperty, TextWrapping.Wrap);
         }
 
-        if (element is DataGrid dataGrid)
+        if (!preserveSingleLine && element is DataGrid dataGrid)
         {
             dataGrid.SetCurrentValue(DataGrid.RowHeightProperty, double.NaN);
             dataGrid.SetCurrentValue(DataGrid.ColumnHeaderHeightProperty, double.NaN);

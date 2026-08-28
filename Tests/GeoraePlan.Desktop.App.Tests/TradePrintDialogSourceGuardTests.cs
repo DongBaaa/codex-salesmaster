@@ -36,14 +36,14 @@ public sealed class TradePrintDialogSourceGuardTests
 
         Assert.Contains("파일 저장(XPS)", xaml, StringComparison.Ordinal);
         Assert.Contains("PDF 저장", xaml, StringComparison.Ordinal);
-        Assert.Contains("복합기가 잡히지 않으면 PDF 저장 후 복합기/다른 PC에서 출력하세요.", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Windows 기본 인쇄창 대신", xaml, StringComparison.Ordinal);
         Assert.Contains("SaveDocumentAsXps", executor, StringComparison.Ordinal);
         Assert.Contains("SaveDocumentAsPdf", executor, StringComparison.Ordinal);
         Assert.Contains("XpsDocument.CreateXpsDocumentWriter", executor, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void TradePrintWindow_KeepsPrintActionFooterVisibleWhenOptionsOverflow()
+    public void TradePrintWindow_FitsOptionsAndFixedActionsWithoutMainScrollViewer()
     {
         var repoRoot = FindRepositoryRoot();
         var xaml = File.ReadAllText(Path.Combine(
@@ -53,15 +53,23 @@ public sealed class TradePrintDialogSourceGuardTests
             "Views",
             "TradePrintWindow.xaml"));
 
-        var scrollViewerIndex = xaml.IndexOf("<ScrollViewer Grid.Row=\"0\"", StringComparison.Ordinal);
-        var scrollViewerEndIndex = xaml.IndexOf("</ScrollViewer>", StringComparison.Ordinal);
-        var footerIndex = xaml.IndexOf("<Border Grid.Row=\"1\"", scrollViewerEndIndex, StringComparison.Ordinal);
+        var footerIndex = xaml.IndexOf("x:Name=\"PrintActionFooter\"", StringComparison.Ordinal);
         var printButtonIndex = xaml.IndexOf("x:Name=\"PrintButton\"", StringComparison.Ordinal);
 
-        Assert.True(scrollViewerIndex >= 0, "인쇄 옵션 본문은 스크롤 영역 안에 있어야 합니다.");
-        Assert.True(scrollViewerEndIndex > scrollViewerIndex, "스크롤 영역 닫힘 태그를 찾을 수 없습니다.");
-        Assert.True(footerIndex > scrollViewerEndIndex, "PDF 저장/파일 저장/인쇄/취소 버튼 푸터는 스크롤 영역 밖 하단 고정 행에 있어야 합니다.");
+        Assert.DoesNotContain("<ScrollViewer", xaml, StringComparison.Ordinal);
+        Assert.True(footerIndex >= 0, "PDF 저장/파일 저장/인쇄/취소 버튼 푸터는 하단 고정 행에 있어야 합니다.");
         Assert.True(printButtonIndex > footerIndex, "인쇄 버튼은 하단 고정 푸터 안에 있어야 합니다.");
+        Assert.Contains("Height=\"500\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("MinHeight=\"480\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("MinWidth=\"720\"", xaml, StringComparison.Ordinal);
+        Assert.Contains(
+            "infra:ResponsiveWindowBehavior.IsGlobalLayoutExcluded=\"True\"",
+            xaml,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "infra:ResponsiveWindowBehavior.IsEnabled=\"False\"",
+            xaml,
+            StringComparison.Ordinal);
         Assert.Contains("ResizeMode=\"CanResizeWithGrip\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Content=\"인쇄\"", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("Content=\"확인\"", xaml, StringComparison.Ordinal);
@@ -215,7 +223,7 @@ public sealed class TradePrintDialogSourceGuardTests
     }
 
     [Fact]
-    public void TradePrintWindow_ProvidesDiagnosticCopyAndExplicitOnePageTestPrintStates()
+    public void TradePrintWindow_RemovesDiagnosticDetailsAndPinsNormalPageOrder()
     {
         var repoRoot = FindRepositoryRoot();
         var xaml = File.ReadAllText(Path.Combine(
@@ -230,33 +238,26 @@ public sealed class TradePrintDialogSourceGuardTests
             "거래플랜.Desktop.App",
             "Views",
             "TradePrintWindow.xaml.cs"));
-        var executor = File.ReadAllText(Path.Combine(
-            repoRoot,
-            "Desktop",
-            "거래플랜.Desktop.App",
-            "Services",
-            "TradePrintExecutor.cs"));
-
-        Assert.Contains("x:Name=\"CopyDiagnosticButton\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Content=\"진단 복사\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("x:Name=\"PrintDiagnosticButton\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Content=\"1쪽 테스트\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Click=\"OnCopyDiagnosticClick\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Click=\"OnPrintDiagnosticClick\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("OnCopyDiagnosticClick", codeBehind, StringComparison.Ordinal);
-        Assert.Contains("OnPrintDiagnosticClick", codeBehind, StringComparison.Ordinal);
-        Assert.Contains("BuildPrinterDiagnosticReport", codeBehind, StringComparison.Ordinal);
-        Assert.Contains("SetClipboardTextWithRetry", codeBehind, StringComparison.Ordinal);
-        Assert.Contains("Clipboard.SetDataObject(text, copy: true)", codeBehind, StringComparison.Ordinal);
-        Assert.Contains("const int maxAttempts = 5", codeBehind, StringComparison.Ordinal);
-        Assert.Contains("const int retryDelayMilliseconds = 80", codeBehind, StringComparison.Ordinal);
-        Assert.Contains("프린터 진단 정보를 클립보드에 복사하지 못했습니다", codeBehind, StringComparison.Ordinal);
-        Assert.Contains("오프라인이라 1쪽 테스트 인쇄를 보내지 않았습니다", codeBehind, StringComparison.Ordinal);
-        Assert.Contains("1쪽 테스트 인쇄를 보내지 못했습니다", codeBehind, StringComparison.Ordinal);
-        Assert.Contains("PDF/XPS fallback", codeBehind, StringComparison.Ordinal);
-        Assert.Contains("TryPrintDiagnosticPage", executor, StringComparison.Ordinal);
-        Assert.Contains("거래플랜 프린터 진단 페이지", executor, StringComparison.Ordinal);
-        Assert.Contains("1쪽 테스트 인쇄 출력 오류", executor, StringComparison.Ordinal);
+        Assert.DoesNotContain("x:Name=\"CopyDiagnosticButton\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Content=\"진단 복사\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("x:Name=\"PrintDiagnosticButton\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Content=\"1쪽 테스트\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("PrinterTypeTextBlock", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("PrinterLocationTextBlock", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("PrinterStatusTextBlock", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Text=\"종류:\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Text=\"위치:\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Text=\"상태:\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReverseOrderCheckBox", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("역방향 인쇄", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("StatusTextBlock", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("OnCopyDiagnosticClick", codeBehind, StringComparison.Ordinal);
+        Assert.DoesNotContain("OnPrintDiagnosticClick", codeBehind, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReverseOrderCheckBox", codeBehind, StringComparison.Ordinal);
+        Assert.Contains(
+            "pageNumbers,\n            false,",
+            codeBehind.Replace("\r\n", "\n", StringComparison.Ordinal),
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -379,7 +380,7 @@ public sealed class TradePrintDialogSourceGuardTests
     }
 
     [Fact]
-    public void TradePrintWindow_PrinterSelectorUsesFullTextNonVirtualizedItems()
+    public void TradePrintWindow_PrinterSelectorUsesCompactVirtualizedSingleLineItems()
     {
         var repoRoot = FindRepositoryRoot();
         var xaml = File.ReadAllText(Path.Combine(
@@ -389,27 +390,37 @@ public sealed class TradePrintDialogSourceGuardTests
             "Views",
             "TradePrintWindow.xaml"));
 
-        Assert.DoesNotContain("DisplayMemberPath=\"DisplayName\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("VirtualizingStackPanel.IsVirtualizing=\"False\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("ScrollViewer.CanContentScroll=\"False\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Height=\"34\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("MaxDropDownHeight=\"224\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("VirtualizingStackPanel.IsVirtualizing=\"True\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("VirtualizingStackPanel.VirtualizationMode=\"Recycling\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("ScrollViewer.CanContentScroll=\"True\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Text=\"{Binding DisplayName, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Text=\"{Binding TypeText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Text=\"{Binding LocationText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("Text=\"{Binding StatusText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("TextWrapping=\"Wrap\"", xaml, StringComparison.Ordinal);
-        Assert.Contains("TextTrimming=\"None\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("FullTextLayoutBehavior.PreserveSingleLine=\"True\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Text=\"{Binding TypeText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Text=\"{Binding LocationText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Text=\"{Binding StatusText, Mode=OneWay}\"", xaml, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void TradePrintWindow_RealNativeSnapshotRealizesEveryFullPrinterItem()
+    public void TradePrintWindow_TwentyPrinterSnapshotKeepsDropdownHeightBounded()
     {
         if (!OperatingSystem.IsWindows())
             return;
 
         RunOnSta(() =>
         {
-            var snapshot = TradePrinterCatalog.LoadSnapshot();
-            Assert.NotEmpty(snapshot.Printers);
+            var printers = Enumerable.Range(1, 20)
+                .Select(index => new PrinterCatalogItem(
+                    $"Printer-{index:00}",
+                    index == 1 ? "Printer-01 (기본)" : $"Printer-{index:00}",
+                    "Driver",
+                    "-",
+                    "준비",
+                    IsOffline: false,
+                    IsDefault: index == 1))
+                .ToArray();
+            var snapshot = new PrinterCatalogSnapshot(printers, "Printer-01");
             var window = new TradePrintWindow(snapshot, pageCount: 1);
             try
             {
@@ -422,31 +433,15 @@ public sealed class TradePrintDialogSourceGuardTests
                     System.Windows.Threading.DispatcherPriority.ApplicationIdle);
                 combo.UpdateLayout();
 
-                Assert.Equal(snapshot.Printers.Count, combo.Items.Count);
-                for (var index = 0; index < combo.Items.Count; index++)
-                {
-                    var item = Assert.IsType<ComboBoxItem>(
-                        combo.ItemContainerGenerator.ContainerFromIndex(index));
-                    item.ApplyTemplate();
-                    item.UpdateLayout();
-
-                    var textBlocks = FindVisualDescendants<TextBlock>(item).ToArray();
-                    Assert.NotEmpty(textBlocks);
-                    Assert.All(textBlocks, textBlock =>
-                    {
-                        Assert.Equal(TextWrapping.Wrap, textBlock.TextWrapping);
-                        Assert.Equal(TextTrimming.None, textBlock.TextTrimming);
-                    });
-
-                    var displayName = combo.Items[index]
-                        .GetType()
-                        .GetProperty("DisplayName", BindingFlags.Public | BindingFlags.Instance)
-                        ?.GetValue(combo.Items[index]) as string;
-                    Assert.False(string.IsNullOrWhiteSpace(displayName));
-                    Assert.Contains(
-                        textBlocks.Select(ReadTextBlockText),
-                        text => string.Equals(text, displayName, StringComparison.Ordinal));
-                }
+                Assert.Equal(20, combo.Items.Count);
+                Assert.Equal(34d, combo.ActualHeight, precision: 1);
+                Assert.Equal(224d, combo.MaxDropDownHeight);
+                var popup = Assert.IsType<System.Windows.Controls.Primitives.Popup>(
+                    combo.Template.FindName("PART_Popup", combo));
+                Assert.NotNull(popup.Child);
+                Assert.True(
+                    popup.Child.RenderSize.Height <= combo.MaxDropDownHeight + 2,
+                    $"프린터 드롭다운은 8행 높이를 넘으면 안 됩니다. Actual={popup.Child.RenderSize.Height}");
             }
             finally
             {
@@ -534,7 +529,7 @@ public sealed class TradePrintDialogSourceGuardTests
     }
 
     [Fact]
-    public void TradePrintWindow_KeepsFullWidthPrinterSelectorAndActionsVisibleAt780MinWidth()
+    public void TradePrintWindow_KeepsCompactPrinterSelectorAndThreeActionsVisibleAtMinimumSize()
     {
         RunOnSta(() =>
         {
@@ -551,21 +546,25 @@ public sealed class TradePrintDialogSourceGuardTests
                 var printerCombo = Assert.IsAssignableFrom<FrameworkElement>(window.FindName("PrinterComboBox"));
                 var printerActionGrid = Assert.IsAssignableFrom<FrameworkElement>(window.FindName("PrinterActionGrid"));
                 var propertiesButton = Assert.IsAssignableFrom<FrameworkElement>(window.FindName("PropertiesButton"));
-                var copyDiagnosticButton = Assert.IsAssignableFrom<FrameworkElement>(window.FindName("CopyDiagnosticButton"));
-                var printDiagnosticButton = Assert.IsAssignableFrom<FrameworkElement>(window.FindName("PrintDiagnosticButton"));
+                var refreshButton = Assert.IsAssignableFrom<FrameworkElement>(window.FindName("RefreshPrintersButton"));
+                var optionsGrid = Assert.IsAssignableFrom<FrameworkElement>(window.FindName("PrintOptionsGrid"));
+                var actionFooter = Assert.IsAssignableFrom<FrameworkElement>(window.FindName("PrintActionFooter"));
 
                 var comboOrigin = printerCombo.TranslatePoint(new Point(0, 0), root);
                 var actionOrigin = printerActionGrid.TranslatePoint(new Point(0, 0), root);
                 var propertiesLeft = propertiesButton.TranslatePoint(new Point(0, 0), root).X;
-                var copyOrigin = copyDiagnosticButton.TranslatePoint(new Point(0, 0), root);
-                var printRight = printDiagnosticButton.TranslatePoint(new Point(printDiagnosticButton.ActualWidth, 0), root).X;
+                var refreshRight = refreshButton.TranslatePoint(new Point(refreshButton.ActualWidth, 0), root).X;
+                var optionsBottom = optionsGrid.TranslatePoint(new Point(0, optionsGrid.ActualHeight), root).Y;
+                var footerTop = actionFooter.TranslatePoint(new Point(0, 0), root).Y;
+                var footerBottom = actionFooter.TranslatePoint(new Point(0, actionFooter.ActualHeight), root).Y;
 
-                Assert.True(actionOrigin.Y >= comboOrigin.Y + printerCombo.ActualHeight + 7, "프린터 작업 버튼은 전체 폭 선택 상자 아래에 있어야 합니다.");
-                Assert.True(Math.Abs(actionOrigin.Y - copyOrigin.Y) < 1, "모든 프린터 작업 버튼은 같은 행에 있어야 합니다.");
-                Assert.True(printerCombo.ActualWidth >= 600, $"780px 최소폭에서도 긴 프린터 이름을 표시할 전체 폭을 확보해야 합니다. ActualWidth={printerCombo.ActualWidth}");
+                Assert.True(actionOrigin.Y >= comboOrigin.Y + printerCombo.ActualHeight + 5, "프린터 작업 버튼은 전체 폭 선택 상자 아래에 있어야 합니다.");
+                Assert.True(printerCombo.ActualWidth >= 640, $"최소폭에서도 긴 프린터 이름을 표시할 전체 폭을 확보해야 합니다. ActualWidth={printerCombo.ActualWidth}");
                 Assert.True(Math.Abs(printerActionGrid.ActualWidth - printerCombo.ActualWidth) < 1, "프린터 선택 상자와 작업 버튼 행은 같은 전체 폭을 사용해야 합니다.");
                 Assert.True(propertiesLeft >= comboOrigin.X - 1, $"첫 프린터 작업 버튼이 왼쪽에서 잘리면 안 됩니다. Left={propertiesLeft}, ComboLeft={comboOrigin.X}");
-                Assert.True(printRight <= root.ActualWidth + 1, $"780px 최소폭에서 1쪽 테스트 버튼이 잘리면 안 됩니다. Right={printRight}, RootWidth={root.ActualWidth}");
+                Assert.True(refreshRight <= root.ActualWidth + 1, $"최소폭에서 새로고침 버튼이 잘리면 안 됩니다. Right={refreshRight}, RootWidth={root.ActualWidth}");
+                Assert.True(optionsBottom <= footerTop + 1, $"페이지/매수 영역과 하단 작업 버튼이 겹치면 안 됩니다. OptionsBottom={optionsBottom}, FooterTop={footerTop}");
+                Assert.True(footerBottom <= root.ActualHeight + 1, $"하단 작업 버튼이 최소 높이에서 잘리면 안 됩니다. FooterBottom={footerBottom}, RootHeight={root.ActualHeight}");
             }
             finally
             {

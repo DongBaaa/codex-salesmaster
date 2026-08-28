@@ -123,10 +123,26 @@ public sealed class FullTextUiContractTests
                 RowHeight = 22,
                 ColumnHeaderHeight = 22
             };
+            var compactText = new TextBlock
+            {
+                Text = "한 줄로 유지할 조밀한 표 셀",
+                TextWrapping = TextWrapping.NoWrap,
+                TextTrimming = TextTrimming.None
+            };
+            var compactRegion = new Border { Child = compactText };
+            FullTextLayoutBehavior.SetPreserveSingleLine(compactRegion, true);
+            var compactDataGrid = new DataGrid
+            {
+                RowHeight = 22,
+                MinRowHeight = 0
+            };
+            FullTextLayoutBehavior.SetPreserveSingleLine(compactDataGrid, true);
             var panel = new StackPanel();
             panel.Children.Add(text);
             panel.Children.Add(button);
             panel.Children.Add(dataGrid);
+            panel.Children.Add(compactRegion);
+            panel.Children.Add(compactDataGrid);
             var window = new Window
             {
                 Content = panel,
@@ -152,6 +168,10 @@ public sealed class FullTextUiContractTests
                 Assert.True(double.IsNaN(dataGrid.RowHeight));
                 Assert.True(double.IsNaN(dataGrid.ColumnHeaderHeight));
                 Assert.True(dataGrid.MinRowHeight >= 32);
+                Assert.Equal(TextWrapping.NoWrap, compactText.TextWrapping);
+                Assert.Equal(TextTrimming.None, compactText.TextTrimming);
+                Assert.Equal(22d, compactDataGrid.RowHeight);
+                Assert.Equal(0d, compactDataGrid.MinRowHeight);
 
             }
             finally
