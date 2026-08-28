@@ -2267,8 +2267,8 @@ public sealed class ChildWindowResponsiveLayoutTests
                 Assert.Equal("Auto", (string?)splitterRow.Attribute("Height")),
             itemSearchRow =>
             {
-                Assert.Equal("2*", (string?)itemSearchRow.Attribute("Height"));
-                Assert.Equal("267", (string?)itemSearchRow.Attribute("MinHeight"));
+                Assert.Equal("1*", (string?)itemSearchRow.Attribute("Height"));
+                Assert.Equal("176", (string?)itemSearchRow.Attribute("MinHeight"));
                 Assert.Null(itemSearchRow.Attribute("MaxHeight"));
             });
 
@@ -2341,6 +2341,43 @@ public sealed class ChildWindowResponsiveLayoutTests
             document,
             xaml,
             "SalesItemSearchWorkspace");
+
+        var printOptionsBorder = AssertNamedElement(
+            document,
+            xaml,
+            "SalesPrintOptionsBorder");
+        Assert.Equal("0", (string?)printOptionsBorder.Attribute("Grid.Row"));
+        Assert.Equal("2", (string?)printOptionsBorder.Attribute("Grid.RowSpan"));
+        Assert.Equal("10,6", (string?)printOptionsBorder.Attribute("Padding"));
+        var printOptionsPanel = AssertNamedElement(
+            document,
+            xaml,
+            "SalesPrintOptionsPanel");
+        Assert.Equal("StackPanel", printOptionsPanel.Name.LocalName);
+        Assert.DoesNotContain(
+            printOptionsPanel.Ancestors(),
+            ancestor => ancestor.Name.LocalName == "ScrollViewer");
+        foreach (var requiredOption in new[]
+                 {
+                     "거래명세서",
+                     "견적서",
+                     "대금청구서",
+                     "날짜 인쇄함",
+                     "단가 인쇄함",
+                     "인쇄하기[F9]",
+                     "출력물 편집",
+                     "세금계산서 발행 완료",
+                     "세금계산서 인쇄",
+                 })
+        {
+            Assert.Contains(
+                printOptionsPanel.Descendants(),
+                element =>
+                    string.Equals(
+                        (string?)element.Attribute("Content"),
+                        requiredOption,
+                        StringComparison.Ordinal));
+        }
         Assert.Equal("3", (string?)itemSearchWorkspace.Attribute("Grid.Row"));
         Assert.Contains(
             itemSearchWorkspace.Descendants(),

@@ -18,7 +18,7 @@
 - 저장소에서 재현 가능한 공개 버전·파일명·SHA-256 기준은 `D:\거래플랜\배포\stable.json`입니다. `배포\업데이트\manifest\stable.json`은 게시 과정의 로컬 산출물이며 live manifest와는 별도로 확인합니다.
 
 ### 현재 소스·테스트판
-- `[로컬검증]` Windows PC 현재 소스 `1.1.699`, FileVersion `1.1.699.0`이며 공개 stable과 일치합니다.
+- `[로컬검증]` Windows PC 현재 소스 `1.1.700`, FileVersion `1.1.700.0`이며 공개 stable `1.1.699`보다 높은 live 반영 후보입니다.
 - `[로컬검증]` Android 소스 `0.2.83`, versionCode `194`
 - `[로컬검증]` 서버 전체 1,478건 통과, PostgreSQL 전용 20건 건너뜀, 실패 0
 - `[로컬검증]` 별도 ephemeral PostgreSQL 업무 회귀 22/22, 데스크톱 전체 3,568/3,568 통과

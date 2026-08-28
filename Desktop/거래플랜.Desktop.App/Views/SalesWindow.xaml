@@ -294,8 +294,9 @@
                 <RowDefinition Height="3*" MinHeight="40" MaxHeight="210"/>
                 <RowDefinition Height="4*" MinHeight="152"/>
                 <RowDefinition Height="Auto"/>
-                <!-- 메인 거래내역과 같은 Auto 행 높이에서 데이터 6행 이상을 확보하는 최소 영역 -->
-                <RowDefinition Height="2*" MinHeight="267"/>
+                <!-- 검색 도구 38 + 헤더 28 + 공통 Auto 데이터 행 6×17 + 테두리/여백 8 = 176 DIP.
+                     데이터 행 높이는 건드리지 않고 기본 6행만 확보해 인쇄옵션 영역에 공간을 돌려준다. -->
+                <RowDefinition Height="1*" MinHeight="176"/>
             </Grid.RowDefinitions>
 
             <ScrollViewer x:Name="SalesCustomerHeaderScrollViewer"
@@ -631,17 +632,22 @@
                     </DataGrid>
                 </Border>
 
-                <Border Grid.Row="0" Grid.RowSpan="2" Grid.Column="1" Background="#122038" BorderBrush="#2E4060" BorderThickness="1" Padding="10">
-                    <ScrollViewer VerticalScrollBarVisibility="Auto"
-                                  HorizontalScrollBarVisibility="Disabled">
-                        <StackPanel>
+                <Border x:Name="SalesPrintOptionsBorder"
+                        Grid.Row="0"
+                        Grid.RowSpan="2"
+                        Grid.Column="1"
+                        Background="#122038"
+                        BorderBrush="#2E4060"
+                        BorderThickness="1"
+                        Padding="10,6">
+                        <StackPanel x:Name="SalesPrintOptionsPanel">
                             <StackPanel Visibility="{Binding ShowStatementOptions, Converter={StaticResource BoolToVisibilityConverter}}"
-                                        Margin="0,0,0,10">
-                                <TextBlock Text="인쇄옵션" Foreground="#EAF2FF" FontWeight="Bold" Margin="0,0,0,6"/>
+                                        Margin="0,0,0,6">
+                                <TextBlock Text="인쇄옵션" Foreground="#EAF2FF" FontWeight="Bold" Margin="0,0,0,4"/>
                                 <TextBlock Text="[출력 서류]" Foreground="#EAF2FF" Margin="0,0,0,4"/>
                                 <CheckBox Content="거래명세서" IsChecked="{Binding PrintStatementDocument}" Foreground="#EAF2FF" FontSize="13" Margin="0,0,0,2"/>
                                 <CheckBox Content="견적서" IsChecked="{Binding PrintEstimateDocument}" Foreground="#EAF2FF" FontSize="13" Margin="0,0,0,2"/>
-                                <CheckBox Content="대금청구서" IsChecked="{Binding PrintPaymentClaimDocument}" Foreground="#EAF2FF" FontSize="13" Margin="0,0,0,8"/>
+                                <CheckBox Content="대금청구서" IsChecked="{Binding PrintPaymentClaimDocument}" Foreground="#EAF2FF" FontSize="13" Margin="0,0,0,4"/>
                                 <TextBlock Text="[인쇄 설정]" Foreground="#EAF2FF" Margin="0,0,0,4"/>
                                 <CheckBox Content="날짜 인쇄함" IsChecked="{Binding PrintWithDate}" Foreground="#EAF2FF" FontSize="13" Margin="0,0,0,4"/>
                                 <CheckBox Content="단가 인쇄함" IsChecked="{Binding PrintWithPrice}" Foreground="#EAF2FF" FontSize="13"/>
@@ -706,11 +712,11 @@
                                            TextWrapping="Wrap"/>
                             </Border>
 
-                            <Button Style="{StaticResource TradePlanPrintButtonStyle}" Content="인쇄하기[F9]" Height="36" HorizontalAlignment="Stretch" Margin="0,0,0,6" Command="{Binding PrintCommand}"/>
+                            <Button Style="{StaticResource TradePlanPrintButtonStyle}" Content="인쇄하기[F9]" Height="36" HorizontalAlignment="Stretch" Margin="0,0,0,4" Command="{Binding PrintCommand}"/>
                             <Button Style="{StaticResource TradePlanPrintButtonStyle}" Content="출력물 편집"
                                     Height="36"
                                     HorizontalAlignment="Stretch"
-                                    Margin="0,0,0,6"
+                                    Margin="0,0,0,4"
                                     Command="{Binding EditPrintOutputCommand}"
                                     Visibility="{Binding CanEditPrintOutput, Converter={StaticResource BoolToVisibilityConverter}}"/>
                             <CheckBox Content="세금계산서 발행 완료"
@@ -723,16 +729,15 @@
                                        Visibility="{Binding ShowTaxInvoiceIssuedOption, Converter={StaticResource BoolToVisibilityConverter}}"
                                        Foreground="#B7C9E6"
                                        TextWrapping="Wrap"
-                                       Margin="0,0,0,10"/>
+                                       Margin="0,0,0,6"/>
                             <Button Style="{StaticResource TradePlanPrintButtonStyle}" Content="세금계산서 인쇄"
                                     Height="36"
                                     HorizontalAlignment="Stretch"
-                                    Margin="0,0,0,6"
+                                    Margin="0"
                                     Command="{Binding PrintTaxInvoiceCommand}"
                                     Visibility="{Binding CanPrintTaxInvoice, Converter={StaticResource BoolToVisibilityConverter}}"/>
 
                         </StackPanel>
-                    </ScrollViewer>
                 </Border>
             </Grid>
 
