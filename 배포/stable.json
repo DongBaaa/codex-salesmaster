@@ -1,49 +1,49 @@
 {
-  "channel": "stable",
-  "generationId": "359b79af3ade488687928107eb9ceba5",
-  "generatedAtUtc": "2026-08-28T04:27:42.2880627Z",
-  "desktop": {
-    "platform": "desktop",
-    "version": "1.1.699",
-    "mandatory": false,
-    "minimumSupportedVersion": "",
-    "packageUrl": "/updates/download/desktop/tradeplan-pc-installer-v1.1.699.zip",
-    "fileName": "tradeplan-pc-installer-v1.1.699.zip",
-    "sha256": "961F99BAFD8F8F66084CF74E7173171D7A627CE896DDF90385F27741182690C6",
-    "fileSize": 234168890,
-    "notes": "내부 업데이트 패키지/동기화 안정화 개선 반영",
-    "releasedAtUtc": "2026-08-28T04:27:54.7405493Z",
-    "installers": [
-      {
-        "audience": "user",
-        "format": "exe",
-        "version": "1.1.699",
-        "packageUrl": "/updates/download/desktop/tradeplan-pc-setup-v1.1.699.exe",
-        "fileName": "tradeplan-pc-setup-v1.1.699.exe",
-        "sha256": "342131DD3D96D7E3ED13C1D7714B7AB734EB2585B5165E88E578142568856724",
-        "fileSize": 250345056
-      },
-      {
-        "audience": "administrator",
-        "format": "msi",
-        "version": "1.1.699",
-        "packageUrl": "/updates/download/desktop/tradeplan-pc-admin-v1.1.699.msi",
-        "fileName": "tradeplan-pc-admin-v1.1.699.msi",
-        "sha256": "980D3E00DD2F926E4E786A84965C4269EECA69C8A3B3DCE38DA0909BEE5C25AD",
-        "fileSize": 187940864
-      }
-    ]
-  },
-  "android": {
-    "platform": "android",
-    "version": "0.2.82",
-    "mandatory": false,
-    "minimumSupportedVersion": "",
-    "packageUrl": "/updates/download/android/tradeplan-android-v0.2.82.apk",
-    "fileName": "tradeplan-android-v0.2.82.apk",
-    "sha256": "82871101E42CBF906C494DD47FB64321B2FCD7A8F1BB1DD4E94622E720F54600",
-    "fileSize": 42928348,
-    "notes": "모바일 상세탭/첨부 보기/내부 업데이트 확인 기능 반영",
-    "releasedAtUtc": "2026-08-12T02:35:52.6187085Z"
-  }
+    "channel":  "stable",
+    "generationId":  "343792fd5d554e3b9f70424985187602",
+    "generatedAtUtc":  "2026-08-28T08:51:45.3474520Z",
+    "desktop":  {
+                    "platform":  "desktop",
+                    "version":  "1.1.700",
+                    "mandatory":  false,
+                    "minimumSupportedVersion":  "",
+                    "packageUrl":  "/updates/download/desktop/tradeplan-pc-installer-v1.1.700.zip",
+                    "fileName":  "tradeplan-pc-installer-v1.1.700.zip",
+                    "sha256":  "A015691B101A0F9D6446A5807A82AAC78041E8C874886946AE5DA65641CB18F0",
+                    "fileSize":  234167873,
+                    "notes":  "내부 업데이트 패키지/동기화 안정화 개선 반영",
+                    "releasedAtUtc":  "2026-08-28T08:51:59.8124872Z",
+                    "installers":  [
+                                       {
+                                           "audience":  "user",
+                                           "format":  "exe",
+                                           "version":  "1.1.700",
+                                           "packageUrl":  "/updates/download/desktop/tradeplan-pc-setup-v1.1.700.exe",
+                                           "fileName":  "tradeplan-pc-setup-v1.1.700.exe",
+                                           "sha256":  "E3EE3666724A989344E398075F5FEB9BF0C0F7485F7F4FB9BAB61AC9BA3FC464",
+                                           "fileSize":  250324576
+                                       },
+                                       {
+                                           "audience":  "administrator",
+                                           "format":  "msi",
+                                           "version":  "1.1.700",
+                                           "packageUrl":  "/updates/download/desktop/tradeplan-pc-admin-v1.1.700.msi",
+                                           "fileName":  "tradeplan-pc-admin-v1.1.700.msi",
+                                           "sha256":  "BF12F3E42518DEF4F99442B81CB9B8DE0E5B2816682B5605B5139D1F581BDB32",
+                                           "fileSize":  187920384
+                                       }
+                                   ]
+                },
+    "android":  {
+                    "platform":  "android",
+                    "version":  "0.2.82",
+                    "mandatory":  false,
+                    "minimumSupportedVersion":  "",
+                    "packageUrl":  "/updates/download/android/tradeplan-android-v0.2.82.apk",
+                    "fileName":  "tradeplan-android-v0.2.82.apk",
+                    "sha256":  "82871101E42CBF906C494DD47FB64321B2FCD7A8F1BB1DD4E94622E720F54600",
+                    "fileSize":  42928348,
+                    "notes":  "모바일 상세탭/첨부 보기/내부 업데이트 확인 기능 반영",
+                    "releasedAtUtc":  "2026-08-12T02:35:52.6187085Z"
+                }
 }
