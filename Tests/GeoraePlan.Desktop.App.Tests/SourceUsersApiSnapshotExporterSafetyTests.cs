@@ -16,6 +16,24 @@ public sealed class SourceUsersApiSnapshotExporterSafetyTests
     }
 
     [Fact]
+    public void ValidationFunctionExtraction_IncludesAclDependency()
+    {
+        var source = File.ReadAllText(FindExporter());
+
+        Assert.Contains(
+            "'Get-SourceUsersSnapshotFileSystemAcl'",
+            source,
+            StringComparison.Ordinal);
+        Assert.True(
+            source.IndexOf(
+                "'Get-SourceUsersSnapshotFileSystemAcl'",
+                StringComparison.Ordinal) <
+            source.IndexOf(
+                "'Assert-SourceUsersSnapshotAcl'",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void PromptedCredential_IsCollectedInTheVisibleConsoleAndPasswordIsMasked()
     {
         var source = File.ReadAllText(FindExporter());

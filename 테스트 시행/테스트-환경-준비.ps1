@@ -14318,6 +14318,8 @@ function Assert-LegacyInvoiceCanonicalizationReportProfile {
         '73D294E643379C1808AFF89842AA899EF5107C1B269F6B07ACCEE6E59E10B636'
     $currentOperationalApprovedSourceDatabaseSha256 =
         '1DE40C0FA21FE662EAECFA7ED3B654EA1271076FE1F69029919A3295525EBEC6'
+    $latestOperationalApprovedSourceDatabaseSha256 =
+        'A3C4A81A9FCA783F40844DC04810A905C99619722A608D9C379CA4BB157A0654'
     if ([string]::Equals(
             $ExpectedSourceDatabaseSha256,
             $originalApprovedSourceDatabaseSha256,
@@ -14401,6 +14403,19 @@ function Assert-LegacyInvoiceCanonicalizationReportProfile {
             '49AD13A712746B8AA6C38BB8ED069053B4C9305A320E117864F2DB8040CB4AA0'
         $expectedDependencyReferencesSha256 =
             'AC560B78FA943CFF1934C84BAB2ED37EC16E260ACA923CF94CE0FBB9E69F2C1F'
+    }
+    elseif ([string]::Equals(
+            $ExpectedSourceDatabaseSha256,
+            $latestOperationalApprovedSourceDatabaseSha256,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        $expectedBeforeMetadataSha256 =
+            '470D4118ACF242C3B4C1B7C5CCC6D0FC1CC7A1E9F9D2794F08EC470630153EBA'
+        $expectedAfterMetadataSha256 =
+            '49D925656056F81EBF84A23C0ED18433E205D7FB0F87699CE75A2965BD366BF9'
+        $expectedLatestInvoiceBusinessSha256 =
+            '49AD13A712746B8AA6C38BB8ED069053B4C9305A320E117864F2DB8040CB4AA0'
+        $expectedDependencyReferencesSha256 =
+            '798161B849E966FFBDCA7D008D8581118BC791A815B1D5621EAA7A954301EFA4'
     }
     else {
         throw 'Canonicalization report source snapshot is not approved.'
@@ -16357,7 +16372,8 @@ if ($CanonicalizeLegacyInvoiceSeed) {
         '937B93127A721A16857403DE5B3B7DDD7669C1787AC0EAD9C32C83A413B37FE2',
         'D7D83F5970542AAADD37491E4CE79CB63C7044E776802AD52B02BC5CA27D8CAB',
         '73D294E643379C1808AFF89842AA899EF5107C1B269F6B07ACCEE6E59E10B636',
-        '1DE40C0FA21FE662EAECFA7ED3B654EA1271076FE1F69029919A3295525EBEC6'
+        '1DE40C0FA21FE662EAECFA7ED3B654EA1271076FE1F69029919A3295525EBEC6',
+        'A3C4A81A9FCA783F40844DC04810A905C99619722A608D9C379CA4BB157A0654'
     )
     $requestedLegacyInvoiceSeedSourceDatabaseSha256 =
         $CanonicalizeLegacyInvoiceSeedExpectedSourceDatabaseSha256.Trim()

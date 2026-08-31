@@ -912,13 +912,16 @@ public sealed class WpfGlobalUiGuardTests
     }
 
     [Fact]
-    public void SalesWindow_RentalLinkedInvoice_ShowsSaveActionAndEditBoundaryNotice()
+    public void SalesWindow_RentalLinkedInvoice_UsesDedicatedApplyActionAndEditBoundaryNotice()
     {
         var root = FindRepositoryRoot();
         var xamlPath = Path.Combine(root, "Desktop", "거래플랜.Desktop.App", "Views", "SalesWindow.xaml");
         var xaml = File.ReadAllText(xamlPath);
 
+        Assert.Contains("x:Name=\"SalesRentalLinkedSaveButton\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Content=\"렌탈 전표 반영\"", xaml, StringComparison.Ordinal);
         Assert.Contains("Command=\"{Binding SaveCommand}\"", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("Content=\"저장\"", xaml, StringComparison.Ordinal);
         Assert.Contains("IsRentalBillingLinkedInvoice", xaml, StringComparison.Ordinal);
         Assert.Contains("RentalBillingLinkedNoticeText", xaml, StringComparison.Ordinal);
         Assert.Contains("RentalBillingLinkedReferenceText", xaml, StringComparison.Ordinal);

@@ -86,6 +86,8 @@
              Link="SyncDiag\IsolatedStoredCredentialReader.cs" />
     <Compile Include="..\..\tools\SyncDiag\RtRentalDeltaApplier.cs"
              Link="SyncDiag\RtRentalDeltaApplier.cs" />
+    <Compile Include="..\..\tools\SyncDiag\RtRentalDeltaPlanner.cs"
+             Link="SyncDiag\RtRentalDeltaPlanner.cs" />
     <Compile Include="..\..\tools\SyncDiag\IsolatedTestServerSqliteFinalizer.cs"
              Link="SyncDiag\IsolatedTestServerSqliteFinalizer.cs" />
     <Compile Include="..\..\tools\SyncDiag\ImmutableSqliteInspectionGuard.cs"

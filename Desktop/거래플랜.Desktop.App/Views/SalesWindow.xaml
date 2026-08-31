@@ -216,12 +216,14 @@
                            HorizontalAlignment="Right"
                            VerticalAlignment="Center">
                     <Button Style="{StaticResource TradePlanEditButtonStyle}" Content="{Binding NewDocumentButtonText}" Height="40" MinWidth="132" Margin="0,0,8,0" Command="{Binding StartNewInvoiceCommand}"/>
-                    <Button Style="{StaticResource TradePlanPrimaryButtonStyle}"
-                            Content="저장"
+                    <Button x:Name="SalesRentalLinkedSaveButton"
+                            Style="{StaticResource TradePlanPrimaryButtonStyle}"
+                            Content="렌탈 전표 반영"
                             Height="40"
-                            MinWidth="96"
+                            MinWidth="132"
                             Margin="0,0,8,0"
                             Command="{Binding SaveCommand}"
+                            Visibility="{Binding IsRentalBillingLinkedInvoice, Converter={StaticResource BoolToVisibilityConverter}}"
                             ToolTip="현재 전표를 저장합니다. 렌탈 청구 전표는 저장 전 반영 범위를 확인합니다."/>
                     <Button Style="{StaticResource TradePlanEditButtonStyle}"
                             Content="{Binding PaymentActionButtonText}"
@@ -233,19 +235,6 @@
                     <Button Style="{StaticResource TradePlanSecondaryButtonStyle}" Content="닫기(F12)" Height="40" MinWidth="112" Click="CloseButton_Click"/>
                 </WrapPanel>
             </Grid>
-        </Border>
-
-        <Border DockPanel.Dock="Top"
-                Background="#102039"
-                BorderBrush="#2E4060"
-                BorderThickness="0,0,0,1"
-                Padding="10,7">
-            <TextBlock x:Name="SalesAutoSaveNoticeText"
-                       Text="이 화면은 자동저장 방식으로 동작합니다. 항목추가/항목수정, 수금/지급 입력 진입, 창 닫기 시 입력 내역이 저장됩니다. 단, 렌탈 청구 전표는 저장 버튼으로 반영 범위를 확인한 뒤 저장합니다."
-                       Foreground="#FFD180"
-                       TextWrapping="Wrap"
-                       TextTrimming="None"
-                       ToolTip="이 화면은 자동저장 방식으로 동작합니다. 항목추가/항목수정, 수금/지급 입력 진입, 창 닫기 시 입력 내역이 저장됩니다. 단, 렌탈 청구 전표는 저장 버튼으로 반영 범위를 확인한 뒤 저장합니다."/>
         </Border>
 
         <Border DockPanel.Dock="Top"
@@ -291,7 +280,7 @@
 
         <Grid x:Name="SalesWorkspaceGrid" Margin="6" Grid.IsSharedSizeScope="True">
             <Grid.RowDefinitions>
-                <RowDefinition Height="3*" MinHeight="40" MaxHeight="210"/>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="4*" MinHeight="152"/>
                 <RowDefinition Height="Auto"/>
                 <!-- 검색 도구 38 + 헤더 28 + 공통 Auto 데이터 행 6×17 + 테두리/여백 8 = 176 DIP.
@@ -302,7 +291,7 @@
             <ScrollViewer x:Name="SalesCustomerHeaderScrollViewer"
                           Grid.Row="0"
                           HorizontalScrollBarVisibility="Auto"
-                          VerticalScrollBarVisibility="Auto">
+                          VerticalScrollBarVisibility="Disabled">
             <Border x:Name="SalesCustomerHeaderContent"
                     MinWidth="880"
                     Background="#1A2B4A"
@@ -505,6 +494,8 @@
                                       VerticalScrollBarVisibility="Disabled">
                         <Grid x:Name="SalesDocumentHeaderContent"
                               MinWidth="780"
+                              MinHeight="38"
+                              VerticalAlignment="Center"
                               Margin="0,0,0,6">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto"/>
@@ -525,13 +516,17 @@
                                     <Style TargetType="{x:Type Button}" BasedOn="{StaticResource UnifiedDatePickerButtonStyle}"/>
                                 </DatePicker.Resources>
                             </DatePicker>
-                            <Button Grid.Column="3"
+                            <Button x:Name="SalesLoadPreviousHistoryButton"
+                                    Grid.Column="3"
                                     Style="{StaticResource TradePlanSecondaryButtonStyle}"
                                     Content="이전기록불러오기"
-                                    Height="34"
+                                    Height="36"
+                                    MinHeight="36"
                                     Width="132"
                                     Margin="0,0,8,0"
-                                    Padding="10,0"
+                                    Padding="8,0"
+                                    VerticalAlignment="Center"
+                                    VerticalContentAlignment="Center"
                                     IsEnabled="{Binding CanLoadPreviousHistory}"
                                     Click="LoadPreviousHistoryButton_Click"/>
                             <StackPanel Grid.Column="4" HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -640,20 +635,57 @@
                         BorderBrush="#2E4060"
                         BorderThickness="1"
                         Padding="10,6">
-                        <StackPanel x:Name="SalesPrintOptionsPanel">
-                            <StackPanel Visibility="{Binding ShowStatementOptions, Converter={StaticResource BoolToVisibilityConverter}}"
-                                        Margin="0,0,0,6">
-                                <TextBlock Text="인쇄옵션" Foreground="#EAF2FF" FontWeight="Bold" Margin="0,0,0,4"/>
-                                <TextBlock Text="[출력 서류]" Foreground="#EAF2FF" Margin="0,0,0,4"/>
-                                <CheckBox Content="거래명세서" IsChecked="{Binding PrintStatementDocument}" Foreground="#EAF2FF" FontSize="13" Margin="0,0,0,2"/>
-                                <CheckBox Content="견적서" IsChecked="{Binding PrintEstimateDocument}" Foreground="#EAF2FF" FontSize="13" Margin="0,0,0,2"/>
-                                <CheckBox Content="대금청구서" IsChecked="{Binding PrintPaymentClaimDocument}" Foreground="#EAF2FF" FontSize="13" Margin="0,0,0,4"/>
-                                <TextBlock Text="[인쇄 설정]" Foreground="#EAF2FF" Margin="0,0,0,4"/>
-                                <CheckBox Content="날짜 인쇄함" IsChecked="{Binding PrintWithDate}" Foreground="#EAF2FF" FontSize="13" Margin="0,0,0,4"/>
-                                <CheckBox Content="단가 인쇄함" IsChecked="{Binding PrintWithPrice}" Foreground="#EAF2FF" FontSize="13"/>
-                            </StackPanel>
+                        <Grid x:Name="SalesPrintOptionsPanel" VerticalAlignment="Top">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0"
+                                       Grid.ColumnSpan="2"
+                                       Text="인쇄옵션"
+                                       Foreground="#EAF2FF"
+                                       FontWeight="Bold"
+                                       Margin="0,0,0,4"/>
+
+                            <Grid Grid.Row="1"
+                                  Grid.ColumnSpan="2"
+                                  Visibility="{Binding ShowStatementOptions, Converter={StaticResource BoolToVisibilityConverter}}"
+                                  Margin="0,0,0,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Grid.ColumnSpan="2" Text="[출력 서류]" Foreground="#EAF2FF" Margin="0,0,0,2"/>
+                                <CheckBox Grid.Row="1" Grid.Column="0" Content="거래명세서" IsChecked="{Binding PrintStatementDocument}" Foreground="#EAF2FF" FontSize="13" Margin="0,0,4,2"/>
+                                <CheckBox Grid.Row="1" Grid.Column="1" Content="견적서" IsChecked="{Binding PrintEstimateDocument}" Foreground="#EAF2FF" FontSize="13" Margin="4,0,0,2"/>
+                                <CheckBox Grid.Row="2" Grid.ColumnSpan="2" Content="대금청구서" IsChecked="{Binding PrintPaymentClaimDocument}" Foreground="#EAF2FF" FontSize="13" Margin="0,0,0,4"/>
+                                <TextBlock Grid.Row="3" Grid.ColumnSpan="2" Text="[인쇄 설정]" Foreground="#EAF2FF" Margin="0,0,0,2"/>
+                                <CheckBox Grid.Row="4" Grid.Column="0" Content="날짜 인쇄함" IsChecked="{Binding PrintWithDate}" Foreground="#EAF2FF" FontSize="13" Margin="0,0,4,0"/>
+                                <CheckBox Grid.Row="4" Grid.Column="1" Content="단가 인쇄함" IsChecked="{Binding PrintWithPrice}" Foreground="#EAF2FF" FontSize="13" Margin="4,0,0,0"/>
+                            </Grid>
 
                             <Border Background="#18314C"
+                                    Grid.Row="2"
+                                    Grid.ColumnSpan="2"
                                     CornerRadius="4"
                                     Padding="8"
                                     Margin="0,0,0,8"
@@ -664,45 +696,73 @@
                             </Border>
 
                             <Border Background="#18314C"
+                                    Grid.Row="3"
+                                    Grid.ColumnSpan="2"
                                     CornerRadius="4"
-                                    Padding="8"
-                                    Margin="0,0,0,8"
+                                    Padding="6"
+                                    Margin="0,0,0,4"
                                     Visibility="{Binding ShowPurchaseReceivingOptions, Converter={StaticResource BoolToVisibilityConverter}}">
-                                <StackPanel>
-                                    <TextBlock Text="구매 입고 확인"
+                                <Grid x:Name="SalesPurchaseReceivingOptionsGrid">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Row="0"
+                                               Grid.ColumnSpan="2"
+                                               Text="구매 입고 확인"
                                                Foreground="#EAF2FF"
                                                FontWeight="Bold"
-                                               Margin="0,0,0,6"/>
-                                    <CheckBox Content="입고확인 필요"
+                                               Margin="0,0,0,2"/>
+                                    <CheckBox Grid.Row="1"
+                                              Grid.Column="0"
+                                              Content="입고확인 필요"
                                               IsChecked="{Binding PurchaseReceivingRequired, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                               Foreground="#EAF2FF"
-                                              Margin="0,0,0,6"/>
-                                    <TextBlock Text="{Binding PurchaseReceivingStatusDisplay}"
+                                              Margin="0,0,4,2"/>
+                                    <TextBlock Grid.Row="1"
+                                               Grid.Column="1"
+                                               Text="{Binding PurchaseReceivingStatusDisplay}"
                                                Foreground="#FFD54F"
                                                FontWeight="Bold"
-                                               Margin="0,0,0,4"/>
-                                    <TextBlock Text="{Binding PurchaseReceivingMetaDisplay}"
+                                               Margin="4,0,0,2"/>
+                                    <TextBlock Grid.Row="2"
+                                               Grid.ColumnSpan="2"
+                                               Text="{Binding PurchaseReceivingMetaDisplay}"
                                                Foreground="#B7D8FF"
                                                TextWrapping="Wrap"
                                                FontSize="12"
-                                               Margin="0,0,0,6"/>
-                                    <TextBox Text="{Binding PurchaseReceivingMemo, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                               Margin="0,0,0,2"/>
+                                    <TextBox Grid.Row="3"
+                                             Grid.Column="0"
+                                             Text="{Binding PurchaseReceivingMemo, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                              MinWidth="0"
-                                             MinHeight="58"
+                                             MinHeight="42"
                                              AcceptsReturn="True"
                                              TextWrapping="Wrap"
                                              VerticalScrollBarVisibility="Auto"
-                                             Margin="0,0,0,6"
+                                             Margin="0,0,3,0"
                                              ToolTip="송장번호, 배송 확인 메모, 입고 특이사항을 기록합니다."/>
-                                    <Button Style="{StaticResource TradePlanEditButtonStyle}"
+                                    <Button Grid.Row="3"
+                                            Grid.Column="1"
+                                            Style="{StaticResource TradePlanEditButtonStyle}"
                                             Content="입고확인"
-                                            Height="34"
+                                            MinHeight="34"
+                                            VerticalAlignment="Stretch"
                                             HorizontalAlignment="Stretch"
+                                            Margin="3,0,0,0"
                                             Command="{Binding ConfirmPurchaseReceivingCommand}"/>
-                                </StackPanel>
+                                </Grid>
                             </Border>
 
                             <Border Background="#18314C"
+                                    Grid.Row="4"
+                                    Grid.ColumnSpan="2"
                                     CornerRadius="4"
                                     Padding="8"
                                     Margin="0,0,0,8"
@@ -712,32 +772,47 @@
                                            TextWrapping="Wrap"/>
                             </Border>
 
-                            <Button Style="{StaticResource TradePlanPrintButtonStyle}" Content="인쇄하기[F9]" Height="36" HorizontalAlignment="Stretch" Margin="0,0,0,4" Command="{Binding PrintCommand}"/>
-                            <Button Style="{StaticResource TradePlanPrintButtonStyle}" Content="출력물 편집"
+                            <Button Grid.Row="5"
+                                    Grid.Column="0"
+                                    Style="{StaticResource TradePlanPrintButtonStyle}"
+                                    Content="인쇄하기[F9]"
                                     Height="36"
                                     HorizontalAlignment="Stretch"
-                                    Margin="0,0,0,4"
+                                    Margin="0,0,2,4"
+                                    Command="{Binding PrintCommand}"/>
+                            <Button Grid.Row="5"
+                                    Grid.Column="1"
+                                    Style="{StaticResource TradePlanPrintButtonStyle}" Content="출력물 편집"
+                                    Height="36"
+                                    HorizontalAlignment="Stretch"
+                                    Margin="2,0,0,4"
                                     Command="{Binding EditPrintOutputCommand}"
                                     Visibility="{Binding CanEditPrintOutput, Converter={StaticResource BoolToVisibilityConverter}}"/>
-                            <CheckBox Content="세금계산서 발행 완료"
+                            <CheckBox Grid.Row="6"
+                                      Grid.ColumnSpan="2"
+                                      Content="세금계산서 발행 완료"
                                       IsChecked="{Binding TaxInvoiceIssued, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                       Visibility="{Binding ShowTaxInvoiceIssuedOption, Converter={StaticResource BoolToVisibilityConverter}}"
                                       Margin="0,0,0,4"
                                       Foreground="#EAF2FF"
                                       VerticalAlignment="Center"/>
-                            <TextBlock Text="{Binding TaxInvoiceNumberDisplay, StringFormat=세금계산서 번호: {0}}"
+                            <TextBlock Grid.Row="7"
+                                       Grid.ColumnSpan="2"
+                                       Text="{Binding TaxInvoiceNumberDisplay, StringFormat=세금계산서 번호: {0}}"
                                        Visibility="{Binding ShowTaxInvoiceIssuedOption, Converter={StaticResource BoolToVisibilityConverter}}"
                                        Foreground="#B7C9E6"
                                        TextWrapping="Wrap"
                                        Margin="0,0,0,6"/>
-                            <Button Style="{StaticResource TradePlanPrintButtonStyle}" Content="세금계산서 인쇄"
+                            <Button Grid.Row="8"
+                                    Grid.ColumnSpan="2"
+                                    Style="{StaticResource TradePlanPrintButtonStyle}" Content="세금계산서 인쇄"
                                     Height="36"
                                     HorizontalAlignment="Stretch"
                                     Margin="0"
                                     Command="{Binding PrintTaxInvoiceCommand}"
                                     Visibility="{Binding CanPrintTaxInvoice, Converter={StaticResource BoolToVisibilityConverter}}"/>
 
-                        </StackPanel>
+                        </Grid>
                 </Border>
             </Grid>
 

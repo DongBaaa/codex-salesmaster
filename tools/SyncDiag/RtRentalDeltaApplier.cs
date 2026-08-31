@@ -65,6 +65,26 @@ internal sealed record RtRentalDeltaRunResult(
     long ServerRevisionBefore,
     long ServerRevisionAfter);
 
+internal sealed record RtRentalDeltaGenerationResult(
+    string PlanPath,
+    string ReportPath,
+    string PlanSha256,
+    string SourceSha256,
+    string BusinessDatabaseName,
+    long ServerRevision,
+    int CredentialCandidateCount,
+    int LoginSucceededCount,
+    int RentalAssetEditAllowedCount,
+    int BusinessDatabaseSelectedCount,
+    RtRentalDeltaPlanAudit Audit);
+
+internal sealed record RtRentalCredentialSelectionResult(
+    bool Selected,
+    int CandidateCount,
+    int LoginSucceededCount,
+    int RentalAssetEditAllowedCount,
+    int BusinessDatabaseSelectedCount);
+
 internal static class RtRentalDeltaApplier
 {
     internal const string RootMarkerName =
@@ -83,6 +103,11 @@ internal static class RtRentalDeltaApplier
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
+    };
+
+    private static readonly JsonSerializerOptions WriteJsonOptions = new(JsonOptions)
+    {
+        WriteIndented = true
     };
 
     internal static async Task<RtRentalDeltaRunResult> ApplyAsync(
@@ -108,6 +133,163 @@ internal static class RtRentalDeltaApplier
             credentialDatabasePath,
             apply: false,
             cancellationToken);
+
+    internal static async Task<RtRentalDeltaGenerationResult> GeneratePlanAsync(
+        string sourceCsvPath,
+        string credentialDatabasePath,
+        string businessDatabaseName,
+        string planOutputPath,
+        string reportOutputPath,
+        CancellationToken cancellationToken = default)
+    {
+        var root = RequireMigrationRoot();
+        var fullSourcePath = RequireContainedRegularFile(root, sourceCsvPath, "source");
+        var fullCredentialPath = RequireContainedRegularFile(
+            root,
+            credentialDatabasePath,
+            "credential database");
+        var fullPlanOutputPath = RequireContainedNewFilePath(
+            root,
+            planOutputPath,
+            "plan output");
+        var fullReportOutputPath = RequireContainedNewFilePath(
+            root,
+            reportOutputPath,
+            "report output");
+        if (string.Equals(
+                fullPlanOutputPath,
+                fullReportOutputPath,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "The RT rental plan and report output paths must be different.");
+        }
+
+        var normalizedDatabaseName = TenantScopeCatalog.GetDatabaseName(
+            businessDatabaseName);
+        if (!string.Equals(
+                normalizedDatabaseName,
+                TenantScopeCatalog.GetDatabaseName(TenantScopeCatalog.UsenetGroup),
+                StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(
+                normalizedDatabaseName,
+                TenantScopeCatalog.GetDatabaseName(TenantScopeCatalog.Itworld),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "The RT rental plan targets an unsupported business database.");
+        }
+
+        _ = NormalizeRequiredProductionBaseUrl();
+        var sourceSha256 = ComputeFileSha256(fullSourcePath);
+        var credentialHashBefore = ComputeFileSha256(fullCredentialPath);
+        var credentials = await ReadCredentialCandidatesAsync(
+            fullCredentialPath,
+            cancellationToken);
+        var session = new SessionState();
+        using var http = new HttpClient
+        {
+            BaseAddress = NormalizeRequiredProductionBaseUrl(),
+            Timeout = TimeSpan.FromSeconds(120)
+        };
+        var api = new ErpApiClient(http, session);
+        try
+        {
+            var selection = await SelectApprovedCredentialAsync(
+                api,
+                session,
+                credentials,
+                normalizedDatabaseName,
+                cancellationToken);
+            if (!selection.Selected)
+            {
+                throw new InvalidOperationException(
+                    BuildCredentialSelectionFailureMessage(
+                        selection.CandidateCount,
+                        selection.LoginSucceededCount,
+                        selection.RentalAssetEditAllowedCount,
+                        selection.BusinessDatabaseSelectedCount));
+            }
+
+            var snapshot = await PullRentalAdministrationAsync(
+                api,
+                normalizedDatabaseName,
+                cancellationToken);
+            var generatedAtUtc = DateTime.UtcNow;
+            var planId = $"rt-rental-{normalizedDatabaseName.ToLowerInvariant()}-{generatedAtUtc:yyyyMMddHHmmss}";
+            var sourceRows = RtRentalDeltaPlanner.ReadSourceCsv(fullSourcePath);
+            var build = RtRentalDeltaPlanner.BuildPlan(
+                sourceRows,
+                snapshot.RentalAssets,
+                normalizedDatabaseName,
+                sourceSha256,
+                planId,
+                generatedAtUtc);
+            if (build.Plan.Entries.Count == 0)
+            {
+                throw new InvalidDataException(
+                    "The RT rental source produced no safe changed entries. No plan was written.");
+            }
+
+            ValidatePlan(build.Plan);
+            var planBytes = JsonSerializer.SerializeToUtf8Bytes(
+                build.Plan,
+                WriteJsonOptions);
+            var planSha256 = ComputeSha256(planBytes);
+            var reportBytes = JsonSerializer.SerializeToUtf8Bytes(
+                new
+                {
+                    SchemaVersion = 1,
+                    PlanId = build.Plan.PlanId,
+                    build.Plan.BusinessDatabaseName,
+                    build.Plan.GeneratedAtUtc,
+                    SourceSha256 = sourceSha256,
+                    PlanSha256 = planSha256,
+                    ServerRevision = snapshot.CurrentServerRevision,
+                    CredentialSelection = new
+                    {
+                        selection.CandidateCount,
+                        selection.LoginSucceededCount,
+                        selection.RentalAssetEditAllowedCount,
+                        selection.BusinessDatabaseSelectedCount
+                    },
+                    Audit = build.Audit
+                },
+                WriteJsonOptions);
+
+            await WriteNewFileAsync(
+                fullReportOutputPath,
+                reportBytes,
+                cancellationToken);
+            await WriteNewFileAsync(
+                fullPlanOutputPath,
+                planBytes,
+                cancellationToken);
+            return new RtRentalDeltaGenerationResult(
+                fullPlanOutputPath,
+                fullReportOutputPath,
+                planSha256,
+                sourceSha256,
+                normalizedDatabaseName,
+                snapshot.CurrentServerRevision,
+                selection.CandidateCount,
+                selection.LoginSucceededCount,
+                selection.RentalAssetEditAllowedCount,
+                selection.BusinessDatabaseSelectedCount,
+                build.Audit);
+        }
+        finally
+        {
+            if (!string.Equals(
+                    credentialHashBefore,
+                    ComputeFileSha256(fullCredentialPath),
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "The migration credential snapshot changed while it was in use.");
+            }
+        }
+    }
 
     private static async Task<RtRentalDeltaRunResult> RunAsync(
         string planPath,
@@ -150,24 +332,9 @@ internal static class RtRentalDeltaApplier
 
         var baseUrl = NormalizeRequiredProductionBaseUrl();
         var credentialHashBefore = ComputeFileSha256(fullCredentialPath);
-        var credentials = new List<IsolatedStoredCredential>();
-        var savedLogin = await IsolatedStoredCredentialReader.ReadSavedLoginAsync(
+        var credentials = await ReadCredentialCandidatesAsync(
             fullCredentialPath,
             cancellationToken);
-        if (savedLogin is not null)
-            credentials.Add(savedLogin);
-        credentials.AddRange(await IsolatedStoredCredentialReader.ReadAsync(
-            fullCredentialPath,
-            cancellationToken));
-        credentials = credentials
-            .GroupBy(
-                credential => credential.Username,
-                StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.First())
-            .ToList();
-        if (credentials.Count == 0)
-            throw new InvalidDataException(
-                "The migration credential snapshot has no saved login candidates.");
 
         var session = new SessionState();
         using var http = new HttpClient
@@ -178,49 +345,21 @@ internal static class RtRentalDeltaApplier
         var api = new ErpApiClient(http, session);
         try
         {
-            var selectedCredential = false;
-            foreach (var credential in credentials)
-            {
-                var password = UnprotectCredential(
-                    credential.PasswordProtected);
-                try
-                {
-                    var login = await api.LoginAsync(
-                        credential.Username,
-                        password,
-                        cancellationToken);
-                    if (login is null ||
-                        string.IsNullOrWhiteSpace(login.Token))
-                    {
-                        continue;
-                    }
+            var selection = await SelectApprovedCredentialAsync(
+                api,
+                session,
+                credentials,
+                plan.BusinessDatabaseName,
+                cancellationToken);
 
-                    session.SetSession(login.Token, login.User);
-                    if (!session.HasPermission("Rental.AssetEdit"))
-                        continue;
-
-                    session.SetBusinessDatabase(plan.BusinessDatabaseName);
-                    if (!string.Equals(
-                            session.SelectedBusinessDatabaseName,
-                            plan.BusinessDatabaseName,
-                            StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    selectedCredential = true;
-                    break;
-                }
-                finally
-                {
-                    password = string.Empty;
-                }
-            }
-
-            if (!selectedCredential)
+            if (!selection.Selected)
             {
                 throw new InvalidOperationException(
-                    "No saved login candidate can select the approved business database with rental-asset edit permission.");
+                    BuildCredentialSelectionFailureMessage(
+                        selection.CandidateCount,
+                        selection.LoginSucceededCount,
+                        selection.RentalAssetEditAllowedCount,
+                        selection.BusinessDatabaseSelectedCount));
             }
 
             var before = await PullRentalAdministrationAsync(
@@ -289,6 +428,125 @@ internal static class RtRentalDeltaApplier
                     "The migration credential snapshot changed while it was in use.");
             }
         }
+    }
+
+    internal static string BuildCredentialSelectionFailureMessage(
+        int candidateCount,
+        int loginSucceededCount,
+        int rentalAssetEditAllowedCount,
+        int businessDatabaseSelectedCount)
+    {
+        if (candidateCount < 0 ||
+            loginSucceededCount < 0 ||
+            rentalAssetEditAllowedCount < 0 ||
+            businessDatabaseSelectedCount < 0 ||
+            loginSucceededCount > candidateCount ||
+            rentalAssetEditAllowedCount > loginSucceededCount ||
+            businessDatabaseSelectedCount > rentalAssetEditAllowedCount)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(candidateCount),
+                "Credential selection counters must be non-negative and monotonic.");
+        }
+
+        var reason = loginSucceededCount == 0
+            ? "saved_login_failed"
+            : rentalAssetEditAllowedCount == 0
+                ? "rental_asset_edit_permission_missing"
+                : "target_business_database_not_selectable";
+
+        return
+            "No saved login candidate passed the approved rental migration scope checks. " +
+            $"reason={reason}; candidates={candidateCount}; " +
+            $"login_succeeded={loginSucceededCount}; " +
+            $"rental_asset_edit_allowed={rentalAssetEditAllowedCount}; " +
+            $"business_database_selected={businessDatabaseSelectedCount}. " +
+            "This describes only the saved credential snapshot and does not mean " +
+            "that the server has no administrator account.";
+    }
+
+    private static async Task<List<IsolatedStoredCredential>> ReadCredentialCandidatesAsync(
+        string credentialDatabasePath,
+        CancellationToken cancellationToken)
+    {
+        var credentials = new List<IsolatedStoredCredential>();
+        var savedLogin = await IsolatedStoredCredentialReader.ReadSavedLoginAsync(
+            credentialDatabasePath,
+            cancellationToken);
+        if (savedLogin is not null)
+            credentials.Add(savedLogin);
+        credentials.AddRange(await IsolatedStoredCredentialReader.ReadAsync(
+            credentialDatabasePath,
+            cancellationToken));
+        credentials = credentials
+            .GroupBy(
+                credential => credential.Username,
+                StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToList();
+        if (credentials.Count == 0)
+            throw new InvalidDataException(
+                "The migration credential snapshot has no saved login candidates.");
+        return credentials;
+    }
+
+    private static async Task<RtRentalCredentialSelectionResult> SelectApprovedCredentialAsync(
+        ErpApiClient api,
+        SessionState session,
+        IReadOnlyCollection<IsolatedStoredCredential> credentials,
+        string businessDatabaseName,
+        CancellationToken cancellationToken)
+    {
+        var loginSucceededCount = 0;
+        var rentalAssetEditAllowedCount = 0;
+        var businessDatabaseSelectedCount = 0;
+        foreach (var credential in credentials)
+        {
+            var password = UnprotectCredential(credential.PasswordProtected);
+            try
+            {
+                var login = await api.LoginAsync(
+                    credential.Username,
+                    password,
+                    cancellationToken);
+                if (login is null || string.IsNullOrWhiteSpace(login.Token))
+                    continue;
+
+                loginSucceededCount++;
+                session.SetSession(login.Token, login.User);
+                if (!session.HasPermission("Rental.AssetEdit"))
+                    continue;
+
+                rentalAssetEditAllowedCount++;
+                session.SetBusinessDatabase(businessDatabaseName);
+                if (!string.Equals(
+                        session.SelectedBusinessDatabaseName,
+                        businessDatabaseName,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                businessDatabaseSelectedCount++;
+                return new RtRentalCredentialSelectionResult(
+                    true,
+                    credentials.Count,
+                    loginSucceededCount,
+                    rentalAssetEditAllowedCount,
+                    businessDatabaseSelectedCount);
+            }
+            finally
+            {
+                password = string.Empty;
+            }
+        }
+
+        return new RtRentalCredentialSelectionResult(
+            false,
+            credentials.Count,
+            loginSucceededCount,
+            rentalAssetEditAllowedCount,
+            businessDatabaseSelectedCount);
     }
 
     internal static RtRentalPreparedMutations PrepareMutations(
@@ -720,6 +978,44 @@ internal static class RtRentalDeltaApplier
         }
         EnsureNoReparsePoints(fullPath);
         return fullPath;
+    }
+
+    private static string RequireContainedNewFilePath(
+        string root,
+        string path,
+        string label)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var parent = Path.GetDirectoryName(fullPath);
+        if (!fullPath.StartsWith(
+                root + Path.DirectorySeparatorChar,
+                StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(parent) ||
+            !Directory.Exists(parent) ||
+            File.Exists(fullPath) ||
+            Directory.Exists(fullPath))
+        {
+            throw new InvalidOperationException(
+                $"The RT rental {label} must be a new file inside an existing migration-root directory.");
+        }
+        EnsureNoReparsePoints(parent);
+        return fullPath;
+    }
+
+    private static async Task WriteNewFileAsync(
+        string path,
+        ReadOnlyMemory<byte> bytes,
+        CancellationToken cancellationToken)
+    {
+        await using var stream = new FileStream(
+            path,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 64 * 1024,
+            FileOptions.Asynchronous | FileOptions.WriteThrough);
+        await stream.WriteAsync(bytes, cancellationToken);
+        await stream.FlushAsync(cancellationToken);
     }
 
     private static void EnsureNoReparsePoints(string path)

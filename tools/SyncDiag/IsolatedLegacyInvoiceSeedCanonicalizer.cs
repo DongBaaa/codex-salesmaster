@@ -174,6 +174,8 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
         "73D294E643379C1808AFF89842AA899EF5107C1B269F6B07ACCEE6E59E10B636";
     internal const string CurrentOperationalApprovedSourceDatabaseSha256 =
         "1DE40C0FA21FE662EAECFA7ED3B654EA1271076FE1F69029919A3295525EBEC6";
+    internal const string LatestOperationalApprovedSourceDatabaseSha256 =
+        "A3C4A81A9FCA783F40844DC04810A905C99619722A608D9C379CA4BB157A0654";
 
     internal static readonly JsonSerializerOptions ReportJsonOptions = new()
     {
@@ -322,6 +324,23 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
                             "49AD13A712746B8AA6C38BB8ED069053B4C9305A320E117864F2DB8040CB4AA0",
                         DependencyReferencesSha256 =
                             "AC560B78FA943CFF1934C84BAB2ED37EC16E260ACA923CF94CE0FBB9E69F2C1F"
+                    },
+                [LatestOperationalApprovedSourceDatabaseSha256] =
+                    ApprovedProfile with
+                    {
+                        SourceDatabaseSha256 =
+                            LatestOperationalApprovedSourceDatabaseSha256,
+                        AuthorizedNonAcknowledgedOutboxCount = 88,
+                        AuthorizedNonAcknowledgedOutboxSha256 =
+                            "D54838917A9D1F5538FE1D153E7964B25CCA741531D9D4E25CD14CFEE14A1E6E",
+                        BeforeMetadataSha256 =
+                            "470D4118ACF242C3B4C1B7C5CCC6D0FC1CC7A1E9F9D2794F08EC470630153EBA",
+                        AfterMetadataSha256 =
+                            "49D925656056F81EBF84A23C0ED18433E205D7FB0F87699CE75A2965BD366BF9",
+                        LatestInvoiceBusinessSha256 =
+                            "49AD13A712746B8AA6C38BB8ED069053B4C9305A320E117864F2DB8040CB4AA0",
+                        DependencyReferencesSha256 =
+                            "798161B849E966FFBDCA7D008D8581118BC791A815B1D5621EAA7A954301EFA4"
                     }
             };
 

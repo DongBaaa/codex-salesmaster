@@ -568,7 +568,7 @@ public sealed class ChildWindowResponsiveLayoutTests
             xaml,
             "SalesCustomerHeaderScrollViewer",
             horizontal: "Auto",
-            vertical: "Auto");
+            vertical: "Disabled");
         var customerHeaderScrollViewer = AssertNamedElement(
             sales,
             xaml,
@@ -592,6 +592,30 @@ public sealed class ChildWindowResponsiveLayoutTests
             "SalesDocumentHeaderContent",
             "MinWidth",
             "780");
+        AssertNamedElementAttribute(
+            sales,
+            xaml,
+            "SalesDocumentHeaderContent",
+            "MinHeight",
+            "38");
+        AssertNamedElementAttribute(
+            sales,
+            xaml,
+            "SalesLoadPreviousHistoryButton",
+            "Height",
+            "36");
+        AssertNamedElementAttribute(
+            sales,
+            xaml,
+            "SalesLoadPreviousHistoryButton",
+            "MinHeight",
+            "36");
+        AssertNamedElementAttribute(
+            sales,
+            xaml,
+            "SalesLoadPreviousHistoryButton",
+            "VerticalContentAlignment",
+            "Center");
         AssertScrollViewer(
             sales,
             xaml,
@@ -2254,9 +2278,9 @@ public sealed class ChildWindowResponsiveLayoutTests
             rowDefinitions,
             customerHeaderRow =>
             {
-                Assert.Equal("3*", (string?)customerHeaderRow.Attribute("Height"));
-                Assert.Equal("40", (string?)customerHeaderRow.Attribute("MinHeight"));
-                Assert.Equal("210", (string?)customerHeaderRow.Attribute("MaxHeight"));
+                Assert.Equal("Auto", (string?)customerHeaderRow.Attribute("Height"));
+                Assert.Null(customerHeaderRow.Attribute("MinHeight"));
+                Assert.Null(customerHeaderRow.Attribute("MaxHeight"));
             },
             salesLinesRow =>
             {
@@ -2353,7 +2377,31 @@ public sealed class ChildWindowResponsiveLayoutTests
             document,
             xaml,
             "SalesPrintOptionsPanel");
-        Assert.Equal("StackPanel", printOptionsPanel.Name.LocalName);
+        Assert.Equal("Grid", printOptionsPanel.Name.LocalName);
+        var printOptionColumns = Assert.Single(
+                printOptionsPanel.Elements(),
+                element => element.Name.LocalName == "Grid.ColumnDefinitions")
+            .Elements()
+            .Where(element => element.Name.LocalName == "ColumnDefinition")
+            .Select(element => (string?)element.Attribute("Width"))
+            .ToArray();
+        Assert.Equal(new[] { "*", "*" }, printOptionColumns);
+        var purchaseReceivingOptions = AssertNamedElement(
+            document,
+            xaml,
+            "SalesPurchaseReceivingOptionsGrid");
+        Assert.Equal("Grid", purchaseReceivingOptions.Name.LocalName);
+        var purchaseReceivingColumns = Assert.Single(
+                purchaseReceivingOptions.Elements(),
+                element => element.Name.LocalName == "Grid.ColumnDefinitions")
+            .Elements()
+            .Where(element => element.Name.LocalName == "ColumnDefinition")
+            .Select(element => (string?)element.Attribute("Width"))
+            .ToArray();
+        Assert.Equal(new[] { "*", "*" }, purchaseReceivingColumns);
+        Assert.DoesNotContain(
+            purchaseReceivingOptions.Elements(),
+            element => element.Name.LocalName == "StackPanel");
         Assert.DoesNotContain(
             printOptionsPanel.Ancestors(),
             ancestor => ancestor.Name.LocalName == "ScrollViewer");
@@ -2661,13 +2709,17 @@ public sealed class ChildWindowResponsiveLayoutTests
             "Width",
             "82");
 
-        var notice = AssertNamedElement(
-            document,
-            xaml,
-            "SalesAutoSaveNoticeText");
-        Assert.Equal("Wrap", (string?)notice.Attribute("TextWrapping"));
-        Assert.Equal("None", (string?)notice.Attribute("TextTrimming"));
-        Assert.False(string.IsNullOrWhiteSpace((string?)notice.Attribute("ToolTip")));
+        Assert.DoesNotContain(
+            document.Descendants(),
+            element => string.Equals(
+                (string?)element.Attribute(xaml + "Name"),
+                "SalesAutoSaveNoticeText",
+                StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            document.Descendants(),
+            element => ((string?)element.Attribute("Text"))?.Contains(
+                "이 화면은 자동저장 방식으로 동작합니다.",
+                StringComparison.Ordinal) == true);
 
         var rentalNotice = AssertNamedElement(
             document,
@@ -2726,9 +2778,28 @@ public sealed class ChildWindowResponsiveLayoutTests
                 StringComparison.Ordinal));
         Assert.Contains(
             buttons,
+            button =>
+                string.Equals(
+                    (string?)button.Attribute(xaml + "Name"),
+                    "SalesRentalLinkedSaveButton",
+                    StringComparison.Ordinal) &&
+                string.Equals(
+                    (string?)button.Attribute("Content"),
+                    "렌탈 전표 반영",
+                    StringComparison.Ordinal) &&
+                string.Equals(
+                    (string?)button.Attribute("Command"),
+                    "{Binding SaveCommand}",
+                    StringComparison.Ordinal) &&
+                string.Equals(
+                    (string?)button.Attribute("Visibility"),
+                    "{Binding IsRentalBillingLinkedInvoice, Converter={StaticResource BoolToVisibilityConverter}}",
+                    StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            buttons,
             button => string.Equals(
-                (string?)button.Attribute("Command"),
-                "{Binding SaveCommand}",
+                (string?)button.Attribute("Content"),
+                "저장",
                 StringComparison.Ordinal));
         Assert.Contains(
             buttons,

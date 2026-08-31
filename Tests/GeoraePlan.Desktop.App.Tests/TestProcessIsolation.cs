@@ -58,6 +58,9 @@ internal static class TestProcessIsolation
         Environment.SetEnvironmentVariable("APPDATA", roamingAppDataRoot);
         Environment.SetEnvironmentVariable("TEMP", TempRoot);
         Environment.SetEnvironmentVariable("TMP", TempRoot);
+        Environment.SetEnvironmentVariable(
+            "PSModulePath",
+            GetWindowsPowerShellModulePath());
 
         _ = AppPaths.LocalDbFile;
 
@@ -66,6 +69,31 @@ internal static class TestProcessIsolation
             throw new InvalidOperationException(
                 $"Desktop test database escaped the isolated root: {AppPaths.LocalDbFile}");
         }
+    }
+
+    private static string GetWindowsPowerShellModulePath()
+    {
+        var windowsPowerShellHome = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.System),
+            "WindowsPowerShell",
+            "v1.0");
+        var modulePaths = new[]
+        {
+            Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                "WindowsPowerShell",
+                "Modules"),
+            Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "WindowsPowerShell",
+                "Modules"),
+            Path.Combine(windowsPowerShellHome, "Modules")
+        };
+
+        return string.Join(
+            Path.PathSeparator,
+            modulePaths.Where(Directory.Exists).Distinct(
+                StringComparer.OrdinalIgnoreCase));
     }
 
     internal static bool IsWithin(string candidatePath, string parentPath)

@@ -15,7 +15,7 @@ using 거래플랜.Shared.Contracts;
 
 var command = args.FirstOrDefault()?.Trim().ToLowerInvariant();
 var canonicalizationCommitted = false;
-const string usage = "usage: SyncDiag <prepare-test-seed|inspect-legacy-invoice-test-seed-profile|inspect-read-only-legacy-invoice-seed-profile <database-path>|preview-legacy-invoice-test-seed|canonicalize-legacy-invoice-test-seed|prepare-test-seed-retry|preseed-sync|mark-all-dirty|sync|maintenance-sync|inspect|stored-credential-envelopes|source-credential-envelopes|read-only-summary <database-path>|read-only-integrity-report <database-path> <tenant-code> <office-code> [--include-details]|audit-rental-workbook <database-path> <workbook-path> <report-json-path>|preview-rt-rental-delta <plan-json-path> <source-csv-path> <credential-database-path>|apply-rt-rental-delta <plan-json-path> <source-csv-path> <credential-database-path>|snapshot-sqlite <source-db> <target-db>|finalize-test-app-sqlite|finalize-test-server-sqlite <database-path>>";
+const string usage = "usage: SyncDiag <prepare-test-seed|inspect-legacy-invoice-test-seed-profile|inspect-read-only-legacy-invoice-seed-profile <database-path>|preview-legacy-invoice-test-seed|canonicalize-legacy-invoice-test-seed|prepare-test-seed-retry|preseed-sync|mark-all-dirty|sync|maintenance-sync|inspect|stored-credential-envelopes|source-credential-envelopes|read-only-summary <database-path>|read-only-integrity-report <database-path> <tenant-code> <office-code> [--include-details]|audit-rental-workbook <database-path> <workbook-path> <report-json-path>|plan-rt-rental-delta <source-csv-path> <credential-database-path> <business-database-name> <plan-json-output-path> <report-json-output-path>|preview-rt-rental-delta <plan-json-path> <source-csv-path> <credential-database-path>|apply-rt-rental-delta <plan-json-path> <source-csv-path> <credential-database-path>|snapshot-sqlite <source-db> <target-db>|finalize-test-app-sqlite|finalize-test-server-sqlite <database-path>>";
 if (string.IsNullOrWhiteSpace(command))
 {
     Console.Error.WriteLine(usage);
@@ -85,6 +85,48 @@ if (string.Equals(
 
 try
 {
+    if (string.Equals(command, "plan-rt-rental-delta", StringComparison.Ordinal))
+    {
+        if (args.Length != 6 ||
+            args.Skip(1).Any(string.IsNullOrWhiteSpace))
+        {
+            Console.Error.WriteLine(
+                "usage: SyncDiag plan-rt-rental-delta <source-csv-path> <credential-database-path> <business-database-name> <plan-json-output-path> <report-json-output-path>");
+            return 2;
+        }
+
+        var generated = await RtRentalDeltaApplier.GeneratePlanAsync(
+            args[1],
+            args[2],
+            args[3],
+            args[4],
+            args[5]);
+        Console.WriteLine("rt_rental_delta_plan_succeeded=True");
+        Console.WriteLine($"plan_path={generated.PlanPath}");
+        Console.WriteLine($"report_path={generated.ReportPath}");
+        Console.WriteLine($"plan_sha256={generated.PlanSha256}");
+        Console.WriteLine($"source_sha256={generated.SourceSha256}");
+        Console.WriteLine($"business_database={generated.BusinessDatabaseName}");
+        Console.WriteLine($"server_revision={generated.ServerRevision}");
+        Console.WriteLine($"credential_candidates={generated.CredentialCandidateCount}");
+        Console.WriteLine($"login_succeeded={generated.LoginSucceededCount}");
+        Console.WriteLine($"rental_asset_edit_allowed={generated.RentalAssetEditAllowedCount}");
+        Console.WriteLine($"business_database_selected={generated.BusinessDatabaseSelectedCount}");
+        Console.WriteLine($"source_rows={generated.Audit.SourceRowCount}");
+        Console.WriteLine($"target_company_source_rows={generated.Audit.SourceTargetCompanyRowCount}");
+        Console.WriteLine($"target_assets={generated.Audit.TargetAssetCount}");
+        Console.WriteLine($"matched_unique_keys={generated.Audit.MatchedUniqueKeyCount}");
+        Console.WriteLine($"planned_changes={generated.Audit.PlannedChangeCount}");
+        Console.WriteLine($"already_equal={generated.Audit.AlreadyEqualCount}");
+        Console.WriteLine($"unmatched_source={generated.Audit.UnmatchedSourceCount}");
+        Console.WriteLine($"customer_mismatch_excluded={generated.Audit.CustomerMismatchExcludedCount}");
+        Console.WriteLine($"status_mismatch_excluded={generated.Audit.StatusMismatchExcludedCount}");
+        Console.WriteLine($"unsupported_status_excluded={generated.Audit.UnsupportedStatusExcludedCount}");
+        Console.WriteLine($"invalid_scalar_excluded={generated.Audit.InvalidScalarExcludedCount}");
+        Console.WriteLine($"billing_profile_fee_preserved={generated.Audit.BillingProfileFeePreservedCount}");
+        return 0;
+    }
+
     if (string.Equals(command, "preview-rt-rental-delta", StringComparison.Ordinal))
     {
         if (args.Length != 4 ||

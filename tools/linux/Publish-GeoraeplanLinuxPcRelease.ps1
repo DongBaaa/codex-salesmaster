@@ -3092,16 +3092,78 @@ function Invoke-SshTarUpload {
 
     $tarExe = Resolve-TarExecutable
     $sshExe = Resolve-SshExecutable
+    $archiveDirectory = Resolve-GeoraePlanScriptTempDirectory
+    $archivePath = Join-Path $archiveDirectory (
+        'georaeplan-linux-upload-' + [Guid]::NewGuid().ToString('N') + '.tar')
+    $archiveFileName = [IO.Path]::GetFileName($archivePath)
     $quotedRemoteDirectory = Convert-ToSingleQuotedShellLiteral -Value $RemoteDirectory
     $remoteCommand = "rm -rf $quotedRemoteDirectory && mkdir -p $quotedRemoteDirectory && tar -xf - -C $quotedRemoteDirectory"
 
-    $tarStartInfo = [System.Diagnostics.ProcessStartInfo]::new($tarExe)
-    $tarStartInfo.UseShellExecute = $false
-    $tarStartInfo.CreateNoWindow = $true
-    $tarStartInfo.RedirectStandardOutput = $true
-    $tarStartInfo.RedirectStandardError = $true
-    $tarStartInfo.Arguments = (@('-C', $SourceDirectory, '-cf', '-', '.') |
+    try {
+    $archiveStartInfo = [System.Diagnostics.ProcessStartInfo]::new($tarExe)
+    $archiveStartInfo.UseShellExecute = $false
+    $archiveStartInfo.CreateNoWindow = $true
+    $archiveStartInfo.WorkingDirectory = $archiveDirectory
+    $archiveStartInfo.RedirectStandardOutput = $false
+    $archiveStartInfo.RedirectStandardError = $true
+    $archiveStartInfo.Arguments = (@('-C', $SourceDirectory, '-cf', $archiveFileName, '.') |
         ForEach-Object { Quote-ProcessArgument -Argument $_ }) -join ' '
+
+    $archiveProcess = [System.Diagnostics.Process]::new()
+    $archiveProcess.StartInfo = $archiveStartInfo
+    try {
+        if (-not $archiveProcess.Start()) {
+            throw 'Failed to start local tar archive process.'
+        }
+        $archiveStderrTask = $archiveProcess.StandardError.ReadToEndAsync()
+        $archiveProcess.WaitForExit()
+        $archiveStderr = $archiveStderrTask.GetAwaiter().GetResult()
+        if ($archiveProcess.ExitCode -ne 0) {
+            throw "Local tar archive creation failed with exit code $($archiveProcess.ExitCode): $archiveStderr"
+        }
+    }
+    finally {
+        $archiveProcess.Dispose()
+    }
+
+    $listStartInfo = [System.Diagnostics.ProcessStartInfo]::new($tarExe)
+    $listStartInfo.UseShellExecute = $false
+    $listStartInfo.CreateNoWindow = $true
+    $listStartInfo.WorkingDirectory = $archiveDirectory
+    $listStartInfo.RedirectStandardOutput = $true
+    $listStartInfo.RedirectStandardError = $true
+    $listStartInfo.Arguments = (@('-tf', $archiveFileName) |
+        ForEach-Object { Quote-ProcessArgument -Argument $_ }) -join ' '
+
+    $listProcess = [System.Diagnostics.Process]::new()
+    $listProcess.StartInfo = $listStartInfo
+    try {
+        if (-not $listProcess.Start()) {
+            throw 'Failed to start local tar validation process.'
+        }
+        $listStdoutTask = $listProcess.StandardOutput.ReadToEndAsync()
+        $listStderrTask = $listProcess.StandardError.ReadToEndAsync()
+        $listProcess.WaitForExit()
+        $null = $listStdoutTask.GetAwaiter().GetResult()
+        $listStderr = $listStderrTask.GetAwaiter().GetResult()
+        if ($listProcess.ExitCode -ne 0) {
+            throw "Local tar archive validation failed with exit code $($listProcess.ExitCode): $listStderr"
+        }
+    }
+    finally {
+        $listProcess.Dispose()
+    }
+
+    $archiveItem = Get-Item -LiteralPath $archivePath -Force
+    $archiveSha256 = Get-GeoraePlanLinuxFileSha256 -Path $archivePath
+    Write-Host (
+        "linux_pc_upload_archive_ready bytes=$($archiveItem.Length) " +
+        "sha256=$archiveSha256")
+    }
+    catch {
+        Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+        throw
+    }
 
     $sshArguments = New-SshArgumentList -Config $Config -BatchMode
     $sshArguments += $remoteCommand
@@ -3114,15 +3176,20 @@ function Invoke-SshTarUpload {
     $sshStartInfo.Arguments = ($sshArguments |
         ForEach-Object { Quote-ProcessArgument -Argument $_ }) -join ' '
 
-    $tarProcess = [System.Diagnostics.Process]::new()
-    $tarProcess.StartInfo = $tarStartInfo
     $sshProcess = [System.Diagnostics.Process]::new()
     $sshProcess.StartInfo = $sshStartInfo
-    $tarStarted = $false
     $sshStarted = $false
     $sshInputClosed = $false
+    $archiveStream = $null
 
     try {
+        $archiveStream = [IO.FileStream]::new(
+            $archivePath,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::Read,
+            1048576,
+            [IO.FileOptions]::SequentialScan)
         if (-not $sshProcess.Start()) {
             throw 'Failed to start Linux PC ssh upload process.'
         }
@@ -3130,39 +3197,25 @@ function Invoke-SshTarUpload {
         $sshStdoutTask = $sshProcess.StandardOutput.ReadToEndAsync()
         $sshStderrTask = $sshProcess.StandardError.ReadToEndAsync()
 
-        if (-not $tarProcess.Start()) {
-            throw 'Failed to start local tar upload process.'
-        }
-        $tarStarted = $true
-        $tarStderrTask = $tarProcess.StandardError.ReadToEndAsync()
-
-        $copyTask = $tarProcess.StandardOutput.BaseStream.CopyToAsync($sshProcess.StandardInput.BaseStream)
+        $copyTask = $archiveStream.CopyToAsync($sshProcess.StandardInput.BaseStream)
         $copyError = $null
         try {
             $null = $copyTask.GetAwaiter().GetResult()
         }
         catch {
             $copyError = $_
-            if (-not $tarProcess.HasExited) {
-                $tarProcess.Kill()
-            }
         }
         finally {
             $sshProcess.StandardInput.Close()
             $sshInputClosed = $true
         }
 
-        $tarProcess.WaitForExit()
         $sshProcess.WaitForExit()
-        $tarStderr = $tarStderrTask.GetAwaiter().GetResult()
         $sshStdout = $sshStdoutTask.GetAwaiter().GetResult()
         $sshStderr = $sshStderrTask.GetAwaiter().GetResult()
 
         if ($null -ne $copyError) {
-            throw "Linux PC ssh upload stream failed: $($copyError.Exception.Message) tar_stderr=$tarStderr ssh_stderr=$sshStderr"
-        }
-        if ($tarProcess.ExitCode -ne 0) {
-            throw "Local tar upload failed with exit code $($tarProcess.ExitCode): $tarStderr"
+            throw "Linux PC ssh upload stream failed: $($copyError.Exception.Message) ssh_stderr=$sshStderr"
         }
         if ($sshProcess.ExitCode -ne 0) {
             $message = if ([string]::IsNullOrWhiteSpace($sshStderr)) { $sshStdout } else { $sshStderr }
@@ -3170,17 +3223,12 @@ function Invoke-SshTarUpload {
         }
     }
     finally {
+        if ($null -ne $archiveStream) {
+            $archiveStream.Dispose()
+        }
         if ($sshStarted -and -not $sshInputClosed) {
             try {
                 $sshProcess.StandardInput.Close()
-            }
-            catch {
-            }
-        }
-        if ($tarStarted -and -not $tarProcess.HasExited) {
-            try {
-                $tarProcess.Kill()
-                $tarProcess.WaitForExit()
             }
             catch {
             }
@@ -3193,8 +3241,8 @@ function Invoke-SshTarUpload {
             catch {
             }
         }
-        $tarProcess.Dispose()
         $sshProcess.Dispose()
+        Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
     }
 }
 

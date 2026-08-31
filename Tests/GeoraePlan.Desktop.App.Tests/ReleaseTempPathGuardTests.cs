@@ -814,7 +814,21 @@ public sealed class ReleaseTempPathGuardTests
             "Get-Command tar.exe -ErrorAction SilentlyContinue");
         Assert.Contains("[Security.Cryptography.SHA256]::Create()", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Get-FileHash", source, StringComparison.Ordinal);
-        Assert.Contains("$null = $copyTask.GetAwaiter().GetResult()", source, StringComparison.Ordinal);
+        Assert.Contains("$archivePath = Join-Path $archiveDirectory", source, StringComparison.Ordinal);
+        Assert.Contains("$archiveFileName = [IO.Path]::GetFileName($archivePath)", source, StringComparison.Ordinal);
+        Assert.Contains("$archiveStartInfo.WorkingDirectory = $archiveDirectory", source, StringComparison.Ordinal);
+        Assert.Contains("@('-C', $SourceDirectory, '-cf', $archiveFileName, '.')", source, StringComparison.Ordinal);
+        Assert.Contains("$listStartInfo.WorkingDirectory = $archiveDirectory", source, StringComparison.Ordinal);
+        Assert.Contains("@('-tf', $archiveFileName)", source, StringComparison.Ordinal);
+        Assert.Contains("Get-GeoraePlanLinuxFileSha256 -Path $archivePath", source, StringComparison.Ordinal);
+        Assert.Contains("$archiveStream.CopyToAsync($sshProcess.StandardInput.BaseStream)", source, StringComparison.Ordinal);
+        Assert.Contains("Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("$tarProcess.StandardOutput.BaseStream.CopyToAsync", source, StringComparison.Ordinal);
+        AssertInOrder(
+            source,
+            "Local tar archive validation failed",
+            "linux_pc_upload_archive_ready",
+            "$sshProcess.Start()");
         AssertInOrder(
             source,
             "$gateArgs += @(",
@@ -840,17 +854,20 @@ public sealed class ReleaseTempPathGuardTests
             source,
             "function Invoke-SshTarUpload",
             "function Get-RemoteEnvMap");
-        Assert.DoesNotContain("georaeplan-linux-upload-", uploadFunction, StringComparison.Ordinal);
+        Assert.Contains("georaeplan-linux-upload-", uploadFunction, StringComparison.Ordinal);
         Assert.DoesNotContain("cmd /c", uploadFunction, StringComparison.Ordinal);
-        Assert.Contains("$tarStartInfo.RedirectStandardOutput = $true", uploadFunction, StringComparison.Ordinal);
+        Assert.Contains("$archiveStartInfo.RedirectStandardOutput = $false", uploadFunction, StringComparison.Ordinal);
         Assert.Contains("$sshStartInfo.RedirectStandardInput = $true", uploadFunction, StringComparison.Ordinal);
         AssertInOrder(
             uploadFunction,
+            "$archiveProcess.Start()",
+            "$archiveProcess.WaitForExit()",
+            "$listProcess.Start()",
+            "$listProcess.WaitForExit()",
+            "linux_pc_upload_archive_ready",
             "$sshProcess.Start()",
-            "$tarProcess.Start()",
-            "$tarProcess.StandardOutput.BaseStream.CopyToAsync($sshProcess.StandardInput.BaseStream)",
+            "$archiveStream.CopyToAsync($sshProcess.StandardInput.BaseStream)",
             "$sshProcess.StandardInput.Close()",
-            "$tarProcess.WaitForExit()",
             "$sshProcess.WaitForExit()");
         Assert.Contains("[switch]$AllowMissingLiveUpdateBaseline", source, StringComparison.Ordinal);
         Assert.Contains("function Copy-VerifiedLiveUpdateRollbackBaselineFromSourceUpdatesRoot", source, StringComparison.Ordinal);
@@ -4386,11 +4403,15 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("function Resolve-GeoraePlanScriptTempDirectory", linuxReleaseSource, StringComparison.Ordinal);
         Assert.Contains("@($env:GEORAEPLAN_TEMP_ROOT, $env:TEMP, [System.IO.Path]::GetTempPath())", linuxReleaseSource, StringComparison.Ordinal);
         Assert.Contains(
-            "$tarProcess.StandardOutput.BaseStream.CopyToAsync($sshProcess.StandardInput.BaseStream)",
+            "$archiveDirectory = Resolve-GeoraePlanScriptTempDirectory",
+            linuxReleaseSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "$archiveStream.CopyToAsync($sshProcess.StandardInput.BaseStream)",
             linuxReleaseSource,
             StringComparison.Ordinal);
         Assert.DoesNotContain(
-            "$archiveDirectory = Resolve-GeoraePlanScriptTempDirectory",
+            "$tarProcess.StandardOutput.BaseStream.CopyToAsync",
             linuxReleaseSource,
             StringComparison.Ordinal);
     }

@@ -88,6 +88,157 @@ public sealed class RtRentalDeltaApplierTests
                 [asset]));
     }
 
+    [Theory]
+    [InlineData(1, 0, 0, 0, "saved_login_failed")]
+    [InlineData(1, 1, 0, 0, "rental_asset_edit_permission_missing")]
+    [InlineData(1, 1, 1, 0, "target_business_database_not_selectable")]
+    public void CredentialSelectionFailure_DistinguishesTheActualGate(
+        int candidateCount,
+        int loginSucceededCount,
+        int rentalAssetEditAllowedCount,
+        int businessDatabaseSelectedCount,
+        string expectedReason)
+    {
+        var message = RtRentalDeltaApplier.BuildCredentialSelectionFailureMessage(
+            candidateCount,
+            loginSucceededCount,
+            rentalAssetEditAllowedCount,
+            businessDatabaseSelectedCount);
+
+        Assert.Contains($"reason={expectedReason}", message, StringComparison.Ordinal);
+        Assert.Contains($"candidates={candidateCount}", message, StringComparison.Ordinal);
+        Assert.Contains(
+            $"login_succeeded={loginSucceededCount}",
+            message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            $"rental_asset_edit_allowed={rentalAssetEditAllowedCount}",
+            message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            $"business_database_selected={businessDatabaseSelectedCount}",
+            message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "does not mean that the server has no administrator account",
+            message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CredentialSelectionFailure_RejectsImpossibleCounters()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            RtRentalDeltaApplier.BuildCredentialSelectionFailureMessage(
+                candidateCount: 1,
+                loginSucceededCount: 1,
+                rentalAssetEditAllowedCount: 0,
+                businessDatabaseSelectedCount: 1));
+    }
+
+    [Fact]
+    public void BuildPlan_UsesOnlyUniqueProtectedIdentityMatch()
+    {
+        var asset = CreateItworldAsset();
+        var source = CreateSource(asset) with
+        {
+            ItemName = "RT 최신 모델",
+            InstallLocation = "RT 최신 설치위치"
+        };
+
+        var result = RtRentalDeltaPlanner.BuildPlan(
+            [source],
+            [asset],
+            "ITWORLD",
+            new string('1', 64),
+            "rt-rental-itworld-test",
+            DateTime.UtcNow);
+
+        var entry = Assert.Single(result.Plan.Entries);
+        Assert.Equal(asset.Id, entry.AssetId);
+        Assert.Equal(asset.ManagementNumber, entry.ExpectedManagementNumber);
+        Assert.Equal("RT 최신 모델", entry.Values.ItemName);
+        Assert.Equal("RT 최신 설치위치", entry.Values.InstallLocation);
+        Assert.Equal(1, result.Audit.MatchedUniqueKeyCount);
+        Assert.Equal(1, result.Audit.PlannedChangeCount);
+        Assert.Equal(0, result.Audit.CustomerMismatchExcludedCount);
+    }
+
+    [Theory]
+    [InlineData("다른 거래처", "렌탈", 1, 0)]
+    [InlineData("기존 거래처", "계약종료", 0, 1)]
+    public void BuildPlan_ExcludesProtectedCustomerOrUnsupportedStatus(
+        string sourceCustomer,
+        string sourceStatus,
+        int expectedCustomerMismatch,
+        int expectedUnsupportedStatus)
+    {
+        var asset = CreateItworldAsset();
+        var source = CreateSource(asset) with
+        {
+            CustomerName = sourceCustomer,
+            Status = sourceStatus,
+            ItemName = "변경되면 안 되는 모델"
+        };
+
+        var result = RtRentalDeltaPlanner.BuildPlan(
+            [source],
+            [asset],
+            "ITWORLD",
+            new string('2', 64),
+            "rt-rental-itworld-test",
+            DateTime.UtcNow);
+
+        Assert.Empty(result.Plan.Entries);
+        Assert.Equal(expectedCustomerMismatch, result.Audit.CustomerMismatchExcludedCount);
+        Assert.Equal(expectedUnsupportedStatus, result.Audit.UnsupportedStatusExcludedCount);
+    }
+
+    [Fact]
+    public void BuildPlan_PreservesProfileLinkedFeeButKeepsOtherSafeChanges()
+    {
+        var asset = CreateItworldAsset();
+        asset.BillingProfileId = Guid.NewGuid();
+        var source = CreateSource(asset) with
+        {
+            ItemName = "RT 최신 모델",
+            MonthlyFeeText = "200,000"
+        };
+
+        var result = RtRentalDeltaPlanner.BuildPlan(
+            [source],
+            [asset],
+            "ITWORLD",
+            new string('3', 64),
+            "rt-rental-itworld-test",
+            DateTime.UtcNow);
+
+        var entry = Assert.Single(result.Plan.Entries);
+        Assert.Equal("RT 최신 모델", entry.Values.ItemName);
+        Assert.Equal(asset.MonthlyFee, entry.Values.MonthlyFee);
+        Assert.Equal(1, result.Audit.BillingProfileFeePreservedCount);
+    }
+
+    [Fact]
+    public void BuildPlan_ExcludesDuplicateTargetManagementNumber()
+    {
+        var first = CreateItworldAsset();
+        var second = CreateItworldAsset();
+        second.ManagementNumber = first.ManagementNumber;
+        var source = CreateSource(first) with { ItemName = "RT 최신 모델" };
+
+        var result = RtRentalDeltaPlanner.BuildPlan(
+            [source],
+            [first, second],
+            "ITWORLD",
+            new string('4', 64),
+            "rt-rental-itworld-test",
+            DateTime.UtcNow);
+
+        Assert.Empty(result.Plan.Entries);
+        Assert.Equal(2, result.Audit.DuplicateTargetKeyCount);
+    }
+
     private static RtRentalDeltaPlan CreatePlan(RentalAssetDto asset)
         => new()
         {
@@ -165,4 +316,32 @@ public sealed class RtRentalDeltaApplierTests
             UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-5),
             Revision = 1234
         };
+
+    private static RentalAssetDto CreateItworldAsset()
+    {
+        var asset = CreateAsset();
+        asset.TenantCode = "ITWORLD";
+        asset.OfficeCode = "ITWORLD";
+        asset.ResponsibleOfficeCode = "ITWORLD";
+        asset.ManagementCompanyCode = "ITWORLD";
+        return asset;
+    }
+
+    private static RtRentalSourceRow CreateSource(RentalAssetDto asset)
+        => new(
+            SourceLineNumber: 2,
+            Status: "렌탈",
+            ManagementNumber: asset.ManagementNumber,
+            ItemCategoryName: asset.ItemCategoryName,
+            ItemName: asset.ItemName,
+            Manufacturer: asset.Manufacturer,
+            MachineNumber: asset.MachineNumber,
+            CustomerName: asset.CurrentCustomerName,
+            InstallLocation: asset.InstallLocation,
+            ManagementCompany: "아이티월드",
+            MonthlyFeeText: asset.MonthlyFee.ToString("0"),
+            ContractMonthsText: $"{asset.ContractMonths}개월",
+            ContractStartDate: asset.ContractStartDate?.ToString("yyyy-MM-dd") ?? "-",
+            RentalEndDate: asset.RentalEndDate?.ToString("yyyy-MM-dd") ?? "-",
+            DisposalDate: asset.DisposalDate?.ToString("yyyy-MM-dd") ?? "-");
 }

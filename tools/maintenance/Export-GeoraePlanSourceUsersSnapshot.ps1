@@ -37,6 +37,7 @@ function Get-PreparationSnapshotValidationFunctionSource {
         'ConvertTo-SourceUsersSnapshotCanonicalJsonString',
         'Get-SourceUsersSnapshotCanonicalJson',
         'Get-SourceUsersSnapshotScopeCounts',
+        'Get-SourceUsersSnapshotFileSystemAcl',
         'Assert-SourceUsersSnapshotAcl',
         'Import-SourceUsersSnapshot'
     )
