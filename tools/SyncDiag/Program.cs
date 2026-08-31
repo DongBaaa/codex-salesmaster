@@ -15,7 +15,7 @@ using 거래플랜.Shared.Contracts;
 
 var command = args.FirstOrDefault()?.Trim().ToLowerInvariant();
 var canonicalizationCommitted = false;
-const string usage = "usage: SyncDiag <prepare-test-seed|inspect-legacy-invoice-test-seed-profile|inspect-read-only-legacy-invoice-seed-profile <database-path>|preview-legacy-invoice-test-seed|canonicalize-legacy-invoice-test-seed|prepare-test-seed-retry|preseed-sync|mark-all-dirty|sync|maintenance-sync|inspect|stored-credential-envelopes|source-credential-envelopes|read-only-summary <database-path>|read-only-integrity-report <database-path> <tenant-code> <office-code> [--include-details]|audit-rental-workbook <database-path> <workbook-path> <report-json-path>|plan-rt-rental-delta <source-csv-path> <credential-database-path> <business-database-name> <plan-json-output-path> <report-json-output-path>|preview-rt-rental-delta <plan-json-path> <source-csv-path> <credential-database-path>|apply-rt-rental-delta <plan-json-path> <source-csv-path> <credential-database-path>|snapshot-sqlite <source-db> <target-db>|finalize-test-app-sqlite|finalize-test-server-sqlite <database-path>>";
+const string usage = "usage: SyncDiag <prepare-test-seed|inspect-legacy-invoice-test-seed-profile|inspect-read-only-legacy-invoice-seed-profile <database-path>|preview-legacy-invoice-test-seed|canonicalize-legacy-invoice-test-seed|prepare-test-seed-retry|preseed-sync|mark-all-dirty|sync|maintenance-sync|inspect|stored-credential-envelopes|source-credential-envelopes|read-only-summary <database-path>|read-only-integrity-report <database-path> <tenant-code> <office-code> [--include-details]|audit-rental-workbook <database-path> <workbook-path> <report-json-path>|plan-rt-rental-delta <source-csv-path> <credential-database-path> <business-database-name> <plan-json-output-path> <report-json-output-path>|preview-rt-rental-delta <plan-json-path> <source-csv-path> <credential-database-path>|apply-rt-rental-delta <plan-json-path> <source-csv-path> <credential-database-path>|plan-rt-rental-full-stage <source-csv-path> <credential-database-path> <business-database-name> <plan-json-output-path> <report-json-output-path>|preview-rt-rental-full-stage <plan-json-path> <source-csv-path> <credential-database-path>|apply-rt-rental-full-stage <plan-json-path> <source-csv-path> <credential-database-path>|snapshot-sqlite <source-db> <target-db>|finalize-test-app-sqlite|finalize-test-server-sqlite <database-path>>";
 if (string.IsNullOrWhiteSpace(command))
 {
     Console.Error.WriteLine(usage);
@@ -85,6 +85,87 @@ if (string.Equals(
 
 try
 {
+    if (string.Equals(command, "plan-rt-rental-full-stage", StringComparison.Ordinal))
+    {
+        if (args.Length != 6 || args.Skip(1).Any(string.IsNullOrWhiteSpace))
+        {
+            Console.Error.WriteLine(
+                "usage: SyncDiag plan-rt-rental-full-stage <source-csv-path> <credential-database-path> <business-database-name> <plan-json-output-path> <report-json-output-path>");
+            return 2;
+        }
+
+        var generated = await RtRentalDeltaApplier.GenerateFullStagePlanAsync(
+            args[1], args[2], args[3], args[4], args[5]);
+        Console.WriteLine("rt_rental_full_stage_plan_succeeded=True");
+        Console.WriteLine($"plan_path={generated.PlanPath}");
+        Console.WriteLine($"report_path={generated.ReportPath}");
+        Console.WriteLine($"plan_sha256={generated.PlanSha256}");
+        Console.WriteLine($"source_sha256={generated.SourceSha256}");
+        Console.WriteLine($"business_database={generated.BusinessDatabaseName}");
+        Console.WriteLine($"server_revision={generated.ServerRevision}");
+        Console.WriteLine($"credential_candidates={generated.CredentialCandidateCount}");
+        Console.WriteLine($"login_succeeded={generated.LoginSucceededCount}");
+        Console.WriteLine($"rental_asset_edit_allowed={generated.RentalAssetEditAllowedCount}");
+        Console.WriteLine($"business_database_selected={generated.BusinessDatabaseSelectedCount}");
+        Console.WriteLine($"source_rows={generated.Audit.SourceRowCount}");
+        Console.WriteLine($"target_company_source_rows={generated.Audit.SourceTargetCompanyRowCount}");
+        Console.WriteLine($"matched_existing={generated.Audit.MatchedExistingCount}");
+        Console.WriteLine($"planned_updates={generated.Audit.PlannedUpdateCount}");
+        Console.WriteLine($"planned_creates={generated.Audit.PlannedCreateCount}");
+        Console.WriteLine($"already_equal={generated.Audit.AlreadyEqualCount}");
+        Console.WriteLine($"status_changes={generated.Audit.StatusChangeCount}");
+        Console.WriteLine($"customer_approval_held_creates={generated.Audit.CustomerApprovalHeldCreateCount}");
+        Console.WriteLine($"customer_confirmation_candidates={generated.CustomerCandidateCount}");
+        Console.WriteLine($"billing_fee_confirmation_candidates={generated.BillingFeeCandidateCount}");
+        Console.WriteLine($"missing_billing_profile_reference_held={generated.Audit.MissingBillingProfileReferenceHeldCount}");
+        Console.WriteLine($"unlinked_fee_changes={generated.Audit.UnlinkedFeeChangeCount}");
+        return 0;
+    }
+
+    if (string.Equals(command, "preview-rt-rental-full-stage", StringComparison.Ordinal))
+    {
+        if (args.Length != 4 || args.Skip(1).Any(string.IsNullOrWhiteSpace))
+        {
+            Console.Error.WriteLine(
+                "usage: SyncDiag preview-rt-rental-full-stage <plan-json-path> <source-csv-path> <credential-database-path>");
+            return 2;
+        }
+
+        var preview = await RtRentalDeltaApplier.PreviewFullStageAsync(args[1], args[2], args[3]);
+        Console.WriteLine("rt_rental_full_stage_preview_succeeded=True");
+        Console.WriteLine($"plan_sha256={preview.PlanSha256}");
+        Console.WriteLine($"source_sha256={preview.SourceSha256}");
+        Console.WriteLine($"business_database={preview.BusinessDatabaseName}");
+        Console.WriteLine($"planned_count={preview.PlannedCount}");
+        Console.WriteLine($"would_submit_count={preview.SubmittedCount}");
+        Console.WriteLine($"skipped_no_change_count={preview.SkippedNoChangeCount}");
+        Console.WriteLine($"server_revision={preview.ServerRevisionBefore}");
+        return 0;
+    }
+
+    if (string.Equals(command, "apply-rt-rental-full-stage", StringComparison.Ordinal))
+    {
+        if (args.Length != 4 || args.Skip(1).Any(string.IsNullOrWhiteSpace))
+        {
+            Console.Error.WriteLine(
+                "usage: SyncDiag apply-rt-rental-full-stage <plan-json-path> <source-csv-path> <credential-database-path>");
+            return 2;
+        }
+
+        var applied = await RtRentalDeltaApplier.ApplyFullStageAsync(args[1], args[2], args[3]);
+        Console.WriteLine("rt_rental_full_stage_apply_succeeded=True");
+        Console.WriteLine($"plan_sha256={applied.PlanSha256}");
+        Console.WriteLine($"source_sha256={applied.SourceSha256}");
+        Console.WriteLine($"business_database={applied.BusinessDatabaseName}");
+        Console.WriteLine($"planned_count={applied.PlannedCount}");
+        Console.WriteLine($"submitted_count={applied.SubmittedCount}");
+        Console.WriteLine($"accepted_count={applied.AcceptedCount}");
+        Console.WriteLine($"skipped_no_change_count={applied.SkippedNoChangeCount}");
+        Console.WriteLine($"server_revision_before={applied.ServerRevisionBefore}");
+        Console.WriteLine($"server_revision_after={applied.ServerRevisionAfter}");
+        return 0;
+    }
+
     if (string.Equals(command, "plan-rt-rental-delta", StringComparison.Ordinal))
     {
         if (args.Length != 6 ||

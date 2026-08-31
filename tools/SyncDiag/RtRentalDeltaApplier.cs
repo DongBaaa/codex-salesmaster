@@ -85,7 +85,7 @@ internal sealed record RtRentalCredentialSelectionResult(
     int RentalAssetEditAllowedCount,
     int BusinessDatabaseSelectedCount);
 
-internal static class RtRentalDeltaApplier
+internal static partial class RtRentalDeltaApplier
 {
     internal const string RootMarkerName =
         ".georaeplan-rt-rental-migration-root";
@@ -644,8 +644,23 @@ internal static class RtRentalDeltaApplier
             result.DuplicateMutationCount != 0 ||
             result.Conflicts.Count != 0)
         {
+            var conflictSummary = string.Join(
+                " | ",
+                result.Conflicts
+                    .Take(10)
+                    .Select(conflict =>
+                        $"{NormalizeText(conflict.EntityName)}:{NormalizeText(conflict.EntityId)}:{NormalizeText(conflict.Reason)}"));
+            var noticeSummary = string.Join(
+                " | ",
+                result.Notices
+                    .Take(10)
+                    .Select(notice =>
+                        $"{NormalizeText(notice.EntityName)}:{NormalizeText(notice.EntityId)}:{NormalizeText(notice.Code)}:{NormalizeText(notice.Message)}"));
             throw new InvalidOperationException(
-                "The RT rental delta push was not accepted completely.");
+                $"The RT rental delta push was not accepted completely. " +
+                $"submitted={submitted.Count}; accepted={result.AcceptedCount}; " +
+                $"conflicts={result.ConflictCount}; duplicates={result.DuplicateMutationCount}; " +
+                $"conflict_details={conflictSummary}; notices={noticeSummary}");
         }
 
         var expectedIds = submitted.Select(asset => asset.Id).ToHashSet();
