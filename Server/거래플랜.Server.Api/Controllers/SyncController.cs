@@ -14191,11 +14191,21 @@ public sealed class SyncController : ControllerBase
         }
         else if (customerKeys.Count > 0)
         {
+            // A profile already linked to another customer must never be reused only
+            // because loose name variants share a prefix (for example, [인천시청]).
+            // Name fallback is reserved for legacy profiles without a customer link.
             var nameMatches = candidates
+                .Where(profile => !profile.CustomerId.HasValue || profile.CustomerId.Value == Guid.Empty)
                 .Where(profile => ProfileMatchesRentalNames(profile, customerKeys))
                 .ToList();
             if (nameMatches.Count > 0)
                 candidates = nameMatches;
+            else
+                return null;
+        }
+        else
+        {
+            return null;
         }
 
         if (candidates.Count == 0)

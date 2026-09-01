@@ -90,6 +90,8 @@
              Link="SyncDiag\RtRentalDeltaPlanner.cs" />
     <Compile Include="..\..\tools\SyncDiag\RtRentalFullStage.cs"
              Link="SyncDiag\RtRentalFullStage.cs" />
+    <Compile Include="..\..\tools\SyncDiag\RtRentalResolution.cs"
+             Link="SyncDiag\RtRentalResolution.cs" />
     <Compile Include="..\..\tools\SyncDiag\IsolatedTestServerSqliteFinalizer.cs"
              Link="SyncDiag\IsolatedTestServerSqliteFinalizer.cs" />
     <Compile Include="..\..\tools\SyncDiag\ImmutableSqliteInspectionGuard.cs"

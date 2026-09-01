@@ -2765,6 +2765,58 @@ public sealed class DbInitializerRegressionTests : IDisposable
     }
 
     [Fact]
+    public async Task MergeDuplicateRentalAssetsAsync_PreservesDistinctWarehouseAssetsWithDifferentManagementNumbers()
+    {
+        static RentalAsset CreateWarehouseAsset(Guid id, string managementId, string managementNumber) => new()
+        {
+            Id = id,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+            ManagementId = managementId,
+            ManagementNumber = managementNumber,
+            AssetKey = $"ITWORLD|{managementNumber}||SL-M3820ND",
+            CurrentLocation = "창고",
+            InstallSiteName = string.Empty,
+            InstallLocation = string.Empty,
+            CustomerName = string.Empty,
+            CurrentCustomerName = string.Empty,
+            ItemCategoryName = "프린터",
+            ItemName = "SL-M3820ND",
+            Manufacturer = "삼성",
+            MachineNumber = string.Empty,
+            MonthlyFee = 0m,
+            ContractMonths = 0,
+            AssetStatus = "창고"
+        };
+
+        var firstId = Guid.Parse("13611111-1111-1111-1111-111111111111");
+        var secondId = Guid.Parse("13622222-2222-2222-2222-222222222222");
+        _dbContext.RentalAssets.AddRange(
+            CreateWarehouseAsset(firstId, "WAREHOUSE-001", "2012-004"),
+            CreateWarehouseAsset(secondId, "WAREHOUSE-002", "2012-005"));
+        await _dbContext.SaveChangesAsync();
+
+        var method = typeof(DbInitializer).GetMethod(
+            "MergeDuplicateRentalAssetsAsync",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        var task = method!.Invoke(null, new object?[] { _dbContext, CancellationToken.None }) as Task;
+        Assert.NotNull(task);
+        await task!;
+        await _dbContext.SaveChangesAsync();
+
+        var remainingIds = await _dbContext.RentalAssets.IgnoreQueryFilters()
+            .Where(asset => asset.Id == firstId || asset.Id == secondId)
+            .Select(asset => asset.Id)
+            .ToListAsync();
+        Assert.Contains(firstId, remainingIds);
+        Assert.Contains(secondId, remainingIds);
+    }
+
+    [Fact]
     public async Task EnsureRentalAssetsTableAsync_AllowsDeletedNaturalKeyDuplicates_ButBlocksActiveDuplicates()
     {
         var method = typeof(DbInitializer).GetMethod(

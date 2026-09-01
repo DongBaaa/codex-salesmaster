@@ -15623,6 +15623,110 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Push_DoesNotAutoMatchRentalBillingProfileFromDifferentCustomerByItemAndSite()
+    {
+        var targetCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "[인천시청]징수담당관실",
+            NameMatchKey = "인천시청징수담당관실",
+            TradeType = "매출"
+        };
+        var unrelatedCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            NameOriginal = "[인천시청]건설심사과",
+            NameMatchKey = "인천시청건설심사과",
+            TradeType = "매출"
+        };
+        var unrelatedProfile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+            ProfileKey = $"ITWORLD|CUSTOMER:{unrelatedCustomer.Id:N}|묶음|후불|25|24||",
+            CustomerId = unrelatedCustomer.Id,
+            CustomerName = unrelatedCustomer.NameOriginal,
+            ItemName = "세돌이JT-7270SC",
+            InstallSiteName = "인천 상륙작전기념관",
+            BillingTemplateJson = "[]",
+            BillingDay = 25,
+            MonthlyAmount = 40000m,
+            IsActive = false
+        };
+        var assetId = Guid.NewGuid();
+        var existingAsset = new RentalAsset
+        {
+            Id = assetId,
+            TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+            ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+            ManagementId = $"AUTO-MATCH-{assetId:N}",
+            ManagementNumber = $"AUTO-MATCH-{assetId:N}",
+            CustomerId = unrelatedCustomer.Id,
+            CustomerName = unrelatedCustomer.NameOriginal,
+            CurrentCustomerName = unrelatedCustomer.NameOriginal,
+            ItemName = unrelatedProfile.ItemName,
+            InstallLocation = unrelatedProfile.InstallSiteName,
+            InstallSiteName = unrelatedProfile.InstallSiteName,
+            BillingProfileId = null,
+            CurrentLocation = unrelatedProfile.InstallSiteName,
+            AssetStatus = RentalAssetStatusNormalizer.Active,
+            CreatedAtUtc = DateTime.UtcNow.AddMonths(-1),
+            UpdatedAtUtc = DateTime.UtcNow.AddMinutes(-2)
+        };
+        _dbContext.AddRange(targetCustomer, unrelatedCustomer, unrelatedProfile, existingAsset);
+        await _dbContext.SaveChangesAsync();
+
+        var response = await _controller.Push(new SyncPushRequest
+        {
+            DeviceId = "different-customer-profile-auto-match-guard",
+            RentalAssets =
+            [
+                new RentalAssetDto
+                {
+                    Id = assetId,
+                    TenantCode = TenantScopeCatalog.Itworld,
+                    OfficeCode = OfficeCodeCatalog.Itworld,
+                    ResponsibleOfficeCode = OfficeCodeCatalog.Itworld,
+                    ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+                    ManagementId = $"AUTO-MATCH-{assetId:N}",
+                    ManagementNumber = $"AUTO-MATCH-{assetId:N}",
+                    CustomerId = targetCustomer.Id,
+                    CustomerName = targetCustomer.NameOriginal,
+                    CurrentCustomerName = targetCustomer.NameOriginal,
+                    ItemName = unrelatedProfile.ItemName,
+                    InstallLocation = unrelatedProfile.InstallSiteName,
+                    InstallSiteName = unrelatedProfile.InstallSiteName,
+                    BillingProfileId = null,
+                    CurrentLocation = unrelatedProfile.InstallSiteName,
+                    AssetStatus = existingAsset.AssetStatus,
+                    ExpectedRevision = existingAsset.Revision,
+                    CreatedAtUtc = existingAsset.CreatedAtUtc,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            ]
+        }, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<SyncPushResult>(ok.Value);
+        Assert.True(result.ConflictCount == 0,
+            string.Join(" | ", result.Conflicts.Select(conflict => $"{conflict.EntityName}:{conflict.Reason}")));
+        var storedAsset = await _dbContext.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == assetId);
+        Assert.Equal(targetCustomer.Id, storedAsset.CustomerId);
+        Assert.Null(storedAsset.BillingProfileId);
+    }
+
+    [Fact]
     public async Task Pull_DoesNotIncludeCrossTenantRentalData_ForUserWithRentalEditAll()
     {
         var usenetCustomer = new Customer

@@ -393,18 +393,24 @@ public static partial class DbInitializer
             current.BillingMethod);
 
     private static string BuildRentalAssetDuplicateKey(RentalAsset current)
-        => RentalDuplicateNormalizer.BuildRentalAssetDuplicateKey(
-            current.CustomerName,
-            current.CurrentCustomerName,
-            current.InstallSiteName,
-            current.InstallLocation,
-            current.ItemCategoryName,
-            current.ItemName,
-            current.Manufacturer,
-            current.MachineNumber,
-            current.MonthlyFee,
-            current.ContractMonths,
-            current.AssetStatus);
+        => string.Join('|',
+            BuildStrictTextKey(current.TenantCode),
+            BuildStrictTextKey(current.OfficeCode),
+            BuildStrictTextKey(current.ManagementCompanyCode),
+            BuildStrictTextKey(current.ManagementId),
+            BuildStrictTextKey(current.ManagementNumber),
+            RentalDuplicateNormalizer.BuildRentalAssetDuplicateKey(
+                current.CustomerName,
+                current.CurrentCustomerName,
+                current.InstallSiteName,
+                current.InstallLocation,
+                current.ItemCategoryName,
+                current.ItemName,
+                current.Manufacturer,
+                current.MachineNumber,
+                current.MonthlyFee,
+                current.ContractMonths,
+                current.AssetStatus));
 
     private static bool MergeRentalBillingProfileValues(RentalBillingProfile canonical, RentalBillingProfile duplicate)
     {
