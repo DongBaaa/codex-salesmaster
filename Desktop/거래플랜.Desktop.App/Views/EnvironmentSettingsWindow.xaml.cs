@@ -1,4 +1,5 @@
 ﻿using System.Windows;
+using System.Windows.Controls;
 using System.ComponentModel;
 using System.Windows.Input;
 using 거래플랜.Desktop.App.Infrastructure;
@@ -15,6 +16,7 @@ public enum EnvironmentSettingsInitialTab
 
 public partial class EnvironmentSettingsWindow : Window
 {
+    private const double UpdateSingleColumnWidthThreshold = 900d;
     private readonly EnvironmentSettingsViewModel _viewModel;
 
     public EnvironmentSettingsWindow(EnvironmentSettingsViewModel vm, EnvironmentSettingsInitialTab initialTab = EnvironmentSettingsInitialTab.General)
@@ -23,6 +25,7 @@ public partial class EnvironmentSettingsWindow : Window
         _viewModel = vm;
         DataContext = vm;
         Closing += EnvironmentSettingsWindow_Closing;
+        UpdateTabScrollViewer.SizeChanged += (_, _) => ApplyResponsiveUpdateLayout();
 
         Loaded += (_, _) =>
         {
@@ -32,7 +35,36 @@ public partial class EnvironmentSettingsWindow : Window
                 EnvironmentSettingsInitialTab.Sync => SyncTab,
                 _ => SettingsTabs.SelectedItem
             };
+            ApplyResponsiveUpdateLayout();
         };
+    }
+
+    private void ApplyResponsiveUpdateLayout()
+    {
+        var availableWidth = UpdateTabScrollViewer.ViewportWidth;
+        if (!double.IsFinite(availableWidth) || availableWidth <= 0d)
+            availableWidth = SettingsTabs.ActualWidth;
+        if (!double.IsFinite(availableWidth) || availableWidth <= 0d)
+            return;
+
+        var useSingleColumn = availableWidth < UpdateSingleColumnWidthThreshold;
+        if (useSingleColumn)
+        {
+            UpdateInstallStatusColumn.Width = new GridLength(1d, GridUnitType.Star);
+            UpdateOverviewSpacerColumn.Width = new GridLength(0d);
+            UpdateReleaseNotesColumn.Width = new GridLength(0d);
+            Grid.SetRow(UpdateReleaseNotesPanel, 1);
+            Grid.SetColumn(UpdateReleaseNotesPanel, 0);
+            UpdateReleaseNotesPanel.Margin = new Thickness(0d, 12d, 0d, 0d);
+            return;
+        }
+
+        UpdateInstallStatusColumn.Width = new GridLength(1.2d, GridUnitType.Star);
+        UpdateOverviewSpacerColumn.Width = new GridLength(12d);
+        UpdateReleaseNotesColumn.Width = new GridLength(1.8d, GridUnitType.Star);
+        Grid.SetRow(UpdateReleaseNotesPanel, 0);
+        Grid.SetColumn(UpdateReleaseNotesPanel, 2);
+        UpdateReleaseNotesPanel.Margin = new Thickness(0d);
     }
 
     private void EnvironmentSettingsWindow_Closing(

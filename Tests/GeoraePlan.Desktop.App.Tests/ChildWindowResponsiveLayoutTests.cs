@@ -1564,6 +1564,120 @@ public sealed class ChildWindowResponsiveLayoutTests
     }
 
     [Fact]
+    public void EnvironmentSettingsUpdateTab_ReflowsAndWrapsInsideTheWindow()
+    {
+        var desktopAppDirectory = FindDesktopAppDirectory();
+        var document = LoadWindow(
+            desktopAppDirectory,
+            "EnvironmentSettingsWindow.xaml");
+        XNamespace xamlNamespace = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        Assert.Equal("760", (string?)document.Root?.Attribute("MinWidth"));
+        Assert.Equal("560", (string?)document.Root?.Attribute("MinHeight"));
+
+        var updateTab = AssertNamedElement(
+            document,
+            xamlNamespace,
+            "UpdateTab");
+        var scrollViewer = Assert.Single(
+            updateTab.Elements(),
+            element => element.Name.LocalName == "ScrollViewer");
+        Assert.Equal(
+            "UpdateTabScrollViewer",
+            (string?)scrollViewer.Attribute(xamlNamespace + "Name"));
+        Assert.Equal(
+            "Disabled",
+            (string?)scrollViewer.Attribute("HorizontalScrollBarVisibility"));
+        Assert.Equal(
+            "Auto",
+            (string?)scrollViewer.Attribute("VerticalScrollBarVisibility"));
+        Assert.Equal(
+            "Stretch",
+            (string?)scrollViewer.Attribute("HorizontalContentAlignment"));
+        Assert.Equal(
+            "False",
+            (string?)scrollViewer.Attribute("CanContentScroll"));
+
+        var overviewGrid = AssertNamedElement(
+            document,
+            xamlNamespace,
+            "UpdateOverviewGrid");
+        Assert.Equal(
+            new[] { "Auto", "Auto" },
+            overviewGrid
+                .Elements()
+                .Single(element => element.Name.LocalName == "Grid.RowDefinitions")
+                .Elements()
+                .Select(element => (string?)element.Attribute("Height"))
+                .ToArray());
+        Assert.Equal(
+            new[] { "1.2*", "12", "1.8*" },
+            overviewGrid
+                .Elements()
+                .Single(element => element.Name.LocalName == "Grid.ColumnDefinitions")
+                .Elements()
+                .Select(element => (string?)element.Attribute("Width"))
+                .ToArray());
+
+        var releaseNotesPanel = AssertNamedElement(
+            document,
+            xamlNamespace,
+            "UpdateReleaseNotesPanel");
+        Assert.Equal("0", (string?)releaseNotesPanel.Attribute("Grid.Row"));
+        Assert.Equal("2", (string?)releaseNotesPanel.Attribute("Grid.Column"));
+
+        var statusText = Assert.Single(
+            document.Descendants(),
+            element =>
+                element.Name.LocalName == "TextBlock" &&
+                string.Equals(
+                    (string?)element.Attribute("Text"),
+                    "{Binding StatusMessage}",
+                    StringComparison.Ordinal));
+        Assert.Equal("0", (string?)statusText.Attribute("MinWidth"));
+        Assert.Equal("Wrap", (string?)statusText.Attribute("TextWrapping"));
+        var statusGrid = Assert.IsType<XElement>(statusText.Parent);
+        Assert.Equal("Grid", statusGrid.Name.LocalName);
+        Assert.Equal(
+            new[] { "Auto", "*" },
+            statusGrid
+                .Elements()
+                .Single(element => element.Name.LocalName == "Grid.ColumnDefinitions")
+                .Elements()
+                .Select(element => (string?)element.Attribute("Width"))
+                .ToArray());
+
+        var codeBehind = File.ReadAllText(Path.Combine(
+            desktopAppDirectory,
+            "Views",
+            "EnvironmentSettingsWindow.xaml.cs"));
+        Assert.Contains(
+            "UpdateSingleColumnWidthThreshold = 900d",
+            codeBehind,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "UpdateTabScrollViewer.SizeChanged += (_, _) => ApplyResponsiveUpdateLayout();",
+            codeBehind,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "var availableWidth = UpdateTabScrollViewer.ViewportWidth;",
+            codeBehind,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Grid.SetRow(UpdateReleaseNotesPanel, 1);",
+            codeBehind,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Grid.SetColumn(UpdateReleaseNotesPanel, 0);",
+            codeBehind,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Grid.SetColumn(UpdateReleaseNotesPanel, 2);",
+            codeBehind,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EnvironmentSettingsSyncTab_ExposesEverySectionThroughDefaultSizeOverflowNavigation()
     {
         var desktopAppDirectory = FindDesktopAppDirectory();
@@ -2088,7 +2202,8 @@ public sealed class ChildWindowResponsiveLayoutTests
             FindDesktopAppDirectory(),
             "Infrastructure",
             "ChildWindowResponsiveLayoutPolicy.cs");
-        var source = File.ReadAllText(policyPath);
+        var source = File.ReadAllText(policyPath)
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
 
         Assert.Contains("window.Owner is not null", source, StringComparison.Ordinal);
         Assert.Contains("MonitorFromWindow(\n                    ownerHandle", source, StringComparison.Ordinal);

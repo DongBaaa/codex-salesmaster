@@ -4719,6 +4719,27 @@ public sealed class UpdaterTransactionSafetyTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void DesktopUpdateReadiness_ReportsPendingAndFailedOutboxCountsSeparately()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var source = File.ReadAllText(Path.Combine(
+            repositoryRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Services",
+            "UpdateReadinessService.cs"));
+
+        Assert.Contains(
+            "sync outbox 대기 {outboxSummary.PendingCount:N0}건과 실패 {outboxSummary.FailedCount:N0}건",
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "(실패 {outboxSummary.FailedCount:N0}건 포함)",
+            source,
+            StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("2.0.0", "1.0.0", "3.0.0")]
     [InlineData("2.0.0", "2.0.0", "2.0.0")]

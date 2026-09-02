@@ -189,7 +189,7 @@ public static class UpdateReadinessService
         if (outboxSummary.PendingCount > 0)
         {
             var outboxText = outboxSummary.FailedCount > 0
-                ? $"sync outbox 대기 {outboxSummary.PendingCount:N0}건(실패 {outboxSummary.FailedCount:N0}건 포함)이 남아 있습니다."
+                ? $"sync outbox 대기 {outboxSummary.PendingCount:N0}건과 실패 {outboxSummary.FailedCount:N0}건이 남아 있습니다."
                 : $"sync outbox 대기 {outboxSummary.PendingCount:N0}건이 남아 있습니다.";
             parts.Add(outboxText);
         }

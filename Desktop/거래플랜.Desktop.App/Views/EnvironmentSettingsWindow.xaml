@@ -4,6 +4,8 @@
         Title="환경설정"
         Height="820"
         Width="1240"
+        MinWidth="760"
+        MinHeight="560"
         WindowStartupLocation="CenterOwner"
         Background="#151F2E"
         KeyDown="Window_KeyDown">
@@ -1535,7 +1537,12 @@
             </TabItem>
 
             <TabItem x:Name="UpdateTab" Header="버전 / 업데이트">
-                <ScrollViewer Margin="10" VerticalScrollBarVisibility="Auto">
+                <ScrollViewer x:Name="UpdateTabScrollViewer"
+                              Margin="10"
+                              HorizontalScrollBarVisibility="Disabled"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalContentAlignment="Stretch"
+                              CanContentScroll="False">
                     <StackPanel>
                         <Border Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="16">
                             <Grid>
@@ -1562,14 +1569,18 @@
                             </Grid>
                         </Border>
 
-                        <Grid Margin="0,14,0,0">
+                        <Grid x:Name="UpdateOverviewGrid" Margin="0,14,0,0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="1.2*"/>
-                                <ColumnDefinition Width="12"/>
-                                <ColumnDefinition Width="1.8*"/>
+                                <ColumnDefinition x:Name="UpdateInstallStatusColumn" Width="1.2*"/>
+                                <ColumnDefinition x:Name="UpdateOverviewSpacerColumn" Width="12"/>
+                                <ColumnDefinition x:Name="UpdateReleaseNotesColumn" Width="1.8*"/>
                             </Grid.ColumnDefinitions>
 
-                            <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="16">
+                            <Border x:Name="UpdateInstallStatusPanel" Grid.Row="0" Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="16">
                                 <StackPanel>
                                     <TextBlock Text="설치 상태" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
                                     <Grid Margin="0,16,0,0">
@@ -1599,7 +1610,7 @@
                                 </StackPanel>
                             </Border>
 
-                            <Border Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="16">
+                            <Border x:Name="UpdateReleaseNotesPanel" Grid.Row="0" Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="16">
                                 <StackPanel>
                                     <TextBlock Text="배포 메모" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
                                     <Border Background="#102039" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,14,0,0">
@@ -1632,12 +1643,24 @@
                 BorderThickness="1"
                 CornerRadius="6"
                 Padding="10">
-            <DockPanel LastChildFill="False">
-                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
-                    <ProgressBar Width="220" Height="12" IsIndeterminate="{Binding IsBusy}" Margin="0,0,12,0"/>
-                    <TextBlock Text="{Binding StatusMessage}" Foreground="#90CAF9" VerticalAlignment="Center"/>
-                </StackPanel>
-            </DockPanel>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <ProgressBar Grid.Column="0"
+                             Width="220"
+                             Height="12"
+                             IsIndeterminate="{Binding IsBusy}"
+                             Margin="0,0,12,0"
+                             VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="1"
+                           MinWidth="0"
+                           Text="{Binding StatusMessage}"
+                           Foreground="#90CAF9"
+                           VerticalAlignment="Center"
+                           TextWrapping="Wrap"/>
+            </Grid>
         </Border>
     </Grid>
 </Window>
