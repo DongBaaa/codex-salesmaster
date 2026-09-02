@@ -216,6 +216,86 @@ public sealed class WpfGlobalUiGuardTests
     }
 
     [Fact]
+    public void RentalDetailForms_KeepEditorsInsideTheirAvailablePanelWidth()
+    {
+        var root = FindRepositoryRoot();
+        var appXaml = File.ReadAllText(Path.Combine(root, "Desktop", "거래플랜.Desktop.App", "App.xaml"));
+        var viewRoot = Path.Combine(root, "Desktop", "거래플랜.Desktop.App", "Views");
+        var responsiveViews = new[]
+        {
+            "RentalBillingWindow.xaml",
+            "RentalAssetWindow.xaml",
+            "RentalAssetLinkDialog.xaml",
+            "RentalCustomerOnboardingWindow.xaml"
+        };
+
+        var textBoxStyle = ExtractBlock(
+            appXaml,
+            "<Style x:Key=\"ResponsiveDetailTextBoxStyle\"",
+            "</Style>");
+        var comboBoxStyle = ExtractBlock(
+            appXaml,
+            "<Style x:Key=\"ResponsiveDetailComboBoxStyle\"",
+            "</Style>");
+        var datePickerStyle = ExtractBlock(
+            appXaml,
+            "<Style x:Key=\"ResponsiveDetailDatePickerStyle\"",
+            "</Style>");
+
+        Assert.Contains("<Setter Property=\"MinWidth\" Value=\"0\"/>", textBoxStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"HorizontalAlignment\" Value=\"Stretch\"/>", textBoxStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"MinWidth\" Value=\"0\"/>", comboBoxStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"HorizontalAlignment\" Value=\"Stretch\"/>", comboBoxStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"MinWidth\" Value=\"0\"/>", datePickerStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"Width\" Value=\"Auto\"/>", datePickerStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"MaxWidth\" Value=\"Infinity\"/>", datePickerStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"HorizontalAlignment\" Value=\"Stretch\"/>", datePickerStyle, StringComparison.Ordinal);
+
+        foreach (var viewName in responsiveViews)
+        {
+            var xaml = File.ReadAllText(Path.Combine(viewRoot, viewName));
+            Assert.Contains(
+                "<Style TargetType=\"TextBox\" BasedOn=\"{StaticResource ResponsiveDetailTextBoxStyle}\"/>",
+                xaml,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "<Style TargetType=\"ComboBox\" BasedOn=\"{StaticResource ResponsiveDetailComboBoxStyle}\"/>",
+                xaml,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "<Style TargetType=\"DatePicker\" BasedOn=\"{StaticResource ResponsiveDetailDatePickerStyle}\"/>",
+                xaml,
+                StringComparison.Ordinal);
+        }
+
+        foreach (var viewName in responsiveViews.Take(3))
+        {
+            var xaml = File.ReadAllText(Path.Combine(viewRoot, viewName));
+            Assert.Contains("HorizontalScrollBarVisibility=\"Disabled\"", xaml, StringComparison.Ordinal);
+            Assert.Contains("HorizontalContentAlignment=\"Stretch\"", xaml, StringComparison.Ordinal);
+        }
+
+        var billingXaml = File.ReadAllText(Path.Combine(viewRoot, "RentalBillingWindow.xaml"));
+        Assert.DoesNotContain("MinWidth=\"620\"", billingXaml, StringComparison.Ordinal);
+        Assert.Contains(
+            "BasedOn=\"{StaticResource ResponsiveDetailComboBoxStyle}\"",
+            ExtractBlock(billingXaml, "<Style x:Key=\"BillingAnchorMonthComboBoxStyle\"", "</Style>"),
+            StringComparison.Ordinal);
+
+        var assetXaml = File.ReadAllText(Path.Combine(viewRoot, "RentalAssetWindow.xaml"));
+        Assert.DoesNotContain("MinWidth=\"620\"", assetXaml, StringComparison.Ordinal);
+
+        var onboardingXaml = File.ReadAllText(Path.Combine(viewRoot, "RentalCustomerOnboardingWindow.xaml"));
+        Assert.DoesNotContain("MinWidth=\"760\"", onboardingXaml, StringComparison.Ordinal);
+
+        var assetLinkXaml = File.ReadAllText(Path.Combine(viewRoot, "RentalAssetLinkDialog.xaml"));
+        Assert.Contains(
+            "<Setter Property=\"MinWidth\" Value=\"0\"/>",
+            ExtractBlock(assetLinkXaml, "<Style x:Key=\"ReadOnlyInfoTextBoxStyle\"", "</Style>"),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DataIntegrityAlertWindow_KeepsScrollableBodyAndWiresVisibleActionButtons()
     {
         var root = FindRepositoryRoot();

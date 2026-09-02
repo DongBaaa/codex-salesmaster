@@ -152,13 +152,19 @@
                 </StackPanel>
             </Border>
 
-            <Border x:Name="OnboardingTabHost" Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12">
-                <TabControl x:Name="OnboardingStepsTabControl" SelectedIndex="{Binding CurrentStepIndex}" Background="#1A2B4A" BorderThickness="0">
+            <Border x:Name="OnboardingTabHost" Grid.Column="2" MinWidth="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12">
+                <TabControl x:Name="OnboardingStepsTabControl" MinWidth="0" SelectedIndex="{Binding CurrentStepIndex}" Background="#1A2B4A" BorderThickness="0">
+                    <TabControl.Resources>
+                        <Style TargetType="TextBox" BasedOn="{StaticResource ResponsiveDetailTextBoxStyle}"/>
+                        <Style TargetType="ComboBox" BasedOn="{StaticResource ResponsiveDetailComboBoxStyle}"/>
+                        <Style TargetType="DatePicker" BasedOn="{StaticResource ResponsiveDetailDatePickerStyle}"/>
+                    </TabControl.Resources>
                     <TabItem Header="거래처정보">
                         <ScrollViewer x:Name="CustomerInfoScrollViewer"
-                                      HorizontalScrollBarVisibility="Auto"
-                                      VerticalScrollBarVisibility="Auto">
-                        <Grid MinWidth="760" Margin="6">
+                                      HorizontalScrollBarVisibility="Disabled"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalContentAlignment="Stretch">
+                        <Grid MinWidth="0" Margin="6">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="104"/>
                                 <ColumnDefinition Width="*"/>
@@ -199,9 +205,10 @@
 
                     <TabItem Header="렌탈 기본정보">
                         <ScrollViewer x:Name="RentalBasicsScrollViewer"
-                                      HorizontalScrollBarVisibility="Auto"
-                                      VerticalScrollBarVisibility="Auto">
-                        <Grid MinWidth="760" Margin="6">
+                                      HorizontalScrollBarVisibility="Disabled"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalContentAlignment="Stretch">
+                        <Grid MinWidth="0" Margin="6">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="104"/>
                                 <ColumnDefinition Width="*"/>
@@ -225,9 +232,10 @@
 
                     <TabItem Header="청구 설정">
                         <ScrollViewer x:Name="BillingSettingsScrollViewer"
-                                      HorizontalScrollBarVisibility="Auto"
-                                      VerticalScrollBarVisibility="Auto">
-                        <Grid MinWidth="760" Margin="6">
+                                      HorizontalScrollBarVisibility="Disabled"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalContentAlignment="Stretch">
+                        <Grid MinWidth="0" Margin="6">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
@@ -461,9 +469,10 @@
 
                     <TabItem Header="최종 확인">
                         <ScrollViewer x:Name="FinalReviewScrollViewer"
-                                      HorizontalScrollBarVisibility="Auto"
-                                      VerticalScrollBarVisibility="Auto">
-                        <Grid MinWidth="760" Margin="6">
+                                      HorizontalScrollBarVisibility="Disabled"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalContentAlignment="Stretch">
+                        <Grid MinWidth="0" Margin="6">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>

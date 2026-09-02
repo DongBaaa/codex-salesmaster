@@ -392,10 +392,16 @@
             <Border Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12">
                 <ScrollViewer x:Name="RentalAssetDetailScrollViewer"
                               HorizontalScrollBarVisibility="Disabled"
-                              VerticalScrollBarVisibility="Auto">
-                    <Grid IsEnabled="{Binding CanEditAssetDetails}">
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalContentAlignment="Stretch">
+                    <Grid IsEnabled="{Binding CanEditAssetDetails}" MinWidth="0">
                     <Grid x:Name="RentalAssetDetailContent"
-                          MinWidth="620">
+                          MinWidth="0">
+                        <Grid.Resources>
+                            <Style TargetType="TextBox" BasedOn="{StaticResource ResponsiveDetailTextBoxStyle}"/>
+                            <Style TargetType="ComboBox" BasedOn="{StaticResource ResponsiveDetailComboBoxStyle}"/>
+                            <Style TargetType="DatePicker" BasedOn="{StaticResource ResponsiveDetailDatePickerStyle}"/>
+                        </Grid.Resources>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="104"/>
                             <ColumnDefinition Width="*"/>

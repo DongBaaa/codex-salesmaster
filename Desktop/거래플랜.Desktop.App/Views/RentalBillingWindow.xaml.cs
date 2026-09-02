@@ -98,8 +98,8 @@ public partial class RentalBillingWindow : Window
             return;
         }
 
-        BillingListColumn.MinWidth = 420;
-        BillingDetailColumn.MinWidth = 620;
+        BillingListColumn.MinWidth = 0;
+        BillingDetailColumn.MinWidth = 0;
         BillingListColumn.Width = _billingListColumnWidth;
         BillingWorkspaceSplitterColumn.Width = new GridLength(10);
         BillingWorkspaceGridSplitter.Visibility = Visibility.Visible;

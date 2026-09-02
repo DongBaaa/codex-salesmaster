@@ -79,6 +79,22 @@
             <Setter Property="MinWidth" Value="180"/>
             <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
+        <!-- 상세 편집 폼은 좁은 패널에서도 전역 입력 컨트롤의 기본 최소폭(180)을
+             상속하지 않고 현재 열의 가용 너비 안에서 축소됩니다. -->
+        <Style x:Key="ResponsiveDetailTextBoxStyle" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+            <Setter Property="MinWidth" Value="0"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+        </Style>
+        <Style x:Key="ResponsiveDetailComboBoxStyle" TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
+            <Setter Property="MinWidth" Value="0"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+        </Style>
+        <Style x:Key="ResponsiveDetailDatePickerStyle" TargetType="DatePicker" BasedOn="{StaticResource {x:Type DatePicker}}">
+            <Setter Property="MinWidth" Value="0"/>
+            <Setter Property="Width" Value="Auto"/>
+            <Setter Property="MaxWidth" Value="Infinity"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+        </Style>
         <Style TargetType="ComboBoxItem">
             <Setter Property="FontFamily" Value="맑은 고딕"/>
             <Setter Property="Padding" Value="8,4"/>

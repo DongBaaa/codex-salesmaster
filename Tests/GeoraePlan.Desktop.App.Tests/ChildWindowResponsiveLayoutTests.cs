@@ -217,7 +217,7 @@ public sealed class ChildWindowResponsiveLayoutTests
             xaml,
             "RentalAssetDetailContent",
             "MinWidth",
-            "620");
+            "0");
 
         var rentalBilling = LoadWindow(
             desktopAppDirectory,
@@ -910,7 +910,7 @@ public sealed class ChildWindowResponsiveLayoutTests
                 onboarding,
                 xaml,
                 scrollViewerName,
-                horizontal: "Auto",
+                horizontal: "Disabled",
                 vertical: "Auto");
             var scrollViewer = AssertNamedElement(
                 onboarding,
@@ -918,7 +918,7 @@ public sealed class ChildWindowResponsiveLayoutTests
                 scrollViewerName);
             var scrollContent = Assert.Single(scrollViewer.Elements());
             Assert.Equal("Grid", scrollContent.Name.LocalName);
-            Assert.Equal("760", (string?)scrollContent.Attribute("MinWidth"));
+            Assert.Equal("0", (string?)scrollContent.Attribute("MinWidth"));
         }
         AssertScrollViewer(
             onboarding,

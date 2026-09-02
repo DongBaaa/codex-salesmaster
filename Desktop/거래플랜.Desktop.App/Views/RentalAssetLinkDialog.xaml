@@ -32,6 +32,7 @@
             <Setter Property="Background" Value="#24364F"/>
             <Setter Property="BorderBrush" Value="#324A69"/>
             <Setter Property="Foreground" Value="#EAF2FF"/>
+            <Setter Property="MinWidth" Value="0"/>
         </Style>
         <Style TargetType="ComboBox">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -186,8 +187,15 @@
             </Border>
 
             <Border Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
+                              HorizontalContentAlignment="Stretch">
                     <StackPanel>
+                        <StackPanel.Resources>
+                            <Style TargetType="TextBox" BasedOn="{StaticResource ResponsiveDetailTextBoxStyle}"/>
+                            <Style TargetType="ComboBox" BasedOn="{StaticResource ResponsiveDetailComboBoxStyle}"/>
+                            <Style TargetType="DatePicker" BasedOn="{StaticResource ResponsiveDetailDatePickerStyle}"/>
+                        </StackPanel.Resources>
                         <TextBlock Text="선택 자산 상세정보" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,10"/>
 
                         <Grid IsEnabled="{Binding SelectedAsset.CanEditInLinkDialog}">
