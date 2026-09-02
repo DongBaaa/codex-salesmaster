@@ -199,6 +199,127 @@ public static partial class DbInitializer
         }
     }
 
+    public static async Task ProvisionDedicatedTenantDatabaseAsync(
+        TenantDatabaseConnectionInfo connectionInfo,
+        string tenantCode,
+        string displayName,
+        string description,
+        RevisionClock revisionClock,
+        ILogger logger,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(connectionInfo);
+        ArgumentNullException.ThrowIfNull(revisionClock);
+        ArgumentNullException.ThrowIfNull(logger);
+        if (connectionInfo.UseSqlite || !connectionInfo.IsDedicatedBusinessDatabase)
+            throw new InvalidOperationException("독립 업체 DB 생성은 PostgreSQL 별도 업무 DB 연결에서만 지원합니다.");
+        if (!TenantScopeCatalog.TryNormalizeCustomTenantCode(tenantCode, out var normalizedTenantCode))
+            throw new InvalidOperationException("독립 업체 코드는 ORG_로 시작하는 5~40자의 영문 대문자, 숫자, 밑줄만 사용할 수 있습니다.");
+        if (TenantScopeCatalog.AllTenants.Contains(normalizedTenantCode, StringComparer.OrdinalIgnoreCase))
+            throw new InvalidOperationException("기본 업체 코드는 신규 독립 업체 코드로 사용할 수 없습니다.");
+
+        var normalizedDisplayName = string.IsNullOrWhiteSpace(displayName)
+            ? normalizedTenantCode
+            : displayName.Trim();
+        await EnsureDedicatedBusinessDatabaseExistsAsync(connectionInfo, logger, cancellationToken);
+        await using var tenantDbContext = CreateDbContext(connectionInfo, revisionClock);
+        await EnsureBusinessDatabaseSchemaAsync(tenantDbContext, logger, cancellationToken);
+        await EnsureOperationalRuntimeSchemaAsync(tenantDbContext, cancellationToken);
+        await VerifyRequiredOperationalSchemaAsync(tenantDbContext, cancellationToken);
+        await EnsureReferenceDataAsync(tenantDbContext, cancellationToken);
+        await UpsertTenantDefinitionAsync(
+            tenantDbContext,
+            normalizedTenantCode,
+            normalizedDisplayName,
+            TenantScopeCatalog.StorageDedicatedDatabase,
+            description,
+            cancellationToken);
+        await UpsertTenantOfficeDefinitionAsync(
+            tenantDbContext,
+            normalizedTenantCode,
+            normalizedTenantCode,
+            normalizedDisplayName,
+            true,
+            cancellationToken);
+        await EnsureProvisionedTenantDefaultsAsync(
+            tenantDbContext,
+            normalizedTenantCode,
+            normalizedDisplayName,
+            cancellationToken);
+        await tenantDbContext.SaveChangesAsync(cancellationToken);
+        await EnsureUnitsUniqueIndexAsync(tenantDbContext, cancellationToken);
+        logger.LogInformation(
+            "Provisioned dedicated business database {DatabaseName} for tenant {TenantCode}.",
+            TenantScopeCatalog.GetPhysicalDatabaseName(normalizedTenantCode),
+            normalizedTenantCode);
+    }
+
+    private static async Task EnsureProvisionedTenantDefaultsAsync(
+        AppDbContext dbContext,
+        string tenantCode,
+        string displayName,
+        CancellationToken cancellationToken)
+    {
+        var nowUtc = DateTime.UtcNow;
+        var profileId = OfficeCodeCatalog.GetDefaultCompanyProfileId(tenantCode);
+        var profile = await dbContext.CompanyProfiles.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current =>
+                    current.Id == profileId || current.OfficeCode == tenantCode,
+                cancellationToken);
+        if (profile is null)
+        {
+            profile = new CompanyProfile
+            {
+                Id = profileId,
+                OfficeCode = tenantCode,
+                ProfileName = $"{displayName} 기본",
+                TradeName = displayName,
+                BankAccountText = "입금용 계좌번호를 입력하세요.",
+                IsDefaultForOffice = true,
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAtUtc = nowUtc,
+                UpdatedAtUtc = nowUtc
+            };
+            dbContext.CompanyProfiles.Add(profile);
+        }
+        else
+        {
+            profile.OfficeCode = tenantCode;
+            profile.IsDefaultForOffice = true;
+            profile.IsActive = true;
+            profile.IsDeleted = false;
+            profile.UpdatedAtUtc = nowUtc;
+        }
+
+        var managementCompany = await dbContext.RentalManagementCompanies.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current =>
+                    current.TenantCode == tenantCode && current.Code == tenantCode,
+                cancellationToken);
+        if (managementCompany is null)
+        {
+            dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+            {
+                TenantCode = tenantCode,
+                Code = tenantCode,
+                Name = displayName,
+                IsSystemDefault = true,
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAtUtc = nowUtc,
+                UpdatedAtUtc = nowUtc
+            });
+        }
+        else
+        {
+            managementCompany.Name = displayName;
+            managementCompany.IsSystemDefault = true;
+            managementCompany.IsActive = true;
+            managementCompany.IsDeleted = false;
+            managementCompany.UpdatedAtUtc = nowUtc;
+        }
+    }
+
     private static async Task EnsureBusinessDatabaseSchemaAsync(
         AppDbContext dbContext,
         ILogger logger,
@@ -5479,6 +5600,7 @@ public static partial class DbInitializer
         await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "DocumentLeadDays", "INTEGER NOT NULL DEFAULT 0", "integer NOT NULL DEFAULT 0", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillingTemplateJson", "TEXT NOT NULL DEFAULT '[]'", "text NOT NULL DEFAULT '[]'", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "BillingRunsJson", "TEXT NOT NULL DEFAULT '[]'", "text NOT NULL DEFAULT '[]'", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "PoolMeterAllowance", "INTEGER NOT NULL DEFAULT 0", "boolean NOT NULL DEFAULT false", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalAssets", "CurrentCustomerName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalAssets", "InstallSiteName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalAssets", "BillingEligibilityStatus", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
@@ -5488,6 +5610,17 @@ public static partial class DbInitializer
         await EnsureColumnAsync(dbContext, "RentalAssets", "LastBillingProfileId", "TEXT NULL", "uuid NULL", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalAssets", "LastBillingProfileDisplay", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
         await EnsureColumnAsync(dbContext, "RentalAssets", "LastAssignmentClearedAtUtc", "TEXT NULL", "timestamp with time zone NULL", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "MeterBillingEnabled", "INTEGER NOT NULL DEFAULT 0", "boolean NOT NULL DEFAULT false", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "BlackIncludedMode", "TEXT NOT NULL DEFAULT '미설정'", "text NOT NULL DEFAULT '미설정'", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "BlackIncludedPages", "INTEGER NULL", "integer NULL", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "BlackOverageUnitPrice", "REAL NULL", "numeric(18,4) NULL", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "ColorIncludedMode", "TEXT NOT NULL DEFAULT '미설정'", "text NOT NULL DEFAULT '미설정'", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "ColorIncludedPages", "INTEGER NULL", "integer NULL", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "ColorOverageUnitPrice", "REAL NULL", "numeric(18,4) NULL", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "MeterReadingsJson", "TEXT NOT NULL DEFAULT '[]'", "text NOT NULL DEFAULT '[]'", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "MeterEvidenceJson", "TEXT NOT NULL DEFAULT '[]'", "text NOT NULL DEFAULT '[]'", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "MeterPolicySource", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "RentalAssets", "MeterPolicySourceUpdatedAtUtc", "TEXT NULL", "timestamp with time zone NULL", cancellationToken);
         // Keep retired columns as empty compatibility columns so stale clients or lingering
         // server query paths do not fail with missing-column errors during sync.
         await EnsureColumnAsync(dbContext, "RentalBillingProfiles", "RealCustomerName", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);

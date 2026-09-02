@@ -790,7 +790,13 @@
                             <TextBox Grid.Row="7" Grid.Column="4" Text="{Binding EditDocumentLeadDays, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsDocumentLeadDaysVisible}" Margin="0,0,0,6"/>
 
                             <TextBlock Grid.Row="8" Grid.Column="0" Text="청구방식" Margin="0,0,4,6"/>
-                            <ComboBox Grid.Row="8" Grid.Column="1" ItemsSource="{Binding BillingMethodOptions}" SelectedItem="{Binding EditBillingMethod}" Margin="0,0,0,6"/>
+                            <StackPanel Grid.Row="8" Grid.Column="1" Margin="0,0,0,6">
+                                <ComboBox ItemsSource="{Binding BillingMethodOptions}" SelectedItem="{Binding EditBillingMethod}"/>
+                                <CheckBox Content="기본 출력량 통합 합산"
+                                          IsChecked="{Binding EditPoolMeterAllowance}"
+                                          Margin="0,6,0,0"
+                                          ToolTip="같은 청구 프로필에 연결된 장비들의 기본 출력량과 사용량을 합산하여 초과분을 계산합니다."/>
+                            </StackPanel>
                             <TextBlock Grid.Row="8" Grid.Column="3" Text="제출서류" VerticalAlignment="Top" Margin="0,0,4,6"/>
                             <TextBox Grid.Row="8" Grid.Column="4" Text="{Binding EditSubmissionDocuments, UpdateSourceTrigger=PropertyChanged}" Height="66" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" Margin="0,0,0,6"/>
 

@@ -12,19 +12,19 @@
 
 ## 현재 버전 상태
 ### 공개 stable
-- `[공개]` Windows PC `1.1.702`
+- `[공개]` Windows PC `1.1.703`
 - `[공개]` Android 표시 버전은 `0.2.82`입니다. APK 내부 versionCode는 공개 매니페스트에 없으므로 공개값으로 단정하지 않습니다.
 - `[공개]` 2026-08-31 확인에서 `trade.2884.kr/healthz`와 stable manifest는 HTTP 200·redirect 0이며 `fileDeletionLeaseProtocol=shared-flock-v1`입니다.
 - 저장소에서 재현 가능한 공개 버전·파일명·SHA-256 기준은 `D:\거래플랜\배포\stable.json`입니다. `배포\업데이트\manifest\stable.json`은 게시 과정의 로컬 산출물이며 live manifest와는 별도로 확인합니다.
 
 ### 현재 소스·테스트판
-- `[로컬검증]` Windows PC 현재 소스 `1.1.702`, FileVersion `1.1.702.0`이며 공개 stable과 일치합니다.
+- `[로컬검증]` Windows PC 현재 소스 `1.1.703`, FileVersion `1.1.703.0`이며 공개 stable과 일치합니다.
 - `[로컬검증]` Android 소스 `0.2.83`, versionCode `194`
 - `[로컬검증]` 서버 전체 1,478건 통과, PostgreSQL 전용 20건 건너뜀, 실패 0
 - `[로컬검증]` 별도 ephemeral PostgreSQL 업무 회귀 22/22, 데스크톱 전체 3,620/3,620 통과
 - `[로컬검증]` 격리 `Run-All.cmd`, 우선 업무 창 7/7, Multi-PC 24/24, 제한 계정 허용 11/11·차단 2/2 통과
 - `[로컬검증]` WPF 36개 창 768/768, Windows native/앱 프린터 목록 11/11 exact, Android 실제 에뮬레이터 18개 화면 1,044/1,044 통과
-- 현재 소스 `1.1.702`의 정식 패키지 생성과 Linux PC live 반영을 완료했습니다. 현재 공개 stable ZIP SHA-256은 `354130D9C975623661020F9A832B3C9FB8732731697A68857B5CF9EC8B87800D`입니다.
+- 현재 소스 `1.1.703`의 정식 패키지 생성과 Linux PC live 반영을 완료했습니다. 현재 공개 stable ZIP SHA-256은 `6E3F214E8544D99C41884154DA187F38F207AAF98F70EF1D76871B3A7ADEBBDA`입니다.
 - 버전 게시와 Git stage/commit/push는 수행했습니다. Windows Authenticode 공개 신뢰 서명과 실제 기기 설치는 수행하지 않았습니다.
 
 ### 승인·실사용 검증 대기

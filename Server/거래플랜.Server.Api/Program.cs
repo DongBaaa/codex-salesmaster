@@ -109,7 +109,7 @@ var tenantDatabaseRoutingOptions = new TenantDatabaseRoutingOptions
     DefaultConnectionString = connectionString,
     DedicatedBusinessConnections = dedicatedBusinessConnections,
     RequiredDedicatedTenantCodes = !builder.Environment.IsDevelopment() && !useSqlite
-        ? [TenantScopeCatalog.Itworld]
+        ? [TenantScopeCatalog.UsenetGroup, TenantScopeCatalog.Itworld]
         : []
 };
 
@@ -159,6 +159,7 @@ builder.Services.AddScoped<ItemDuplicateMergeService>();
 builder.Services.AddScoped<InvoiceStockSnapshotService>();
 builder.Services.AddScoped<RentalSettlementRecalculationService>();
 builder.Services.AddScoped<RentalAssignmentHistoryService>();
+builder.Services.AddScoped<TenantProvisioningService>();
 builder.Services.AddSingleton<IStoredFileDeferredDeletionQueue, StoredFileDeferredDeletionQueue>();
 builder.Services.AddSingleton<IStoredFileDeletionLeaseProbe, StoredFileDeletionLeaseProbe>();
 builder.Services.AddScoped<StoredFileReferenceReconciler>();
@@ -583,38 +584,49 @@ static void ValidateProductionSecurityConfiguration(
     if (ContainsInsecureConnectionStringSecret(connectionString))
         throw new InvalidOperationException("Production database password cannot use a sample or placeholder value.");
 
-    if (!dedicatedBusinessConnections.TryGetValue(
-            TenantScopeCatalog.Itworld,
-            out var itworldConnectionString) ||
-        string.IsNullOrWhiteSpace(itworldConnectionString))
+    var requiredDedicatedTenantCodes = new[]
     {
-        throw new InvalidOperationException(
-            "Production requires a dedicated ITWORLD database connection.");
-    }
-
-    try
+        TenantScopeCatalog.UsenetGroup,
+        TenantScopeCatalog.Itworld
+    };
+    var physicalDatabaseIdentities = new Dictionary<string, string>(StringComparer.Ordinal)
     {
-        var centralIdentity = PhysicalDatabaseIdentity.FromConnectionInfo(new TenantDatabaseConnectionInfo
+        [PhysicalDatabaseIdentity.FromConnectionInfo(new TenantDatabaseConnectionInfo
         {
             UseSqlite = false,
             ConnectionString = connectionString
-        });
-        var itworldIdentity = PhysicalDatabaseIdentity.FromConnectionInfo(new TenantDatabaseConnectionInfo
-        {
-            UseSqlite = false,
-            ConnectionString = itworldConnectionString
-        });
-        if (string.Equals(centralIdentity, itworldIdentity, StringComparison.Ordinal))
+        })] = "CENTRAL"
+    };
+    foreach (var tenantCode in requiredDedicatedTenantCodes)
+    {
+        if (!dedicatedBusinessConnections.TryGetValue(tenantCode, out var dedicatedConnectionString) ||
+            string.IsNullOrWhiteSpace(dedicatedConnectionString))
         {
             throw new InvalidOperationException(
-                "Production ITWORLD database must be physically separate from the central database.");
+                $"Production requires a dedicated {tenantCode} business database connection.");
         }
-    }
-    catch (ArgumentException ex)
-    {
-        throw new InvalidOperationException(
-            "Production ITWORLD database connection is invalid.",
-            ex);
+
+        try
+        {
+            var identity = PhysicalDatabaseIdentity.FromConnectionInfo(new TenantDatabaseConnectionInfo
+            {
+                UseSqlite = false,
+                ConnectionString = dedicatedConnectionString
+            });
+            if (physicalDatabaseIdentities.TryGetValue(identity, out var existingOwner))
+            {
+                throw new InvalidOperationException(
+                    $"Production {tenantCode} business database must be physically separate from {existingOwner}.");
+            }
+
+            physicalDatabaseIdentities[identity] = tenantCode;
+        }
+        catch (ArgumentException ex)
+        {
+            throw new InvalidOperationException(
+                $"Production {tenantCode} business database connection is invalid.",
+                ex);
+        }
     }
 
     if (!securityOptions.RequireHttpsForwardedProto)

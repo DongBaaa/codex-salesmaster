@@ -6458,7 +6458,16 @@ function ConvertFrom-StoredCredentialEnvelopeProcessResult {
                 }
             }
         }
-        $parsed = $jsonText | ConvertFrom-Json -ErrorAction Stop
+        $convertFromJsonCommand = Get-Command ConvertFrom-Json -ErrorAction Stop
+        $parsed = if ($convertFromJsonCommand.Parameters.ContainsKey('DateKind')) {
+            $jsonText |
+                ConvertFrom-Json -DateKind String -ErrorAction Stop
+        }
+        else {
+            # Windows PowerShell 5.1 does not expose -DateKind and already
+            # retains the ISO 8601 credential timestamp as a string.
+            $jsonText | ConvertFrom-Json -ErrorAction Stop
+        }
         if ($null -eq $parsed) {
             throw 'Stored credential envelope is empty.'
         }
@@ -6478,7 +6487,8 @@ function ConvertFrom-StoredCredentialEnvelopeProcessResult {
                 $envelopeFields |
                     Where-Object { $requiredEnvelopeFields -cnotcontains $_ }
             ).Count -gt 0 -or
-            $parsed.schemaVersion -isnot [int] -or
+            ($parsed.schemaVersion -isnot [int] -and
+                $parsed.schemaVersion -isnot [long]) -or
             [int]$parsed.schemaVersion -ne 1 -or
             $parsed.protection -isnot [string] -or
             [string]$parsed.protection -cne 'DPAPI-CurrentUser' -or
@@ -12312,7 +12322,12 @@ function Start-HiddenServerProcess {
         'DOTNET_ENVIRONMENT' = 'Development'
         'Kestrel__Endpoints__Http__Url' = $ServerUrl
         'ERP_DB_FALLBACK_SQLITE' = '1'
-        'SeedUsers__EnableSeedUsers' = 'false'
+        # The finalized isolated database already contains the restored users.
+        # Rotate only the isolated admin to this run-scoped secret so unattended
+        # auto-login cannot depend on or expose an operational password.
+        'SeedUsers__EnableSeedUsers' = 'true'
+        'SeedUsers__AdminOnlyBootstrap' = 'true'
+        'SeedUsers__UpdateExistingAdminPassword' = 'true'
         'SeedUsers__AdminPassword' = $AdminPassword
         'SeedUsers__UserPassword' = (New-LocalTestPassword)
         'SeedUsers__ItwPassword' = (New-LocalTestPassword)
@@ -14320,6 +14335,8 @@ function Assert-LegacyInvoiceCanonicalizationReportProfile {
         '1DE40C0FA21FE662EAECFA7ED3B654EA1271076FE1F69029919A3295525EBEC6'
     $latestOperationalApprovedSourceDatabaseSha256 =
         'A3C4A81A9FCA783F40844DC04810A905C99619722A608D9C379CA4BB157A0654'
+    $adminLoginOperationalApprovedSourceDatabaseSha256 =
+        '0740B46F71C93CC613519796C240B734D7815153B2FD997FD7B4343DDA6FA70E'
     if ([string]::Equals(
             $ExpectedSourceDatabaseSha256,
             $originalApprovedSourceDatabaseSha256,
@@ -14404,16 +14421,22 @@ function Assert-LegacyInvoiceCanonicalizationReportProfile {
         $expectedDependencyReferencesSha256 =
             'AC560B78FA943CFF1934C84BAB2ED37EC16E260ACA923CF94CE0FBB9E69F2C1F'
     }
-    elseif ([string]::Equals(
+    elseif (
+        [string]::Equals(
             $ExpectedSourceDatabaseSha256,
             $latestOperationalApprovedSourceDatabaseSha256,
-            [StringComparison]::OrdinalIgnoreCase)) {
+            [StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals(
+            $ExpectedSourceDatabaseSha256,
+            $adminLoginOperationalApprovedSourceDatabaseSha256,
+            [StringComparison]::OrdinalIgnoreCase)
+    ) {
         $expectedBeforeMetadataSha256 =
             '470D4118ACF242C3B4C1B7C5CCC6D0FC1CC7A1E9F9D2794F08EC470630153EBA'
         $expectedAfterMetadataSha256 =
             '49D925656056F81EBF84A23C0ED18433E205D7FB0F87699CE75A2965BD366BF9'
         $expectedLatestInvoiceBusinessSha256 =
-            '49AD13A712746B8AA6C38BB8ED069053B4C9305A320E117864F2DB8040CB4AA0'
+            'DEE66A13D48ACC63BFA1EB31D357BEA41BCE9C4BA0E3CC06A5681F47728FF26A'
         $expectedDependencyReferencesSha256 =
             '798161B849E966FFBDCA7D008D8581118BC791A815B1D5621EAA7A954301EFA4'
     }
@@ -16373,7 +16396,8 @@ if ($CanonicalizeLegacyInvoiceSeed) {
         'D7D83F5970542AAADD37491E4CE79CB63C7044E776802AD52B02BC5CA27D8CAB',
         '73D294E643379C1808AFF89842AA899EF5107C1B269F6B07ACCEE6E59E10B636',
         '1DE40C0FA21FE662EAECFA7ED3B654EA1271076FE1F69029919A3295525EBEC6',
-        'A3C4A81A9FCA783F40844DC04810A905C99619722A608D9C379CA4BB157A0654'
+        'A3C4A81A9FCA783F40844DC04810A905C99619722A608D9C379CA4BB157A0654',
+        '0740B46F71C93CC613519796C240B734D7815153B2FD997FD7B4343DDA6FA70E'
     )
     $requestedLegacyInvoiceSeedSourceDatabaseSha256 =
         $CanonicalizeLegacyInvoiceSeedExpectedSourceDatabaseSha256.Trim()

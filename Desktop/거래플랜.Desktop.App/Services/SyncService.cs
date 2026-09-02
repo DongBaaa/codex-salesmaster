@@ -948,9 +948,8 @@ public sealed class SyncService : IDisposable
 
             var now = DateTime.UtcNow;
             var mergedBusinessDatabaseCount = 0;
-            foreach (var businessDatabaseName in TenantScopeCatalog.AllTenants
-                         .Select(TenantScopeCatalog.GetDatabaseName)
-                         .Distinct(StringComparer.OrdinalIgnoreCase))
+            var businessDatabaseNames = await GetAdministrativeBusinessDatabaseNamesAsync(ct);
+            foreach (var businessDatabaseName in businessDatabaseNames)
             {
                 ct.ThrowIfCancellationRequested();
                 if (!IsSyncOperationOwnerCurrent(operationOwner))
@@ -1160,6 +1159,35 @@ public sealed class SyncService : IDisposable
         {
             _administrativeBusinessCacheRefreshLock.Release();
         }
+    }
+
+    private async Task<IReadOnlyList<string>> GetAdministrativeBusinessDatabaseNamesAsync(
+        CancellationToken ct)
+    {
+        var tenantCodes = TenantScopeCatalog.AllTenants.ToList();
+        try
+        {
+            var snapshot = await _api.GetTenantConfigurationAsync(includeInactive: false, ct: ct);
+            if (snapshot?.Tenants is not null)
+            {
+                tenantCodes.AddRange(snapshot.Tenants
+                    .Where(tenant => tenant.IsActive)
+                    .Select(tenant => tenant.TenantCode));
+            }
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            AppLogger.Warn(
+                "SYNC",
+                $"관리자 업체 DB 목록 조회 실패로 기본 업체 목록만 사용합니다: {ex.InnerException?.Message ?? ex.Message}");
+        }
+
+        return tenantCodes
+            .Where(tenantCode => TenantScopeCatalog.TryNormalizeTenantCode(tenantCode, out _))
+            .Select(TenantScopeCatalog.GetDatabaseName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(databaseName => databaseName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private async Task<long> GetAdministrativeBusinessCacheRevisionAsync(

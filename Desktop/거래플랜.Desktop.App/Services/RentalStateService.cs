@@ -49,6 +49,8 @@ public sealed partial class RentalStateService
     private const string AlertDaysSettingKey = "Rental.AlertDaysBefore";
     private const string BillingWorkbookPathSettingKey = "Rental.ImportBillingWorkbookPath";
     private const string AssetWorkbookPathSettingKey = "Rental.ImportAssetWorkbookPath";
+    private const string MeterBaselineWorkbookPathSettingKey = "Rental.ImportMeterBaselineWorkbookPath";
+    private const string MeterBaselineEvidencePathSettingKey = "Rental.ImportMeterBaselineEvidencePath";
     private const string BillingEditorDraftSettingPrefix = "Rental.BillingEditorDraft";
     private const string OnboardingDraftSettingPrefix = "Rental.OnboardingDraft";
     private const string BillingEligibilityExcluded = "청구제외";
@@ -396,6 +398,31 @@ WHERE ""AssignedUsername"" <> '';", ct);
     {
         await UpsertSettingAsync(BillingWorkbookPathSettingKey, billingPath ?? string.Empty, ct);
         await UpsertSettingAsync(AssetWorkbookPathSettingKey, assetPath ?? string.Empty, ct);
+    }
+
+    public async Task<(string WorkbookPath, string EvidencePath)> GetMeterBaselineImportPathsAsync(
+        CancellationToken ct = default)
+    {
+        var workbookPath = await _db.Settings.AsNoTracking()
+            .Where(setting => setting.Key == MeterBaselineWorkbookPathSettingKey)
+            .Select(setting => setting.Value)
+            .FirstOrDefaultAsync(ct)
+            ?? string.Empty;
+        var evidencePath = await _db.Settings.AsNoTracking()
+            .Where(setting => setting.Key == MeterBaselineEvidencePathSettingKey)
+            .Select(setting => setting.Value)
+            .FirstOrDefaultAsync(ct)
+            ?? string.Empty;
+        return (workbookPath, evidencePath);
+    }
+
+    public async Task SaveMeterBaselineImportPathsAsync(
+        string workbookPath,
+        string evidencePath,
+        CancellationToken ct = default)
+    {
+        await UpsertSettingAsync(MeterBaselineWorkbookPathSettingKey, workbookPath ?? string.Empty, ct);
+        await UpsertSettingAsync(MeterBaselineEvidencePathSettingKey, evidencePath ?? string.Empty, ct);
     }
 
     public async Task<RentalBillingEditorDraftModel?> GetBillingEditorDraftAsync(SessionState session, CancellationToken ct = default)
@@ -9476,6 +9503,9 @@ WHERE ""AssignedUsername"" <> '';", ct);
             asset.PurchaseVendor = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.PurchaseVendor);
             asset.InstallLocation = RentalCatalogValueNormalizer.NormalizeDisplayText(asset.InstallLocation);
             asset.DepositText = (asset.DepositText ?? string.Empty).Trim();
+            var meterValidationMessage = NormalizeRentalMeterPolicy(asset);
+            if (!string.IsNullOrWhiteSpace(meterValidationMessage))
+                return LocalMutationResult.Denied(meterValidationMessage);
             asset.AssetStatus = ResolveAssetStatus(asset.AssetStatus, asset.CurrentLocation, asset.DisposalDate);
             await ApplyNonOperatingAssetStateRulesAsync(asset, existing, session, ct);
             asset.BillingEligibilityStatus = string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus)
@@ -9957,6 +9987,82 @@ WHERE ""AssignedUsername"" <> '';", ct);
         asset.ResponsibleOfficeCode = normalizedResponsibleOfficeCode;
         asset.OfficeCode = ownerOfficeCode;
         asset.TenantCode = TenantScopeCatalog.GetTenantCodeForOffice(ownerOfficeCode);
+    }
+
+    private static string NormalizeRentalMeterPolicy(LocalRentalAsset asset)
+    {
+        asset.BlackIncludedMode = RentalMeterPolicyModes.Normalize(asset.BlackIncludedMode, asset.BlackIncludedPages);
+        asset.ColorIncludedMode = RentalMeterPolicyModes.Normalize(asset.ColorIncludedMode, asset.ColorIncludedPages);
+
+        if (string.Equals(asset.BlackIncludedMode, RentalMeterPolicyModes.Unlimited, StringComparison.Ordinal))
+        {
+            asset.BlackIncludedPages = null;
+            asset.BlackOverageUnitPrice = null;
+        }
+        if (string.Equals(asset.ColorIncludedMode, RentalMeterPolicyModes.Unlimited, StringComparison.Ordinal))
+        {
+            asset.ColorIncludedPages = null;
+            asset.ColorOverageUnitPrice = null;
+        }
+
+        asset.MeterReadingsJson = RentalMeterBillingRules.SerializeReadings(
+            RentalMeterBillingRules.ParseReadings(asset.MeterReadingsJson));
+        asset.MeterEvidenceJson = NormalizeRentalMeterEvidenceJson(asset.MeterEvidenceJson);
+        asset.MeterPolicySource = (asset.MeterPolicySource ?? string.Empty).Trim();
+        if (asset.MeterPolicySourceUpdatedAtUtc.HasValue)
+            asset.MeterPolicySourceUpdatedAtUtc = NormalizeHistoryUtc(asset.MeterPolicySourceUpdatedAtUtc.Value);
+
+        if (!asset.MeterBillingEnabled)
+            return string.Empty;
+
+        var blackValidation = ValidateRentalMeterColorPolicy(
+            "흑백",
+            asset.BlackIncludedMode,
+            asset.BlackIncludedPages,
+            asset.BlackOverageUnitPrice);
+        if (!string.IsNullOrWhiteSpace(blackValidation))
+            return blackValidation;
+
+        return ValidateRentalMeterColorPolicy(
+            "컬러",
+            asset.ColorIncludedMode,
+            asset.ColorIncludedPages,
+            asset.ColorOverageUnitPrice);
+    }
+
+    private static string ValidateRentalMeterColorPolicy(
+        string colorMode,
+        string includedMode,
+        int? includedPages,
+        decimal? overageUnitPrice)
+    {
+        if (string.Equals(includedMode, RentalMeterPolicyModes.Unlimited, StringComparison.Ordinal))
+            return string.Empty;
+        if (!string.Equals(includedMode, RentalMeterPolicyModes.Numeric, StringComparison.Ordinal))
+            return $"검침 초과청구를 사용하려면 {colorMode} 기본 출력량을 지정하거나 무제한으로 설정하세요.";
+        if (!includedPages.HasValue || includedPages.Value < 0)
+            return $"{colorMode} 기본 출력량은 0 이상이어야 합니다.";
+        if (!overageUnitPrice.HasValue || overageUnitPrice.Value < 0m)
+            return $"{colorMode} 초과 장당요금은 0 이상이어야 합니다.";
+        return string.Empty;
+    }
+
+    private static string NormalizeRentalMeterEvidenceJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return "[]";
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.ValueKind == JsonValueKind.Array
+                ? document.RootElement.GetRawText()
+                : "[]";
+        }
+        catch (JsonException)
+        {
+            return "[]";
+        }
     }
 
     private async Task RefreshLocalRentalAssetAssignmentHistoriesAsync(
@@ -10841,6 +10947,130 @@ WHERE ""AssignedUsername"" <> '';", ct);
         return LocalMutationResult.Ok(billingProfileId, "렌탈 청구 처리 이력을 저장했습니다.");
     }
 
+    public async Task<RentalImportResult> ImportMeterBaselineWorkbookAsync(
+        string workbookPath,
+        string evidencePath,
+        SessionState session,
+        CancellationToken ct = default)
+    {
+        if (!CanImportRental(session))
+            throw new InvalidOperationException("권한이 없어 렌탈 검침 기준값을 가져올 수 없습니다.");
+        if (string.IsNullOrWhiteSpace(workbookPath) || !File.Exists(workbookPath))
+            throw new FileNotFoundException("렌탈 검침 기준값 엑셀 파일을 찾을 수 없습니다.", workbookPath);
+        if (!string.IsNullOrWhiteSpace(evidencePath) && !File.Exists(evidencePath))
+            throw new FileNotFoundException("렌탈 검침 근거 PDF 파일을 찾을 수 없습니다.", evidencePath);
+
+        workbookPath = Path.GetFullPath(workbookPath);
+        evidencePath = string.IsNullOrWhiteSpace(evidencePath)
+            ? string.Empty
+            : Path.GetFullPath(evidencePath);
+        await SaveMeterBaselineImportPathsAsync(workbookPath, evidencePath, ct);
+
+        var result = new RentalImportResult { SourcePath = workbookPath };
+        var parsed = RentalMeterWorkbookBaselineReader.Read(ReadWorkbook(workbookPath));
+        result.Messages.AddRange(parsed.Messages);
+        result.ErrorCount += parsed.Messages.Count;
+        if (parsed.Candidates.Count == 0)
+            return result;
+
+        var selectedTenantCode = ResolveCurrentRentalTenantCode(session);
+        var targetAssets = await ApplyAssetScope(
+                _db.RentalAssets.Where(asset => asset.TenantCode == selectedTenantCode),
+                session)
+            .ToListAsync(ct);
+        var assetsByManagementNumber = targetAssets
+            .Where(asset => !string.IsNullOrWhiteSpace(asset.ManagementNumber))
+            .GroupBy(
+                asset => RentalMeterWorkbookBaselineReader.NormalizeIdentifier(asset.ManagementNumber),
+                StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
+
+        var nowUtc = DateTime.UtcNow;
+        var changedAssetIds = new HashSet<Guid>();
+        await using var transaction = await _db.Database.BeginTransactionAsync(ct);
+        foreach (var candidate in parsed.Candidates)
+        {
+            var normalizedManagementNumber =
+                RentalMeterWorkbookBaselineReader.NormalizeIdentifier(candidate.ManagementNumber);
+            if (!assetsByManagementNumber.TryGetValue(normalizedManagementNumber, out var matches) || matches.Count == 0)
+            {
+                result.SkippedCount++;
+                result.Messages.Add($"관리번호 {candidate.ManagementNumber}: 현재 선택한 업체 DB에서 장비를 찾지 못했습니다.");
+                continue;
+            }
+
+            if (matches.Count != 1)
+            {
+                result.ErrorCount++;
+                result.Messages.Add($"관리번호 {candidate.ManagementNumber}: 일치 장비가 {matches.Count:N0}대여서 자동 반영하지 않았습니다.");
+                continue;
+            }
+
+            var asset = matches[0];
+            if (!CanImportRentalAssetEntityScope(asset, session))
+            {
+                result.SkippedCount++;
+                result.Messages.Add($"관리번호 {candidate.ManagementNumber}: 해당 담당 범위의 가져오기 권한이 없습니다.");
+                continue;
+            }
+
+            var readings = RentalMeterBillingRules.ParseReadings(asset.MeterReadingsJson).ToList();
+            var existingOpeningBaselines = readings
+                .Where(reading => reading.IsOpeningBaseline && reading.IsFinalized)
+                .ToList();
+            var newerOpeningBaseline = existingOpeningBaselines
+                .OrderByDescending(reading => reading.ReadingDate)
+                .ThenByDescending(reading => reading.RecordedAtUtc)
+                .FirstOrDefault();
+            if (newerOpeningBaseline is not null && newerOpeningBaseline.ReadingDate > candidate.ReadingDate)
+            {
+                result.SkippedCount++;
+                result.Messages.Add(
+                    $"관리번호 {candidate.ManagementNumber}: {newerOpeningBaseline.ReadingDate:yyyy-MM-dd}의 더 최신 시작값이 있어 덮어쓰지 않았습니다.");
+                continue;
+            }
+
+            if (newerOpeningBaseline is not null &&
+                newerOpeningBaseline.ReadingDate == candidate.ReadingDate &&
+                newerOpeningBaseline.BlackMeter == candidate.BlackMeter &&
+                newerOpeningBaseline.ColorMeter == candidate.ColorMeter)
+            {
+                result.SkippedCount++;
+                result.Messages.Add($"관리번호 {candidate.ManagementNumber}: 같은 시작 검침값이 이미 등록되어 있습니다.");
+                continue;
+            }
+
+            readings.RemoveAll(reading => reading.IsOpeningBaseline);
+            var evidenceReference = string.IsNullOrWhiteSpace(evidencePath)
+                ? workbookPath
+                : $"{workbookPath} | {evidencePath}";
+            readings.Add(new RentalMeterReadingRecord
+            {
+                BillingYearMonth = candidate.ReadingDate.ToString("yyyy-MM", CultureInfo.InvariantCulture),
+                ReadingDate = candidate.ReadingDate,
+                BlackMeter = candidate.BlackMeter,
+                ColorMeter = candidate.ColorMeter,
+                IsFinalized = true,
+                IsOpeningBaseline = true,
+                SourceSystem = "기존 임대카운터 엑셀",
+                EvidenceReference = evidenceReference,
+                Note = $"{candidate.SheetName} 시트의 마지막 확정 마감 검침값을 시작값으로 이관",
+                RecordedAtUtc = nowUtc
+            });
+
+            asset.MeterReadingsJson = RentalMeterBillingRules.SerializeReadings(readings);
+            asset.IsDirty = true;
+            asset.UpdatedAtUtc = nowUtc;
+            changedAssetIds.Add(asset.Id);
+            result.UpdatedCount++;
+        }
+
+        await _db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
+        PublishStateChanged(changedAssetIds, null, "검침 시작값 가져오기");
+        return result;
+    }
+
     public async Task<RentalImportResult> ImportBillingWorkbookAsync(
         string path,
         SessionState session,
@@ -11714,6 +11944,15 @@ WHERE ""AssignedUsername"" <> '';", ct);
             profile.OfficeCode,
             profile.ManagementCompanyCode,
             profile.ResponsibleOfficeCode,
+            session,
+            officeCode => CanImportRentalOfficeScope(officeCode, session));
+
+    private bool CanImportRentalAssetEntityScope(LocalRentalAsset asset, SessionState session)
+        => CanImportRental(session) && CanEditRentalEntityScope(
+            asset.TenantCode,
+            asset.OfficeCode,
+            asset.ManagementCompanyCode,
+            asset.ResponsibleOfficeCode,
             session,
             officeCode => CanImportRentalOfficeScope(officeCode, session));
 
@@ -13450,10 +13689,109 @@ WHERE ""AssignedUsername"" <> '';", ct);
             }
         }
 
+        var meterLineResult = AppendRentalMeterChargeDrafts(
+            profile,
+            billingMonths,
+            includedAssets,
+            lineDrafts);
+        if (!meterLineResult.Success)
+            return (false, meterLineResult.Message, new List<LocalInvoiceLine>());
+
         if (lineDrafts.Count == 0)
             return (false, "판매전표에 넣을 청구라인을 만들지 못했습니다.", new List<LocalInvoiceLine>());
 
         return (true, string.Empty, MaterializeRentalBillingInvoiceLines(lineDrafts));
+    }
+
+    private static (bool Success, string Message) AppendRentalMeterChargeDrafts(
+        LocalRentalBillingProfile profile,
+        IReadOnlyList<DateOnly> billingMonths,
+        IReadOnlyList<LocalRentalAsset> includedAssets,
+        ICollection<RentalBillingInvoiceLineDraft> lineDrafts)
+    {
+        var meterAssets = includedAssets
+            .Where(asset => asset.MeterBillingEnabled)
+            .OrderBy(asset => asset.ManagementNumber, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(asset => asset.Id)
+            .ToList();
+        if (meterAssets.Count == 0)
+            return (true, string.Empty);
+
+        var meterInputs = meterAssets
+            .Select(asset => new RentalMeterAssetBillingInput(
+                asset.Id,
+                asset.ManagementNumber,
+                asset.ItemName,
+                asset.MeterBillingEnabled,
+                asset.BlackIncludedMode,
+                asset.BlackIncludedPages,
+                asset.BlackOverageUnitPrice,
+                asset.ColorIncludedMode,
+                asset.ColorIncludedPages,
+                asset.ColorOverageUnitPrice,
+                asset.MeterReadingsJson))
+            .ToList();
+        var assetsById = meterAssets.ToDictionary(asset => asset.Id);
+
+        foreach (var billingMonth in billingMonths)
+        {
+            var result = RentalMeterBillingRules.Calculate(
+                billingMonth.ToString("yyyy-MM", CultureInfo.InvariantCulture),
+                meterInputs,
+                profile.PoolMeterAllowance);
+            if (!result.Success)
+            {
+                return (false,
+                    $"{billingMonth:yyyy-MM} 검침 초과청구를 계산할 수 없습니다. {result.Message}");
+            }
+
+            foreach (var charge in result.Lines)
+            {
+                var chargeAssets = charge.AssetIds
+                    .Where(assetsById.ContainsKey)
+                    .Select(assetId => assetsById[assetId])
+                    .ToList();
+                var specification = chargeAssets.Count switch
+                {
+                    0 => profile.PoolMeterAllowance ? "통합계약" : string.Empty,
+                    1 => FirstNonEmpty(chargeAssets[0].ManagementNumber, chargeAssets[0].ItemName),
+                    _ => $"통합계약 {chargeAssets.Count:N0}대"
+                };
+                var materialNumber = BuildAggregatedRentalBillingInvoiceField(
+                    chargeAssets.Select(asset => asset.ManagementNumber));
+                var serialNumber = BuildAggregatedRentalBillingInvoiceField(
+                    chargeAssets.Select(asset => asset.MachineNumber));
+                var installLocation = BuildAggregatedRentalBillingInvoiceField(
+                    chargeAssets.Select(asset => FirstNonEmpty(asset.InstallLocation, asset.InstallSiteName)));
+                var line = new LocalInvoiceLine
+                {
+                    Id = Guid.NewGuid(),
+                    ItemId = null,
+                    ItemTrackingType = ItemTrackingTypes.NonStock,
+                    ItemNameOriginal = $"사무기기 {charge.ColorMode} 초과출력[{billingMonth.Month}월]",
+                    SpecificationOriginal = specification,
+                    Unit = "매",
+                    Quantity = charge.OveragePages,
+                    UnitPrice = charge.UnitPrice,
+                    LineAmount = charge.Amount,
+                    OrderIndex = lineDrafts.Count + 1,
+                    MaterialNumber = materialNumber,
+                    SerialNumber = serialNumber,
+                    InstallLocation = installLocation,
+                    Remark = $"사용 {charge.UsagePages:N0}매 - 기본 {charge.IncludedPages:N0}매 = 초과 {charge.OveragePages:N0}매 | {charge.EvidenceSummary}"
+                };
+                lineDrafts.Add(new RentalBillingInvoiceLineDraft(
+                    lineDrafts.Count,
+                    false,
+                    billingMonth,
+                    Guid.Empty,
+                    line.ItemNameOriginal,
+                    line,
+                    chargeAssets));
+            }
+        }
+
+        return (true, string.Empty);
     }
 
     private static List<LocalInvoiceLine> MaterializeRentalBillingInvoiceLines(

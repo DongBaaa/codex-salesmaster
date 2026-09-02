@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using 거래플랜.Shared.Contracts;
 using Microsoft.AspNetCore.Http;
+using Npgsql;
 
 namespace 거래플랜.Server.Api.Services;
 
@@ -67,7 +68,8 @@ public sealed class TenantDatabaseConnectionResolver : ITenantDatabaseConnection
         if (_routingOptions.UseSqlite)
             return ResolveSqlite();
 
-        var normalizedTenantCode = TenantScopeCatalog.NormalizeTenantCodeOrDefault(tenantCode);
+        if (!TenantScopeCatalog.TryNormalizeTenantCode(tenantCode, out var normalizedTenantCode))
+            throw new InvalidOperationException("A valid tenant code is required for business database routing.");
         if (_routingOptions.DedicatedBusinessConnections.TryGetValue(normalizedTenantCode, out var dedicatedConnectionString) &&
             !string.IsNullOrWhiteSpace(dedicatedConnectionString) &&
             !UsesCentralPhysicalDatabase(dedicatedConnectionString))
@@ -90,6 +92,19 @@ public sealed class TenantDatabaseConnectionResolver : ITenantDatabaseConnection
         {
             throw new InvalidOperationException(
                 $"Tenant '{normalizedTenantCode}' requires a dedicated business database connection.");
+        }
+
+        if (!TenantScopeCatalog.AllTenants.Contains(normalizedTenantCode, StringComparer.OrdinalIgnoreCase))
+        {
+            var derivedConnectionString = BuildDerivedDedicatedConnectionString(normalizedTenantCode);
+            return new TenantDatabaseConnectionInfo
+            {
+                UseSqlite = false,
+                ConnectionString = derivedConnectionString,
+                TenantCode = normalizedTenantCode,
+                IsControlPlane = false,
+                IsDedicatedBusinessDatabase = true
+            };
         }
 
         return new TenantDatabaseConnectionInfo
@@ -164,6 +179,18 @@ public sealed class TenantDatabaseConnectionResolver : ITenantDatabaseConnection
             ConnectionString = candidateConnectionString
         });
         return string.Equals(centralIdentity, candidateIdentity, StringComparison.Ordinal);
+    }
+
+    private string BuildDerivedDedicatedConnectionString(string tenantCode)
+    {
+        if (string.IsNullOrWhiteSpace(_routingOptions.DefaultConnectionString))
+            throw new InvalidOperationException("Central database connection is empty.");
+
+        var builder = new NpgsqlConnectionStringBuilder(_routingOptions.DefaultConnectionString)
+        {
+            Database = TenantScopeCatalog.GetPhysicalDatabaseName(tenantCode)
+        };
+        return builder.ConnectionString;
     }
 
     private TenantDatabaseConnectionInfo ResolveSqlite()

@@ -807,6 +807,37 @@ public sealed class AdministrativeBusinessCacheRevisionTests
         Assert.Contains(handler.Requests, request => request.DatabaseName == "ITWORLD" && request.SinceRevision == 200);
     }
 
+    [Fact]
+    public async Task AdministrativeBusinessCache_IncludesProvisionedCustomTenantDatabase()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = CreateDbContext(connection);
+        await db.Database.EnsureCreatedAsync();
+
+        var session = CreateAdminSession();
+        var dispatcher = new SyncRequestDispatcher();
+        var local = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
+        var rental = new RentalStateService(db);
+        var diagnostics = new SyncDiagnosticsService(session);
+        var handler = new AdministrativeCachePullHandler
+        {
+            AdditionalTenantCodes = ["ORG_NEWCO"]
+        };
+        var api = new ErpApiClient(
+            new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") },
+            session);
+        using var sync = new SyncService(db, local, rental, api, session, dispatcher, diagnostics);
+
+        Assert.True(await sync.EnsureAdministrativeBusinessCachesAsync());
+
+        Assert.Equal(3, handler.Requests.Count);
+        Assert.Contains(handler.Requests, request => request.DatabaseName == "USENET");
+        Assert.Contains(handler.Requests, request => request.DatabaseName == "ITWORLD");
+        Assert.Contains(handler.Requests, request => request.DatabaseName == "ORG_NEWCO");
+        Assert.All(handler.Requests, request => Assert.True(request.RentalAdministrationOnly));
+    }
+
     private static LocalDbContext CreateDbContext(SqliteConnection connection)
         => new(new DbContextOptionsBuilder<LocalDbContext>()
             .UseSqlite(connection)
@@ -841,6 +872,9 @@ public sealed class AdministrativeBusinessCacheRevisionTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            if (IsTenantConfigurationRequest(request))
+                return CreateTenantConfigurationResponse();
+
             Interlocked.Increment(ref _requestCount);
             PullReceived.TrySetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
@@ -879,6 +913,9 @@ public sealed class AdministrativeBusinessCacheRevisionTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            if (IsTenantConfigurationRequest(request))
+                return Task.FromResult(CreateTenantConfigurationResponse());
+
             var databaseName = request.Headers.TryGetValues(
                 "X-Tenant-Code",
                 out var values)
@@ -928,6 +965,7 @@ public sealed class AdministrativeBusinessCacheRevisionTests
             _itemsByDatabase = new(StringComparer.OrdinalIgnoreCase);
 
         public List<PullRequest> Requests { get; } = [];
+        public string[] AdditionalTenantCodes { get; init; } = [];
 
         public void ClearRequests() => Requests.Clear();
 
@@ -949,6 +987,9 @@ public sealed class AdministrativeBusinessCacheRevisionTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            if (IsTenantConfigurationRequest(request))
+                return Task.FromResult(CreateTenantConfigurationResponse(AdditionalTenantCodes));
+
             var databaseName = request.Headers.TryGetValues("X-Tenant-Code", out var values)
                 ? values.Single()
                 : string.Empty;
@@ -1001,4 +1042,33 @@ public sealed class AdministrativeBusinessCacheRevisionTests
         string DatabaseName,
         long SinceRevision,
         bool RentalAdministrationOnly);
+
+    private static bool IsTenantConfigurationRequest(HttpRequestMessage request)
+        => request.Method == HttpMethod.Get &&
+           string.Equals(
+               request.RequestUri?.AbsolutePath.TrimEnd('/'),
+               "/tenant-settings",
+               StringComparison.OrdinalIgnoreCase);
+
+    private static HttpResponseMessage CreateTenantConfigurationResponse(
+        params string[] additionalTenantCodes)
+    {
+        var tenantCodes = TenantScopeCatalog.AllTenants
+            .Concat(additionalTenantCodes)
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        var json = JsonSerializer.Serialize(new TenantConfigurationSnapshotDto
+        {
+            Tenants = tenantCodes.Select(tenantCode => new TenantDefinitionDto
+            {
+                TenantCode = tenantCode,
+                DisplayName = TenantScopeCatalog.GetTenantDisplayName(tenantCode),
+                StorageMode = TenantScopeCatalog.StorageDedicatedDatabase,
+                IsActive = true
+            }).ToList()
+        });
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        };
+    }
 }

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using GeoraePlan.Tools.SyncDiag;
 using 거래플랜.Shared.Contracts;
@@ -90,6 +91,45 @@ public sealed class RtRentalResolutionTests
     }
 
     [Fact]
+    public void BuildPlan_TombstonesOnlyRtConfirmedCrossDatabaseCopyAndPreservesTradePlanOnlyAsset()
+    {
+        var customer = Customer("잘못된 DB 고객");
+        var crossDatabaseCopy = Asset("2607-001", customer);
+        var tradePlanOnlyAsset = Asset("LEGACY-001", customer);
+        var profile = Profile(customer, [crossDatabaseCopy.Id], 165000);
+        crossDatabaseCopy.BillingProfileId = profile.Id;
+        var currentHistory = AssignmentHistory(crossDatabaseCopy, customer, profile);
+        var source = Source("2607-001", "아이티월드 고객") with
+        {
+            ManagementCompany = "아이티월드"
+        };
+
+        var build = RtRentalResolutionPlanner.BuildPlan(
+            [source],
+            Snapshot([customer], [crossDatabaseCopy, tradePlanOnlyAsset], [profile], [currentHistory]),
+            "USENET",
+            new string('X', 64),
+            "rt-cross-database-test",
+            DateTime.UtcNow);
+
+        var desiredAsset = Assert.Single(build.Plan.Assets).Desired;
+        Assert.Equal(crossDatabaseCopy.Id, desiredAsset.Id);
+        Assert.True(desiredAsset.IsDeleted);
+        Assert.Null(desiredAsset.CustomerId);
+        Assert.Null(desiredAsset.BillingProfileId);
+        Assert.Equal(customer.NameOriginal, desiredAsset.LastCustomerName);
+        Assert.DoesNotContain(build.Plan.Assets, entry => entry.EntityId == tradePlanOnlyAsset.Id);
+        Assert.False(Assert.Single(build.Plan.BillingProfiles).Desired.IsActive);
+        var closedHistory = Assert.Single(build.Plan.AssignmentHistories).Desired;
+        Assert.False(closedHistory.IsCurrent);
+        Assert.NotNull(closedHistory.UnlinkedAtUtc);
+        Assert.Equal(1, build.Plan.Audit.CrossDatabaseTombstoneCount);
+        Assert.Contains(build.Plan.Decisions, decision =>
+            decision.ManagementNumber == "2607-001" &&
+            decision.Decision == "잘못된 DB 복사본 비활성화");
+    }
+
+    [Fact]
     public void BuildPlan_ClosesOldAndCreatesCurrentHistoryWhenCustomerChanges()
     {
         var oldCustomer = Customer("[인천시청]민생담당관실");
@@ -145,6 +185,30 @@ public sealed class RtRentalResolutionTests
     }
 
     [Fact]
+    public void BuildProfileUnlinkPlan_ClearsDirectLinkToDeletedProfile()
+    {
+        var customer = Customer("고아 프로필 고객");
+        var asset = Asset("2508-011", customer);
+        var deletedProfile = Profile(customer, [asset.Id], 165000);
+        deletedProfile.IsDeleted = true;
+        asset.BillingProfileId = deletedProfile.Id;
+
+        var build = RtRentalResolutionPlanner.BuildProfileUnlinkPlan(
+            [Source("2508-011", "고아 프로필 고객")],
+            Snapshot([customer], [asset], [deletedProfile]),
+            "USENET",
+            new string('G', 64),
+            "rt-resolve-usenet-orphan-unlink-test",
+            DateTime.UtcNow);
+
+        var unlink = Assert.Single(build.Plan.Assets).Desired;
+        Assert.Null(unlink.BillingProfileId);
+        Assert.Equal(asset.CustomerId, unlink.CustomerId);
+        Assert.Empty(build.Plan.BillingProfiles);
+        Assert.Contains(build.Plan.Decisions, decision => decision.Decision == "고아 프로필 선행 해제");
+    }
+
+    [Fact]
     public void BuildPlan_TrimsIndividualProfileAndRecalculatesAmount()
     {
         var customer = Customer("상수도사업본부[중부수도사업소]");
@@ -191,6 +255,206 @@ public sealed class RtRentalResolutionTests
 
         Assert.Equal(100000, Assert.Single(build.Plan.Assets).Desired.MonthlyFee);
         Assert.Equal(0, build.Plan.Audit.VatInclusiveFeeAdjustedCount);
+    }
+
+    [Fact]
+    public void EntityBusinessEquals_AcceptsServerNormalizedUnlinkedActiveBillingStatus()
+    {
+        var customer = Customer("무료 장비 고객");
+        var approved = Asset("1812-004", customer);
+        approved.MonthlyFee = 0;
+        approved.BillingProfileId = null;
+        approved.BillingEligibilityStatus = "청구제외";
+        approved.BillingExclusionReason = "청구 프로필 삭제로 청구목록 제외";
+        var stored = RtRentalResolutionPlanner.Clone(approved);
+        stored.BillingEligibilityStatus = "미확인";
+        stored.BillingExclusionReason = string.Empty;
+
+        Assert.True(RtRentalResolutionPlanner.EntityBusinessEquals(stored, approved));
+    }
+
+    [Fact]
+    public void EntityBusinessEquals_StillRejectsMeaningfulRentalAssetDifference()
+    {
+        var customer = Customer("금액 확인 고객");
+        var approved = Asset("2609-001", customer);
+        approved.BillingProfileId = null;
+        approved.BillingEligibilityStatus = "미확인";
+        var stored = RtRentalResolutionPlanner.Clone(approved);
+        stored.MonthlyFee += 1000;
+
+        Assert.False(RtRentalResolutionPlanner.EntityBusinessEquals(stored, approved));
+    }
+
+    [Theory]
+    [InlineData("무", RentalMeterPolicyModes.Unlimited, null)]
+    [InlineData("무제한", RentalMeterPolicyModes.Unlimited, null)]
+    [InlineData("10,000", RentalMeterPolicyModes.Numeric, 10000)]
+    [InlineData("", RentalMeterPolicyModes.Unconfigured, null)]
+    public void ParseRtIncludedPolicy_NormalizesActualRtValueShapes(
+        string raw,
+        string expectedMode,
+        int? expectedPages)
+    {
+        var parsed = RtRentalResolutionPlanner.ParseRtIncludedPolicy(raw);
+
+        Assert.Equal(expectedMode, parsed.Mode);
+        Assert.Equal(expectedPages, parsed.Pages);
+    }
+
+    [Fact]
+    public void BuildPlan_ImportsRtMeterPolicyWithoutEnablingBillingPrematurely()
+    {
+        var customer = Customer("검침 고객");
+        var asset = Asset("2609-010", customer);
+        var generatedAtUtc = new DateTime(2026, 9, 1, 3, 0, 0, DateTimeKind.Utc);
+        var source = Source("2609-010", "검침 고객") with
+        {
+            BlackIncludedText = "10,000",
+            ColorIncludedText = "무",
+            BlackOverageText = "11",
+            ColorOverageText = "",
+            HasMeterPolicyColumns = true
+        };
+
+        var build = RtRentalResolutionPlanner.BuildPlan(
+            [source],
+            Snapshot([customer], [asset]),
+            "USENET",
+            new string('M', 64),
+            "rt-resolve-meter-test",
+            generatedAtUtc);
+
+        var desired = Assert.Single(build.Plan.Assets).Desired;
+        Assert.False(desired.MeterBillingEnabled);
+        Assert.Equal(RentalMeterPolicyModes.Numeric, desired.BlackIncludedMode);
+        Assert.Equal(10000, desired.BlackIncludedPages);
+        Assert.Equal(11m, desired.BlackOverageUnitPrice);
+        Assert.Equal(RentalMeterPolicyModes.Unlimited, desired.ColorIncludedMode);
+        Assert.Null(desired.ColorIncludedPages);
+        Assert.Null(desired.ColorOverageUnitPrice);
+        Assert.Equal("rt.2884.kr", desired.MeterPolicySource);
+        Assert.Equal(generatedAtUtc, desired.MeterPolicySourceUpdatedAtUtc);
+    }
+
+    [Fact]
+    public void BuildPlan_DoesNotReplanWhenOnlyRtMeterPolicyObservationTimeChanged()
+    {
+        var customer = Customer("검침 고객");
+        var asset = Asset("2609-010", customer);
+        asset.ItemCategoryName = "복합기";
+        asset.Manufacturer = "리코";
+        asset.ContractMonths = 36;
+        asset.ContractStartDate = new DateOnly(2026, 1, 1);
+        asset.MonthlyFee = 150000;
+        asset.BlackIncludedMode = RentalMeterPolicyModes.Numeric;
+        asset.BlackIncludedPages = 10000;
+        asset.BlackOverageUnitPrice = 11m;
+        asset.ColorIncludedMode = RentalMeterPolicyModes.Unlimited;
+        asset.ColorIncludedPages = null;
+        asset.ColorOverageUnitPrice = null;
+        asset.MeterPolicySource = "rt.2884.kr";
+        asset.MeterPolicySourceUpdatedAtUtc = new DateTime(2026, 9, 1, 3, 0, 0, DateTimeKind.Utc);
+        var source = Source("2609-010", "검침 고객") with
+        {
+            BlackIncludedText = "10,000",
+            ColorIncludedText = "무",
+            BlackOverageText = "11",
+            ColorOverageText = "",
+            HasMeterPolicyColumns = true
+        };
+
+        var build = RtRentalResolutionPlanner.BuildPlan(
+            [source],
+            Snapshot([customer], [asset]),
+            "USENET",
+            new string('N', 64),
+            "rt-resolve-meter-idempotent-test",
+            new DateTime(2026, 9, 2, 3, 0, 0, DateTimeKind.Utc));
+
+        Assert.Empty(build.Plan.Assets);
+        Assert.Equal(0, build.Plan.Audit.PlannedEntityCount);
+    }
+
+    [Fact]
+    public void EntityBusinessEquals_IgnoresRtMeterPolicyTimestampPrecision()
+    {
+        var customer = Customer("검침 고객");
+        var approved = Asset("2609-011", customer);
+        approved.MeterPolicySourceUpdatedAtUtc = new DateTime(638924652000000009, DateTimeKind.Utc);
+        var stored = RtRentalResolutionPlanner.Clone(approved);
+        stored.MeterPolicySourceUpdatedAtUtc = new DateTime(638924652000000000, DateTimeKind.Utc);
+
+        Assert.True(RtRentalResolutionPlanner.EntityBusinessEquals(stored, approved));
+        Assert.Empty(RtRentalResolutionPlanner.EntityBusinessDifferenceProperties(stored, approved));
+    }
+
+    [Fact]
+    public void EntityBusinessDifferenceProperties_ReportsOnlyMeaningfulFieldNames()
+    {
+        var customer = Customer("금액 확인 고객");
+        var approved = Asset("2609-012", customer);
+        var stored = RtRentalResolutionPlanner.Clone(approved);
+        stored.MonthlyFee += 1000;
+        stored.MeterPolicySourceUpdatedAtUtc = DateTime.UtcNow;
+
+        Assert.Equal(
+            [nameof(RentalAssetDto.MonthlyFee)],
+            RtRentalResolutionPlanner.EntityBusinessDifferenceProperties(stored, approved));
+    }
+
+    [Fact]
+    public void EntityBusinessEquals_AcceptsEquivalentDecimalScaleFromPostgreSql()
+    {
+        var customer = Customer("검침 고객");
+        var approved = Asset("2609-013", customer);
+        approved.BlackOverageUnitPrice = decimal.Parse("11", CultureInfo.InvariantCulture);
+        var stored = RtRentalResolutionPlanner.Clone(approved);
+        stored.BlackOverageUnitPrice = decimal.Parse("11.0000", CultureInfo.InvariantCulture);
+
+        Assert.True(RtRentalResolutionPlanner.EntityBusinessEquals(stored, approved));
+    }
+
+    [Theory]
+    [InlineData(false, "ITWORLD", "ITWORLD", "ITWORLD")]
+    [InlineData(true, "USENET_GROUP", "USENET", "USENET")]
+    public void BuildPlan_DoesNotPreserveInactiveOrWrongDatabaseBillingProfile(
+        bool isActive,
+        string tenantCode,
+        string officeCode,
+        string responsibleOfficeCode)
+    {
+        var customer = Customer("청구범위 고객");
+        customer.TenantCode = TenantScopeCatalog.Itworld;
+        customer.OfficeCode = OfficeCodeCatalog.Itworld;
+        customer.ResponsibleOfficeCode = OfficeCodeCatalog.Itworld;
+        var asset = Asset("2609-014", customer);
+        asset.TenantCode = TenantScopeCatalog.Itworld;
+        asset.OfficeCode = OfficeCodeCatalog.Itworld;
+        asset.ResponsibleOfficeCode = OfficeCodeCatalog.Itworld;
+        asset.ManagementCompanyCode = OfficeCodeCatalog.Itworld;
+        asset.MonthlyFee = 150000;
+        asset.ItemCategoryName = "복합기";
+        asset.Manufacturer = "리코";
+        asset.ContractMonths = 36;
+        asset.ContractStartDate = new DateOnly(2026, 1, 1);
+        var profile = Profile(customer, [asset.Id], 150000);
+        profile.IsActive = isActive;
+        profile.TenantCode = tenantCode;
+        profile.OfficeCode = officeCode;
+        profile.ResponsibleOfficeCode = responsibleOfficeCode;
+        asset.BillingProfileId = profile.Id;
+
+        var source = Source("2609-014", "청구범위 고객") with { ManagementCompany = "아이티월드" };
+        var build = RtRentalResolutionPlanner.BuildPlan(
+            [source],
+            Snapshot([customer], [asset], [profile]),
+            "ITWORLD",
+            new string('P', 64),
+            "rt-resolve-profile-scope-test",
+            new DateTime(2026, 9, 2, 3, 0, 0, DateTimeKind.Utc));
+
+        Assert.Null(Assert.Single(build.Plan.Assets).Desired.BillingProfileId);
     }
 
     private static SyncPullResponse Snapshot(

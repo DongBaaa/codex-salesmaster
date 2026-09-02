@@ -585,6 +585,105 @@
                                 Padding="10,8"
                                 Margin="0,10,0,0">
                             <StackPanel>
+                                <DockPanel Margin="0,0,0,8">
+                                    <CheckBox DockPanel.Dock="Right"
+                                              Content="검침 초과청구 사용"
+                                              IsChecked="{Binding EditMeterBillingEnabled}"
+                                              VerticalAlignment="Center"/>
+                                    <StackPanel>
+                                        <TextBlock Text="기본 출력량 · 초과요금 · 검침" Foreground="#4FC3F7" FontWeight="Bold"/>
+                                        <TextBlock Foreground="#90CAF9" Margin="0,3,12,0" TextWrapping="Wrap">
+                                            <Run Text="정책 출처: "/><Run Text="{Binding EditMeterPolicySource}"/>
+                                        </TextBlock>
+                                    </StackPanel>
+                                </DockPanel>
+
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="104"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="8"/>
+                                        <ColumnDefinition Width="104"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+
+                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="흑백 기본" VerticalAlignment="Center" Margin="0,0,4,6"/>
+                                    <ComboBox Grid.Row="0" Grid.Column="1" ItemsSource="{Binding MeterPolicyModeOptions}" SelectedItem="{Binding EditBlackIncludedMode}" Margin="0,0,0,6"/>
+                                    <TextBlock Grid.Row="0" Grid.Column="3" Text="흑백 기본매수" VerticalAlignment="Center" Margin="0,0,4,6"/>
+                                    <TextBox Grid.Row="0" Grid.Column="4" Text="{Binding EditBlackIncludedPages, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6"/>
+
+                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="흑백 초과단가" VerticalAlignment="Center" Margin="0,0,4,6"/>
+                                    <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding EditBlackOverageUnitPrice, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6"/>
+                                    <TextBlock Grid.Row="1" Grid.Column="3" Text="컬러 기본" VerticalAlignment="Center" Margin="0,0,4,6"/>
+                                    <ComboBox Grid.Row="1" Grid.Column="4" ItemsSource="{Binding MeterPolicyModeOptions}" SelectedItem="{Binding EditColorIncludedMode}" Margin="0,0,0,6"/>
+
+                                    <TextBlock Grid.Row="2" Grid.Column="0" Text="컬러 기본매수" VerticalAlignment="Center" Margin="0,0,4,6"/>
+                                    <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding EditColorIncludedPages, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6"/>
+                                    <TextBlock Grid.Row="2" Grid.Column="3" Text="컬러 초과단가" VerticalAlignment="Center" Margin="0,0,4,6"/>
+                                    <TextBox Grid.Row="2" Grid.Column="4" Text="{Binding EditColorOverageUnitPrice, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6"/>
+
+                                    <TextBlock Grid.Row="3" Grid.Column="0" Text="검침 청구월" VerticalAlignment="Center" Margin="0,0,4,6"/>
+                                    <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding EditMeterBillingYearMonth, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6" ToolTip="yyyy-MM 형식"/>
+                                    <TextBlock Grid.Row="3" Grid.Column="3" Text="검침일" VerticalAlignment="Center" Margin="0,0,4,6"/>
+                                    <DatePicker Grid.Row="3" Grid.Column="4" SelectedDate="{Binding EditMeterReadingDate}" SelectedDateFormat="Short" Margin="0,0,0,6">
+                                        <DatePicker.Resources><Style TargetType="{x:Type Button}" BasedOn="{StaticResource RentalDatePickerButtonStyle}"/></DatePicker.Resources>
+                                    </DatePicker>
+
+                                    <TextBlock Grid.Row="4" Grid.Column="0" Text="흑백 누적" VerticalAlignment="Center" Margin="0,0,4,6"/>
+                                    <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding EditBlackMeterText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6"/>
+                                    <TextBlock Grid.Row="4" Grid.Column="3" Text="컬러 누적" VerticalAlignment="Center" Margin="0,0,4,6"/>
+                                    <TextBox Grid.Row="4" Grid.Column="4" Text="{Binding EditColorMeterText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6"/>
+
+                                    <TextBlock Grid.Row="5" Grid.Column="0" Text="증빙/메모" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                    <Grid Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="8"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox Grid.Column="0" Text="{Binding EditMeterEvidenceReference, UpdateSourceTrigger=PropertyChanged}" ToolTip="원본 엑셀 또는 PDF 경로"/>
+                                        <TextBox Grid.Column="2" Text="{Binding EditMeterReadingNote, UpdateSourceTrigger=PropertyChanged}"/>
+                                    </Grid>
+                                </Grid>
+
+                                <WrapPanel Margin="0,8,0,8">
+                                    <CheckBox Content="시작값으로 지정" IsChecked="{Binding EditMeterReadingIsOpeningBaseline}" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                    <Button Content="확정 검침 저장" Style="{StaticResource TradePlanPrimaryButtonStyle}" Command="{Binding SaveFinalizedMeterReadingCommand}" Margin="0,0,8,0"/>
+                                    <Button Content="선택 검침 삭제" Style="{StaticResource TradePlanDangerButtonStyle}" Command="{Binding DeleteSelectedMeterReadingCommand}"/>
+                                </WrapPanel>
+
+                                <DataGrid ItemsSource="{Binding MeterReadings}"
+                                          SelectedItem="{Binding SelectedMeterReading}"
+                                          Height="150"
+                                          IsReadOnly="True">
+                                    <DataGrid.Columns>
+                                        <DataGridTextColumn Header="청구월" Binding="{Binding BillingYearMonth}" Width="82"/>
+                                        <DataGridTextColumn Header="검침일" Binding="{Binding ReadingDate, StringFormat=yyyy-MM-dd}" Width="95"/>
+                                        <DataGridTextColumn Header="흑백 누적" Binding="{Binding BlackMeter, StringFormat=N0}" Width="85"/>
+                                        <DataGridTextColumn Header="컬러 누적" Binding="{Binding ColorMeter, StringFormat=N0}" Width="85"/>
+                                        <DataGridCheckBoxColumn Header="시작값" Binding="{Binding IsOpeningBaseline}" Width="62"/>
+                                        <DataGridTextColumn Header="증빙" Binding="{Binding EvidenceReference}" Width="*"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Row="17" Grid.ColumnSpan="5"
+                                Background="#20344B"
+                                BorderBrush="#38506D"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                Padding="10,8"
+                                Margin="0,10,0,0">
+                            <StackPanel>
                                 <TextBlock Text="임대 이력" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,6"/>
                                 <TextBlock Text="회수·연결해제·재임대 시점의 거래처/설치위치/청구 연결 내역을 자동으로 누적합니다." Foreground="#90CAF9" TextWrapping="Wrap" Margin="0,0,0,8"/>
                                 <DataGrid x:Name="AssignmentHistoryGrid"

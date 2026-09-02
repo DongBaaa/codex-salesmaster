@@ -673,6 +673,37 @@
                             </Grid.ColumnDefinitions>
 
                             <StackPanel Grid.Column="0">
+                                <Border Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="14" Margin="0,0,0,12">
+                                    <StackPanel>
+                                        <TextBlock Text="신규 독립 업체 승인 / DB 생성" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
+                                        <TextBlock Text="독립 회사로 승인할 때만 별도 DB를 생성합니다. 직원이나 하위업체는 여기서 DB를 만들지 말고 사용자 관리에서 기존 업체권역과 담당지점을 선택하세요."
+                                                   Foreground="#9FB3C8" Margin="0,6,0,12" TextWrapping="Wrap"/>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+                                            <Label Grid.Row="0" Grid.Column="0" Content="신규 업체 코드" ToolTip="ORG_로 시작 (예: ORG_NEWCO)"/>
+                                            <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding ProvisioningTenantCode, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                            <Label Grid.Row="1" Grid.Column="0" Content="표시 이름"/>
+                                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding ProvisioningTenantDisplayName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                            <Label Grid.Row="2" Grid.Column="0" Content="승인 메모"/>
+                                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding ProvisioningTenantDescription, UpdateSourceTrigger=PropertyChanged}" Height="54" AcceptsReturn="True" TextWrapping="Wrap" IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                        </Grid>
+                                        <Button Content="독립 업체 승인 및 DB 생성"
+                                                Style="{StaticResource TradePlanPrimaryButtonStyle}"
+                                                Command="{Binding ProvisionIndependentTenantCommand}"
+                                                Margin="0,12,0,0"
+                                                HorizontalAlignment="Left"
+                                                IsEnabled="{Binding CanManageTenantConfiguration}"/>
+                                    </StackPanel>
+                                </Border>
+
                                 <Border Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="14">
                                     <DockPanel>
                                         <Border DockPanel.Dock="Top" Background="#102039" Padding="12" CornerRadius="6,6,0,0">

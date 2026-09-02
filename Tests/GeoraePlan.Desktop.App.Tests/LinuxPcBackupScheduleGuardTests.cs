@@ -99,7 +99,7 @@ public sealed class LinuxPcBackupScheduleGuardTests
     }
 
     [Fact]
-    public void BackupJob_RequiresOneUnchangedClusterSnapshotWindowAcrossBothLogicalDumps()
+    public void BackupJob_RequiresOneUnchangedClusterSnapshotWindowAcrossAllLogicalDumps()
     {
         var source = ReadLinuxTool(
             "assets",
@@ -116,19 +116,25 @@ public sealed class LinuxPcBackupScheduleGuardTests
             source,
             StringComparison.Ordinal);
         Assert.Contains(
-            "database_snapshot_consistency=unchanged_across_both_dumps",
+            "database_snapshot_consistency=unchanged_across_all_dumps",
             source,
             StringComparison.Ordinal);
 
         var snapshotBefore = source.IndexOf(
             "database_snapshot_before=",
             StringComparison.Ordinal);
-        var centralDump = source.IndexOf(
-            "backup_database_start scope=central",
-            StringComparison.Ordinal);
-        var businessDump = source.IndexOf(
-            "backup_database_start scope=business",
-            StringComparison.Ordinal);
+        var dumpLoop = snapshotBefore >= 0
+            ? source.IndexOf(
+                "for database_name in \"${databases[@]}\"; do",
+                snapshotBefore,
+                StringComparison.Ordinal)
+            : -1;
+        var databaseDump = dumpLoop >= 0
+            ? source.IndexOf(
+                "backup_database_start database=$database_name",
+                dumpLoop,
+                StringComparison.Ordinal)
+            : -1;
         var snapshotAfter = source.IndexOf(
             "database_snapshot_after=",
             StringComparison.Ordinal);
@@ -141,12 +147,12 @@ public sealed class LinuxPcBackupScheduleGuardTests
 
         Assert.True(
             snapshotBefore >= 0 &&
-            snapshotBefore < centralDump &&
-            centralDump < businessDump &&
-            businessDump < snapshotAfter &&
+            snapshotBefore < dumpLoop &&
+            dumpLoop < databaseDump &&
+            databaseDump < snapshotAfter &&
             snapshotAfter < filesArchive &&
             filesArchive < finalMove,
-            "Both logical dumps must be rejected unless one unchanged cluster snapshot window encloses them before publication.");
+            "Every discovered logical dump must be rejected unless one unchanged cluster snapshot window encloses the complete dump loop before publication.");
     }
 
     [Fact]

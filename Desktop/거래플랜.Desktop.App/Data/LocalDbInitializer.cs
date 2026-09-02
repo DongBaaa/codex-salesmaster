@@ -900,7 +900,18 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             ("LastInstallLocation", "TEXT NOT NULL DEFAULT ''"),
             ("LastBillingProfileId", "TEXT NULL"),
             ("LastBillingProfileDisplay", "TEXT NOT NULL DEFAULT ''"),
-            ("LastAssignmentClearedAtUtc", "TEXT NULL")
+            ("LastAssignmentClearedAtUtc", "TEXT NULL"),
+            ("MeterBillingEnabled", "INTEGER NOT NULL DEFAULT 0"),
+            ("BlackIncludedMode", "TEXT NOT NULL DEFAULT '미설정'"),
+            ("BlackIncludedPages", "INTEGER NULL"),
+            ("BlackOverageUnitPrice", "REAL NULL"),
+            ("ColorIncludedMode", "TEXT NOT NULL DEFAULT '미설정'"),
+            ("ColorIncludedPages", "INTEGER NULL"),
+            ("ColorOverageUnitPrice", "REAL NULL"),
+            ("MeterReadingsJson", "TEXT NOT NULL DEFAULT '[]'"),
+            ("MeterEvidenceJson", "TEXT NOT NULL DEFAULT '[]'"),
+            ("MeterPolicySource", "TEXT NOT NULL DEFAULT ''"),
+            ("MeterPolicySourceUpdatedAtUtc", "TEXT NULL")
         };
         foreach (var (col, def) in rentalAssetCols)
             await TryAddColumnAsync(db, "RentalAssets", col, def);
@@ -946,7 +957,8 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             ("RequiresFollowUp", "INTEGER NOT NULL DEFAULT 0"),
             ("LastSettledDate", "TEXT NULL"),
             ("BillingTemplateJson", "TEXT NOT NULL DEFAULT '[]'"),
-            ("BillingRunsJson", "TEXT NOT NULL DEFAULT '[]'")
+            ("BillingRunsJson", "TEXT NOT NULL DEFAULT '[]'"),
+            ("PoolMeterAllowance", "INTEGER NOT NULL DEFAULT 0")
         };
         foreach (var (col, def) in rentalBillingProfileCols)
             await TryAddColumnAsync(db, "RentalBillingProfiles", col, def);

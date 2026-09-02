@@ -180,17 +180,76 @@ assert_identity() {
   fi
 }
 
+load_database_manifest() {
+  local root="$1"
+  local line_count=0
+  local database_name
+  local dump_name
+  local digest
+  local extra
+  local computed_list_sha256
+  local computed_digest_set_sha256
+  local -A seen_databases=()
+  local -A seen_dumps=()
+  manifest_database_names=()
+  manifest_dump_names=()
+  manifest_database_digests=()
+
+  assert_regular_single_link_file "$root/databases.txt" databases.txt
+  while IFS=$'\t' read -r database_name dump_name digest extra; do
+    ((line_count += 1))
+    if [[ -n "$extra" ||
+          ( "$database_name" != georaeplan &&
+            "$database_name" != georaeplan_itworld &&
+            "$database_name" != georaeplan_usenet &&
+            ! "$database_name" =~ ^georaeplan_org_[a-z0-9_]+$ ) ||
+          "$dump_name" != "${database_name}.dump" ||
+          ! "$digest" =~ ^[0-9a-f]{64}$ ||
+          -n "${seen_databases[$database_name]:-}" ||
+          -n "${seen_dumps[$dump_name]:-}" ]]; then
+      echo "restore_drill_database_manifest_invalid line=$line_count" >&2
+      exit 3
+    fi
+    seen_databases[$database_name]=1
+    seen_dumps[$dump_name]=1
+    manifest_database_names+=("$database_name")
+    manifest_dump_names+=("$dump_name")
+    manifest_database_digests+=("$digest")
+  done < "$root/databases.txt"
+  if (( line_count < 2 || line_count > 256 )) ||
+     [[ -z "${seen_databases[georaeplan]:-}" ||
+        -z "${seen_databases[georaeplan_itworld]:-}" ]]; then
+    echo "restore_drill_database_manifest_invalid reason=count_or_required_database" >&2
+    exit 3
+  fi
+  computed_list_sha256="$(printf '%s\n' "${manifest_database_names[@]}" | sha256sum | awk '{print $1}')"
+  computed_digest_set_sha256="$(
+    for index in "${!manifest_database_names[@]}"; do
+      printf '%s=%s\n' "${manifest_database_names[$index]}" "${manifest_database_digests[$index]}"
+    done | sha256sum | awk '{print $1}'
+  )"
+  [[ "$(read_single_field "$root/metadata.txt" database_manifest)" == databases.txt &&
+      "$(read_single_field "$root/metadata.txt" database_count)" == "$line_count" &&
+      "$(read_single_field "$root/metadata.txt" database_list_sha256)" == "$computed_list_sha256" &&
+      "$(read_single_field "$root/metadata.txt" database_manifest_sha256)" == "$(sha256sum "$root/databases.txt" | awk '{print $1}')" &&
+      "$(read_single_field "$root/metadata.txt" database_digest_set_sha256)" == "$computed_digest_set_sha256" ]] || {
+    echo "restore_drill_database_manifest_binding_invalid" >&2
+    exit 3
+  }
+}
+
 compute_replica_manifest_sha256() {
   local root="$1"
+  load_database_manifest "$root"
   (
     cd "$root"
     sha256sum \
       COMPLETE \
       SHA256SUMS \
       data-protection-keys.tar.gz \
+      databases.txt \
       files.tar.gz \
-      georaeplan.dump \
-      georaeplan_itworld.dump \
+      "${manifest_dump_names[@]}" \
       metadata.txt |
       sha256sum |
       awk '{print $1}'
@@ -204,7 +263,11 @@ assert_replica_set() {
   local replica_manifest_sha256="$4"
   local actual
   local expected
-  expected=$'COMPLETE\nREPLICA\nSHA256SUMS\ndata-protection-keys.tar.gz\nfiles.tar.gz\ngeoraeplan.dump\ngeoraeplan_itworld.dump\nmetadata.txt'
+  load_database_manifest "$root"
+  expected="$({
+    printf '%s\n' COMPLETE REPLICA SHA256SUMS data-protection-keys.tar.gz databases.txt files.tar.gz metadata.txt
+    printf '%s\n' "${manifest_dump_names[@]}"
+  } | LC_ALL=C sort)"
   actual="$(find "$root" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)"
   [[ "$actual" == "$expected" ]] || {
     echo "restore_drill_replica_entry_set_invalid" >&2
@@ -214,8 +277,8 @@ assert_replica_set() {
     echo "restore_drill_replica_entry_type_invalid" >&2
     exit 3
   fi
-  for name in COMPLETE REPLICA SHA256SUMS data-protection-keys.tar.gz files.tar.gz \
-    georaeplan.dump georaeplan_itworld.dump metadata.txt; do
+  for name in COMPLETE REPLICA SHA256SUMS data-protection-keys.tar.gz databases.txt files.tar.gz \
+    metadata.txt "${manifest_dump_names[@]}"; do
     assert_regular_single_link_file "$root/$name" "$name"
   done
   assert_exact_keys \
@@ -228,7 +291,7 @@ assert_replica_set() {
     REPLICA
   assert_exact_keys \
     "$root/metadata.txt" \
-    $'backup\nbusiness_business_count_sha256\nbusiness_database\ncentral_business_count_sha256\ncentral_database\ncreated_at\ndatabase_snapshot_consistency\ndatabase_snapshot_sha256\nestimated_source_bytes\nfile_deletion_lease\nfiles_archive\nkeyring_archive\nreplica\nrequired_available_bytes\nrun_id' \
+    $'backup\nbusiness_business_count_sha256\nbusiness_database\ncentral_business_count_sha256\ncentral_database\ncreated_at\ndatabase_count\ndatabase_digest_set_sha256\ndatabase_list_sha256\ndatabase_manifest\ndatabase_manifest_sha256\ndatabase_snapshot_consistency\ndatabase_snapshot_sha256\nestimated_source_bytes\nfile_deletion_lease\nfiles_archive\nkeyring_archive\nreplica\nrequired_available_bytes\nrun_id' \
     metadata
   [[ "$(read_single_field "$root/COMPLETE" backup)" == complete &&
       "$(read_single_field "$root/COMPLETE" run_id)" == "$source_run_id" &&
@@ -246,7 +309,7 @@ assert_replica_set() {
       "$(read_single_field "$root/metadata.txt" files_archive)" == files.tar.gz &&
       "$(read_single_field "$root/metadata.txt" keyring_archive)" == data-protection-keys.tar.gz &&
       "$(read_single_field "$root/metadata.txt" file_deletion_lease)" == exclusive_during_database_and_file_capture &&
-      "$(read_single_field "$root/metadata.txt" database_snapshot_consistency)" == unchanged_across_both_dumps &&
+      "$(read_single_field "$root/metadata.txt" database_snapshot_consistency)" == unchanged_across_all_dumps &&
       "$(read_single_field "$root/metadata.txt" replica)" == disabled &&
       "$(read_single_field "$root/metadata.txt" database_snapshot_sha256)" =~ ^[0-9a-f]{64}$ &&
       "$(read_single_field "$root/metadata.txt" central_business_count_sha256)" =~ ^[0-9a-f]{64}$ &&
@@ -263,8 +326,9 @@ assert_replica_set() {
     exit 3
   }
   (cd "$root" && sha256sum -c SHA256SUMS > /dev/null)
-  pg_restore -l "$root/georaeplan.dump" > /dev/null
-  pg_restore -l "$root/georaeplan_itworld.dump" > /dev/null
+  for dump_name in "${manifest_dump_names[@]}"; do
+    pg_restore -l "$root/$dump_name" > /dev/null
+  done
 }
 
 write_status_atomically() {
@@ -386,7 +450,7 @@ while IFS= read -r entry; do
 done < <(find "$REPLICA_ROOT" -mindepth 1 -maxdepth 1 -print)
 assert_exact_keys \
   "$REPLICA_STATUS" \
-  $'archive_validation\nreplica\nreplica_id\nreplica_manifest_sha256\nreplica_set_path\nrestore_catalog_validation\nsource_manifest_sha256\nsource_run_id\nverified_at' \
+  $'archive_validation\ndatabase_count\ndatabase_digest_set_sha256\ndatabase_list_sha256\ndatabase_manifest_sha256\nreplica\nreplica_id\nreplica_manifest_sha256\nreplica_set_path\nrestore_catalog_validation\nsource_manifest_sha256\nsource_run_id\nverified_at' \
   external-replica-status
 
 source_run_id="$(read_single_field "$BACKUP_STATUS" run_id)"
@@ -402,6 +466,10 @@ if [[ ! "$source_run_id" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9]+$ ||
       "$replica_source_manifest_sha256" != "$source_manifest_sha256" ||
       "$(read_single_field "$REPLICA_STATUS" replica)" != ok ||
       "$(read_single_field "$REPLICA_STATUS" replica_id)" != "$REPLICA_ID" ||
+      ! "$(read_single_field "$REPLICA_STATUS" database_count)" =~ ^[0-9]{1,3}$ ||
+      ! "$(read_single_field "$REPLICA_STATUS" database_list_sha256)" =~ ^[0-9a-f]{64}$ ||
+      ! "$(read_single_field "$REPLICA_STATUS" database_manifest_sha256)" =~ ^[0-9a-f]{64}$ ||
+      ! "$(read_single_field "$REPLICA_STATUS" database_digest_set_sha256)" =~ ^[0-9a-f]{64}$ ||
       "$(read_single_field "$REPLICA_STATUS" archive_validation)" != ok ||
       "$(read_single_field "$REPLICA_STATUS" restore_catalog_validation)" != ok ]]; then
   echo "restore_drill_replica_status_binding_invalid" >&2
@@ -424,8 +492,18 @@ flock -s -w "$LOCK_TIMEOUT_SECONDS" 8 || { echo "restore_drill_replica_lock_time
 exec 9<> "$DRILL_LOCK"
 flock -w "$LOCK_TIMEOUT_SECONDS" 9 || { echo "restore_drill_lock_timeout" >&2; exit 4; }
 assert_replica_set "$replica_set" "$source_run_id" "$source_manifest_sha256" "$replica_manifest_sha256"
-central_business_count_sha256="$(read_single_field "$replica_set/metadata.txt" central_business_count_sha256)"
-business_business_count_sha256="$(read_single_field "$replica_set/metadata.txt" business_business_count_sha256)"
+load_database_manifest "$replica_set"
+restore_database_names=("${manifest_database_names[@]}")
+restore_dump_names=("${manifest_dump_names[@]}")
+restore_expected_digests=("${manifest_database_digests[@]}")
+restore_database_count="${#restore_database_names[@]}"
+[[ "$(read_single_field "$REPLICA_STATUS" database_count)" == "$restore_database_count" &&
+    "$(read_single_field "$REPLICA_STATUS" database_list_sha256)" == "$(read_single_field "$replica_set/metadata.txt" database_list_sha256)" &&
+    "$(read_single_field "$REPLICA_STATUS" database_manifest_sha256)" == "$(read_single_field "$replica_set/metadata.txt" database_manifest_sha256)" &&
+    "$(read_single_field "$REPLICA_STATUS" database_digest_set_sha256)" == "$(read_single_field "$replica_set/metadata.txt" database_digest_set_sha256)" ]] || {
+  echo "restore_drill_replica_database_binding_invalid" >&2
+  exit 3
+}
 assert_identity "$STATE_ROOT" "$state_root_identity" state_root
 assert_identity "$REPLICA_ROOT" "$replica_root_identity" replica_root
 assert_identity "$replica_set" "$replica_set_identity" replica_set
@@ -578,33 +656,33 @@ for _ in $(seq 1 60); do
 done
 docker_exec "$container_id" pg_isready -U postgres -d postgres > /dev/null
 
-for database in restore_central restore_business; do
-  docker_exec "$container_id" createdb -U postgres "$database"
+declare -a restored_digest_records=()
+for index in "${!restore_database_names[@]}"; do
+  restore_database="$(printf 'restore_%03d' "$index")"
+  source_database="${restore_database_names[$index]}"
+  dump_name="${restore_dump_names[$index]}"
+  expected_digest="${restore_expected_digests[$index]}"
+  docker_exec "$container_id" createdb -U postgres "$restore_database"
+  docker_exec "$container_id" \
+    pg_restore --exit-on-error --no-owner --no-privileges \
+    -U postgres -d "$restore_database" "/restore/$dump_name"
+  restored_digest="$(query_business_count_digest "$container_id" "$restore_database")"
+  if [[ ! "$restored_digest" =~ ^[0-9a-f]{64}$ ]]; then
+    failure_reason=business_query_digest_invalid
+    exit 5
+  fi
+  if [[ "$restored_digest" != "$expected_digest" ]]; then
+    failure_reason=business_count_digest_mismatch
+    echo "restore_drill_business_count_digest_mismatch database=$source_database expected_sha256=$expected_digest actual_sha256=$restored_digest" >&2
+    exit 5
+  fi
+  restored_digest_records+=("$source_database=$restored_digest")
 done
-docker_exec "$container_id" \
-  pg_restore --exit-on-error --no-owner --no-privileges \
-  -U postgres -d restore_central /restore/georaeplan.dump
-docker_exec "$container_id" \
-  pg_restore --exit-on-error --no-owner --no-privileges \
-  -U postgres -d restore_business /restore/georaeplan_itworld.dump
-
-central_schema_sha256="$(query_business_count_digest "$container_id" restore_central)"
-business_schema_sha256="$(query_business_count_digest "$container_id" restore_business)"
-[[ "$central_schema_sha256" =~ ^[0-9a-f]{64}$ &&
-    "$business_schema_sha256" =~ ^[0-9a-f]{64}$ ]] || {
-  failure_reason=business_query_digest_invalid
+restored_database_set_sha256="$(printf '%s\n' "${restored_digest_records[@]}" | sha256sum | awk '{print $1}')"
+[[ "$restored_database_set_sha256" == "$(read_single_field "$replica_set/metadata.txt" database_digest_set_sha256)" ]] || {
+  failure_reason=business_count_digest_set_mismatch
   exit 5
 }
-if [[ "$central_schema_sha256" != "$central_business_count_sha256" ]]; then
-  failure_reason=business_count_digest_mismatch
-  echo "restore_drill_business_count_digest_mismatch scope=central expected_sha256=$central_business_count_sha256 actual_sha256=$central_schema_sha256" >&2
-  exit 5
-fi
-if [[ "$business_schema_sha256" != "$business_business_count_sha256" ]]; then
-  failure_reason=business_count_digest_mismatch
-  echo "restore_drill_business_count_digest_mismatch scope=business expected_sha256=$business_business_count_sha256 actual_sha256=$business_schema_sha256" >&2
-  exit 5
-fi
 
 assert_replica_set "$replica_set" "$source_run_id" "$source_manifest_sha256" "$replica_manifest_sha256"
 assert_identity "$STATE_ROOT" "$state_root_identity" state_root
@@ -623,8 +701,8 @@ write_status_atomically \
   "source_manifest_sha256=$source_manifest_sha256" \
   "replica_manifest_sha256=$replica_manifest_sha256" \
   "image_id=$IMAGE_ID" \
-  "central_schema_sha256=$central_schema_sha256" \
-  "business_schema_sha256=$business_schema_sha256" \
+  "database_count=$restore_database_count" \
+  "restored_database_set_sha256=$restored_database_set_sha256" \
   "business_count_digest_contract=source_metadata_match" \
   "network_mode=none" \
   "completed_at=$(date -Iseconds)"

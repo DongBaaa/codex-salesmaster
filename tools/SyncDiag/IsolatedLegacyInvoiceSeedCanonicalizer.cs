@@ -176,6 +176,8 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
         "1DE40C0FA21FE662EAECFA7ED3B654EA1271076FE1F69029919A3295525EBEC6";
     internal const string LatestOperationalApprovedSourceDatabaseSha256 =
         "A3C4A81A9FCA783F40844DC04810A905C99619722A608D9C379CA4BB157A0654";
+    internal const string AdminLoginOperationalApprovedSourceDatabaseSha256 =
+        "0740B46F71C93CC613519796C240B734D7815153B2FD997FD7B4343DDA6FA70E";
 
     internal static readonly JsonSerializerOptions ReportJsonOptions = new()
     {
@@ -338,7 +340,24 @@ public static class IsolatedLegacyInvoiceSeedCanonicalizer
                         AfterMetadataSha256 =
                             "49D925656056F81EBF84A23C0ED18433E205D7FB0F87699CE75A2965BD366BF9",
                         LatestInvoiceBusinessSha256 =
-                            "49AD13A712746B8AA6C38BB8ED069053B4C9305A320E117864F2DB8040CB4AA0",
+                            "DEE66A13D48ACC63BFA1EB31D357BEA41BCE9C4BA0E3CC06A5681F47728FF26A",
+                        DependencyReferencesSha256 =
+                            "798161B849E966FFBDCA7D008D8581118BC791A815B1D5621EAA7A954301EFA4"
+                    },
+                [AdminLoginOperationalApprovedSourceDatabaseSha256] =
+                    ApprovedProfile with
+                    {
+                        SourceDatabaseSha256 =
+                            AdminLoginOperationalApprovedSourceDatabaseSha256,
+                        AuthorizedNonAcknowledgedOutboxCount = 88,
+                        AuthorizedNonAcknowledgedOutboxSha256 =
+                            "D54838917A9D1F5538FE1D153E7964B25CCA741531D9D4E25CD14CFEE14A1E6E",
+                        BeforeMetadataSha256 =
+                            "470D4118ACF242C3B4C1B7C5CCC6D0FC1CC7A1E9F9D2794F08EC470630153EBA",
+                        AfterMetadataSha256 =
+                            "49D925656056F81EBF84A23C0ED18433E205D7FB0F87699CE75A2965BD366BF9",
+                        LatestInvoiceBusinessSha256 =
+                            "DEE66A13D48ACC63BFA1EB31D357BEA41BCE9C4BA0E3CC06A5681F47728FF26A",
                         DependencyReferencesSha256 =
                             "798161B849E966FFBDCA7D008D8581118BC791A815B1D5621EAA7A954301EFA4"
                     }

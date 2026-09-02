@@ -53,11 +53,13 @@ public sealed class UsersController : ControllerBase
             return Conflict("Username already exists.");
 
         if (!TryNormalizeOfficeCode(request.OfficeCode, out var normalizedOfficeCode))
-            return BadRequest("OfficeCode must be one of USENET, ITWORLD, YEONSU.");
+            return BadRequest("OfficeCode must be an approved office code.");
 
         var normalizedTenantCode = NormalizeTenantCode(request.TenantCode, normalizedOfficeCode);
         if (!TenantScopeCatalog.TenantContainsOffice(normalizedTenantCode, normalizedOfficeCode))
             return BadRequest("TenantCode and OfficeCode are not compatible.");
+        if (!await IsApprovedTenantOfficeAsync(normalizedTenantCode, normalizedOfficeCode, cancellationToken))
+            return BadRequest("관리자 승인 및 DB 구성이 완료된 업체/지점만 사용자에게 지정할 수 있습니다.");
 
         var normalizedRole = NormalizeRole(request.Role);
         var normalizedScopeType = NormalizeScopeType(request.ScopeType, normalizedRole);
@@ -110,11 +112,13 @@ public sealed class UsersController : ControllerBase
             return Conflict("Username already exists.");
 
         if (!TryNormalizeOfficeCode(request.OfficeCode, out var normalizedOfficeCode))
-            return BadRequest("OfficeCode must be one of USENET, ITWORLD, YEONSU.");
+            return BadRequest("OfficeCode must be an approved office code.");
 
         var normalizedTenantCode = NormalizeTenantCode(request.TenantCode, normalizedOfficeCode);
         if (!TenantScopeCatalog.TenantContainsOffice(normalizedTenantCode, normalizedOfficeCode))
             return BadRequest("TenantCode and OfficeCode are not compatible.");
+        if (!await IsApprovedTenantOfficeAsync(normalizedTenantCode, normalizedOfficeCode, cancellationToken))
+            return BadRequest("관리자 승인 및 DB 구성이 완료된 업체/지점만 사용자에게 지정할 수 있습니다.");
 
         var normalizedRole = NormalizeRole(request.Role);
         var normalizedScopeType = NormalizeScopeType(request.ScopeType, normalizedRole);
@@ -227,6 +231,39 @@ public sealed class UsersController : ControllerBase
         return string.Equals(role, "admin", StringComparison.OrdinalIgnoreCase)
             ? TenantScopeCatalog.ScopeOfficeOnly
             : TenantScopeCatalog.ScopeOfficeOnly;
+    }
+
+    private async Task<bool> IsApprovedTenantOfficeAsync(
+        string tenantCode,
+        string officeCode,
+        CancellationToken cancellationToken)
+    {
+        // The two built-in companies and their offices are part of the product's
+        // canonical bootstrap data. Keep them assignable even in lightweight
+        // controller tests or recovery databases where the control-plane rows
+        // have not been seeded yet. Custom companies must always have completed
+        // the administrator provisioning flow below.
+        if (TenantScopeCatalog.AllTenants.Contains(tenantCode, StringComparer.OrdinalIgnoreCase) &&
+            TenantScopeCatalog.GetOfficeCodesForTenant(tenantCode)
+                .Contains(officeCode, StringComparer.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var tenantApproved = await _dbContext.TenantDefinitions
+            .AnyAsync(tenant =>
+                    tenant.TenantCode == tenantCode &&
+                    tenant.IsActive,
+                cancellationToken);
+        if (!tenantApproved)
+            return false;
+
+        return await _dbContext.TenantOfficeDefinitions
+            .AnyAsync(office =>
+                    office.TenantCode == tenantCode &&
+                    office.OfficeCode == officeCode &&
+                    office.IsActive,
+                cancellationToken);
     }
 
     private async Task PersistScopeTypeAsync(Guid userId, string normalizedScopeType, CancellationToken cancellationToken)

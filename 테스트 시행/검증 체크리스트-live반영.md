@@ -41,3 +41,28 @@
 - 기존 운영 데이터 경고 `rental_profile_customer_unlinked(1)`, `rental_asset_template_monthly_mismatch(1)`만 명시 허용하고 신규 경고는 차단합니다.
 - public ZIP SHA-256: `919A3759139AB4F3EF10183E14F8AC9B17E33877E5530CA4D792FC3AFEBAF591`; 로컬·manifest·Linux live 일치.
 - Windows Authenticode 인증서 환경변수가 없어 EXE/MSI는 `NotSigned`; 버전·내용·SHA와 업데이트 경로는 검증 완료했습니다.
+
+## 2026-09-02 Desktop 1.1.703 / USENET DB 분리·RT 이관
+
+- [x] 테스트 실행환경을 재구성하고 `Run-All.cmd`에서 자동 로그인·대시보드 109건·2회 동기화·ITWORLD/USENET 캐시 갱신·오류 0을 확인했다.
+- [x] RT 원본 768대가 USENET 219대·ITWORLD 549대로 최종 수렴했고 양쪽 최종 계획이 각각 0건임을 확인했다.
+- [x] USENET/ITWORLD 활성 자산의 관리번호 중복 0건, 고아 청구프로필 연결 0건을 확인했다.
+- [x] 서버 전체 테스트 1,496건 통과, 실패 0, PostgreSQL 환경 의존 20건 건너뜀을 확인했다.
+- [x] 데스크톱 회귀 3,652건 중 3,649건 통과 후 문서 버전 3건과 고정 기대값을 수정하고 문서 검사 클래스 전체 27/27 통과를 확인했다.
+- [x] 전체 솔루션 Release 빌드 경고 0, 오류 0을 확인했다.
+- [x] 데스크톱 버전과 stable manifest가 `1.1.703`으로 일치하고 Android `0.2.82` 자산이 보존됨을 확인했다.
+- [x] ZIP·EXE·MSI를 재생성했고 Live 응답 HTTP 200 및 로컬·Live 크기/해시 일치를 확인했다.
+- [x] 거래플랜 API·PostgreSQL 컨테이너 정상, `trade.2884.kr/healthz` HTTP 200을 확인했다.
+- [x] 공통 인프라 영향 확인으로 `work.2884.kr`·`itw.2884.kr` HTTP 200을 확인했다.
+- [x] 분리 후 중앙·ITWORLD·USENET 3개 DB 신규 백업, 외장 복제, 격리 복구훈련 성공을 확인했다.
+- [ ] Windows EXE/MSI Authenticode 서명 환경을 구성한다. 현재 산출물은 `NotSigned`이다.
+
+### 1.1.703 릴리스 근거
+
+- 서버 릴리스: `/srv/georaeplan/releases/20260902-1703-rt-usenet`
+- 백업 run ID: `20260902T075826Z-1076603`
+- 외장 복제 manifest SHA-256: `1373c2e0c236bdb79a67baee9437fde597895803b040879f3b24050c692de1ce`
+- ZIP SHA-256: `6E3F214E8544D99C41884154DA187F38F207AAF98F70EF1D76871B3A7ADEBBDA`
+- EXE SHA-256: `3928B9D171220B515667C1827714A46FDAC0A5F924B48A6060BC0F332E7B6808`
+- MSI SHA-256: `BC6CAC02583149906379E8B29C918D4F18B46412E519ACA20F1B07CA9CF5D7BB`
+- 필수 업데이트 정책은 변경하지 않았고 Android는 기존 `0.2.82`를 유지했습니다.

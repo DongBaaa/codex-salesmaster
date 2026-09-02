@@ -15,6 +15,9 @@ public sealed partial class EnvironmentSettingsViewModel
     [ObservableProperty] private string _editingTenantStorageMode = TenantScopeCatalog.StorageSharedDatabase;
     [ObservableProperty] private string _editingTenantDescription = string.Empty;
     [ObservableProperty] private bool _editingTenantIsActive = true;
+    [ObservableProperty] private string _provisioningTenantCode = string.Empty;
+    [ObservableProperty] private string _provisioningTenantDisplayName = string.Empty;
+    [ObservableProperty] private string _provisioningTenantDescription = string.Empty;
 
     [ObservableProperty] private TenantOfficeDefinitionDto? _selectedTenantOfficeDefinition;
     [ObservableProperty] private string _editingOfficeCode = OfficeCodeCatalog.Usenet;
@@ -334,6 +337,89 @@ public sealed partial class EnvironmentSettingsViewModel
         catch (Exception ex)
         {
             StatusMessage = $"업체 권역 저장 실패: {ex.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    [RelayCommand]
+    private async Task ProvisionIndependentTenantAsync()
+    {
+        if (!CanManageTenantConfiguration)
+        {
+            StatusMessage = "독립 업체 DB를 생성할 시스템 관리 권한이 없습니다.";
+            return;
+        }
+
+        if (!TenantScopeCatalog.TryNormalizeCustomTenantCode(ProvisioningTenantCode, out var tenantCode) ||
+            TenantScopeCatalog.AllTenants.Contains(tenantCode, StringComparer.OrdinalIgnoreCase))
+        {
+            StatusMessage = "신규 업체 코드는 ORG_로 시작하는 5~40자의 영문 대문자, 숫자, 밑줄만 사용할 수 있습니다.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(ProvisioningTenantDisplayName))
+        {
+            StatusMessage = "신규 업체 표시 이름을 입력하세요.";
+            return;
+        }
+
+        try
+        {
+            IsBusy = true;
+            var request = new ProvisionIndependentTenantRequest
+            {
+                TenantCode = tenantCode,
+                DisplayName = ProvisioningTenantDisplayName.Trim(),
+                Description = ProvisioningTenantDescription.Trim()
+            };
+            TenantProvisioningResultDto? provisioned = null;
+            var outcome = await ExecuteTenantMutationWithRecoveryAsync(
+                async () =>
+                {
+                    provisioned = await _api.ProvisionIndependentTenantAsync(request);
+                },
+                () => ReloadTenantConfigurationCoreAsync(
+                    includeInactive: true,
+                    preferredTenantCode: tenantCode,
+                    preferredOfficeCode: tenantCode,
+                    reloadScopeMatrix: false),
+                () => TenantDefinitions.Any(current =>
+                          string.Equals(current.TenantCode, tenantCode, StringComparison.OrdinalIgnoreCase) &&
+                          current.IsActive &&
+                          string.Equals(
+                              TenantScopeCatalog.NormalizeStorageModeOrDefault(current.StorageMode),
+                              TenantScopeCatalog.StorageDedicatedDatabase,
+                              StringComparison.OrdinalIgnoreCase)) &&
+                      TenantOfficeDefinitions.Any(current =>
+                          string.Equals(current.TenantCode, tenantCode, StringComparison.OrdinalIgnoreCase) &&
+                          string.Equals(current.OfficeCode, tenantCode, StringComparison.OrdinalIgnoreCase) &&
+                          current.IsActive));
+            if (outcome.IsAmbiguous)
+            {
+                StatusMessage = outcome.StatusMessage;
+                return;
+            }
+
+            var refresh = await ReloadAfterConfirmedTenantMutationAsync(
+                () => ReloadTenantConfigurationCoreAsync(
+                    includeInactive: false,
+                    preferredTenantCode: tenantCode,
+                    preferredOfficeCode: tenantCode),
+                $"독립 업체 {request.DisplayName}의 DB {provisioned?.BusinessDatabaseName ?? TenantScopeCatalog.GetPhysicalDatabaseName(tenantCode)}를 생성했습니다. 이제 사용자 관리에서 이 업체를 선택해 계정을 만드세요.");
+            if (refresh.RefreshSucceeded)
+            {
+                ProvisioningTenantCode = string.Empty;
+                ProvisioningTenantDisplayName = string.Empty;
+                ProvisioningTenantDescription = string.Empty;
+            }
+            StatusMessage = refresh.StatusMessage;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"독립 업체 DB 생성 실패: {ex.Message}";
         }
         finally
         {

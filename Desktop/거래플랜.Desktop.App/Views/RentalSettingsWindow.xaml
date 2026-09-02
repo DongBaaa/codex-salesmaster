@@ -104,6 +104,8 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
@@ -131,8 +133,19 @@
                         <Button Content="가져오기" Width="88" MinWidth="88" Style="{StaticResource TradePlanEditButtonStyle}" Command="{Binding ImportAssetWorkbookCommand}"/>
                     </StackPanel>
 
-                    <TextBlock Grid.Row="4" Grid.ColumnSpan="3" Text="예: 7,3,1,0 → 7일 전, 3일 전, 하루 전, 당일 알림" Foreground="#9FB3C8" Margin="0,4,0,0"/>
-                    <TextBlock Grid.Row="5" Grid.ColumnSpan="3" Text="엑셀 가져오기는 관리자 권한에서만 권장합니다." Foreground="#9FB3C8" Margin="0,6,0,0"/>
+                    <TextBlock Grid.Row="4" Grid.Column="0" Text="검침 기준값" VerticalAlignment="Center" Margin="0,0,4,8"/>
+                    <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding MeterBaselineWorkbookPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,8"/>
+                    <StackPanel Grid.Row="4" Grid.Column="2" Orientation="Horizontal">
+                        <Button Content="찾기" Width="70" MinWidth="70" Margin="0,0,6,0" Command="{Binding BrowseMeterBaselineWorkbookCommand}"/>
+                        <Button Content="시작값 반영" Width="104" MinWidth="104" Style="{StaticResource TradePlanEditButtonStyle}" Command="{Binding ImportMeterBaselineWorkbookCommand}"/>
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="5" Grid.Column="0" Text="근거 PDF" VerticalAlignment="Center" Margin="0,0,4,8"/>
+                    <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding MeterBaselineEvidencePath, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,8"/>
+                    <Button Grid.Row="5" Grid.Column="2" Content="찾기" Width="70" MinWidth="70" HorizontalAlignment="Left" Command="{Binding BrowseMeterBaselineEvidenceCommand}"/>
+
+                    <TextBlock Grid.Row="6" Grid.ColumnSpan="3" Text="검침 기준값은 장비별 마지막 확정 마감값만 시작값으로 저장하며 과거 사용량은 다시 청구하지 않습니다." Foreground="#90CAF9" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                    <TextBlock Grid.Row="7" Grid.ColumnSpan="3" Text="예: 7,3,1,0 → 7일 전, 3일 전, 하루 전, 당일 알림 · 엑셀 가져오기는 관리자 권한에서만 권장합니다." Foreground="#9FB3C8" Margin="0,6,0,0" TextWrapping="Wrap"/>
                 </Grid>
             </Border>
 

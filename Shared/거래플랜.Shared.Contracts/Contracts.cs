@@ -626,6 +626,7 @@ public sealed class RentalBillingProfileDto : SyncEntityDto
     public DateOnly? LastSettledDate { get; set; }
     public string BillingTemplateJson { get; set; } = "[]";
     public string BillingRunsJson { get; set; } = "[]";
+    public bool PoolMeterAllowance { get; set; }
     public bool IsActive { get; set; } = true;
 }
 
@@ -671,6 +672,17 @@ public sealed class RentalAssetDto : SyncEntityDto
     public DateOnly? RentalEndDate { get; set; }
     public string FreeSupplyItems { get; set; } = string.Empty;
     public string PaidSupplyItems { get; set; } = string.Empty;
+    public bool MeterBillingEnabled { get; set; }
+    public string BlackIncludedMode { get; set; } = RentalMeterPolicyModes.Unconfigured;
+    public int? BlackIncludedPages { get; set; }
+    public decimal? BlackOverageUnitPrice { get; set; }
+    public string ColorIncludedMode { get; set; } = RentalMeterPolicyModes.Unconfigured;
+    public int? ColorIncludedPages { get; set; }
+    public decimal? ColorOverageUnitPrice { get; set; }
+    public string MeterReadingsJson { get; set; } = "[]";
+    public string MeterEvidenceJson { get; set; } = "[]";
+    public string MeterPolicySource { get; set; } = string.Empty;
+    public DateTime? MeterPolicySourceUpdatedAtUtc { get; set; }
     public string AssetStatus { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
 }
@@ -1154,6 +1166,20 @@ public sealed class UpdateTenantOfficeDefinitionRequest
     public string DisplayName { get; set; } = string.Empty;
     public bool IsHeadOffice { get; set; }
     public bool IsActive { get; set; } = true;
+}
+
+public sealed class ProvisionIndependentTenantRequest
+{
+    public string TenantCode { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+}
+
+public sealed class TenantProvisioningResultDto
+{
+    public TenantDefinitionDto Tenant { get; set; } = new();
+    public TenantOfficeDefinitionDto HeadOffice { get; set; } = new();
+    public string BusinessDatabaseName { get; set; } = string.Empty;
 }
 
 public sealed class AppUpdateManifestDto

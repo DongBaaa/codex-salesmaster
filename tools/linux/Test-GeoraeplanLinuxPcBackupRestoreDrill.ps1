@@ -147,6 +147,12 @@ $businessCountText = @(
 $businessCountSha256 = [Convert]::ToHexString(
     [Security.Cryptography.SHA256]::HashData(
         [Text.Encoding]::UTF8.GetBytes($businessCountText))).ToLowerInvariant()
+$databaseNames = @('georaeplan', 'georaeplan_itworld', 'georaeplan_org_branch01', 'georaeplan_usenet')
+$databaseManifestText = (($databaseNames | ForEach-Object { "$_`t$_.dump`t$businessCountSha256" }) -join "`n") + "`n"
+$databaseListText = ($databaseNames -join "`n") + "`n"
+$databaseDigestSetText = (($databaseNames | ForEach-Object { "$_=$businessCountSha256" }) -join "`n") + "`n"
+$databaseListSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($utf8.GetBytes($databaseListText))).ToLowerInvariant()
+$databaseDigestSetSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($utf8.GetBytes($databaseDigestSetText))).ToLowerInvariant()
 
 try {
     foreach ($path in @($stateRoot, $replicaSet, $replicaStaging, $fakeBin)) {
@@ -159,19 +165,21 @@ try {
         "schema_version=1`nowner=georaeplan-external-backup-replica`nreplica_id=$replicaId`n",
         $utf8)
     foreach ($entry in @(
-            'georaeplan.dump', 'georaeplan_itworld.dump', 'files.tar.gz',
-            'data-protection-keys.tar.gz')) {
+            'georaeplan.dump', 'georaeplan_itworld.dump', 'georaeplan_org_branch01.dump',
+            'georaeplan_usenet.dump', 'files.tar.gz', 'data-protection-keys.tar.gz')) {
         [IO.File]::WriteAllText((Join-Path $replicaSet $entry), "fixture-$entry", $utf8)
     }
+    [IO.File]::WriteAllText((Join-Path $replicaSet 'databases.txt'), $databaseManifestText, $utf8)
+    $databaseManifestSha256 = (Get-FileHash -LiteralPath (Join-Path $replicaSet 'databases.txt') -Algorithm SHA256).Hash.ToLowerInvariant()
     [IO.File]::WriteAllText(
         (Join-Path $replicaSet 'metadata.txt'),
-        "backup=georaeplan`nrun_id=$runId`ncreated_at=$([DateTimeOffset]::UtcNow.AddHours(-2).ToString('o'))`ncentral_database=georaeplan`nbusiness_database=georaeplan_itworld`nfiles_archive=files.tar.gz`nkeyring_archive=data-protection-keys.tar.gz`nestimated_source_bytes=1`nrequired_available_bytes=1`nfile_deletion_lease=exclusive_during_database_and_file_capture`ndatabase_snapshot_consistency=unchanged_across_both_dumps`ndatabase_snapshot_sha256=$('a' * 64)`ncentral_business_count_sha256=$businessCountSha256`nbusiness_business_count_sha256=$businessCountSha256`nreplica=disabled`n",
+        "backup=georaeplan`nrun_id=$runId`ncreated_at=$([DateTimeOffset]::UtcNow.AddHours(-2).ToString('o'))`ncentral_database=georaeplan`nbusiness_database=georaeplan_itworld`ndatabase_manifest=databases.txt`ndatabase_count=4`ndatabase_list_sha256=$databaseListSha256`ndatabase_manifest_sha256=$databaseManifestSha256`ndatabase_digest_set_sha256=$databaseDigestSetSha256`nfiles_archive=files.tar.gz`nkeyring_archive=data-protection-keys.tar.gz`nestimated_source_bytes=1`nrequired_available_bytes=1`nfile_deletion_lease=exclusive_during_database_and_file_capture`ndatabase_snapshot_consistency=unchanged_across_all_dumps`ndatabase_snapshot_sha256=$('a' * 64)`ncentral_business_count_sha256=$businessCountSha256`nbusiness_business_count_sha256=$businessCountSha256`nreplica=disabled`n",
         $utf8)
 
     $bashReplicaSet = Convert-ToBashPath $bashExe $replicaSet
     Invoke-Bash -BashExe $bashExe -Command (
         "cd $(Convert-ToBashLiteral $bashReplicaSet) && " +
-        "sha256sum georaeplan.dump georaeplan_itworld.dump files.tar.gz data-protection-keys.tar.gz metadata.txt > SHA256SUMS") | Out-Null
+        "sha256sum georaeplan.dump georaeplan_itworld.dump georaeplan_org_branch01.dump georaeplan_usenet.dump databases.txt files.tar.gz data-protection-keys.tar.gz metadata.txt > SHA256SUMS") | Out-Null
     $sourceManifest = (Get-FileHash -LiteralPath (Join-Path $replicaSet 'SHA256SUMS') -Algorithm SHA256).Hash.ToLowerInvariant()
     [IO.File]::WriteAllText(
         (Join-Path $replicaSet 'COMPLETE'),
@@ -179,7 +187,7 @@ try {
         $utf8)
     $replicaManifestOutput = Invoke-Bash -BashExe $bashExe -Command (
         "cd $(Convert-ToBashLiteral $bashReplicaSet) && " +
-        "sha256sum COMPLETE SHA256SUMS data-protection-keys.tar.gz files.tar.gz georaeplan.dump georaeplan_itworld.dump metadata.txt | sha256sum | awk '{print `$1}'")
+        "sha256sum COMPLETE SHA256SUMS data-protection-keys.tar.gz databases.txt files.tar.gz georaeplan.dump georaeplan_itworld.dump georaeplan_org_branch01.dump georaeplan_usenet.dump metadata.txt | sha256sum | awk '{print `$1}'")
     $replicaManifest = (($replicaManifestOutput.Output | Select-Object -Last 1) -join '').Trim()
     [IO.File]::WriteAllText(
         (Join-Path $replicaSet 'REPLICA'),
@@ -196,7 +204,7 @@ try {
         $utf8)
     [IO.File]::WriteAllText(
         (Join-Path $stateRoot 'external-replica-status.txt'),
-        "replica=ok`nreplica_id=$replicaId`nsource_run_id=$runId`nsource_manifest_sha256=$sourceManifest`nreplica_set_path=$bashReplicaSet`nreplica_manifest_sha256=$replicaManifest`nverified_at=$([DateTimeOffset]::UtcNow.AddHours(-1).ToString('o'))`nrestore_catalog_validation=ok`narchive_validation=ok`n",
+        "replica=ok`nreplica_id=$replicaId`nsource_run_id=$runId`nsource_manifest_sha256=$sourceManifest`ndatabase_count=4`ndatabase_list_sha256=$databaseListSha256`ndatabase_manifest_sha256=$databaseManifestSha256`ndatabase_digest_set_sha256=$databaseDigestSetSha256`nreplica_set_path=$bashReplicaSet`nreplica_manifest_sha256=$replicaManifest`nverified_at=$([DateTimeOffset]::UtcNow.AddHours(-1).ToString('o'))`nrestore_catalog_validation=ok`narchive_validation=ok`n",
         $utf8)
 
     [IO.File]::WriteAllText(
@@ -240,7 +248,7 @@ case "$1" in
     case "$1" in
       pg_isready|createdb) exit 0 ;;
       pg_restore)
-        if [[ "${FAKE_DOCKER_FAIL_BUSINESS_RESTORE:-0}" == 1 && "$*" == *restore_business* ]]; then exit 42; fi
+        if [[ "${FAKE_DOCKER_FAIL_BUSINESS_RESTORE:-0}" == 1 && "$*" == *'/restore/georaeplan_itworld.dump'* ]]; then exit 42; fi
         exit 0
         ;;
       psql)
@@ -299,16 +307,18 @@ esac
     Assert-True ($success.Contains('restore_drill=ok')) 'Restore drill did not publish success.'
     Assert-True ($success.Contains('network_mode=none')) 'Restore drill did not prove network isolation.'
     Assert-True ($success.Contains('business_count_digest_contract=source_metadata_match')) 'Restore drill did not publish the source-bound count digest contract.'
-    Assert-True ($success.Contains("central_schema_sha256=$businessCountSha256")) 'Central restored count digest was not recorded.'
-    Assert-True ($success.Contains("business_schema_sha256=$businessCountSha256")) 'Business restored count digest was not recorded.'
+    Assert-True ($success.Contains('database_count=4')) 'Restored database count was not recorded.'
+    Assert-True ($success.Contains("restored_database_set_sha256=$databaseDigestSetSha256")) 'Restored database digest set was not recorded.'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $stateRoot 'backup-restore-drill-failure-status.txt'))) 'Failure status remained after success.'
     $dockerLog = Get-Content -LiteralPath (Join-Path $fakeBin 'docker.log') -Raw -Encoding UTF8
     Assert-True ($dockerLog.Contains('create --name')) 'Ephemeral container was not created.'
     Assert-True ($dockerLog.Contains('--network none')) 'Ephemeral container was not networkless.'
     Assert-True ($dockerLog.Contains('dst=/var/lib/postgresql/data')) 'Ephemeral restore data workspace was not mounted.'
     Assert-True ($dockerLog.Contains('inspect --format')) 'Ephemeral container contract was not inspected.'
-    Assert-True ($dockerLog.Contains('restore_central /restore/georaeplan.dump')) 'Central dump was not restored.'
-    Assert-True ($dockerLog.Contains('restore_business /restore/georaeplan_itworld.dump')) 'Business dump was not restored.'
+    Assert-True ($dockerLog.Contains('restore_000 /restore/georaeplan.dump')) 'Central dump was not restored.'
+    Assert-True ($dockerLog.Contains('restore_001 /restore/georaeplan_itworld.dump')) 'ITWORLD dump was not restored.'
+    Assert-True ($dockerLog.Contains('restore_002 /restore/georaeplan_org_branch01.dump')) 'Organization dump was not restored.'
+    Assert-True ($dockerLog.Contains('restore_003 /restore/georaeplan_usenet.dump')) 'USENET dump was not restored.'
     Assert-True ($dockerLog.Contains('exec -i')) 'Business-count query did not keep Docker stdin attached.'
     Assert-True ($dockerLog.Contains('rm -f')) 'Ephemeral container was not removed.'
     Assert-True `

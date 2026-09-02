@@ -31,7 +31,7 @@ GEORAEPLAN_REPLICA_ID=<marker와 같은 32 lowercase hex>
 
 1. source backup lock을 shared로, replica lock을 exclusive로 보유한다.
 2. `backup-status.txt`의 정확한 현재 run·manifest·DB snapshot consistency를 확인한다.
-3. source complete set의 정확한 entry set, 단일-link 일반 파일, `SHA256SUMS`, 두 tar, 두 `pg_restore -l`을 검증한다.
+3. source complete set의 `databases.txt`와 정확한 entry set, 단일-link 일반 파일, `SHA256SUMS`, 두 tar, manifest에 적힌 모든 dump의 `pg_restore -l`을 검증한다.
 4. 외부 root의 같은 filesystem `.staging`에 복사하고 다시 동일 검증을 수행한다.
 5. `REPLICA` marker에 source run/hash와 replica manifest hash를 결박한 뒤 `sets/replica_<run>.complete`로 원자 이동한다.
 6. 최종 세트를 재검증한 뒤에만 로컬 `external-replica-status.txt`를 `replica=ok`로 원자 게시한다.
@@ -71,7 +71,7 @@ powershell -NoProfile -File tools/linux/Install-GeoraeplanLinuxPcBackupReplica.p
 
 - 현재 PC/Linux PC에서 확인된 `/mnt/itworld-rental-contracts`에는 백업을 쓰지 않는다.
 - 승인된 전용 NAS share·mount·root marker가 제공되기 전에는 service/timer를 설치하거나 활성화하지 않는다.
-- replica의 archive/catalog 검증은 실제 DB restore drill과 다르다. 별도의 `georaeplan-backup-restore-drill.sh`가 네트워크 없는 일회성 PostgreSQL에 두 dump를 복원하고 업무 표본 쿼리·컨테이너 제거·현재 replica 재검증까지 통과하기 전에는 `restore_drill=ok`를 기록하지 않는다.
+- replica의 archive/catalog 검증은 실제 DB restore drill과 다르다. 별도의 `georaeplan-backup-restore-drill.sh`가 네트워크 없는 일회성 PostgreSQL에 manifest의 모든 dump를 복원하고 업무 표본 쿼리·컨테이너 제거·현재 replica 재검증까지 통과하기 전에는 `restore_drill=ok`를 기록하지 않는다.
 - machine-readable boundary: `restore_drill=not_proven`
 
 복원 드릴 설치기는 기본적으로 읽기 전용 계획만 수행한다. 실제 설치와 실행은 각각 `-Apply`, `-RunAfterInstall`을 명시해야 한다.

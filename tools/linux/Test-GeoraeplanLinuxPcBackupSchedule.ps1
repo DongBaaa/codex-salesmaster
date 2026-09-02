@@ -160,7 +160,13 @@ foreach ($required in @(
         'pg_current_snapshot()',
         'database_snapshot_drift',
         'backup_database_snapshot_consistency=ok',
-        'database_snapshot_consistency=unchanged_across_both_dumps',
+        'database_snapshot_consistency=unchanged_across_all_dumps',
+        'databases.txt',
+        'georaeplan_usenet',
+        'georaeplan_org_',
+        'database_inventory',
+        'database_count',
+        'database_list_sha256',
         'central_business_count_sha256',
         'business_business_count_sha256',
         'backup_business_count_digest_consistency=ok',
@@ -234,6 +240,9 @@ Assert-Contains -Text $installer -Expected '[System.Management.Automation.PSCred
 Assert-Contains -Text $installer -Expected '-Credential $SudoCredential' -Label 'installer'
 Assert-Contains -Text $installer -Expected '-PromptForSudoCredential cannot be combined with -SudoCredential.' -Label 'installer'
 Assert-Contains -Text $installer -Expected 'backup_schedule_remote_assets=ok' -Label 'installer'
+Assert-Contains -Text $installer -Expected '[switch]$RunAfterInstall' -Label 'installer'
+Assert-Contains -Text $installer -Expected "systemctl start georaeplan-backup.service" -Label 'installer'
+Assert-Contains -Text $installer -Expected 'backup_schedule_executed=' -Label 'installer'
 Assert-Contains -Text $installer -Expected 'installed_unreadable=%n mode=%a uid=%u gid=%g' -Label 'installer'
 Assert-Contains -Text $installer -Expected 'config --services | grep -qx postgres' -Label 'installer'
 Assert-Contains -Text $installer -Expected 'database_identity=ok' -Label 'installer'
@@ -370,11 +379,11 @@ if [[ "$selected_service" == "api" ]]; then
       printf '111111\n'
       exit 0
     fi
-    printf 'georaeplan\n'
+    printf 'Default=georaeplan\n'
     if [[ -f "$GEORAEPLAN_FAKE_API_DB_DRIFT_FILE" ]]; then
-      printf 'GEORAEPLAN_ITWORLD\n'
+      printf 'ITWORLD=GEORAEPLAN_ITWORLD\n'
     else
-      printf 'georaeplan_itworld\n'
+      printf 'ITWORLD=georaeplan_itworld\n'
     fi
     exit 0
   fi
@@ -396,6 +405,10 @@ case "${1:-}" in
     printf 'PGDUMP-TEST-%s\n' "$*"
     ;;
   psql)
+    if [[ "$*" == *'SELECT datname FROM pg_database'* ]]; then
+      printf '%s\n' georaeplan georaeplan_itworld georaeplan_org_branch01 georaeplan_usenet
+      exit 0
+    fi
     if [[ "$*" == *'pg_current_snapshot()'* ]]; then
       count=0
       if [[ -f "$GEORAEPLAN_FAKE_SNAPSHOT_COUNT_FILE" ]]; then
@@ -573,6 +586,9 @@ fi
     foreach ($name in @(
             'georaeplan.dump',
             'georaeplan_itworld.dump',
+            'georaeplan_org_branch01.dump',
+            'georaeplan_usenet.dump',
+            'databases.txt',
             'files.tar.gz',
             'data-protection-keys.tar.gz',
             'metadata.txt',
@@ -595,16 +611,23 @@ fi
     Assert-Contains -Text $successStatus -Expected 'replica=disabled' -Label 'success status'
     Assert-Contains -Text $successStatus -Expected 'required_available_bytes=' -Label 'success status'
     Assert-Contains -Text $successStatus -Expected 'file_deletion_lease=exclusive_during_database_and_file_capture' -Label 'success status'
-    Assert-Contains -Text $successStatus -Expected 'database_snapshot_consistency=unchanged_across_both_dumps' -Label 'success status'
+    Assert-Contains -Text $successStatus -Expected 'database_snapshot_consistency=unchanged_across_all_dumps' -Label 'success status'
+    Assert-Contains -Text $successStatus -Expected 'database_count=4' -Label 'success status'
+    Assert-Contains -Text $successStatus -Expected 'database_list_sha256=' -Label 'success status'
     Assert-Contains -Text $successStatus -Expected 'database_snapshot_sha256=' -Label 'success status'
     Assert-NotContains -Text $successStatus -Forbidden 'replica=ok' -Label 'success status'
     $successStatusHash = (Get-FileHash -LiteralPath $successStatusPath -Algorithm SHA256).Hash
 
     $successMetadata = Get-Content -LiteralPath (Join-Path $completedSets[0].FullName 'metadata.txt') -Raw -Encoding UTF8
-    Assert-Contains -Text $successMetadata -Expected 'database_snapshot_consistency=unchanged_across_both_dumps' -Label 'backup metadata'
+    Assert-Contains -Text $successMetadata -Expected 'database_snapshot_consistency=unchanged_across_all_dumps' -Label 'backup metadata'
+    Assert-Contains -Text $successMetadata -Expected 'database_manifest=databases.txt' -Label 'backup metadata'
+    Assert-Contains -Text $successMetadata -Expected 'database_count=4' -Label 'backup metadata'
     Assert-Contains -Text $successMetadata -Expected 'database_snapshot_sha256=' -Label 'backup metadata'
     Assert-Contains -Text $successMetadata -Expected 'central_business_count_sha256=' -Label 'backup metadata'
     Assert-Contains -Text $successMetadata -Expected 'business_business_count_sha256=' -Label 'backup metadata'
+    $databaseManifest = Get-Content -LiteralPath (Join-Path $completedSets[0].FullName 'databases.txt') -Raw -Encoding UTF8
+    Assert-Contains -Text $databaseManifest -Expected "georaeplan_org_branch01`tgeoraeplan_org_branch01.dump`t" -Label 'database manifest'
+    Assert-Contains -Text $databaseManifest -Expected "georaeplan_usenet`tgeoraeplan_usenet.dump`t" -Label 'database manifest'
 
     Remove-Item -LiteralPath $businessCountFile -Force -ErrorAction SilentlyContinue
     Set-Content -LiteralPath $businessCountDriftFlag -Value 'drift' -Encoding UTF8
@@ -638,8 +661,8 @@ fi
     $postSnapshotDriftTrace = Get-Content -LiteralPath $tracePath -Raw -Encoding UTF8
     Assert-True `
         -Condition (([regex]::Matches($postSnapshotDriftTrace, ' pg_dump ')).Count -eq
-                    ([regex]::Matches($preSnapshotDriftTrace, ' pg_dump ')).Count + 2) `
-        -Message 'The snapshot drift harness did not enclose both logical dumps.'
+                    ([regex]::Matches($preSnapshotDriftTrace, ' pg_dump ')).Count + 4) `
+        -Message 'The snapshot drift harness did not enclose all discovered database dumps.'
     Assert-True `
         -Condition ($successStatusHash -eq (Get-FileHash -LiteralPath $successStatusPath -Algorithm SHA256).Hash) `
         -Message 'A snapshot-drift run overwrote the last successful backup status.'

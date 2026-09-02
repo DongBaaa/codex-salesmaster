@@ -141,17 +141,76 @@ assert_exact_keys() {
   fi
 }
 
+load_database_manifest() {
+  local root="$1"
+  local line_count=0
+  local database_name
+  local dump_name
+  local digest
+  local extra
+  local computed_list_sha256
+  local computed_digest_set_sha256
+  local -A seen_databases=()
+  local -A seen_dumps=()
+  manifest_database_names=()
+  manifest_dump_names=()
+  manifest_database_digests=()
+
+  assert_regular_single_link_file "$root/databases.txt" databases.txt
+  while IFS=$'\t' read -r database_name dump_name digest extra; do
+    ((line_count += 1))
+    if [[ -n "$extra" ||
+          ( "$database_name" != georaeplan &&
+            "$database_name" != georaeplan_itworld &&
+            "$database_name" != georaeplan_usenet &&
+            ! "$database_name" =~ ^georaeplan_org_[a-z0-9_]+$ ) ||
+          "$dump_name" != "${database_name}.dump" ||
+          ! "$digest" =~ ^[0-9a-f]{64}$ ||
+          -n "${seen_databases[$database_name]:-}" ||
+          -n "${seen_dumps[$dump_name]:-}" ]]; then
+      echo "replica_database_manifest_invalid line=$line_count" >&2
+      exit 3
+    fi
+    seen_databases[$database_name]=1
+    seen_dumps[$dump_name]=1
+    manifest_database_names+=("$database_name")
+    manifest_dump_names+=("$dump_name")
+    manifest_database_digests+=("$digest")
+  done < "$root/databases.txt"
+  if (( line_count < 2 || line_count > 256 )) ||
+     [[ -z "${seen_databases[georaeplan]:-}" ||
+        -z "${seen_databases[georaeplan_itworld]:-}" ]]; then
+    echo "replica_database_manifest_invalid reason=count_or_required_database" >&2
+    exit 3
+  fi
+  computed_list_sha256="$(printf '%s\n' "${manifest_database_names[@]}" | sha256sum | awk '{print $1}')"
+  computed_digest_set_sha256="$(
+    for index in "${!manifest_database_names[@]}"; do
+      printf '%s=%s\n' "${manifest_database_names[$index]}" "${manifest_database_digests[$index]}"
+    done | sha256sum | awk '{print $1}'
+  )"
+  [[ "$(read_single_field "$root/metadata.txt" database_manifest)" == databases.txt &&
+      "$(read_single_field "$root/metadata.txt" database_count)" == "$line_count" &&
+      "$(read_single_field "$root/metadata.txt" database_list_sha256)" == "$computed_list_sha256" &&
+      "$(read_single_field "$root/metadata.txt" database_manifest_sha256)" == "$(sha256sum "$root/databases.txt" | awk '{print $1}')" &&
+      "$(read_single_field "$root/metadata.txt" database_digest_set_sha256)" == "$computed_digest_set_sha256" ]] || {
+    echo "replica_database_manifest_binding_invalid" >&2
+    exit 3
+  }
+}
+
 compute_replica_manifest_sha256() {
   local root="$1"
+  load_database_manifest "$root"
   (
     cd "$root"
     sha256sum \
       COMPLETE \
       SHA256SUMS \
       data-protection-keys.tar.gz \
+      databases.txt \
       files.tar.gz \
-      georaeplan.dump \
-      georaeplan_itworld.dump \
+      "${manifest_dump_names[@]}" \
       metadata.txt |
       sha256sum |
       awk '{print $1}'
@@ -163,10 +222,14 @@ assert_exact_entry_set() {
   local include_replica_marker="$2"
   local expected
   local actual
-  expected=$'COMPLETE\nSHA256SUMS\ndata-protection-keys.tar.gz\nfiles.tar.gz\ngeoraeplan.dump\ngeoraeplan_itworld.dump\nmetadata.txt'
-  if [[ "$include_replica_marker" == "true" ]]; then
-    expected+=$'\nREPLICA'
-  fi
+  load_database_manifest "$root"
+  expected="$({
+    printf '%s\n' COMPLETE SHA256SUMS data-protection-keys.tar.gz databases.txt files.tar.gz metadata.txt
+    printf '%s\n' "${manifest_dump_names[@]}"
+    if [[ "$include_replica_marker" == true ]]; then
+      printf '%s\n' REPLICA
+    fi
+  } | LC_ALL=C sort)"
   actual="$(find "$root" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)"
   if [[ "$actual" != "$expected" ]]; then
     echo "replica_entry_set_invalid root=$root" >&2
@@ -183,6 +246,7 @@ remove_owned_staging_dir() {
   local root_identity
   local entry
   local name
+  local -a owned_dump_names=()
   if [[ ! -d "$root" || -L "$root" ||
         "$(stat -Lc '%d' "$root")" != "$(stat -Lc '%d' "$REPLICA_STAGING_ROOT")" ]]; then
     echo "replica_staging_invalid path=$root" >&2
@@ -192,7 +256,14 @@ remove_owned_staging_dir() {
   while IFS= read -r -d '' entry; do
     name="${entry##*/}"
     case "$name" in
-      COMPLETE|SHA256SUMS|data-protection-keys.tar.gz|files.tar.gz|georaeplan.dump|georaeplan_itworld.dump|metadata.txt|REPLICA)
+      georaeplan.dump|georaeplan_itworld.dump|georaeplan_usenet.dump|georaeplan_org_[a-z0-9_]*.dump)
+        if [[ ! -f "$entry" || -L "$entry" || "$(stat -Lc '%h' "$entry")" != "1" ]]; then
+          echo "replica_staging_entry_invalid name=$name" >&2
+          return 1
+        fi
+        owned_dump_names+=("$name")
+        ;;
+      COMPLETE|SHA256SUMS|data-protection-keys.tar.gz|databases.txt|files.tar.gz|metadata.txt|REPLICA)
         if [[ ! -f "$entry" || -L "$entry" || "$(stat -Lc '%h' "$entry")" != "1" ]]; then
           echo "replica_staging_entry_invalid name=$name" >&2
           return 1
@@ -212,14 +283,16 @@ remove_owned_staging_dir() {
     COMPLETE \
     SHA256SUMS \
     data-protection-keys.tar.gz \
+    databases.txt \
     files.tar.gz \
-    georaeplan.dump \
-    georaeplan_itworld.dump \
     metadata.txt \
     REPLICA; do
     if [[ -e "$root/$name" || -L "$root/$name" ]]; then
       rm -f -- "$root/$name" || return 1
     fi
+  done
+  for name in "${owned_dump_names[@]}"; do
+    rm -f -- "$root/$name" || return 1
   done
   rmdir -- "$root"
 }
@@ -233,13 +306,29 @@ assert_archive_set() {
   local actual_manifest_sha256
 
   assert_exact_entry_set "$root" false
+  load_database_manifest "$root"
+  assert_exact_keys \
+    "$root/metadata.txt" \
+    $'backup\nbusiness_business_count_sha256\nbusiness_database\ncentral_business_count_sha256\ncentral_database\ncreated_at\ndatabase_count\ndatabase_digest_set_sha256\ndatabase_list_sha256\ndatabase_manifest\ndatabase_manifest_sha256\ndatabase_snapshot_consistency\ndatabase_snapshot_sha256\nestimated_source_bytes\nfile_deletion_lease\nfiles_archive\nkeyring_archive\nreplica\nrequired_available_bytes\nrun_id' \
+    metadata
+  [[ "$(read_single_field "$root/metadata.txt" backup)" == georaeplan &&
+      "$(read_single_field "$root/metadata.txt" run_id)" == "$expected_run_id" &&
+      "$(read_single_field "$root/metadata.txt" central_database)" == georaeplan &&
+      "$(read_single_field "$root/metadata.txt" business_database)" == georaeplan_itworld &&
+      "$(read_single_field "$root/metadata.txt" files_archive)" == files.tar.gz &&
+      "$(read_single_field "$root/metadata.txt" keyring_archive)" == data-protection-keys.tar.gz &&
+      "$(read_single_field "$root/metadata.txt" file_deletion_lease)" == exclusive_during_database_and_file_capture &&
+      "$(read_single_field "$root/metadata.txt" database_snapshot_consistency)" == unchanged_across_all_dumps &&
+      "$(read_single_field "$root/metadata.txt" replica)" == disabled ]] || {
+    echo "replica_metadata_contract_invalid" >&2
+    exit 3
+  }
   for name in \
     COMPLETE \
     SHA256SUMS \
     data-protection-keys.tar.gz \
+    databases.txt \
     files.tar.gz \
-    georaeplan.dump \
-    georaeplan_itworld.dump \
     metadata.txt; do
     assert_regular_single_link_file "$root/$name" "$name"
   done
@@ -269,8 +358,10 @@ assert_archive_set() {
   )
   tar -tzf "$root/files.tar.gz" > /dev/null
   tar -tzf "$root/data-protection-keys.tar.gz" > /dev/null
-  pg_restore -l "$root/georaeplan.dump" > /dev/null
-  pg_restore -l "$root/georaeplan_itworld.dump" > /dev/null
+  for dump_name in "${manifest_dump_names[@]}"; do
+    assert_regular_single_link_file "$root/$dump_name" "$dump_name"
+    pg_restore -l "$root/$dump_name" > /dev/null
+  done
 }
 
 assert_replicated_set() {
@@ -278,21 +369,10 @@ assert_replicated_set() {
   local expected_run_id="$2"
   local expected_manifest_sha256="$3"
   local expected_root_id="$4"
-  local actual
-  local expected
   local replica_manifest_sha256
   local replicated_at
 
-  expected=$'COMPLETE\nREPLICA\nSHA256SUMS\ndata-protection-keys.tar.gz\nfiles.tar.gz\ngeoraeplan.dump\ngeoraeplan_itworld.dump\nmetadata.txt'
-  actual="$(find "$root" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)"
-  if [[ "$actual" != "$expected" ]]; then
-    echo "replica_entry_set_invalid root=$root" >&2
-    exit 3
-  fi
-  if find "$root" -xdev -mindepth 1 ! -type f -print -quit | grep -q .; then
-    echo "replica_entry_type_invalid root=$root" >&2
-    exit 3
-  fi
+  assert_exact_entry_set "$root" true
   assert_exact_keys \
     "$root/REPLICA" \
     $'replica\nreplica_id\nreplica_manifest_sha256\nreplicated_at\nsource_manifest_sha256\nsource_run_id' \
@@ -321,13 +401,13 @@ assert_archive_set_without_entry_check() {
   local expected_run_id="$2"
   local expected_manifest_sha256="$3"
   local actual_manifest_sha256
+  load_database_manifest "$root"
   for name in \
     COMPLETE \
     SHA256SUMS \
     data-protection-keys.tar.gz \
+    databases.txt \
     files.tar.gz \
-    georaeplan.dump \
-    georaeplan_itworld.dump \
     metadata.txt; do
     assert_regular_single_link_file "$root/$name" "$name"
   done
@@ -353,8 +433,10 @@ assert_archive_set_without_entry_check() {
   )
   tar -tzf "$root/files.tar.gz" > /dev/null
   tar -tzf "$root/data-protection-keys.tar.gz" > /dev/null
-  pg_restore -l "$root/georaeplan.dump" > /dev/null
-  pg_restore -l "$root/georaeplan_itworld.dump" > /dev/null
+  for dump_name in "${manifest_dump_names[@]}"; do
+    assert_regular_single_link_file "$root/$dump_name" "$dump_name"
+    pg_restore -l "$root/$dump_name" > /dev/null
+  done
 }
 
 for pair in \
@@ -471,21 +553,30 @@ done < <(find "$REPLICA_STAGING_ROOT" -mindepth 1 -maxdepth 1 -print)
 
 if [[ "$(read_single_field "$SOURCE_STATUS" backup)" != "ok" ||
       "$(read_single_field "$SOURCE_STATUS" replica)" != "disabled" ||
-      "$(read_single_field "$SOURCE_STATUS" database_snapshot_consistency)" != "unchanged_across_both_dumps" ]]; then
+      "$(read_single_field "$SOURCE_STATUS" database_snapshot_consistency)" != "unchanged_across_all_dumps" ]]; then
   echo "replica_source_status_not_eligible" >&2
   exit 3
 fi
 assert_exact_keys \
   "$SOURCE_STATUS" \
-  $'backup\ncompleted_at\ndatabase_snapshot_consistency\ndatabase_snapshot_sha256\nestimated_source_bytes\nfile_deletion_lease\nmanifest_sha256\nreplica\nrequired_available_bytes\nretention_days\nrun_id\nset_path' \
+  $'backup\ncompleted_at\ndatabase_count\ndatabase_digest_set_sha256\ndatabase_list_sha256\ndatabase_manifest_sha256\ndatabase_snapshot_consistency\ndatabase_snapshot_sha256\nestimated_source_bytes\nfile_deletion_lease\nmanifest_sha256\nreplica\nrequired_available_bytes\nretention_days\nrun_id\nset_path' \
   source_status
 completed_at="$(read_single_field "$SOURCE_STATUS" completed_at)"
 database_snapshot_sha256="$(read_single_field "$SOURCE_STATUS" database_snapshot_sha256)"
+database_count="$(read_single_field "$SOURCE_STATUS" database_count)"
+database_list_sha256="$(read_single_field "$SOURCE_STATUS" database_list_sha256)"
+database_manifest_sha256="$(read_single_field "$SOURCE_STATUS" database_manifest_sha256)"
+database_digest_set_sha256="$(read_single_field "$SOURCE_STATUS" database_digest_set_sha256)"
 estimated_source_bytes="$(read_single_field "$SOURCE_STATUS" estimated_source_bytes)"
 required_available_bytes="$(read_single_field "$SOURCE_STATUS" required_available_bytes)"
 retention_days="$(read_single_field "$SOURCE_STATUS" retention_days)"
 if ! date -d "$completed_at" -Iseconds >/dev/null 2>&1 ||
    [[ ! "$database_snapshot_sha256" =~ ^[0-9a-f]{64}$ ||
+      ! "$database_count" =~ ^[0-9]{1,3}$ ||
+      "$database_count" -lt 2 || "$database_count" -gt 256 ||
+      ! "$database_list_sha256" =~ ^[0-9a-f]{64}$ ||
+      ! "$database_manifest_sha256" =~ ^[0-9a-f]{64}$ ||
+      ! "$database_digest_set_sha256" =~ ^[0-9a-f]{64}$ ||
       ! "$estimated_source_bytes" =~ ^[0-9]+$ ||
       ! "$required_available_bytes" =~ ^[0-9]+$ ||
       ! "$retention_days" =~ ^[0-9]+$ ||
@@ -521,13 +612,15 @@ if [[ -e "$final_dir" ]]; then
 else
   staging_dir="$REPLICA_STAGING_ROOT/replica_${REPLICA_ID}_${run_id}_$$.staging"
   mkdir -m 0700 -- "$staging_dir"
+  load_database_manifest "$source_set"
+  source_dump_names=("${manifest_dump_names[@]}")
   for name in \
     COMPLETE \
     SHA256SUMS \
     data-protection-keys.tar.gz \
+    databases.txt \
     files.tar.gz \
-    georaeplan.dump \
-    georaeplan_itworld.dump \
+    "${source_dump_names[@]}" \
     metadata.txt; do
     cp --reflink=never --preserve=timestamps -- "$source_set/$name" "$staging_dir/$name"
   done
@@ -578,6 +671,10 @@ printf '%s\n' \
   "replica_id=$REPLICA_ID" \
   "source_run_id=$run_id" \
   "source_manifest_sha256=$source_manifest_sha256" \
+  "database_count=$database_count" \
+  "database_list_sha256=$database_list_sha256" \
+  "database_manifest_sha256=$database_manifest_sha256" \
+  "database_digest_set_sha256=$database_digest_set_sha256" \
   "replica_set_path=$final_dir" \
   "replica_manifest_sha256=$replica_manifest_sha256" \
   "verified_at=$(date -Iseconds)" \

@@ -3135,7 +3135,15 @@ public sealed class IsolatedUserBootstrapSafetyTests
             preparationSource,
             StringComparison.Ordinal);
         Assert.Contains(
-            "'SeedUsers__EnableSeedUsers' = 'false'",
+            "'SeedUsers__EnableSeedUsers' = 'true'",
+            preparationSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "'SeedUsers__AdminOnlyBootstrap' = 'true'",
+            preparationSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "'SeedUsers__UpdateExistingAdminPassword' = 'true'",
             preparationSource,
             StringComparison.Ordinal);
         Assert.Contains(

@@ -7,6 +7,7 @@ param(
     [switch]$MirrorToLive,
     [switch]$PreserveLiveUpdateAssets,
     [switch]$PreserveLiveAndroidUpdate,
+    [switch]$PreserveLocalAndroidUpdate,
     [string]$LinuxSshHost = '192.168.0.199',
     [string]$LinuxSshUser = 'itw',
     [int]$LinuxSshPort = 2222,
@@ -4645,8 +4646,14 @@ if ($PreserveLiveUpdateAssets -and -not $MirrorToLive) {
 if ($PreserveLiveAndroidUpdate -and -not $MirrorToLive) {
     throw 'PreserveLiveAndroidUpdate requires MirrorToLive so the verified live Android baseline can be copied.'
 }
+if ($PreserveLocalAndroidUpdate -and $MirrorToLive) {
+    throw 'PreserveLocalAndroidUpdate is only valid for a staged release that is not applied to live.'
+}
 if ($PreserveLiveUpdateAssets -and $PreserveLiveAndroidUpdate) {
     throw 'PreserveLiveUpdateAssets cannot be combined with PreserveLiveAndroidUpdate.'
+}
+if ($PreserveLocalAndroidUpdate -and ($PreserveLiveUpdateAssets -or $PreserveLiveAndroidUpdate)) {
+    throw 'PreserveLocalAndroidUpdate cannot be combined with a live preservation mode.'
 }
 
 if ($MirrorToLive -and -not $SkipPlatformHealthChecks) {
@@ -4788,7 +4795,7 @@ try {
         if (-not [string]::IsNullOrWhiteSpace($AndroidNotes)) {
             $updateAssetArgs.AndroidNotes = $AndroidNotes
         }
-        if ($PreserveLiveAndroidUpdate) {
+        if ($PreserveLiveAndroidUpdate -or $PreserveLocalAndroidUpdate) {
             $updateAssetArgs.PreserveExistingAndroid = $true
         }
 
@@ -4817,6 +4824,9 @@ try {
     }
     elseif ($MirrorToLive -and $SkipAndroidSigningContinuityCheck.IsPresent) {
         Write-Warning 'Android signing continuity gate was skipped by request. Use only when there is no Android package change or a separate reinstall/migration plan has already been verified.'
+    }
+    elseif ($PreserveLocalAndroidUpdate) {
+        Write-Host 'staged_release_android_signing_continuity=not-applicable reason=verified-local-live-equivalent-android-update-preserved'
     }
 
     Update-PublishedAppSettings -PublishRoot $tempPublishRoot -RemoteEnv $remoteEnv

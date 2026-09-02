@@ -131,6 +131,31 @@ public sealed class PhysicalDatabaseIdentityTests
     }
 
     [Fact]
+    public void DedicatedConfiguration_IncludesUsenetGroupWhenItUsesItsOwnPhysicalDatabase()
+    {
+        const string central =
+            "Host=db-server;Port=5432;Database=central;Username=app;Password=test";
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    [$"ConnectionStrings:{TenantScopeCatalog.UsenetGroup}"] =
+                        "Host=db-server;Port=5432;Database=georaeplan_usenet;Username=app;Password=test",
+                    [$"ConnectionStrings:{TenantScopeCatalog.Itworld}"] =
+                        "Host=db-server;Port=5432;Database=georaeplan_itworld;Username=app;Password=test"
+                })
+            .Build();
+
+        var resolved = DedicatedBusinessConnectionConfiguration.Resolve(
+            configuration,
+            central);
+
+        Assert.Equal(2, resolved.Count);
+        Assert.Contains(TenantScopeCatalog.UsenetGroup, resolved.Keys);
+        Assert.Contains(TenantScopeCatalog.Itworld, resolved.Keys);
+    }
+
+    [Fact]
     public void StoredFileReconciler_DeduplicatesExactDatabaseButKeepsCaseDistinctDatabase()
     {
         var central = CreatePostgreSqlConnectionInfo(

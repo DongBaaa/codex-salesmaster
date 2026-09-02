@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [switch]$Apply,
+    [switch]$RunAfterInstall,
     [switch]$PromptForSudoCredential,
     [System.Management.Automation.PSCredential]$SudoCredential,
     [switch]$SkipRemoteReadOnlyCheck,
@@ -182,6 +183,9 @@ if (-not [string]::Equals($LinuxRemoteRoot, '/srv/georaeplan', [StringComparison
 }
 if ($Apply -and $SkipRemoteReadOnlyCheck) {
     throw '-Apply requires the remote read-only preflight.'
+}
+if ($RunAfterInstall -and -not $Apply) {
+    throw '-RunAfterInstall requires -Apply.'
 }
 if ($PromptForSudoCredential -and -not $Apply) {
     throw '-PromptForSudoCredential requires -Apply.'
@@ -380,6 +384,7 @@ try {
     $expectedTimerSha256 = ($assets |
         Where-Object Name -eq 'georaeplan-backup.timer' |
         Select-Object -First 1).Sha256.ToLowerInvariant()
+    $runFlag = if ($RunAfterInstall) { 'true' } else { 'false' }
     $applyCommand = @"
 set -eu
 root=$quotedRoot
@@ -407,6 +412,11 @@ sudo -n systemctl daemon-reload
 sudo -n systemctl enable --now georaeplan-backup.timer
 sudo -n systemctl is-enabled georaeplan-backup.timer
 sudo -n systemctl is-active georaeplan-backup.timer
+if [ '$runFlag' = 'true' ]; then
+  sudo -n systemctl start georaeplan-backup.service
+  test "`$(sudo -n systemctl show georaeplan-backup.service --property=Result --value)" = 'success'
+  test "`$(sudo -n systemctl show georaeplan-backup.service --property=ExecMainStatus --value)" = '0'
+fi
 backup_script_hash=`$(sudo -n sha256sum /usr/local/sbin/georaeplan-backup.sh)
 backup_script_hash=`$`{backup_script_hash%% *}
 service_hash=`$(sudo -n sha256sum /etc/systemd/system/georaeplan-backup.service)
@@ -439,6 +449,7 @@ printf 'backup_schedule_remote_assets=ok\n'
     }
     $applyOutput | ForEach-Object { Write-Host $_ }
     Write-Host 'backup_schedule_apply=ok'
+    Write-Host "backup_schedule_executed=$($RunAfterInstall.ToString().ToLowerInvariant())"
 }
 finally {
     if ($null -ne $sshExe) {

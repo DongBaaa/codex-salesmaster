@@ -17,13 +17,16 @@ public sealed class TenantSettingsController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
     private readonly OfficeScopeService _officeScopeService;
+    private readonly TenantProvisioningService? _tenantProvisioningService;
 
     public TenantSettingsController(
         AppDbContext dbContext,
-        OfficeScopeService officeScopeService)
+        OfficeScopeService officeScopeService,
+        TenantProvisioningService? tenantProvisioningService = null)
     {
         _dbContext = dbContext;
         _officeScopeService = officeScopeService;
+        _tenantProvisioningService = tenantProvisioningService;
     }
 
     [HttpGet]
@@ -66,6 +69,33 @@ public sealed class TenantSettingsController : ControllerBase
         };
 
         return Ok(snapshot);
+    }
+
+    [HttpPost("provision-independent")]
+    public async Task<ActionResult<TenantProvisioningResultDto>> ProvisionIndependentTenant(
+        [FromBody] ProvisionIndependentTenantRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (RequireSystemConfigurationScope() is { } forbidden)
+            return forbidden;
+        if (_tenantProvisioningService is null)
+            return Problem("독립 업체 DB 생성 서비스가 구성되지 않았습니다.");
+
+        try
+        {
+            var result = await _tenantProvisioningService.ProvisionIndependentTenantAsync(
+                request,
+                cancellationToken);
+            return Ok(result);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ex.Message);
+        }
+        catch (DbUpdateException)
+        {
+            return Conflict("같은 업체 코드 또는 지점 코드가 이미 존재합니다.");
+        }
     }
 
     [HttpPut("tenants/{tenantCode}")]

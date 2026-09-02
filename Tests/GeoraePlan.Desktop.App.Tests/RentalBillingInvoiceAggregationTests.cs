@@ -348,6 +348,138 @@ public sealed class RentalBillingInvoiceAggregationTests
         }
     }
 
+    [Fact]
+    public async Task BuildRentalBillingInvoiceLinesAsync_AppendsMeterOverageCharge()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-invoice-meter-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var asset = CreateBillableAsset(assetId, profileId, "METER-A", "METER-SN", "IMC2010", 50_000m);
+            asset.MeterBillingEnabled = true;
+            asset.BlackIncludedMode = RentalMeterPolicyModes.Numeric;
+            asset.BlackIncludedPages = 100;
+            asset.BlackOverageUnitPrice = 10m;
+            asset.ColorIncludedMode = RentalMeterPolicyModes.Unlimited;
+            asset.MeterReadingsJson = RentalMeterBillingRules.SerializeReadings([
+                new RentalMeterReadingRecord
+                {
+                    BillingYearMonth = "2026-05",
+                    ReadingDate = new DateOnly(2026, 5, 31),
+                    BlackMeter = 1000,
+                    ColorMeter = 100,
+                    IsFinalized = true,
+                    IsOpeningBaseline = true
+                },
+                new RentalMeterReadingRecord
+                {
+                    BillingYearMonth = "2026-06",
+                    ReadingDate = new DateOnly(2026, 6, 30),
+                    BlackMeter = 1300,
+                    ColorMeter = 120,
+                    IsFinalized = true
+                }
+            ]);
+            db.RentalAssets.Add(asset);
+            await db.SaveChangesAsync();
+
+            var result = await InvokeBuildRentalBillingInvoiceLinesAsync(
+                new RentalStateService(db),
+                CreateProfile(profileId, "개별"),
+                CreateRun(),
+                [new RentalBillingTemplateItemModel
+                {
+                    DisplayItemName = "IMC2010",
+                    BillingLineMode = "개별",
+                    Unit = "대",
+                    IncludedAssetIds = [assetId]
+                }],
+                CreateAdminSession());
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(2, result.Lines.Count);
+            var meterLine = Assert.Single(
+                result.Lines,
+                line => line.ItemNameOriginal.Contains("흑백 초과출력", StringComparison.Ordinal));
+            Assert.Equal("매", meterLine.Unit);
+            Assert.Equal(200m, meterLine.Quantity);
+            Assert.Equal(10m, meterLine.UnitPrice);
+            Assert.Equal(2000m, meterLine.LineAmount);
+            Assert.Contains("사용 300매", meterLine.Remark, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task BuildRentalBillingInvoiceLinesAsync_BlocksEnabledMeterAssetWithoutFinalReading()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-invoice-meter-review-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var asset = CreateBillableAsset(assetId, profileId, "METER-B", "METER-SN-B", "IMC2010", 50_000m);
+            asset.MeterBillingEnabled = true;
+            asset.BlackIncludedMode = RentalMeterPolicyModes.Numeric;
+            asset.BlackIncludedPages = 100;
+            asset.BlackOverageUnitPrice = 10m;
+            asset.ColorIncludedMode = RentalMeterPolicyModes.Unlimited;
+            asset.MeterReadingsJson = RentalMeterBillingRules.SerializeReadings([
+                new RentalMeterReadingRecord
+                {
+                    BillingYearMonth = "2026-05",
+                    ReadingDate = new DateOnly(2026, 5, 31),
+                    BlackMeter = 1000,
+                    ColorMeter = 100,
+                    IsFinalized = true,
+                    IsOpeningBaseline = true
+                }
+            ]);
+            db.RentalAssets.Add(asset);
+            await db.SaveChangesAsync();
+
+            var result = await InvokeBuildRentalBillingInvoiceLinesAsync(
+                new RentalStateService(db),
+                CreateProfile(profileId, "개별"),
+                CreateRun(),
+                [new RentalBillingTemplateItemModel
+                {
+                    DisplayItemName = "IMC2010",
+                    BillingLineMode = "개별",
+                    IncludedAssetIds = [assetId]
+                }],
+                CreateAdminSession());
+
+            Assert.False(result.Success);
+            Assert.Empty(result.Lines);
+            Assert.Contains("2026-06 확정 검침값이 없습니다", result.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     private static LocalRentalAsset CreateBillableAsset(
         Guid assetId,
         Guid profileId,

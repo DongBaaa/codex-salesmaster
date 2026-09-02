@@ -122,6 +122,7 @@ try
         Console.WriteLine($"customer_aliases_kept={generated.Audit.CustomerAliasKeptCount}");
         Console.WriteLine($"customer_changes={generated.Audit.CustomerChangedCount}");
         Console.WriteLine($"non_operating_assignments_cleared={generated.Audit.NonOperatingAssignmentClearedCount}");
+        Console.WriteLine($"cross_database_tombstones={generated.Audit.CrossDatabaseTombstoneCount}");
         Console.WriteLine($"profiles_trimmed={generated.Audit.BillingProfileTrimmedCount}");
         Console.WriteLine($"profiles_deactivated={generated.Audit.BillingProfileDeactivatedCount}");
         Console.WriteLine($"vat_inclusive_fees_adjusted={generated.Audit.VatInclusiveFeeAdjustedCount}");

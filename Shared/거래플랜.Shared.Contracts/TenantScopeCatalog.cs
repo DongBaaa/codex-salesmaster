@@ -67,8 +67,32 @@ public static class TenantScopeCatalog
             return true;
         }
 
+        if (TryNormalizeCustomTenantCode(trimmed, out canonical))
+            return true;
+
         canonical = string.Empty;
         return false;
+    }
+
+    public static bool TryNormalizeCustomTenantCode(string? value, out string canonical)
+    {
+        var normalized = (value ?? string.Empty).Trim().ToUpperInvariant();
+        if (normalized.Length is < 5 or > 40 ||
+            !normalized.StartsWith("ORG_", StringComparison.Ordinal) ||
+            !char.IsLetter(normalized[4]) ||
+            normalized.EndsWith('_') ||
+            normalized is OfficeCodeCatalog.Shared or "CENTRAL" or "POSTGRES" ||
+            normalized.EndsWith("_MAIN", StringComparison.Ordinal) ||
+            normalized.Any(character => !(character is >= 'A' and <= 'Z' ||
+                                          character is >= '0' and <= '9' ||
+                                          character == '_')))
+        {
+            canonical = string.Empty;
+            return false;
+        }
+
+        canonical = normalized;
+        return true;
     }
 
     public static string NormalizeTenantCodeOrDefault(string? value, string? fallback = null)
@@ -130,11 +154,15 @@ public static class TenantScopeCatalog
     }
 
     public static string GetTenantCodeForOffice(string? officeCode)
-        => OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode) switch
+    {
+        var normalizedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode);
+        return normalizedOfficeCode switch
         {
             OfficeCodeCatalog.Itworld => Itworld,
-            _ => UsenetGroup
+            OfficeCodeCatalog.Usenet or OfficeCodeCatalog.Yeonsu => UsenetGroup,
+            _ => normalizedOfficeCode
         };
+    }
 
     private static bool TryResolveTenantCodeForCanonicalOffice(string? officeCode, out string tenantCode)
     {
@@ -198,7 +226,8 @@ public static class TenantScopeCatalog
         return normalizedTenant switch
         {
             Itworld => [OfficeCodeCatalog.Itworld],
-            _ => [OfficeCodeCatalog.Usenet, OfficeCodeCatalog.Yeonsu]
+            UsenetGroup => [OfficeCodeCatalog.Usenet, OfficeCodeCatalog.Yeonsu],
+            _ => [normalizedTenant]
         };
     }
 
@@ -232,11 +261,15 @@ public static class TenantScopeCatalog
     }
 
     public static string GetTenantDisplayName(string? tenantCode)
-        => NormalizeTenantCodeOrDefault(tenantCode) switch
+    {
+        var normalizedTenantCode = NormalizeTenantCodeOrDefault(tenantCode);
+        return normalizedTenantCode switch
         {
             Itworld => "ITWORLD",
-            _ => "유즈넷 / 연수구"
+            UsenetGroup => "유즈넷 / 연수구",
+            _ => normalizedTenantCode
         };
+    }
 
     public static string GetDatabaseName(string? tenantCodeOrDatabaseName)
     {
@@ -258,11 +291,24 @@ public static class TenantScopeCatalog
             return canonical switch
             {
                 Itworld => "ITWORLD",
-                _ => "USENET"
+                UsenetGroup => "USENET",
+                _ => canonical
             };
         }
 
         return trimmed.ToUpperInvariant();
+    }
+
+    public static string GetPhysicalDatabaseName(string? tenantCode)
+    {
+        var normalizedTenantCode = NormalizeTenantCodeOrDefault(tenantCode);
+        var suffix = normalizedTenantCode switch
+        {
+            UsenetGroup => "usenet",
+            Itworld => "itworld",
+            _ => normalizedTenantCode.ToLowerInvariant()
+        };
+        return $"georaeplan_{suffix}";
     }
 
     public static string GetBusinessDatabaseDisplayName(string? tenantCodeOrDatabaseName)

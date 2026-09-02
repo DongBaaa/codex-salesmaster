@@ -33,6 +33,8 @@ services:
       ASPNETCORE_URLS: http://0.0.0.0:18080
       Database__EnableSqliteFallback: false
       ConnectionStrings__Default: Host=postgres;Port=5432;Database=${POSTGRES_DB:-거래플랜};Username=${POSTGRES_USER:-sm_user};Password=${POSTGRES_PASSWORD:-change_me}
+      ConnectionStrings__USENET_GROUP: Host=postgres;Port=5432;Database=${USENET_POSTGRES_DB:-georaeplan_usenet};Username=${POSTGRES_USER:-sm_user};Password=${POSTGRES_PASSWORD:-change_me}
+      ConnectionStrings__ITWORLD: Host=postgres;Port=5432;Database=${ITWORLD_POSTGRES_DB:-georaeplan_itworld};Username=${POSTGRES_USER:-sm_user};Password=${POSTGRES_PASSWORD:-change_me}
       Jwt__Issuer: ${JWT_ISSUER:-거래플랜}
       Jwt__Audience: ${JWT_AUDIENCE:-georaeplan-client}
       Jwt__SigningKey: ${JWT_SIGNING_KEY:-거래플랜_ChangeThisSigningKeyForProduction_AtLeast32Chars}

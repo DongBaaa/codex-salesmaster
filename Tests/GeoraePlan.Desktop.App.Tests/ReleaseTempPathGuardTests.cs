@@ -840,7 +840,12 @@ public sealed class ReleaseTempPathGuardTests
             StringComparison.Ordinal);
         Assert.Contains("[switch]$PreserveLiveUpdateAssets", source, StringComparison.Ordinal);
         Assert.Contains("[switch]$PreserveLiveAndroidUpdate", source, StringComparison.Ordinal);
+        Assert.Contains("[switch]$PreserveLocalAndroidUpdate", source, StringComparison.Ordinal);
         Assert.Contains("PreserveExistingAndroid = $true", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "$PreserveLiveAndroidUpdate -or $PreserveLocalAndroidUpdate",
+            source,
+            StringComparison.Ordinal);
         Assert.Contains("reason=verified-live-android-update-preserved", source, StringComparison.Ordinal);
         AssertInOrder(
             source,

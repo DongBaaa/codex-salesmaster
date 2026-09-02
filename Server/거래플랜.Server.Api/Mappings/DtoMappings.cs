@@ -779,6 +779,7 @@ public static class DtoMappings
             LastSettledDate = entity.LastSettledDate,
             BillingTemplateJson = entity.BillingTemplateJson,
             BillingRunsJson = entity.BillingRunsJson,
+            PoolMeterAllowance = entity.PoolMeterAllowance,
             IsActive = entity.IsActive
         };
 
@@ -820,6 +821,7 @@ public static class DtoMappings
         entity.LastSettledDate = dto.LastSettledDate;
         entity.BillingTemplateJson = dto.BillingTemplateJson ?? "[]";
         entity.BillingRunsJson = dto.BillingRunsJson ?? "[]";
+        entity.PoolMeterAllowance = dto.PoolMeterAllowance;
         entity.IsActive = dto.IsActive;
         entity.IsDeleted = dto.IsDeleted;
         entity.ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(
@@ -884,6 +886,17 @@ public static class DtoMappings
             RentalEndDate = entity.RentalEndDate,
             FreeSupplyItems = entity.FreeSupplyItems,
             PaidSupplyItems = entity.PaidSupplyItems,
+            MeterBillingEnabled = entity.MeterBillingEnabled,
+            BlackIncludedMode = RentalMeterPolicyModes.Normalize(entity.BlackIncludedMode, entity.BlackIncludedPages),
+            BlackIncludedPages = entity.BlackIncludedPages,
+            BlackOverageUnitPrice = entity.BlackOverageUnitPrice,
+            ColorIncludedMode = RentalMeterPolicyModes.Normalize(entity.ColorIncludedMode, entity.ColorIncludedPages),
+            ColorIncludedPages = entity.ColorIncludedPages,
+            ColorOverageUnitPrice = entity.ColorOverageUnitPrice,
+            MeterReadingsJson = entity.MeterReadingsJson,
+            MeterEvidenceJson = entity.MeterEvidenceJson,
+            MeterPolicySource = entity.MeterPolicySource,
+            MeterPolicySourceUpdatedAtUtc = NormalizeUtc(entity.MeterPolicySourceUpdatedAtUtc),
             AssetStatus = RentalAssetStatusNormalizer.Normalize(entity.AssetStatus),
             Notes = entity.Notes
         };
@@ -927,6 +940,17 @@ public static class DtoMappings
         entity.RentalEndDate = dto.RentalEndDate;
         entity.FreeSupplyItems = dto.FreeSupplyItems?.Trim() ?? string.Empty;
         entity.PaidSupplyItems = dto.PaidSupplyItems?.Trim() ?? string.Empty;
+        entity.MeterBillingEnabled = dto.MeterBillingEnabled;
+        entity.BlackIncludedMode = RentalMeterPolicyModes.Normalize(dto.BlackIncludedMode, dto.BlackIncludedPages);
+        entity.BlackIncludedPages = dto.BlackIncludedPages is >= 0 ? dto.BlackIncludedPages : null;
+        entity.BlackOverageUnitPrice = dto.BlackOverageUnitPrice is >= 0m ? dto.BlackOverageUnitPrice : null;
+        entity.ColorIncludedMode = RentalMeterPolicyModes.Normalize(dto.ColorIncludedMode, dto.ColorIncludedPages);
+        entity.ColorIncludedPages = dto.ColorIncludedPages is >= 0 ? dto.ColorIncludedPages : null;
+        entity.ColorOverageUnitPrice = dto.ColorOverageUnitPrice is >= 0m ? dto.ColorOverageUnitPrice : null;
+        entity.MeterReadingsJson = RentalMeterBillingRules.SerializeReadings(RentalMeterBillingRules.ParseReadings(dto.MeterReadingsJson));
+        entity.MeterEvidenceJson = string.IsNullOrWhiteSpace(dto.MeterEvidenceJson) ? "[]" : dto.MeterEvidenceJson;
+        entity.MeterPolicySource = dto.MeterPolicySource?.Trim() ?? string.Empty;
+        entity.MeterPolicySourceUpdatedAtUtc = NormalizeUtc(dto.MeterPolicySourceUpdatedAtUtc);
         entity.AssetStatus = RentalAssetStatusNormalizer.Normalize(dto.AssetStatus);
         entity.Notes = dto.Notes?.Trim() ?? string.Empty;
         entity.IsDeleted = dto.IsDeleted;

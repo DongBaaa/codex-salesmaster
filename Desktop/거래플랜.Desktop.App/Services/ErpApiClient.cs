@@ -455,6 +455,27 @@ public sealed class ErpApiClient
             ct);
     }
 
+    public async Task<TenantProvisioningResultDto?> ProvisionIndependentTenantAsync(
+        ProvisionIndependentTenantRequest request,
+        CancellationToken ct = default)
+    {
+        return await ExecuteNonIdempotentSingleDispatchAsync(
+            operationName: "독립 업체 DB 생성(tenant-settings/provision-independent)",
+            sendAsync: async token =>
+            {
+                SetAuthHeader(includeBusinessDatabaseHeader: false);
+                return await _http.PostAsJsonAsync(
+                    "tenant-settings/provision-independent",
+                    request,
+                    token);
+            },
+            readAsync: static (resp, token) => ReadRequiredJsonAsync<TenantProvisioningResultDto>(
+                resp,
+                token,
+                "독립 업체 DB 생성(tenant-settings/provision-independent)"),
+            ct);
+    }
+
     public async Task<TenantOfficeDefinitionDto?> UpdateTenantOfficeDefinitionAsync(string officeCode, UpdateTenantOfficeDefinitionRequest request, CancellationToken ct = default)
     {
         var canonicalOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode);

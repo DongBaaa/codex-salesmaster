@@ -31,8 +31,7 @@ public static class OfficeCodeCatalog
 
     public static bool IsCanonical(string? value)
     {
-        var normalized = (value ?? string.Empty).Trim().ToUpperInvariant();
-        return normalized is Usenet or Itworld or Yeonsu;
+        return TryNormalize(value, out _);
     }
 
     public static bool IsCanonicalOfficeCode(string? value)
@@ -86,6 +85,9 @@ public static class OfficeCodeCatalog
             canonical = Yeonsu;
             return true;
         }
+
+        if (TenantScopeCatalog.TryNormalizeCustomTenantCode(trimmed, out canonical))
+            return true;
 
         canonical = string.Empty;
         return false;
@@ -194,28 +196,40 @@ public static class OfficeCodeCatalog
         => NormalizeLoose(primary, secondary, fallback);
 
     public static string GetOfficeDisplayName(string? officeCode)
-        => NormalizeOrDefault(officeCode, Usenet) switch
+    {
+        var normalizedOfficeCode = NormalizeOrDefault(officeCode, Usenet);
+        return normalizedOfficeCode switch
         {
             Itworld => "아이티월드[ITWORLD]",
             Yeonsu => Yeonsu,
-            _ => "유즈넷"
+            Usenet => "유즈넷",
+            _ => normalizedOfficeCode
         };
+    }
 
     public static Guid GetDefaultCompanyProfileId(string? officeCode)
-        => NormalizeOrDefault(officeCode, Usenet) switch
+    {
+        var normalizedOfficeCode = NormalizeOrDefault(officeCode, Usenet);
+        return normalizedOfficeCode switch
         {
             Itworld => ItworldDefaultCompanyProfileId,
             Yeonsu => YeonsuDefaultCompanyProfileId,
-            _ => UsenetDefaultCompanyProfileId
+            Usenet => UsenetDefaultCompanyProfileId,
+            _ => CreateDeterministicGuid($"georaeplan-company-profile:{normalizedOfficeCode}")
         };
+    }
 
     public static string GetMainWarehouseCode(string? officeCode)
-        => NormalizeOrDefault(officeCode, Usenet) switch
+    {
+        var normalizedOfficeCode = NormalizeOrDefault(officeCode, Usenet);
+        return normalizedOfficeCode switch
         {
             Itworld => ItworldMainWarehouse,
             Yeonsu => YeonsuMainWarehouse,
-            _ => UsenetMainWarehouse
+            Usenet => UsenetMainWarehouse,
+            _ => $"{normalizedOfficeCode}_MAIN"
         };
+    }
 
     public static bool TryNormalizeWarehouseCode(string? warehouseCode, out string canonical)
     {
@@ -229,6 +243,13 @@ public static class OfficeCodeCatalog
         if (normalized is UsenetMainWarehouse or ItworldMainWarehouse or YeonsuMainWarehouse)
         {
             canonical = normalized;
+            return true;
+        }
+
+        if (normalized.EndsWith("_MAIN", StringComparison.Ordinal) &&
+            TenantScopeCatalog.TryNormalizeCustomTenantCode(normalized[..^5], out var customOfficeCode))
+        {
+            canonical = $"{customOfficeCode}_MAIN";
             return true;
         }
 
@@ -297,5 +318,15 @@ public static class OfficeCodeCatalog
 
         var office = NormalizeLoose(officeCode, warehouseCode, fallbackOfficeCode);
         return GetMainWarehouseCode(office);
+    }
+
+    private static Guid CreateDeterministicGuid(string value)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(value));
+        var bytes = hash[..16];
+        bytes[7] = (byte)((bytes[7] & 0x0F) | 0x50);
+        bytes[8] = (byte)((bytes[8] & 0x3F) | 0x80);
+        return new Guid(bytes);
     }
 }

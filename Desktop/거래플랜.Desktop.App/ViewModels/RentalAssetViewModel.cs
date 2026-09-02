@@ -4,6 +4,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Documents;
 using System.ComponentModel;
+using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using 거래플랜.Desktop.App.Data;
@@ -104,6 +105,25 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     [ObservableProperty] private int _editContractMonths;
     [ObservableProperty] private string _editFreeSupplyItems = string.Empty;
     [ObservableProperty] private string _editPaidSupplyItems = string.Empty;
+    [ObservableProperty] private bool _editMeterBillingEnabled;
+    [ObservableProperty] private string _editBlackIncludedMode = RentalMeterPolicyModes.Unconfigured;
+    [ObservableProperty] private int? _editBlackIncludedPages;
+    [ObservableProperty] private decimal? _editBlackOverageUnitPrice;
+    [ObservableProperty] private string _editColorIncludedMode = RentalMeterPolicyModes.Unconfigured;
+    [ObservableProperty] private int? _editColorIncludedPages;
+    [ObservableProperty] private decimal? _editColorOverageUnitPrice;
+    [ObservableProperty] private string _editMeterReadingsJson = "[]";
+    [ObservableProperty] private string _editMeterEvidenceJson = "[]";
+    [ObservableProperty] private string _editMeterPolicySource = string.Empty;
+    [ObservableProperty] private DateTime? _editMeterPolicySourceUpdatedAtUtc;
+    [ObservableProperty] private string _editMeterBillingYearMonth = DateTime.Today.ToString("yyyy-MM", CultureInfo.InvariantCulture);
+    [ObservableProperty] private DateTime? _editMeterReadingDate = DateTime.Today;
+    [ObservableProperty] private string _editBlackMeterText = string.Empty;
+    [ObservableProperty] private string _editColorMeterText = string.Empty;
+    [ObservableProperty] private string _editMeterEvidenceReference = string.Empty;
+    [ObservableProperty] private string _editMeterReadingNote = string.Empty;
+    [ObservableProperty] private bool _editMeterReadingIsOpeningBaseline;
+    [ObservableProperty] private RentalMeterReadingRecord? _selectedMeterReading;
     [ObservableProperty] private string _editAssetStatus = "임대진행중";
     [ObservableProperty] private string _editBillingEligibilityStatus = "미확인";
     [ObservableProperty] private string _editBillingExclusionReason = string.Empty;
@@ -125,6 +145,12 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     public ObservableCollection<LocalItemCategoryOption> ItemCategoryOptions { get; } = new ResettableObservableCollection<LocalItemCategoryOption>();
     public ObservableCollection<RentalAssetViewRow> Rows { get; } = new ResettableObservableCollection<RentalAssetViewRow>();
     public ObservableCollection<RentalAssetAssignmentHistoryViewItem> AssignmentHistories { get; } = new ResettableObservableCollection<RentalAssetAssignmentHistoryViewItem>();
+    public ObservableCollection<RentalMeterReadingRecord> MeterReadings { get; } = new ResettableObservableCollection<RentalMeterReadingRecord>();
+    public ObservableCollection<string> MeterPolicyModeOptions { get; } = new([
+        RentalMeterPolicyModes.Unconfigured,
+        RentalMeterPolicyModes.Unlimited,
+        RentalMeterPolicyModes.Numeric
+    ]);
 
     public bool CanViewAll => _rental.CanViewAllAssetScope(_session);
     public bool CanManageAll => _rental.CanManageAllAssetScope(_session);
@@ -472,6 +498,14 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     partial void OnEditContractMonthsChanged(int value) => NotifyEditFieldChanged(nameof(EditContractMonths));
     partial void OnEditFreeSupplyItemsChanged(string value) => NotifyEditFieldChanged(nameof(EditFreeSupplyItems));
     partial void OnEditPaidSupplyItemsChanged(string value) => NotifyEditFieldChanged(nameof(EditPaidSupplyItems));
+    partial void OnEditMeterBillingEnabledChanged(bool value) => NotifyEditFieldChanged(nameof(EditMeterBillingEnabled));
+    partial void OnEditBlackIncludedModeChanged(string value) => NotifyEditFieldChanged(nameof(EditBlackIncludedMode));
+    partial void OnEditBlackIncludedPagesChanged(int? value) => NotifyEditFieldChanged(nameof(EditBlackIncludedPages));
+    partial void OnEditBlackOverageUnitPriceChanged(decimal? value) => NotifyEditFieldChanged(nameof(EditBlackOverageUnitPrice));
+    partial void OnEditColorIncludedModeChanged(string value) => NotifyEditFieldChanged(nameof(EditColorIncludedMode));
+    partial void OnEditColorIncludedPagesChanged(int? value) => NotifyEditFieldChanged(nameof(EditColorIncludedPages));
+    partial void OnEditColorOverageUnitPriceChanged(decimal? value) => NotifyEditFieldChanged(nameof(EditColorOverageUnitPrice));
+    partial void OnEditMeterReadingsJsonChanged(string value) => NotifyEditFieldChanged(nameof(EditMeterReadingsJson));
     partial void OnEditBillingEligibilityStatusChanged(string value) => NotifyEditFieldChanged(nameof(EditBillingEligibilityStatus));
     partial void OnEditBillingExclusionReasonChanged(string value) => NotifyEditFieldChanged(nameof(EditBillingExclusionReason));
     partial void OnEditNotesChanged(string value) => NotifyEditFieldChanged(nameof(EditNotes));
@@ -1367,6 +1401,18 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             EditContractMonths = source.ContractMonths;
             EditFreeSupplyItems = source.FreeSupplyItems;
             EditPaidSupplyItems = source.PaidSupplyItems;
+            EditMeterBillingEnabled = source.MeterBillingEnabled;
+            EditBlackIncludedMode = RentalMeterPolicyModes.Normalize(source.BlackIncludedMode, source.BlackIncludedPages);
+            EditBlackIncludedPages = source.BlackIncludedPages;
+            EditBlackOverageUnitPrice = source.BlackOverageUnitPrice;
+            EditColorIncludedMode = RentalMeterPolicyModes.Normalize(source.ColorIncludedMode, source.ColorIncludedPages);
+            EditColorIncludedPages = source.ColorIncludedPages;
+            EditColorOverageUnitPrice = source.ColorOverageUnitPrice;
+            EditMeterReadingsJson = source.MeterReadingsJson;
+            EditMeterEvidenceJson = source.MeterEvidenceJson;
+            EditMeterPolicySource = source.MeterPolicySource;
+            EditMeterPolicySourceUpdatedAtUtc = source.MeterPolicySourceUpdatedAtUtc;
+            LoadMeterReadings(source.MeterReadingsJson);
             EditAssetStatus = source.AssetStatus;
             EditBillingEligibilityStatus = string.IsNullOrWhiteSpace(source.BillingEligibilityStatus) ? "미확인" : source.BillingEligibilityStatus;
             EditBillingExclusionReason = source.BillingExclusionReason;
@@ -1645,6 +1691,17 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             RentalEndDate = ToDateOnly(EditRentalEndDate),
             FreeSupplyItems = EditFreeSupplyItems,
             PaidSupplyItems = EditPaidSupplyItems,
+            MeterBillingEnabled = EditMeterBillingEnabled,
+            BlackIncludedMode = EditBlackIncludedMode,
+            BlackIncludedPages = EditBlackIncludedPages,
+            BlackOverageUnitPrice = EditBlackOverageUnitPrice,
+            ColorIncludedMode = EditColorIncludedMode,
+            ColorIncludedPages = EditColorIncludedPages,
+            ColorOverageUnitPrice = EditColorOverageUnitPrice,
+            MeterReadingsJson = EditMeterReadingsJson,
+            MeterEvidenceJson = EditMeterEvidenceJson,
+            MeterPolicySource = EditMeterPolicySource,
+            MeterPolicySourceUpdatedAtUtc = EditMeterPolicySourceUpdatedAtUtc,
             ResponsibleOfficeCode = documentOfficeCode,
             AssetStatus = EditAssetStatus,
             Notes = EditNotes
@@ -2896,6 +2953,106 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         }
     }
 
+    [RelayCommand]
+    private void SaveFinalizedMeterReading()
+    {
+        if (!DateTime.TryParseExact(
+                (EditMeterBillingYearMonth ?? string.Empty).Trim(),
+                "yyyy-MM",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out var billingMonth))
+        {
+            StatusMessage = "검침 청구월을 yyyy-MM 형식으로 입력하세요.";
+            return;
+        }
+
+        if (!TryParseMeterValue(EditBlackMeterText, out var blackMeter) ||
+            !TryParseMeterValue(EditColorMeterText, out var colorMeter))
+        {
+            StatusMessage = "흑백·컬러 누적 검침값은 0 이상의 정수로 입력하세요.";
+            return;
+        }
+
+        var normalizedYearMonth = billingMonth.ToString("yyyy-MM", CultureInfo.InvariantCulture);
+        var readings = RentalMeterBillingRules.ParseReadings(EditMeterReadingsJson).ToList();
+        var existing = readings
+            .Where(reading => string.Equals(reading.BillingYearMonth, normalizedYearMonth, StringComparison.Ordinal))
+            .OrderByDescending(reading => reading.RecordedAtUtc)
+            .FirstOrDefault();
+        readings.RemoveAll(reading => string.Equals(reading.BillingYearMonth, normalizedYearMonth, StringComparison.Ordinal));
+
+        var isOpeningBaseline = EditMeterReadingIsOpeningBaseline ||
+                                existing?.IsOpeningBaseline == true ||
+                                readings.Count == 0;
+        if (isOpeningBaseline)
+        {
+            foreach (var reading in readings)
+                reading.IsOpeningBaseline = false;
+        }
+
+        readings.Add(new RentalMeterReadingRecord
+        {
+            BillingYearMonth = normalizedYearMonth,
+            ReadingDate = DateOnly.FromDateTime((EditMeterReadingDate ?? DateTime.Today).Date),
+            BlackMeter = blackMeter,
+            ColorMeter = colorMeter,
+            IsFinalized = true,
+            IsOpeningBaseline = isOpeningBaseline,
+            SourceSystem = "거래플랜",
+            EvidenceReference = (EditMeterEvidenceReference ?? string.Empty).Trim(),
+            Note = (EditMeterReadingNote ?? string.Empty).Trim(),
+            RecordedAtUtc = DateTime.UtcNow
+        });
+
+        EditMeterReadingsJson = RentalMeterBillingRules.SerializeReadings(readings);
+        LoadMeterReadings(EditMeterReadingsJson);
+        EditMeterReadingIsOpeningBaseline = false;
+        StatusMessage = $"{normalizedYearMonth} 확정 검침값을 저장 대기 상태로 반영했습니다.";
+    }
+
+    [RelayCommand]
+    private void DeleteSelectedMeterReading()
+    {
+        if (SelectedMeterReading is null)
+        {
+            StatusMessage = "삭제할 검침 이력을 선택하세요.";
+            return;
+        }
+
+        var target = SelectedMeterReading;
+        var readings = RentalMeterBillingRules.ParseReadings(EditMeterReadingsJson)
+            .Where(reading => !MeterReadingIdentityEquals(reading, target))
+            .ToList();
+        EditMeterReadingsJson = RentalMeterBillingRules.SerializeReadings(readings);
+        LoadMeterReadings(EditMeterReadingsJson);
+        StatusMessage = $"{target.BillingYearMonth} 검침 이력을 삭제 대기 상태로 반영했습니다.";
+    }
+
+    private void LoadMeterReadings(string? json)
+    {
+        SelectedMeterReading = null;
+        MeterReadings.ReplaceWith(
+            RentalMeterBillingRules.ParseReadings(json)
+                .OrderByDescending(reading => reading.BillingYearMonth, StringComparer.Ordinal)
+                .ThenByDescending(reading => reading.ReadingDate));
+    }
+
+    private static bool TryParseMeterValue(string? value, out long parsed)
+        => long.TryParse(
+               (value ?? string.Empty).Trim(),
+               NumberStyles.Integer | NumberStyles.AllowThousands,
+               CultureInfo.GetCultureInfo("ko-KR"),
+               out parsed) &&
+           parsed >= 0;
+
+    private static bool MeterReadingIdentityEquals(
+        RentalMeterReadingRecord left,
+        RentalMeterReadingRecord right)
+        => string.Equals(left.BillingYearMonth, right.BillingYearMonth, StringComparison.Ordinal) &&
+           left.ReadingDate == right.ReadingDate &&
+           left.RecordedAtUtc == right.RecordedAtUtc;
+
     private void RestoreEditSnapshot(RentalAssetViewRow? previousSelection, RentalAssetEditSnapshot snapshot)
     {
         SelectRowWithoutAutoSave(previousSelection?.Source.Id);
@@ -2931,6 +3088,17 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             EditContractMonths,
             EditFreeSupplyItems,
             EditPaidSupplyItems,
+            EditMeterBillingEnabled,
+            EditBlackIncludedMode,
+            EditBlackIncludedPages,
+            EditBlackOverageUnitPrice,
+            EditColorIncludedMode,
+            EditColorIncludedPages,
+            EditColorOverageUnitPrice,
+            EditMeterReadingsJson,
+            EditMeterEvidenceJson,
+            EditMeterPolicySource,
+            EditMeterPolicySourceUpdatedAtUtc,
             EditAssetStatus,
             EditBillingEligibilityStatus,
             EditBillingExclusionReason,
@@ -2978,6 +3146,18 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             EditContractMonths = snapshot.EditContractMonths;
             EditFreeSupplyItems = snapshot.EditFreeSupplyItems;
             EditPaidSupplyItems = snapshot.EditPaidSupplyItems;
+            EditMeterBillingEnabled = snapshot.EditMeterBillingEnabled;
+            EditBlackIncludedMode = snapshot.EditBlackIncludedMode;
+            EditBlackIncludedPages = snapshot.EditBlackIncludedPages;
+            EditBlackOverageUnitPrice = snapshot.EditBlackOverageUnitPrice;
+            EditColorIncludedMode = snapshot.EditColorIncludedMode;
+            EditColorIncludedPages = snapshot.EditColorIncludedPages;
+            EditColorOverageUnitPrice = snapshot.EditColorOverageUnitPrice;
+            EditMeterReadingsJson = snapshot.EditMeterReadingsJson;
+            EditMeterEvidenceJson = snapshot.EditMeterEvidenceJson;
+            EditMeterPolicySource = snapshot.EditMeterPolicySource;
+            EditMeterPolicySourceUpdatedAtUtc = snapshot.EditMeterPolicySourceUpdatedAtUtc;
+            LoadMeterReadings(snapshot.EditMeterReadingsJson);
             EditAssetStatus = snapshot.EditAssetStatus;
             EditBillingEligibilityStatus = snapshot.EditBillingEligibilityStatus;
             EditBillingExclusionReason = snapshot.EditBillingExclusionReason;
@@ -3036,6 +3216,17 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             EditContractMonths: 0,
             EditFreeSupplyItems: string.Empty,
             EditPaidSupplyItems: string.Empty,
+            EditMeterBillingEnabled: false,
+            EditBlackIncludedMode: RentalMeterPolicyModes.Unconfigured,
+            EditBlackIncludedPages: null,
+            EditBlackOverageUnitPrice: null,
+            EditColorIncludedMode: RentalMeterPolicyModes.Unconfigured,
+            EditColorIncludedPages: null,
+            EditColorOverageUnitPrice: null,
+            EditMeterReadingsJson: "[]",
+            EditMeterEvidenceJson: "[]",
+            EditMeterPolicySource: string.Empty,
+            EditMeterPolicySourceUpdatedAtUtc: null,
             EditAssetStatus: "임대진행중",
             EditBillingEligibilityStatus: "미확인",
             EditBillingExclusionReason: string.Empty,
@@ -3084,6 +3275,17 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             ContractMonths = snapshot.EditContractMonths,
             FreeSupplyItems = snapshot.EditFreeSupplyItems,
             PaidSupplyItems = snapshot.EditPaidSupplyItems,
+            MeterBillingEnabled = snapshot.EditMeterBillingEnabled,
+            BlackIncludedMode = snapshot.EditBlackIncludedMode,
+            BlackIncludedPages = snapshot.EditBlackIncludedPages,
+            BlackOverageUnitPrice = snapshot.EditBlackOverageUnitPrice,
+            ColorIncludedMode = snapshot.EditColorIncludedMode,
+            ColorIncludedPages = snapshot.EditColorIncludedPages,
+            ColorOverageUnitPrice = snapshot.EditColorOverageUnitPrice,
+            MeterReadingsJson = snapshot.EditMeterReadingsJson,
+            MeterEvidenceJson = snapshot.EditMeterEvidenceJson,
+            MeterPolicySource = snapshot.EditMeterPolicySource,
+            MeterPolicySourceUpdatedAtUtc = snapshot.EditMeterPolicySourceUpdatedAtUtc,
             ResponsibleOfficeCode = officeCode,
             AssetStatus = snapshot.EditAssetStatus,
             BillingEligibilityStatus = snapshot.EditBillingEligibilityStatus,
@@ -3118,6 +3320,12 @@ public sealed partial class RentalAssetViewModel : ObservableObject
            || !string.IsNullOrWhiteSpace(snapshot.EditNotes)
            || !string.IsNullOrWhiteSpace(snapshot.EditFreeSupplyItems)
            || !string.IsNullOrWhiteSpace(snapshot.EditPaidSupplyItems)
+           || snapshot.EditMeterBillingEnabled
+           || snapshot.EditBlackIncludedPages.HasValue
+           || snapshot.EditBlackOverageUnitPrice.HasValue
+           || snapshot.EditColorIncludedPages.HasValue
+           || snapshot.EditColorOverageUnitPrice.HasValue
+           || RentalMeterBillingRules.ParseReadings(snapshot.EditMeterReadingsJson).Count > 0
            || snapshot.EditPurchasePrice != 0m
            || snapshot.EditSalePrice != 0m
            || snapshot.EditMonthlyFee != 0m
@@ -3158,6 +3366,17 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             .Append('|').Append(snapshot.EditContractMonths)
             .Append('|').Append(snapshot.EditFreeSupplyItems ?? string.Empty)
             .Append('|').Append(snapshot.EditPaidSupplyItems ?? string.Empty)
+            .Append('|').Append(snapshot.EditMeterBillingEnabled)
+            .Append('|').Append(snapshot.EditBlackIncludedMode ?? string.Empty)
+            .Append('|').Append(snapshot.EditBlackIncludedPages)
+            .Append('|').Append(snapshot.EditBlackOverageUnitPrice)
+            .Append('|').Append(snapshot.EditColorIncludedMode ?? string.Empty)
+            .Append('|').Append(snapshot.EditColorIncludedPages)
+            .Append('|').Append(snapshot.EditColorOverageUnitPrice)
+            .Append('|').Append(snapshot.EditMeterReadingsJson ?? "[]")
+            .Append('|').Append(snapshot.EditMeterEvidenceJson ?? "[]")
+            .Append('|').Append(snapshot.EditMeterPolicySource ?? string.Empty)
+            .Append('|').Append(snapshot.EditMeterPolicySourceUpdatedAtUtc?.ToString("O") ?? string.Empty)
             .Append('|').Append(snapshot.EditAssetStatus ?? string.Empty)
             .Append('|').Append(snapshot.EditBillingEligibilityStatus ?? string.Empty)
             .Append('|').Append(snapshot.EditBillingExclusionReason ?? string.Empty)
@@ -3237,6 +3456,17 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         int EditContractMonths,
         string EditFreeSupplyItems,
         string EditPaidSupplyItems,
+        bool EditMeterBillingEnabled,
+        string EditBlackIncludedMode,
+        int? EditBlackIncludedPages,
+        decimal? EditBlackOverageUnitPrice,
+        string EditColorIncludedMode,
+        int? EditColorIncludedPages,
+        decimal? EditColorOverageUnitPrice,
+        string EditMeterReadingsJson,
+        string EditMeterEvidenceJson,
+        string EditMeterPolicySource,
+        DateTime? EditMeterPolicySourceUpdatedAtUtc,
         string EditAssetStatus,
         string EditBillingEligibilityStatus,
         string EditBillingExclusionReason,

@@ -686,6 +686,67 @@ public sealed class UsersControllerScopeTests : IDisposable
                 .ToListAsync());
     }
 
+    [Fact]
+    public async Task GlobalAdmin_CustomTenantUser_RequiresApprovedTenantAndOffice()
+    {
+        const string tenantCode = "ORG_NEWCO_01";
+        var currentUser = new TestCurrentUserContext
+        {
+            Username = "global-admin",
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeAdmin,
+            IsAdmin = true
+        };
+        await using var dbContext = CreateDbContext(currentUser);
+        var controller = CreateController(dbContext, currentUser);
+
+        var unapproved = await controller.Create(new CreateUserRequest
+        {
+            Username = "newco-before-approval",
+            Password = "password",
+            Role = "Admin",
+            TenantCode = tenantCode,
+            OfficeCode = tenantCode,
+            ScopeType = TenantScopeCatalog.ScopeTenantAll,
+            IsActive = true
+        }, CancellationToken.None);
+        Assert.IsType<BadRequestObjectResult>(unapproved.Result);
+
+        dbContext.TenantDefinitions.Add(new TenantDefinition
+        {
+            TenantCode = tenantCode,
+            DisplayName = "신규 업체",
+            StorageMode = TenantScopeCatalog.StorageDedicatedDatabase,
+            IsActive = true
+        });
+        dbContext.TenantOfficeDefinitions.Add(new TenantOfficeDefinition
+        {
+            TenantCode = tenantCode,
+            OfficeCode = tenantCode,
+            DisplayName = "신규 업체 본점",
+            IsHeadOffice = true,
+            IsActive = true
+        });
+        await dbContext.SaveChangesAsync();
+
+        var approved = await controller.Create(new CreateUserRequest
+        {
+            Username = "newco-after-approval",
+            Password = "password",
+            Role = "Admin",
+            TenantCode = tenantCode,
+            OfficeCode = tenantCode,
+            ScopeType = TenantScopeCatalog.ScopeTenantAll,
+            IsActive = true
+        }, CancellationToken.None);
+
+        var created = Assert.IsType<CreatedAtActionResult>(approved.Result);
+        var dto = Assert.IsType<UserAccountDto>(created.Value);
+        Assert.Equal(tenantCode, dto.TenantCode);
+        Assert.Equal(tenantCode, dto.OfficeCode);
+    }
+
     public void Dispose()
         => _connection.Dispose();
 

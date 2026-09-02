@@ -96,7 +96,10 @@ foreach ($required in @(
         'replica=ok',
         'replica=failed',
         'database_snapshot_consistency',
-        'unchanged_across_both_dumps',
+        'unchanged_across_all_dumps',
+        'databases.txt',
+        'georaeplan_usenet',
+        'georaeplan_org_',
         'findmnt -T',
         'cifs|nfs|nfs4',
         'ext4)',
@@ -203,12 +206,23 @@ try {
         (Join-Path $replicaRoot '.georaeplan-replica-root'),
         "schema_version=1`nowner=georaeplan-external-backup-replica`nreplica_id=$replicaId`n",
         [Text.UTF8Encoding]::new($false))
-    [IO.File]::WriteAllText((Join-Path $sourceSet 'georaeplan.dump'), 'central-dump', [Text.UTF8Encoding]::new($false))
-    [IO.File]::WriteAllText((Join-Path $sourceSet 'georaeplan_itworld.dump'), 'business-dump', [Text.UTF8Encoding]::new($false))
+    $utf8 = [Text.UTF8Encoding]::new($false)
+    $databaseNames = @('georaeplan', 'georaeplan_itworld', 'georaeplan_org_branch01', 'georaeplan_usenet')
+    $businessCountSha256 = 'b' * 64
+    foreach ($databaseName in $databaseNames) {
+        [IO.File]::WriteAllText((Join-Path $sourceSet "$databaseName.dump"), "fixture-$databaseName", $utf8)
+    }
+    $databaseManifestText = (($databaseNames | ForEach-Object { "$_`t$_.dump`t$businessCountSha256" }) -join "`n") + "`n"
+    [IO.File]::WriteAllText((Join-Path $sourceSet 'databases.txt'), $databaseManifestText, $utf8)
+    $databaseListText = ($databaseNames -join "`n") + "`n"
+    $databaseDigestSetText = (($databaseNames | ForEach-Object { "$_=$businessCountSha256" }) -join "`n") + "`n"
+    $databaseListSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($utf8.GetBytes($databaseListText))).ToLowerInvariant()
+    $databaseDigestSetSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($utf8.GetBytes($databaseDigestSetText))).ToLowerInvariant()
+    $databaseManifestSha256 = (Get-FileHash -LiteralPath (Join-Path $sourceSet 'databases.txt') -Algorithm SHA256).Hash.ToLowerInvariant()
     [IO.File]::WriteAllText(
         (Join-Path $sourceSet 'metadata.txt'),
-        "backup=georaeplan`nrun_id=$runId`nreplica=disabled`n",
-        [Text.UTF8Encoding]::new($false))
+        "backup=georaeplan`nrun_id=$runId`ncreated_at=2026-08-12T13:19:32+09:00`ncentral_database=georaeplan`nbusiness_database=georaeplan_itworld`ndatabase_manifest=databases.txt`ndatabase_count=4`ndatabase_list_sha256=$databaseListSha256`ndatabase_manifest_sha256=$databaseManifestSha256`ndatabase_digest_set_sha256=$databaseDigestSetSha256`nfiles_archive=files.tar.gz`nkeyring_archive=data-protection-keys.tar.gz`nestimated_source_bytes=1`nrequired_available_bytes=1`nfile_deletion_lease=exclusive_during_database_and_file_capture`ndatabase_snapshot_consistency=unchanged_across_all_dumps`ndatabase_snapshot_sha256=$('a' * 64)`ncentral_business_count_sha256=$businessCountSha256`nbusiness_business_count_sha256=$businessCountSha256`nreplica=disabled`n",
+        $utf8)
     $payload = Join-Path $fixtureRoot 'payload'
     New-Item -ItemType Directory -Path $payload | Out-Null
     [IO.File]::WriteAllText((Join-Path $payload 'payload.txt'), 'payload', [Text.UTF8Encoding]::new($false))
@@ -220,7 +234,7 @@ try {
         "tar -czf $(Convert-ToBashLiteral "$bashSourceSet/data-protection-keys.tar.gz") -C $(Convert-ToBashLiteral $bashPayload) .") | Out-Null
     $manifestCommand = @(
         "cd $(Convert-ToBashLiteral $bashSourceSet)",
-        'sha256sum georaeplan.dump georaeplan_itworld.dump files.tar.gz data-protection-keys.tar.gz metadata.txt > SHA256SUMS'
+        'sha256sum georaeplan.dump georaeplan_itworld.dump georaeplan_org_branch01.dump georaeplan_usenet.dump databases.txt files.tar.gz data-protection-keys.tar.gz metadata.txt > SHA256SUMS'
     ) -join ' && '
     Invoke-Bash -BashExe $bashExe -Command $manifestCommand | Out-Null
     $manifestHash = (Get-FileHash -LiteralPath (Join-Path $sourceSet 'SHA256SUMS') -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -230,7 +244,7 @@ try {
         [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText(
         (Join-Path $stateRoot 'backup-status.txt'),
-        "backup=ok`nreplica=disabled`nrun_id=$runId`ncompleted_at=2026-08-12T13:19:32+09:00`nset_path=$($sourceSet -replace '\\','/')`nmanifest_sha256=$manifestHash`nretention_days=14`nestimated_source_bytes=1`nrequired_available_bytes=1`nfile_deletion_lease=exclusive_during_database_and_file_capture`ndatabase_snapshot_consistency=unchanged_across_both_dumps`ndatabase_snapshot_sha256=$('a' * 64)`n",
+        "backup=ok`nreplica=disabled`nrun_id=$runId`ncompleted_at=2026-08-12T13:19:32+09:00`nset_path=$($sourceSet -replace '\\','/')`nmanifest_sha256=$manifestHash`nretention_days=14`nestimated_source_bytes=1`nrequired_available_bytes=1`nfile_deletion_lease=exclusive_during_database_and_file_capture`ndatabase_snapshot_consistency=unchanged_across_all_dumps`ndatabase_snapshot_sha256=$('a' * 64)`ndatabase_count=4`ndatabase_list_sha256=$databaseListSha256`ndatabase_manifest_sha256=$databaseManifestSha256`ndatabase_digest_set_sha256=$databaseDigestSetSha256`n",
         [Text.UTF8Encoding]::new($false))
     $fakePgRestore = Join-Path $fakeBin 'pg_restore'
     [IO.File]::WriteAllText(
@@ -322,7 +336,7 @@ exit 0
     $bashFinalReplica = Convert-ToBashPath $bashExe $finalReplica
     $forgedDigestResult = Invoke-Bash -BashExe $bashExe -Command (
         "cd $(Convert-ToBashLiteral $bashFinalReplica) && " +
-        "sha256sum COMPLETE SHA256SUMS data-protection-keys.tar.gz files.tar.gz georaeplan.dump georaeplan_itworld.dump metadata.txt | sha256sum | awk '{print `$1}'")
+        "sha256sum COMPLETE SHA256SUMS data-protection-keys.tar.gz databases.txt files.tar.gz georaeplan.dump georaeplan_itworld.dump georaeplan_org_branch01.dump georaeplan_usenet.dump metadata.txt | sha256sum | awk '{print `$1}'")
     $forgedDigest = (($forgedDigestResult.Output | Select-Object -Last 1) -join '').Trim()
     Assert-True ($forgedDigest -match '^[0-9a-f]{64}$') 'Unable to compute the forged replica manifest hash.'
     $forgedMarker = [Text.Encoding]::UTF8.GetString($replicaMarkerBeforeForgery)

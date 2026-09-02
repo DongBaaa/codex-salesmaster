@@ -2526,7 +2526,7 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
             "AssertNoDuplicateJsonObjectPropertiesAndDepth($jsonText, 12)",
             StringComparison.Ordinal);
         var convertFromJsonIndex = parserSource.IndexOf(
-            "$jsonText | ConvertFrom-Json",
+            "ConvertFrom-Json -DateKind String",
             StringComparison.Ordinal);
         Assert.True(
             duplicateValidationIndex >= 0 &&
@@ -2543,6 +2543,14 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
             StringComparison.Ordinal);
         Assert.Contains(
             "requiredCredentialFields",
+            parserSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ConvertFrom-Json -DateKind String",
+            parserSource,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "$parsed.schemaVersion -isnot [long]",
             parserSource,
             StringComparison.Ordinal);
     }
@@ -4459,7 +4467,8 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
                       "D7D83F5970542AAADD37491E4CE79CB63C7044E776802AD52B02BC5CA27D8CAB",
                       "73D294E643379C1808AFF89842AA899EF5107C1B269F6B07ACCEE6E59E10B636",
                       "1DE40C0FA21FE662EAECFA7ED3B654EA1271076FE1F69029919A3295525EBEC6",
-                      "A3C4A81A9FCA783F40844DC04810A905C99619722A608D9C379CA4BB157A0654"
+                      "A3C4A81A9FCA783F40844DC04810A905C99619722A608D9C379CA4BB157A0654",
+                      "0740B46F71C93CC613519796C240B734D7815153B2FD997FD7B4343DDA6FA70E"
                   })
         {
             Assert.Contains(
@@ -4481,6 +4490,7 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
                      "EE5B6FC6E2C9D58B3FBC066E00C95693F8EBC63DFE1BC1FCE784EB80EDF85CE8",
                      "D5528F8C6750119E3D642C0953C8C2519CB88C1E6E37457C81868839649641F7",
                      "49AD13A712746B8AA6C38BB8ED069053B4C9305A320E117864F2DB8040CB4AA0",
+                     "DEE66A13D48ACC63BFA1EB31D357BEA41BCE9C4BA0E3CC06A5681F47728FF26A",
                      "AC560B78FA943CFF1934C84BAB2ED37EC16E260ACA923CF94CE0FBB9E69F2C1F",
                      "798161B849E966FFBDCA7D008D8581118BC791A815B1D5621EAA7A954301EFA4",
                      "deleted_predecessor_active_chain_reroot",

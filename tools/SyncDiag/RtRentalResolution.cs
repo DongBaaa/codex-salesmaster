@@ -56,6 +56,7 @@ internal sealed class RtRentalResolutionAudit
     public int CustomerCreatedCount { get; set; }
     public int ActiveRtBlankCustomerPreservedCount { get; set; }
     public int NonOperatingAssignmentClearedCount { get; set; }
+    public int CrossDatabaseTombstoneCount { get; set; }
     public int BillingProfilePreservedFeeCount { get; set; }
     public int ManualFeePreservedCount { get; set; }
     public int VatInclusiveFeeAdjustedCount { get; set; }
@@ -149,12 +150,15 @@ internal static class RtRentalResolutionPlanner
             .Where(row => string.Equals(NormalizeSimple(row.ManagementCompany), sourceCompany, StringComparison.Ordinal))
             .OrderBy(row => NormalizeSimple(row.ManagementNumber), StringComparer.Ordinal)
             .ToList();
-        var duplicateSourceKeys = targetRows
+        var duplicateSourceKeys = allSourceRows
             .GroupBy(row => NormalizeSimple(row.ManagementNumber), StringComparer.Ordinal)
             .Where(group => string.IsNullOrWhiteSpace(group.Key) || group.Count() != 1)
             .ToList();
         if (duplicateSourceKeys.Count != 0)
             throw new InvalidDataException("The RT rental resolution source has blank or duplicate management numbers.");
+        var sourceRowsByNumber = allSourceRows.ToDictionary(
+            row => NormalizeSimple(row.ManagementNumber),
+            StringComparer.Ordinal);
 
         var currentAssets = snapshot.RentalAssets
             .Where(asset => !asset.IsDeleted &&
@@ -208,7 +212,7 @@ internal static class RtRentalResolutionPlanner
             var desired = current is null
                 ? CreateAsset(source, companyCode, tenantCode, targetStatus, generatedUtc)
                 : Clone(current);
-            ApplyRtScalarValues(desired, source, targetStatus, current);
+            ApplyRtScalarValues(desired, source, targetStatus, current, generatedAtUtc);
 
             CustomerDto? resolvedCustomer = null;
             var rtCustomerName = NormalizeCustomerDisplay(source.CustomerName);
@@ -298,6 +302,8 @@ internal static class RtRentalResolutionPlanner
                 ? foundProfile
                 : null;
             var profileCanBePreserved = isActive && existingProfile is not null &&
+                                        existingProfile.IsActive &&
+                                        ProfileBelongsToTargetDatabase(existingProfile, databaseName) &&
                                         (resolvedCustomer is null ||
                                          !existingProfile.CustomerId.HasValue ||
                                          existingProfile.CustomerId == resolvedCustomer.Id) &&
@@ -336,6 +342,41 @@ internal static class RtRentalResolutionPlanner
             }
 
             AddAssetEntryIfChanged(plan, current, desired);
+        }
+
+        foreach (var current in currentAssets.OrderBy(asset => NormalizeSimple(asset.ManagementNumber), StringComparer.Ordinal))
+        {
+            var managementNumber = NormalizeSimple(current.ManagementNumber);
+            if (!sourceRowsByNumber.TryGetValue(managementNumber, out var source) ||
+                string.Equals(NormalizeSimple(source.ManagementCompany), sourceCompany, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var otherSourceCompany = NormalizeSimple(source.ManagementCompany);
+            if (!string.Equals(otherSourceCompany, "유즈넷", StringComparison.Ordinal) &&
+                !string.Equals(otherSourceCompany, "아이티월드", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var existingProfile = current.BillingProfileId is Guid profileId &&
+                                  profilesById.TryGetValue(profileId, out var foundProfile)
+                ? foundProfile
+                : null;
+            var desired = Clone(current);
+            ApplyNonOperatingAssignment(desired, source, current, existingProfile, generatedUtc);
+            desired.IsDeleted = true;
+            if (existingProfile is not null)
+                AddDeparture(departingProfileAssetIds, existingProfile.Id, desired.Id);
+            foreach (var explicitProfile in explicitProfilesByAssetId.GetValueOrDefault(desired.Id) ?? [])
+                AddDeparture(departingProfileAssetIds, explicitProfile.Id, desired.Id);
+
+            AddAssetEntryIfChanged(plan, current, desired);
+            plan.Audit.CrossDatabaseTombstoneCount++;
+            AddDecision(plan, managementNumber, "DB 배치", source,
+                sourceCompany, otherSourceCompany, "잘못된 DB 복사본 비활성화",
+                "RT 관리업체를 최종 기준으로 적용하여 현재 DB의 복사본은 과거 기록을 보존한 채 활성 목록과 청구 대상에서 제외했습니다.");
         }
 
         BuildProfileEntries(plan, snapshot, departingProfileAssetIds);
@@ -449,6 +490,41 @@ internal static class RtRentalResolutionPlanner
             }
         }
 
+        // Legacy copies can still point at a deleted or out-of-database profile.
+        // Such a profile has no profile mutation above, but the direct asset link
+        // must still be cleared before the final RT mutation can be accepted.
+        foreach (var finalAssetEntry in finalAssetsById.Values.OrderBy(entry => entry.EntityId))
+        {
+            var current = snapshot.RentalAssets.FirstOrDefault(asset => asset.Id == finalAssetEntry.EntityId);
+            if (current?.BillingProfileId is not Guid currentProfileId ||
+                currentProfileId == Guid.Empty ||
+                finalAssetEntry.Desired.BillingProfileId.HasValue ||
+                plan.Assets.Any(entry => entry.EntityId == current.Id))
+            {
+                continue;
+            }
+
+            var unlink = Clone(current);
+            unlink.BillingProfileId = null;
+            plan.Assets.Add(new RtRentalResolutionEntity<RentalAssetDto>
+            {
+                Operation = OperationUpdate,
+                EntityId = unlink.Id,
+                ExpectedEntitySha256 = ComputeEntitySha256(current),
+                Desired = unlink
+            });
+            plan.Audit.PlannedAssetUpdateCount++;
+            AddDecision(
+                plan,
+                unlink.ManagementNumber,
+                "청구프로필",
+                null,
+                currentProfileId.ToString("D"),
+                "연결 없음",
+                "고아 프로필 선행 해제",
+                "삭제되었거나 현재 DB 범위에서 유효하지 않은 청구 프로필 연결만 먼저 해제합니다.");
+        }
+
         plan.BillingProfiles = plan.BillingProfiles
             .OrderBy(entry => entry.Desired.ProfileKey, StringComparer.Ordinal)
             .ToList();
@@ -466,7 +542,8 @@ internal static class RtRentalResolutionPlanner
         RentalAssetDto desired,
         RtRentalSourceRow source,
         string targetStatus,
-        RentalAssetDto? current)
+        RentalAssetDto? current,
+        DateTime generatedAtUtc)
     {
         desired.ItemCategoryName = PreferSource(source.ItemCategoryName, desired.ItemCategoryName);
         desired.ItemName = PreferSource(source.ItemName, desired.ItemName);
@@ -485,7 +562,93 @@ internal static class RtRentalResolutionPlanner
             desired.CurrentLocation = RentalAssetStatusNormalizer.Disposed;
         else if (current is null || RentalAssetStatusNormalizer.IsNonOperating(current.AssetStatus))
             desired.CurrentLocation = PreferSource(source.InstallLocation, current?.CurrentLocation ?? desired.CurrentLocation);
+
+        ApplyRtMeterPolicy(desired, source, generatedAtUtc);
     }
+
+    private static void ApplyRtMeterPolicy(
+        RentalAssetDto desired,
+        RtRentalSourceRow source,
+        DateTime generatedAtUtc)
+    {
+        if (!source.HasMeterPolicyColumns)
+            return;
+
+        var blackPolicy = ParseRtIncludedPolicy(source.BlackIncludedText);
+        var colorPolicy = ParseRtIncludedPolicy(source.ColorIncludedText);
+        var blackOverageUnitPrice = ParseRtOverageUnitPrice(source.BlackOverageText);
+        var colorOverageUnitPrice = ParseRtOverageUnitPrice(source.ColorOverageText);
+        var policyChanged =
+            !string.Equals(desired.BlackIncludedMode, blackPolicy.Mode, StringComparison.Ordinal) ||
+            desired.BlackIncludedPages != blackPolicy.Pages ||
+            desired.BlackOverageUnitPrice != blackOverageUnitPrice ||
+            !string.Equals(desired.ColorIncludedMode, colorPolicy.Mode, StringComparison.Ordinal) ||
+            desired.ColorIncludedPages != colorPolicy.Pages ||
+            desired.ColorOverageUnitPrice != colorOverageUnitPrice ||
+            !string.Equals(desired.MeterPolicySource, "rt.2884.kr", StringComparison.Ordinal);
+        desired.BlackIncludedMode = blackPolicy.Mode;
+        desired.BlackIncludedPages = blackPolicy.Pages;
+        desired.BlackOverageUnitPrice = blackOverageUnitPrice;
+        desired.ColorIncludedMode = colorPolicy.Mode;
+        desired.ColorIncludedPages = colorPolicy.Pages;
+        desired.ColorOverageUnitPrice = colorOverageUnitPrice;
+        desired.MeterPolicySource = "rt.2884.kr";
+        if (policyChanged || !desired.MeterPolicySourceUpdatedAtUtc.HasValue)
+        {
+            desired.MeterPolicySourceUpdatedAtUtc = generatedAtUtc.Kind == DateTimeKind.Utc
+                ? generatedAtUtc
+                : generatedAtUtc.ToUniversalTime();
+        }
+    }
+
+    internal static (string Mode, int? Pages) ParseRtIncludedPolicy(string? value)
+    {
+        var text = NormalizeSourceText(value);
+        if (string.Equals(text, "무", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(text, "무제한", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(text, "면제", StringComparison.OrdinalIgnoreCase))
+        {
+            return (RentalMeterPolicyModes.Unlimited, null);
+        }
+
+        if (TryParseRtDecimal(text, out var numeric) &&
+            numeric >= 0m &&
+            numeric <= int.MaxValue &&
+            decimal.Truncate(numeric) == numeric)
+        {
+            return (RentalMeterPolicyModes.Numeric, decimal.ToInt32(numeric));
+        }
+
+        return (RentalMeterPolicyModes.Unconfigured, null);
+    }
+
+    internal static decimal? ParseRtOverageUnitPrice(string? value)
+    {
+        var text = NormalizeSourceText(value);
+        if (string.IsNullOrWhiteSpace(text) ||
+            string.Equals(text, "무", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(text, "무제한", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(text, "면제", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return TryParseRtDecimal(text, out var numeric) && numeric >= 0m
+            ? numeric
+            : null;
+    }
+
+    private static bool TryParseRtDecimal(string? value, out decimal parsed)
+        => decimal.TryParse(
+            (value ?? string.Empty).Trim(),
+            NumberStyles.Number,
+            CultureInfo.InvariantCulture,
+            out parsed) ||
+           decimal.TryParse(
+               (value ?? string.Empty).Trim(),
+               NumberStyles.Number,
+               CultureInfo.GetCultureInfo("ko-KR"),
+               out parsed);
 
     private static void ApplyActiveAssignment(
         RentalAssetDto desired,
@@ -1065,6 +1228,23 @@ internal static class RtRentalResolutionPlanner
         return !string.IsNullOrWhiteSpace(leftKey) && string.Equals(leftKey, rightKey, StringComparison.Ordinal);
     }
 
+    private static bool ProfileBelongsToTargetDatabase(
+        RentalBillingProfileDto profile,
+        string databaseName)
+    {
+        var itworldDatabase = TenantScopeCatalog.GetDatabaseName(TenantScopeCatalog.Itworld);
+        if (string.Equals(databaseName, itworldDatabase, StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Equals(profile.TenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(profile.OfficeCode, OfficeCodeCatalog.Itworld, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(profile.ResponsibleOfficeCode, OfficeCodeCatalog.Itworld, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return string.Equals(profile.TenantCode, TenantScopeCatalog.UsenetGroup, StringComparison.OrdinalIgnoreCase) &&
+               !string.Equals(profile.OfficeCode, OfficeCodeCatalog.Itworld, StringComparison.OrdinalIgnoreCase) &&
+               !string.Equals(profile.ResponsibleOfficeCode, OfficeCodeCatalog.Itworld, StringComparison.OrdinalIgnoreCase);
+    }
+
     internal static string ComputeSnapshotSha256(SyncPullResponse snapshot)
     {
         var payload = new
@@ -1098,12 +1278,47 @@ internal static class RtRentalResolutionPlanner
 
     internal static bool EntityBusinessEquals<T>(T left, T right)
         where T : SyncEntityDto
+        => EntityBusinessDifferenceProperties(left, right).Count == 0;
+
+    internal static IReadOnlyList<string> EntityBusinessDifferenceProperties<T>(T left, T right)
+        where T : SyncEntityDto
     {
         var a = Clone(left);
         var b = Clone(right);
         ClearMutationMetadata(a);
         ClearMutationMetadata(b);
-        return JsonSerializer.Serialize(a, JsonOptions) == JsonSerializer.Serialize(b, JsonOptions);
+        NormalizeServerOwnedBusinessFields(a);
+        NormalizeServerOwnedBusinessFields(b);
+        return typeof(T).GetProperties()
+            .Where(property => property.CanRead)
+            .Where(property => !Equals(property.GetValue(a), property.GetValue(b)))
+            .Select(property => property.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private static void NormalizeServerOwnedBusinessFields(SyncEntityDto entity)
+    {
+        if (entity is not RentalAssetDto asset)
+            return;
+
+        asset.AssetStatus = RentalAssetStatusNormalizer.Normalize(asset.AssetStatus);
+        // PostgreSQL stores this provenance timestamp at microsecond precision while
+        // the approved plan can carry finer .NET ticks. It is not a billing value,
+        // so exclude only this timestamp from business-value equality checks.
+        asset.MeterPolicySourceUpdatedAtUtc = null;
+        if (RentalAssetStatusNormalizer.IsNonOperating(asset.AssetStatus))
+        {
+            asset.BillingEligibilityStatus = BillingExcluded;
+            asset.BillingExclusionReason = $"자산상태: {asset.AssetStatus}";
+            return;
+        }
+
+        if (!asset.BillingProfileId.HasValue)
+        {
+            asset.BillingEligibilityStatus = BillingUnconfirmed;
+            asset.BillingExclusionReason = string.Empty;
+        }
     }
 
     internal static T Clone<T>(T value)
@@ -1417,7 +1632,12 @@ internal static partial class RtRentalDeltaApplier
                         TenantCode = current?.TenantCode ?? string.Empty,
                         OfficeCode = current?.OfficeCode ?? string.Empty,
                         ResponsibleOfficeCode = current?.ResponsibleOfficeCode ?? string.Empty,
-                        current?.Revision
+                        current?.Revision,
+                        ChangedBusinessFields = current is null
+                            ? Array.Empty<string>()
+                            : RtRentalResolutionPlanner.EntityBusinessDifferenceProperties(
+                                current,
+                                entry.Desired)
                     };
                 }),
                 DeletedAssetCandidates = build.Plan.Assets
@@ -1726,8 +1946,10 @@ internal static partial class RtRentalDeltaApplier
         var currentById = current.GroupBy(entity => entity.Id).ToDictionary(group => group.Key, group => group.Single());
         foreach (var entry in entries.Where(entry => submittedIds.Contains(entry.EntityId)))
         {
-            if (!currentById.TryGetValue(entry.EntityId, out var actual) || actual.IsDeleted)
+            if (!currentById.TryGetValue(entry.EntityId, out var actual))
                 throw new InvalidDataException($"An accepted {entityName} is missing from the verification pull.");
+            if (actual.IsDeleted != entry.Desired.IsDeleted)
+                throw new InvalidDataException($"The accepted {entityName} deletion state does not match the approved resolution values.");
             if (!RtRentalResolutionPlanner.EntityBusinessEquals(actual, entry.Desired))
                 throw new InvalidDataException($"The accepted {entityName} does not match the approved resolution values.");
         }

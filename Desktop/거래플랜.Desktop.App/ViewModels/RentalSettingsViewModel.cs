@@ -17,6 +17,8 @@ public sealed partial class RentalSettingsViewModel : ObservableObject
     [ObservableProperty] private string _alertDaysText = "7,3,1,0";
     [ObservableProperty] private string _billingWorkbookPath = string.Empty;
     [ObservableProperty] private string _assetWorkbookPath = string.Empty;
+    [ObservableProperty] private string _meterBaselineWorkbookPath = string.Empty;
+    [ObservableProperty] private string _meterBaselineEvidencePath = string.Empty;
     [ObservableProperty] private string _statusMessage = "렌탈 기준설정을 불러오는 중입니다.";
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private string _customerLinkCleanupSummary = "메인 거래처명 기준 정리 진단을 불러오는 중입니다.";
@@ -49,6 +51,9 @@ public sealed partial class RentalSettingsViewModel : ObservableObject
             var paths = await _rental.GetImportPathsAsync();
             BillingWorkbookPath = paths.BillingPath;
             AssetWorkbookPath = paths.AssetPath;
+            var meterPaths = await _rental.GetMeterBaselineImportPathsAsync();
+            MeterBaselineWorkbookPath = meterPaths.WorkbookPath;
+            MeterBaselineEvidencePath = meterPaths.EvidencePath;
 
             Offices.Clear();
             foreach (var office in await _local.GetOfficesAsync())
@@ -74,6 +79,7 @@ public sealed partial class RentalSettingsViewModel : ObservableObject
 
         await _rental.SaveAlertDaysTextAsync(AlertDaysText);
         await _rental.SaveImportPathsAsync(BillingWorkbookPath, AssetWorkbookPath);
+        await _rental.SaveMeterBaselineImportPathsAsync(MeterBaselineWorkbookPath, MeterBaselineEvidencePath);
         StatusMessage = "렌탈 알림/가져오기 경로 설정을 저장했습니다.";
     }
 
@@ -116,6 +122,35 @@ public sealed partial class RentalSettingsViewModel : ObservableObject
             var result = await Task.Run(() => _rental.ImportAssetWorkbookAsync(AssetWorkbookPath, _session));
             StatusMessage = $"렌탈 자산 가져오기 완료: {result.Summary}";
             await ReloadAsync();
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    [RelayCommand]
+    private async Task ImportMeterBaselineWorkbookAsync()
+    {
+        if (!CanImport)
+        {
+            StatusMessage = "렌탈 검침 기준값 가져오기는 관리자 또는 렌탈 가져오기 권한이 있는 계정만 사용할 수 있습니다.";
+            return;
+        }
+
+        IsBusy = true;
+        StatusMessage = "마지막 확정 마감 검침값을 장비별 시작값으로 반영하는 중입니다.";
+        try
+        {
+            var result = await Task.Run(() => _rental.ImportMeterBaselineWorkbookAsync(
+                MeterBaselineWorkbookPath,
+                MeterBaselineEvidencePath,
+                _session));
+            var detail = result.Messages.Count == 0
+                ? string.Empty
+                : $" / 확인: {string.Join(" · ", result.Messages.Take(3))}";
+            await ReloadAsync();
+            StatusMessage = $"검침 시작값 가져오기 완료: {result.Summary}{detail}";
         }
         finally
         {
@@ -176,14 +211,44 @@ public sealed partial class RentalSettingsViewModel : ObservableObject
     [RelayCommand]
     private void BrowseAssetWorkbook()
     {
+        var selectedPath = BrowseImportSourceFile(
+            "렌탈 자산 엑셀 선택",
+            "Excel 파일|*.xlsx;*.xlsb;*.xls|모든 파일|*.*");
+        if (!string.IsNullOrWhiteSpace(selectedPath))
+            AssetWorkbookPath = selectedPath;
+    }
+
+    [RelayCommand]
+    private void BrowseMeterBaselineWorkbook()
+    {
+        var selectedPath = BrowseImportSourceFile(
+            "렌탈 검침 기준값 엑셀 선택",
+            "Excel 파일|*.xlsm;*.xlsx;*.xlsb;*.xls|모든 파일|*.*");
+        if (!string.IsNullOrWhiteSpace(selectedPath))
+            MeterBaselineWorkbookPath = selectedPath;
+    }
+
+    [RelayCommand]
+    private void BrowseMeterBaselineEvidence()
+    {
+        var selectedPath = BrowseImportSourceFile(
+            "렌탈 검침 근거 PDF 선택(선택 사항)",
+            "PDF 파일|*.pdf|모든 파일|*.*");
+        if (!string.IsNullOrWhiteSpace(selectedPath))
+            MeterBaselineEvidencePath = selectedPath;
+    }
+
+    private static string? BrowseImportSourceFile(string title, string filter)
+    {
         var dialog = new OpenFileDialog
         {
-            Title = "렌탈 자산 엑셀 선택",
-            Filter = "Excel 파일|*.xlsx;*.xlsb;*.xls|모든 파일|*.*",
+            Title = title,
+            Filter = filter,
             CheckFileExists = true
         };
 
-        if (DialogWindowCloseHelper.ShowDialog(dialog) == true)
-            AssetWorkbookPath = dialog.FileName;
+        return DialogWindowCloseHelper.ShowDialog(dialog) == true
+            ? dialog.FileName
+            : null;
     }
 }

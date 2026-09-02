@@ -288,6 +288,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [ObservableProperty] private decimal _editSettledAmount;
     [ObservableProperty] private decimal _editOutstandingAmount;
     [ObservableProperty] private bool _editRequiresFollowUp;
+    [ObservableProperty] private bool _editPoolMeterAllowance;
     [ObservableProperty] private string _editSubmissionDocuments = string.Empty;
     [ObservableProperty] private string _editNotes = string.Empty;
     [ObservableProperty] private string _templateSummary = string.Empty;
@@ -1520,6 +1521,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             SettledAmount = EditSettledAmount,
             OutstandingAmount = EditOutstandingAmount,
             RequiresFollowUp = EditRequiresFollowUp,
+            PoolMeterAllowance = EditPoolMeterAllowance,
             SubmissionDocuments = EditSubmissionDocuments,
             Notes = EditNotes,
             ResponsibleOfficeCode = officeCode,
@@ -2321,6 +2323,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditSettledAmount = 0m;
         EditOutstandingAmount = 0m;
         EditRequiresFollowUp = false;
+        EditPoolMeterAllowance = false;
         EditSubmissionDocuments = string.Empty;
         EditNotes = string.Empty;
         EditBillingAnchorDate = null;
@@ -3499,6 +3502,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditSettledAmount = value.SettledAmount;
         EditOutstandingAmount = value.OutstandingAmount;
         EditRequiresFollowUp = value.RequiresFollowUp;
+        EditPoolMeterAllowance = source.PoolMeterAllowance;
         EditSubmissionDocuments = source.SubmissionDocuments;
         EditNotes = source.Notes;
         EditBillingAnchorDate = ToDateTime(source.BillingAnchorDate);
@@ -7258,6 +7262,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             NormalizeDecimal(EditSettledAmount),
             NormalizeDecimal(EditOutstandingAmount),
             EditRequiresFollowUp ? "Y" : "N",
+            EditPoolMeterAllowance ? "Y" : "N",
             NormalizeText(EditSubmissionDocuments),
             NormalizeText(EditNotes),
             LinkAssetsLater ? "Y" : "N",

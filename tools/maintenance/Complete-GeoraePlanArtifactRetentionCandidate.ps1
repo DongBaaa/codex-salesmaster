@@ -15,7 +15,7 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'GeoraePlanArtifactRetentionProducer.Common.ps1')
-$script:GeoraePlanArtifactRetentionTestClosureManifestSha256='758B3925167D278E5145FCCFD9EAD941E9FD15535E1A7DD219A4E6037A43377D'
+$script:GeoraePlanArtifactRetentionTestClosureManifestSha256='B87297D9A03FD446472C084897F5F47ED718107CBF09252E03DAC5F012FC403E'
 
 function Invoke-GeoraePlanArtifactRetentionCheckedProcess {
  param([string]$Executable,[string[]]$Arguments,[string]$WorkingDirectory,[string]$Label,[switch]$AllowFailure)

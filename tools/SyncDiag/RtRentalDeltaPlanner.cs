@@ -20,7 +20,12 @@ internal sealed record RtRentalSourceRow(
     string ContractMonthsText,
     string ContractStartDate,
     string RentalEndDate,
-    string DisposalDate);
+    string DisposalDate,
+    string BlackIncludedText = "",
+    string ColorIncludedText = "",
+    string BlackOverageText = "",
+    string ColorOverageText = "",
+    bool HasMeterPolicyColumns = false);
 
 internal sealed class RtRentalDeltaPlanAudit
 {
@@ -116,6 +121,17 @@ internal static class RtRentalDeltaPlanner
             string Get(string header) =>
                 (fields[headerMap[header][0]] ?? string.Empty).Trim();
 
+            string GetOptional(string header) =>
+                headerMap.TryGetValue(header, out var indexes) && indexes.Length == 1
+                    ? (fields[indexes[0]] ?? string.Empty).Trim()
+                    : string.Empty;
+
+            var hasMeterPolicyColumns =
+                headerMap.ContainsKey("BlackIncludedText") &&
+                headerMap.ContainsKey("ColorIncludedText") &&
+                headerMap.ContainsKey("BlackOverageText") &&
+                headerMap.ContainsKey("ColorOverageText");
+
             rows.Add(new RtRentalSourceRow(
                 checked((int)parser.LineNumber),
                 Get("Status"),
@@ -131,7 +147,12 @@ internal static class RtRentalDeltaPlanner
                 Get("ContractMonthsText"),
                 Get("ContractStartDate"),
                 Get("RentalEndDate"),
-                Get("DisposalDate")));
+                Get("DisposalDate"),
+                GetOptional("BlackIncludedText"),
+                GetOptional("ColorIncludedText"),
+                GetOptional("BlackOverageText"),
+                GetOptional("ColorOverageText"),
+                hasMeterPolicyColumns));
         }
 
         if (rows.Count == 0)

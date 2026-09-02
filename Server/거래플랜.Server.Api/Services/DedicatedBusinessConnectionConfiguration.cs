@@ -22,14 +22,6 @@ public static class DedicatedBusinessConnectionConfiguration
 
         foreach (var tenantCode in TenantScopeCatalog.AllTenants)
         {
-            if (string.Equals(
-                    tenantCode,
-                    TenantScopeCatalog.UsenetGroup,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
             var candidate =
                 (connectionSection[tenantCode] ?? string.Empty).Trim();
             if (string.IsNullOrWhiteSpace(candidate))

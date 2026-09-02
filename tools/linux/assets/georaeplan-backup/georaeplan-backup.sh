@@ -247,19 +247,33 @@ extract_database_name() {
   set +f
   return 11
 }
+printf "Default="
 extract_database_name "${ConnectionStrings__Default:-}"
+printf "ITWORLD="
 extract_database_name "${ConnectionStrings__ITWORLD:-}"
+if [ -n "${ConnectionStrings__USENET_GROUP:-}" ]; then
+  printf "USENET_GROUP="
+  extract_database_name "${ConnectionStrings__USENET_GROUP}"
+fi
 ')"
-mapfile -t api_databases <<< "$api_database_identities"
-if (( ${#api_databases[@]} != 2 )); then
+mapfile -t api_database_lines <<< "$api_database_identities"
+if (( ${#api_database_lines[@]} < 2 || ${#api_database_lines[@]} > 3 )); then
   echo "backup_prerequisite_failed reason=api_database_identity_unavailable" >&2
   exit 3
 fi
-api_central_database="${api_databases[0]%$'\r'}"
-api_business_database="${api_databases[1]%$'\r'}"
+if [[ "${api_database_lines[0]}" != Default=* ||
+      "${api_database_lines[1]}" != ITWORLD=* ||
+      ( ${#api_database_lines[@]} -eq 3 && "${api_database_lines[2]}" != USENET_GROUP=* ) ]]; then
+  echo "backup_prerequisite_failed reason=api_database_identity_contract_invalid" >&2
+  exit 3
+fi
+api_central_database="${api_database_lines[0]#Default=}"
+api_central_database="${api_central_database%$'\r'}"
+api_business_database="${api_database_lines[1]#ITWORLD=}"
+api_business_database="${api_business_database%$'\r'}"
 if [[ ! "$database_user" =~ ^[A-Za-z_][A-Za-z0-9_.-]*$ ]] ||
-   [[ ! "$central_database" =~ ^[A-Za-z_][A-Za-z0-9_.-]*$ ]] ||
-   [[ ! "$business_database" =~ ^[A-Za-z_][A-Za-z0-9_.-]*$ ]] ||
+   [[ "$central_database" != georaeplan ]] ||
+   [[ "$business_database" != georaeplan_itworld ]] ||
    [[ "$central_database" == "$business_database" ]]; then
   echo "backup_prerequisite_failed reason=invalid_database_identity" >&2
   exit 3
@@ -269,7 +283,50 @@ if [[ "$api_central_database" != "$central_database" ]] ||
   echo "backup_prerequisite_failed reason=api_database_identity_drift" >&2
   exit 3
 fi
+
+database_inventory="$(
+  "${compose[@]}" exec -T postgres \
+    psql --no-password -X -q -v ON_ERROR_STOP=1 \
+    -U "$database_user" -d "$central_database" -At \
+    -c "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate AND (datname = '$central_database' OR datname ~ '^georaeplan_(itworld|usenet|org_[a-z0-9_]+)$') ORDER BY datname;"
+)"
+database_inventory="${database_inventory//$'\r'/}"
+mapfile -t databases <<< "$database_inventory"
+if (( ${#databases[@]} < 2 || ${#databases[@]} > 256 )); then
+  echo "backup_prerequisite_failed reason=database_inventory_count_invalid" >&2
+  exit 3
+fi
+declare -A discovered_database=()
+for database_name in "${databases[@]}"; do
+  if [[ "$database_name" != georaeplan &&
+        "$database_name" != georaeplan_itworld &&
+        "$database_name" != georaeplan_usenet &&
+        ! "$database_name" =~ ^georaeplan_org_[a-z0-9_]+$ ]] ||
+     [[ -n "${discovered_database[$database_name]:-}" ]]; then
+    echo "backup_prerequisite_failed reason=database_inventory_identity_invalid" >&2
+    exit 3
+  fi
+  discovered_database[$database_name]=1
+done
+for required_database in "$central_database" "$business_database"; do
+  if [[ -z "${discovered_database[$required_database]:-}" ]]; then
+    echo "backup_prerequisite_failed reason=required_database_missing database=$required_database" >&2
+    exit 3
+  fi
+done
+for api_database_line in "${api_database_lines[@]}"; do
+  api_database_name="${api_database_line#*=}"
+  api_database_name="${api_database_name%$'\r'}"
+  if [[ ! "$api_database_name" =~ ^georaeplan(_(itworld|usenet|org_[a-z0-9_]+))?$ ]] ||
+     [[ -z "${discovered_database[$api_database_name]:-}" ]]; then
+    echo "backup_prerequisite_failed reason=api_database_not_discovered database=$api_database_name" >&2
+    exit 3
+  fi
+done
+database_count="${#databases[@]}"
+database_list_sha256="$(printf '%s\n' "${databases[@]}" | sha256sum | awk '{print $1}')"
 echo "backup_api_database_identity=ok"
+echo "backup_database_inventory=ok database_count=$database_count database_list_sha256=$database_list_sha256"
 
 api_port_binding="$("${compose[@]}" port api 8080 | head -n 1 | tr -d '\r')"
 case "$api_port_binding" in
@@ -390,16 +447,22 @@ read_database_business_count_digest() {
   printf '%s' "$output" | sha256sum | awk '{print $1}'
 }
 
-central_database_bytes="$(read_database_size "$central_database")"
-business_database_bytes="$(read_database_size "$business_database")"
+database_bytes_total=0
+for database_name in "${databases[@]}"; do
+  database_bytes="$(read_database_size "$database_name")"
+  if [[ ! "$database_bytes" =~ ^[0-9]+$ ]]; then
+    echo "backup_prerequisite_failed reason=capacity_measurement_invalid database=$database_name" >&2
+    exit 3
+  fi
+  database_bytes_total=$((database_bytes_total + database_bytes))
+done
 files_bytes="$(du -sb -- "$FILES_ROOT" | awk '{print $1}')"
 keyring_bytes="$(du -sb -- "$KEYRING_ROOT" | awk '{print $1}')"
 available_bytes="$(df -PB1 -- "$BACKUP_ROOT" | awk 'NR == 2 {print $4}')"
 available_inodes="$(df -Pi -- "$BACKUP_ROOT" | awk 'NR == 2 {print $4}')"
 
 for measured_value in \
-  "$central_database_bytes" \
-  "$business_database_bytes" \
+  "$database_bytes_total" \
   "$files_bytes" \
   "$keyring_bytes" \
   "$available_bytes" \
@@ -411,8 +474,7 @@ for measured_value in \
 done
 
 estimated_source_bytes=$((
-  central_database_bytes +
-  business_database_bytes +
+  database_bytes_total +
   files_bytes +
   keyring_bytes
 ))
@@ -460,13 +522,14 @@ fi
 echo "backup_api_runtime_stable=before_capture"
 
 mkdir -- "$staging_dir"
-central_dump="$staging_dir/georaeplan.dump"
-business_dump="$staging_dir/georaeplan_itworld.dump"
 files_archive="$staging_dir/files.tar.gz"
 keyring_archive="$staging_dir/data-protection-keys.tar.gz"
+database_manifest_file="$staging_dir/databases.txt"
 metadata_file="$staging_dir/metadata.txt"
 manifest_file="$staging_dir/SHA256SUMS"
 complete_marker="$staging_dir/COMPLETE"
+declare -a database_dump_names=()
+declare -a database_digest_records=()
 
 if ! database_snapshot_before="$(read_database_snapshot)"; then
   echo \
@@ -482,47 +545,42 @@ database_snapshot_before_sha256="$(
 echo \
   "backup_database_snapshot phase=before sha256=$database_snapshot_before_sha256"
 
-if ! central_business_count_sha256_before="$(read_database_business_count_digest "$central_database")"; then
-  echo "backup_prerequisite_failed reason=business_count_digest_unavailable scope=central phase=before" >&2
-  exit 5
-fi
-echo "backup_database_start scope=central database=$central_database"
-"${compose[@]}" exec -T postgres \
-  pg_dump --no-password -U "$database_user" -d "$central_database" -Fc \
-  > "$central_dump"
-[[ -s "$central_dump" ]]
-"${compose[@]}" exec -T postgres pg_restore -l < "$central_dump" > /dev/null
-if ! central_business_count_sha256_after="$(read_database_business_count_digest "$central_database")"; then
-  echo "backup_prerequisite_failed reason=business_count_digest_unavailable scope=central phase=after" >&2
-  exit 5
-fi
-if [[ "$central_business_count_sha256_before" != "$central_business_count_sha256_after" ]]; then
-  echo "backup_prerequisite_failed reason=business_count_digest_drift scope=central before_sha256=$central_business_count_sha256_before after_sha256=$central_business_count_sha256_after" >&2
-  exit 5
-fi
-central_business_count_sha256="$central_business_count_sha256_before"
-echo "backup_business_count_digest_consistency=ok scope=central sha256=$central_business_count_sha256"
-
-if ! business_business_count_sha256_before="$(read_database_business_count_digest "$business_database")"; then
-  echo "backup_prerequisite_failed reason=business_count_digest_unavailable scope=business phase=before" >&2
-  exit 5
-fi
-echo "backup_database_start scope=business database=$business_database"
-"${compose[@]}" exec -T postgres \
-  pg_dump --no-password -U "$database_user" -d "$business_database" -Fc \
-  > "$business_dump"
-[[ -s "$business_dump" ]]
-"${compose[@]}" exec -T postgres pg_restore -l < "$business_dump" > /dev/null
-if ! business_business_count_sha256_after="$(read_database_business_count_digest "$business_database")"; then
-  echo "backup_prerequisite_failed reason=business_count_digest_unavailable scope=business phase=after" >&2
-  exit 5
-fi
-if [[ "$business_business_count_sha256_before" != "$business_business_count_sha256_after" ]]; then
-  echo "backup_prerequisite_failed reason=business_count_digest_drift scope=business before_sha256=$business_business_count_sha256_before after_sha256=$business_business_count_sha256_after" >&2
-  exit 5
-fi
-business_business_count_sha256="$business_business_count_sha256_before"
-echo "backup_business_count_digest_consistency=ok scope=business sha256=$business_business_count_sha256"
+central_business_count_sha256=""
+business_business_count_sha256=""
+: > "$database_manifest_file"
+for database_name in "${databases[@]}"; do
+  dump_name="${database_name}.dump"
+  database_dump="$staging_dir/$dump_name"
+  if ! business_count_sha256_before="$(read_database_business_count_digest "$database_name")"; then
+    echo "backup_prerequisite_failed reason=business_count_digest_unavailable database=$database_name phase=before" >&2
+    exit 5
+  fi
+  echo "backup_database_start database=$database_name"
+  "${compose[@]}" exec -T postgres \
+    pg_dump --no-password -U "$database_user" -d "$database_name" -Fc \
+    > "$database_dump"
+  [[ -s "$database_dump" ]]
+  "${compose[@]}" exec -T postgres pg_restore -l < "$database_dump" > /dev/null
+  if ! business_count_sha256_after="$(read_database_business_count_digest "$database_name")"; then
+    echo "backup_prerequisite_failed reason=business_count_digest_unavailable database=$database_name phase=after" >&2
+    exit 5
+  fi
+  if [[ "$business_count_sha256_before" != "$business_count_sha256_after" ]]; then
+    echo "backup_prerequisite_failed reason=business_count_digest_drift database=$database_name before_sha256=$business_count_sha256_before after_sha256=$business_count_sha256_after" >&2
+    exit 5
+  fi
+  business_count_sha256="$business_count_sha256_before"
+  printf '%s\t%s\t%s\n' "$database_name" "$dump_name" "$business_count_sha256" >> "$database_manifest_file"
+  database_dump_names+=("$dump_name")
+  database_digest_records+=("$database_name=$business_count_sha256")
+  if [[ "$database_name" == "$central_database" ]]; then
+    central_business_count_sha256="$business_count_sha256"
+  elif [[ "$database_name" == "$business_database" ]]; then
+    business_business_count_sha256="$business_count_sha256"
+  fi
+  echo "backup_business_count_digest_consistency=ok database=$database_name sha256=$business_count_sha256"
+done
+[[ -n "$central_business_count_sha256" && -n "$business_business_count_sha256" ]]
 
 if ! database_snapshot_after="$(read_database_snapshot)"; then
   echo \
@@ -542,6 +600,8 @@ if [[ "$database_snapshot_before" != "$database_snapshot_after" ]]; then
   exit 5
 fi
 database_snapshot_sha256="$database_snapshot_before_sha256"
+database_manifest_sha256="$(sha256sum "$database_manifest_file" | awk '{print $1}')"
+database_digest_set_sha256="$(printf '%s\n' "${database_digest_records[@]}" | sha256sum | awk '{print $1}')"
 echo \
   "backup_database_snapshot_consistency=ok snapshot_sha256=$database_snapshot_sha256"
 
@@ -574,12 +634,17 @@ run_id=$run_id
 created_at=$(date -Iseconds)
 central_database=$central_database
 business_database=$business_database
+database_manifest=$(basename "$database_manifest_file")
+database_count=$database_count
+database_list_sha256=$database_list_sha256
+database_manifest_sha256=$database_manifest_sha256
+database_digest_set_sha256=$database_digest_set_sha256
 files_archive=$(basename "$files_archive")
 keyring_archive=$(basename "$keyring_archive")
 estimated_source_bytes=$estimated_source_bytes
 required_available_bytes=$required_available_bytes
 file_deletion_lease=exclusive_during_database_and_file_capture
-database_snapshot_consistency=unchanged_across_both_dumps
+database_snapshot_consistency=unchanged_across_all_dumps
 database_snapshot_sha256=$database_snapshot_sha256
 central_business_count_sha256=$central_business_count_sha256
 business_business_count_sha256=$business_business_count_sha256
@@ -589,8 +654,8 @@ EOF
 (
   cd "$staging_dir"
   sha256sum \
-    "$(basename "$central_dump")" \
-    "$(basename "$business_dump")" \
+    "${database_dump_names[@]}" \
+    "$(basename "$database_manifest_file")" \
     "$(basename "$files_archive")" \
     "$(basename "$keyring_archive")" \
     "$(basename "$metadata_file")" \
@@ -622,8 +687,12 @@ write_status_atomically \
   "estimated_source_bytes=$estimated_source_bytes" \
   "required_available_bytes=$required_available_bytes" \
   "file_deletion_lease=exclusive_during_database_and_file_capture" \
-  "database_snapshot_consistency=unchanged_across_both_dumps" \
-  "database_snapshot_sha256=$database_snapshot_sha256"
+  "database_snapshot_consistency=unchanged_across_all_dumps" \
+  "database_snapshot_sha256=$database_snapshot_sha256" \
+  "database_count=$database_count" \
+  "database_list_sha256=$database_list_sha256" \
+  "database_manifest_sha256=$database_manifest_sha256" \
+  "database_digest_set_sha256=$database_digest_set_sha256"
 
 while IFS= read -r -d '' expired_set; do
   [[ "$expired_set" != "$final_dir" ]] || continue
