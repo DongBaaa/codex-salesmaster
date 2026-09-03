@@ -121,11 +121,37 @@ jobs:
               files = @($manifestFiles)
           } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $readyRoot 'artifact-manifest.json') -Encoding UTF8
 
-      - name: Upload Windows installers
+      - name: Upload artifact manifest
         uses: actions/upload-artifact@v4
         with:
-          name: georaeplan-desktop-installers
-          path: ${{ runner.temp }}\georaeplan-package-ready\*
+          name: georaeplan-desktop-manifest
+          path: ${{ runner.temp }}\georaeplan-package-ready\artifact-manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload desktop ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: georaeplan-desktop-zip
+          path: ${{ runner.temp }}\georaeplan-package-ready\tradeplan-pc-installer-v*.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload desktop EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: georaeplan-desktop-exe
+          path: ${{ runner.temp }}\georaeplan-package-ready\tradeplan-pc-setup-v*.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload desktop MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: georaeplan-desktop-msi
+          path: ${{ runner.temp }}\georaeplan-package-ready\tradeplan-pc-admin-v*.msi
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
