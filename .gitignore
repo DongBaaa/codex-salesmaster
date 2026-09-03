@@ -47,8 +47,17 @@ publish/
 !배포/테스트/모바일/README.txt
 
 # Local DB/cache
+*.db
 *.db-shm
 *.db-wal
+*.db-journal
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+*.dump
+*.dmp
+App_Data/
+infra/data/
 
 # Local verification / scratch artifacts
 server-smoke.pid
@@ -86,8 +95,19 @@ tools/release/windows-signing.local.json
 배포/README.txt
 배포/관리자용/**
 release-temp/
+release-artifacts/
+.georaeplan-stage-*/
 배포/.georaeplan-release-generations/
 배포/.georaeplan-release-publish-stable.lock
+
+# .NET test/package diagnostics
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+BenchmarkDotNet.Artifacts/
+*.nupkg
+*.snupkg
 
 # Additional local scratch / investigation artifacts
 .inspect-*.db

@@ -1,5 +1,11 @@
 name: georaeplan
 
+x-georaeplan-logging: &georaeplan-logging
+  driver: json-file
+  options:
+    max-size: "${DOCKER_LOG_MAX_SIZE:-20m}"
+    max-file: "${DOCKER_LOG_MAX_FILE:-5}"
+
 services:
   postgres:
     image: postgres:16
@@ -13,6 +19,7 @@ services:
       - "${HOST_BIND_IP:-127.0.0.1}:${POSTGRES_HOST_PORT:-15434}:5432"
     volumes:
       - "${GEORAEPLAN_ROOT_PATH:-/srv/georaeplan}/data/postgres:/var/lib/postgresql/data"
+    logging: *georaeplan-logging
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-georaeplan} -d ${POSTGRES_DB:-georaeplan}"]
       interval: 10s
@@ -86,3 +93,4 @@ services:
       - "${GEORAEPLAN_ROOT_PATH:-/srv/georaeplan}/app/live:/app:ro"
       - "${GEORAEPLAN_ROOT_PATH:-/srv/georaeplan}/storage/files:/storage/files"
       - "${GEORAEPLAN_ROOT_PATH:-/srv/georaeplan}/storage/data-protection-keys:/storage/data-protection-keys"
+    logging: *georaeplan-logging

@@ -1,5 +1,11 @@
 name: georaeplan
 
+x-georaeplan-logging: &georaeplan-logging
+  driver: json-file
+  options:
+    max-size: "${DOCKER_LOG_MAX_SIZE:-20m}"
+    max-file: "${DOCKER_LOG_MAX_FILE:-5}"
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -12,7 +18,8 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - georaeplan_postgres_data:/var/lib/postgresql/data
+    logging: *georaeplan-logging
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sm_user} -d ${POSTGRES_DB:-거래플랜}" ]
       interval: 10s
@@ -41,3 +48,8 @@ services:
       Jwt__ExpirationMinutes: ${JWT_EXPIRATION_MINUTES:-43200}
     ports:
       - "${API_PORT:-18080}:18080"
+    logging: *georaeplan-logging
+
+volumes:
+  georaeplan_postgres_data:
+    name: georaeplan-dev-postgres-data
