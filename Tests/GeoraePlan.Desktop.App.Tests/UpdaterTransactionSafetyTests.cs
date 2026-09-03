@@ -436,6 +436,40 @@ public sealed class UpdaterTransactionSafetyTests
     }
 
     [Theory]
+    [InlineData("1.1.705", "1.1.705")]
+    [InlineData("1.1.705.0", "1.1.705")]
+    [InlineData("1.1.705", "1.1.705.0")]
+    [InlineData("v1.1.705+desktop", "1.1.705")]
+    public async Task CheckForUpdatesAsync_EquivalentVersionFormsReportCurrentVersion(
+        string currentVersion,
+        string packageVersion)
+    {
+        var package = CreateUpdatePackage(
+            packageVersion,
+            "1.1.704",
+            mandatory: true);
+        var handler = new UpdateManifestHandler(package);
+        var api = new ErpApiClient(
+            new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") },
+            new SessionState());
+        var service = new DesktopAppUpdateService(
+            api,
+            currentVersionProvider: () => currentVersion,
+            startUpdateCoreOverride: null,
+            verifiedHandoffShutdownScheduler: () => { });
+
+        var result = await service.CheckForUpdatesAsync("stable");
+
+        Assert.False(result.HasBlockingPolicyIssue);
+        Assert.False(result.IsBelowMinimumSupportedVersion);
+        Assert.False(result.RequiresImmediateUpdate);
+        Assert.False(result.IsUpdateAvailable);
+        Assert.Null(result.Package);
+        Assert.Contains("배포된 최신 버전입니다", result.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("오래된 업데이트 매니페스트", result.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
     [InlineData("test", "desktop")]
     [InlineData("", "desktop")]
     [InlineData("Stable", "desktop")]
@@ -4765,6 +4799,22 @@ public sealed class UpdaterTransactionSafetyTests
             "2.0.0",
             "3.0.0",
             "2.5.0",
+            out var failure));
+        Assert.Equal(string.Empty, failure);
+    }
+
+    [Theory]
+    [InlineData("1.1.705", "1.1.706")]
+    [InlineData("1.1.705.0", "1.1.706")]
+    [InlineData("1.1.705", "1.1.706.0")]
+    public void DesktopUpdateVersionPolicy_TreatsMissingRevisionAsZero(
+        string currentVersion,
+        string packageVersion)
+    {
+        Assert.True(DesktopAppUpdateService.IsPackageVersionPolicySatisfied(
+            currentVersion,
+            packageVersion,
+            "1.1.705",
             out var failure));
         Assert.Equal(string.Empty, failure);
     }

@@ -871,9 +871,9 @@ public sealed class DesktopAppUpdateService
 
     private static int CompareVersions(string left, string right)
     {
-        if (!Version.TryParse(NormalizeVersionText(left), out var leftVersion))
+        if (!TryParseVersionStrict(left, out var leftVersion))
             leftVersion = new Version(0, 0, 0);
-        if (!Version.TryParse(NormalizeVersionText(right), out var rightVersion))
+        if (!TryParseVersionStrict(right, out var rightVersion))
             rightVersion = new Version(0, 0, 0);
         return leftVersion.CompareTo(rightVersion);
     }
@@ -905,6 +905,10 @@ public sealed class DesktopAppUpdateService
             TryParseVersionStrict(
                 minimumSupportedVersion,
                 out parsedMinimumSupportedVersion);
+        var isCurrentManifest =
+            hasCurrentVersion &&
+            hasPackageVersion &&
+            parsedCurrentVersion == parsedPackageVersion;
         var isBelowMinimumSupportedVersion =
             hasCurrentVersion &&
             !string.IsNullOrWhiteSpace(minimumSupportedVersion) &&
@@ -917,7 +921,7 @@ public sealed class DesktopAppUpdateService
         var isStaleManifest =
             hasCurrentVersion &&
             hasPackageVersion &&
-            parsedCurrentVersion >= parsedPackageVersion;
+            parsedCurrentVersion > parsedPackageVersion;
 
         if (!IsPackageVersionPolicySatisfied(
                 currentVersion,
@@ -933,10 +937,14 @@ public sealed class DesktopAppUpdateService
                 IsBelowMinimumSupportedVersion = isBelowMinimumSupportedVersion,
                 HasBlockingPolicyIssue = hasBlockingPolicyIssue,
                 Package = null,
-                Message = isStaleManifest &&
+                Message = isCurrentManifest &&
                           !hasBlockingPolicyIssue &&
                           !isBelowMinimumSupportedVersion
-                    ? $"현재 버전({normalizedCurrentVersion})이 배포 대상 버전({latestVersion}) 이상입니다. 오래된 업데이트 매니페스트는 적용하지 않습니다."
+                    ? $"현재 버전({normalizedCurrentVersion})은 배포된 최신 버전입니다."
+                    : isStaleManifest &&
+                          !hasBlockingPolicyIssue &&
+                          !isBelowMinimumSupportedVersion
+                    ? $"현재 버전({normalizedCurrentVersion})이 배포 대상 버전({latestVersion})보다 높습니다. 오래된 업데이트 매니페스트는 적용하지 않습니다."
                     : $"업데이트 매니페스트 버전 정책이 일치하지 않아 적용을 차단했습니다. {policyFailure}"
             };
         }
@@ -1010,7 +1018,11 @@ public sealed class DesktopAppUpdateService
             Version.TryParse(NormalizeVersionText(raw), out var parsedVersion) &&
             parsedVersion is not null)
         {
-            version = parsedVersion;
+            version = new Version(
+                parsedVersion.Major,
+                parsedVersion.Minor,
+                Math.Max(parsedVersion.Build, 0),
+                Math.Max(parsedVersion.Revision, 0));
             return true;
         }
 
