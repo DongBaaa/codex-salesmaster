@@ -223,7 +223,6 @@
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="심각도" Binding="{Binding Severity}" Width="90"/>
                                 <DataGridTextColumn Header="건수" Binding="{Binding Count, StringFormat={}{0:N0}}" Width="70"/>
-                                <DataGridTextColumn Header="코드" Binding="{Binding Code}" Width="190"/>
                                 <DataGridTextColumn Header="내용" Binding="{Binding Message}" Width="*"/>
                             </DataGrid.Columns>
                         </DataGrid>
@@ -232,7 +231,14 @@
                             <TextBlock Text="{Binding ServerIntegrityDetailSummaryText}" Foreground="#EAF2FF" Margin="0,4,0,0" TextWrapping="Wrap"/>
                             <TextBlock Text="{Binding ServerIntegrityDetailStatusText}" Foreground="#9FB3C8" Margin="0,4,0,0" TextWrapping="Wrap"/>
                         </StackPanel>
-                        <DataGrid Grid.Row="6" ItemsSource="{Binding ServerIntegrityDetailRows}" IsReadOnly="True" BorderThickness="0">
+                        <DataGrid x:Name="ServerIntegrityDetailDataGrid"
+                                  Grid.Row="6"
+                                  ItemsSource="{Binding ServerIntegrityDetailRows}"
+                                  SelectedItem="{Binding SelectedServerIntegrityDetailRow, Mode=TwoWay}"
+                                  MouseDoubleClick="ServerIntegrityDetailDataGrid_MouseDoubleClick"
+                                  ToolTip="항목을 더블클릭하면 문제 설명과 해결 방법을 열어 봅니다."
+                                  IsReadOnly="True"
+                                  BorderThickness="0">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="엔터티" Binding="{Binding EntityType}" Width="100"/>
                                 <DataGridTextColumn Header="엔터티 ID" Binding="{Binding EntityIdText}" Width="180"/>
@@ -310,9 +316,9 @@
                                 <DataGridTextColumn Header="마지막 발생" Binding="{Binding LastOccurredAtUtc, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}" Width="160"/>
                                 <DataGridTextColumn Header="유형" Binding="{Binding Category}" Width="130"/>
                                 <DataGridTextColumn Header="필터" Binding="{Binding SummaryText}" Width="220"/>
-                                <DataGridTextColumn Header="원인 요약" Binding="{Binding RawMessage}" Width="2*"/>
-                                <DataGridTextColumn Header="상태" Binding="{Binding Status}" Width="90"/>
-                                <DataGridCheckBoxColumn Header="복구" Binding="{Binding IsRecoverable}" Width="70" IsReadOnly="True"/>
+                                <DataGridTextColumn Header="무슨 문제인가요?" Binding="{Binding ProblemExplanation}" Width="2*"/>
+                                <DataGridTextColumn Header="상태" Binding="{Binding StatusDisplay}" Width="110"/>
+                                <DataGridTextColumn Header="해결 방식" Binding="{Binding RecoveryAvailabilityDisplay}" Width="130"/>
                                 <DataGridTextColumn Header="횟수" Binding="{Binding OccurrenceCount}" Width="70"/>
                                 <DataGridTextColumn Header="사용자 범위" Binding="{Binding UserScopeText}" Width="170"/>
                             </DataGrid.Columns>
@@ -333,13 +339,13 @@
                             </Border>
                             <DataGrid ItemsSource="{Binding OutboxEntries}" SelectedItem="{Binding SelectedOutboxEntry}" IsReadOnly="True" BorderThickness="0">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="상태" Binding="{Binding Status}" Width="90"/>
+                                    <DataGridTextColumn Header="상태" Binding="{Binding StatusDisplay}" Width="110"/>
                                     <DataGridTextColumn Header="엔터티" Binding="{Binding EntityName}" Width="130"/>
                                     <DataGridTextColumn Header="엔터티 ID" Binding="{Binding EntityIdText}" Width="180"/>
                                     <DataGridTextColumn Header="기대 rev" Binding="{Binding ExpectedRevision, StringFormat={}{0:N0}}" Width="80"/>
                                     <DataGridTextColumn Header="준비시각" Binding="{Binding PreparedAtUtc, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}" Width="160"/>
                                     <DataGridTextColumn Header="전송시각" Binding="{Binding SentAtUtc, StringFormat={}{0:yyyy-MM-dd HH:mm:ss}}" Width="160"/>
-                                    <DataGridTextColumn Header="확인사유" Binding="{Binding ErrorMessage}" Width="*"/>
+                                    <DataGridTextColumn Header="전송이 멈춘 이유" Binding="{Binding ErrorMessageDisplay}" Width="*"/>
                                 </DataGrid.Columns>
                             </DataGrid>
                         </DockPanel>
@@ -355,10 +361,14 @@
                         </Border>
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <StackPanel Margin="12">
-                                <TextBlock Text="원인 요약" Foreground="#9FB3C8" FontSize="11"/>
-                                <TextBox Text="{Binding SelectedEvent.RawMessage}" Margin="0,4,0,10" TextWrapping="Wrap" AcceptsReturn="True" MinHeight="64" MaxHeight="160" VerticalScrollBarVisibility="Auto" IsReadOnly="True"/>
+                                <TextBlock Text="무슨 문제인가요?" Foreground="#9FB3C8" FontSize="11"/>
+                                <TextBlock Text="{Binding SelectedEvent.ProblemExplanation}" Margin="0,4,0,8" TextWrapping="Wrap" FontSize="15" Foreground="#EAF2FF"/>
+                                <TextBlock Text="{Binding SelectedEvent.ImpactExplanation}" Margin="0,0,0,14" TextWrapping="Wrap" Foreground="#FFCC80"/>
 
-                                <TextBlock Text="분류" Foreground="#9FB3C8" FontSize="11"/>
+                                <TextBlock Text="지금 무엇을 해야 하나요?" Foreground="#9FB3C8" FontSize="11"/>
+                                <TextBlock Text="{Binding SelectedEvent.ActionSteps}" Margin="0,4,0,14" TextWrapping="Wrap" Foreground="#90CAF9"/>
+
+                                <TextBlock Text="오류 분류(참고)" Foreground="#9FB3C8" FontSize="11"/>
                                 <Grid Margin="0,4,0,10">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="120"/>
@@ -376,7 +386,7 @@
                                     <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedEvent.Subcategory}" Margin="0,6,0,0"/>
                                     <TextBlock Grid.Row="2" Grid.Column="0" Text="동기화 단계" Foreground="#9FB3C8" Margin="0,6,0,0"/>
                                     <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedEvent.SyncPhase}" Margin="0,6,0,0"/>
-                                    <TextBlock Grid.Row="3" Grid.Column="0" Text="복구 조치" Foreground="#9FB3C8" Margin="0,6,0,0"/>
+                                    <TextBlock Grid.Row="3" Grid.Column="0" Text="요약 조치" Foreground="#9FB3C8" Margin="0,6,0,0"/>
                                     <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedEvent.RecoveryAction}" TextWrapping="Wrap" Margin="0,6,0,0"/>
                                 </Grid>
 
@@ -438,14 +448,17 @@
                                     <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding SelectedEvent.Snapshot.LastKnownSyncError}" Margin="0,6,0,0" TextWrapping="Wrap" AcceptsReturn="True" MinHeight="54" MaxHeight="140" VerticalScrollBarVisibility="Auto" IsReadOnly="True"/>
                                 </Grid>
 
-                                <TextBlock Text="권장 복구" Foreground="#9FB3C8" FontSize="11"/>
+                                <TextBlock Text="자동 복구가 실행할 작업" Foreground="#9FB3C8" FontSize="11"/>
                                 <TextBlock Text="{Binding SelectedRecoveryActionTitle}" Margin="0,4,0,0" FontWeight="Bold" Foreground="#B3E5FC"/>
                                 <TextBlock Text="{Binding SelectedRecoveryActionDetail}" Margin="0,4,0,10" TextWrapping="Wrap" Foreground="#90CAF9"/>
 
                                 <TextBlock Text="복구 메모" Foreground="#9FB3C8" FontSize="11"/>
                                 <TextBlock Text="{Binding RepairSummaryText}" Margin="0,4,0,10" TextWrapping="Wrap"/>
 
-                                <TextBlock Text="예외 상세" Foreground="#9FB3C8" FontSize="11"/>
+                                <TextBlock Text="원본 오류 내용(지원용)" Foreground="#9FB3C8" FontSize="11"/>
+                                <TextBox Text="{Binding SelectedEvent.RawMessage}" Margin="0,4,0,10" TextWrapping="Wrap" AcceptsReturn="True" MinHeight="64" MaxHeight="150" VerticalScrollBarVisibility="Auto" IsReadOnly="True"/>
+
+                                <TextBlock Text="프로그램 예외 상세(지원용)" Foreground="#9FB3C8" FontSize="11"/>
                                 <TextBox Text="{Binding SelectedEvent.StackTrace}" Margin="0,4,0,0" TextWrapping="Wrap" AcceptsReturn="True" MinHeight="140" Height="200" IsReadOnly="True"/>
                             </StackPanel>
                         </ScrollViewer>

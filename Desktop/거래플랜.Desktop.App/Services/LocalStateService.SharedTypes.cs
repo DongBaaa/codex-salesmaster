@@ -43,6 +43,37 @@ public static class IntegrityIssueGuidance
         var normalizedCode = Normalize(code);
         var normalizedMessage = message ?? string.Empty;
 
+        if (normalizedCode.Contains("rental_asset_template_monthly_mismatch", StringComparison.Ordinal))
+        {
+            return "1. 렌탈 청구관리에서 해당 거래처를 엽니다. 2. 연결 장비의 월요금 합계와 청구서 품목의 금액을 비교합니다. 3. 실제 계약서 금액을 기준으로 장비 월요금 또는 품목 단가·수량을 맞춘 뒤 저장합니다.";
+        }
+
+        if (normalizedCode.Contains("rental_profile_monthly_amount_mismatch", StringComparison.Ordinal) ||
+            normalizedCode.Contains("rental_profile_asset_monthly_amount_mismatch", StringComparison.Ordinal))
+        {
+            return "1. 렌탈 청구관리에서 월 기준금액과 청구 품목 합계를 비교합니다. 2. 품목의 수량·단가와 연결 장비가 맞는지 확인합니다. 3. 실제 계약 금액으로 수정하고 저장합니다.";
+        }
+
+        if (normalizedCode.Contains("rental_billing_manual_stop_status_mismatch", StringComparison.Ordinal))
+        {
+            return "1. 렌탈 청구관리에서 미수금이 남은 청구월의 전표·수금 내역을 확인합니다. 2. 실제로 청구를 계속할지 중단할지 결정합니다. 3. 청구 설정과 해당 청구 이력의 보류·취소·활성 상태를 같게 맞춰 저장합니다.";
+        }
+
+        if (normalizedCode.Contains("rental_profile_customer_unlinked", StringComparison.Ordinal))
+        {
+            return "1. 렌탈 청구관리에서 표시된 거래처명을 확인합니다. 2. 실제 거래처를 조회해 다시 선택합니다. 3. 잘못된 지점의 동명 거래처가 아닌지 확인한 후 저장합니다.";
+        }
+
+        if (normalizedCode.Contains("duplicate_item_name_match_keys", StringComparison.Ordinal))
+        {
+            return "현재 업무를 막는 오류는 아닙니다. 품목/재고 관리에서 품명·규격·분류·재고·전표 사용 내역을 비교하고, 실제로 같은 품목일 때만 병합하거나 이름을 구분해 주세요.";
+        }
+
+        if (normalizedCode.Contains("rental_assignment_historical_stale_reference_rows", StringComparison.Ordinal))
+        {
+            return "현재 청구에 영향이 없는 과거 기록입니다. 당시 표시 내용이 정상이면 그대로 둘 수 있습니다. 현재 연결을 복원해야 할 명확한 업무 근거가 있을 때만 장비·거래처·청구 설정을 다시 연결하세요.";
+        }
+
         if (normalizedCode.Contains("sync_outbox_failed", StringComparison.Ordinal) ||
             normalizedCode.Contains("sync_outbox_sent_stuck", StringComparison.Ordinal))
         {
@@ -406,6 +437,15 @@ public sealed class SyncOutboxListItem
     public bool IsFailed => string.Equals(Status, "Failed", StringComparison.OrdinalIgnoreCase);
     public string EntityIdText => EntityId == Guid.Empty ? "-" : EntityId.ToString("N");
     public string ShortMutationId => MutationId.Length <= 36 ? MutationId : MutationId[..36] + "...";
+    public string StatusDisplay => Status?.Trim().ToUpperInvariant() switch
+    {
+        "PREPARED" => "전송 대기",
+        "SENT" => "서버 확인 대기",
+        "FAILED" => "전송 실패",
+        "ACKNOWLEDGED" => "전송 완료",
+        _ => string.IsNullOrWhiteSpace(Status) ? "-" : Status
+    };
+    public string ErrorMessageDisplay => DiagnosticUserMessageFormatter.DescribeOutboxError(ErrorMessage);
 }
 
 public sealed record SyncOutboxSummary(

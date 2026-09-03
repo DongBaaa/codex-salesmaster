@@ -1,0 +1,131 @@
+name: GeoraePlan Desktop Windows Package
+
+on:
+  push:
+    branches:
+      - "codex/**"
+    paths:
+      - ".github/workflows/georaeplan-desktop-windows-package.yml"
+      - "Desktop/**"
+      - "Shared/**"
+      - "Updater/**"
+      - "Tests/GeoraePlan.Desktop.App.Tests/**"
+      - "tools/common/**"
+      - "tools/release/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: georaeplan-desktop-package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test-package:
+    name: Build, test, and package Windows desktop
+    runs-on: windows-latest
+    timeout-minutes: 75
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build and run desktop regression tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testProject = Join-Path $PWD 'Tests\GeoraePlan.Desktop.App.Tests\GeoraePlan.Desktop.App.Tests.csproj'
+          dotnet build $testProject -c Release --nologo
+          if ($LASTEXITCODE -ne 0) { throw "Desktop Release build failed with exit code $LASTEXITCODE." }
+
+          $testFilter = @(
+              'FullyQualifiedName~ServerIntegrityResolutionAndPlainLanguageTests',
+              'FullyQualifiedName~ChildWindowResponsiveLayoutTests',
+              'FullyQualifiedName~DataIntegrityIssueViewModelTests',
+              'FullyQualifiedName~DataIntegrityRentalOperationalScopeTests',
+              'FullyQualifiedName~DataIntegrityIssueServicePerformanceTests',
+              'FullyQualifiedName~SyncDiagnostics',
+              'FullyQualifiedName~MasterUiWiringGuardTests',
+              'FullyQualifiedName~EnvironmentSettingsPermissionGuardTests',
+              'FullyQualifiedName~UpdaterTransactionSafetyTests.CheckForUpdatesAsync_EquivalentVersionFormsReportCurrentVersion',
+              'FullyQualifiedName~UpdaterTransactionSafetyTests.DesktopUpdateVersionPolicy_TreatsMissingRevisionAsZero'
+          ) -join '|'
+          dotnet test $testProject -c Release --no-build --nologo --filter $testFilter --logger 'console;verbosity=normal'
+          if ($LASTEXITCODE -ne 0) { throw "Desktop regression tests failed with exit code $LASTEXITCODE." }
+
+      - name: Create ZIP, EXE, and MSI installers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $projectRoot = $PWD.Path
+          $artifactRoot = Join-Path $env:RUNNER_TEMP 'georaeplan-package-output'
+          $readyRoot = Join-Path $env:RUNNER_TEMP 'georaeplan-package-ready'
+          New-Item -ItemType Directory -Force -Path $artifactRoot, $readyRoot | Out-Null
+
+          [xml]$project = Get-Content -LiteralPath (Join-Path $projectRoot 'Desktop\거래플랜.Desktop.App\거래플랜.Desktop.App.csproj') -Raw
+          $version = [string]($project.Project.PropertyGroup.Version | Select-Object -First 1)
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Unexpected desktop version: $version" }
+
+          & (Join-Path $projectRoot 'tools\release\Build-GeoraePlanDesktopInstaller.ps1') `
+              -ProjectRoot $projectRoot `
+              -OutputRoot $artifactRoot
+          if ($LASTEXITCODE -ne 0) { throw "Windows installer build failed with exit code $LASTEXITCODE." }
+
+          $files = @(
+              [pscustomobject]@{
+                  Source = Join-Path $artifactRoot '관리자용\거래플랜-PC-설치패키지.zip'
+                  Name = "tradeplan-pc-installer-v$version.zip"
+                  Format = 'zip'
+              },
+              [pscustomobject]@{
+                  Source = Join-Path $artifactRoot '거래플랜-PC-설치패키지.exe'
+                  Name = "tradeplan-pc-setup-v$version.exe"
+                  Format = 'exe'
+              },
+              [pscustomobject]@{
+                  Source = Join-Path $artifactRoot '관리자용\거래플랜-PC-설치패키지.msi'
+                  Name = "tradeplan-pc-admin-v$version.msi"
+                  Format = 'msi'
+              }
+          )
+
+          $manifestFiles = foreach ($file in $files) {
+              if (-not (Test-Path -LiteralPath $file.Source -PathType Leaf)) {
+                  throw "Expected installer artifact was not produced: $($file.Source)"
+              }
+              $destination = Join-Path $readyRoot $file.Name
+              Copy-Item -LiteralPath $file.Source -Destination $destination -Force
+              $item = Get-Item -LiteralPath $destination
+              [ordered]@{
+                  fileName = $item.Name
+                  format = $file.Format
+                  fileSize = $item.Length
+                  sha256 = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
+              }
+          }
+
+          [ordered]@{
+              version = $version
+              commit = '${{ github.sha }}'
+              createdAtUtc = [DateTime]::UtcNow.ToString('O')
+              releaseBuildWarnings = 0
+              releaseBuildErrors = 0
+              productionDataReadOrWriteRequested = $false
+              syncDirtyOrOutboxMutationRequested = $false
+              files = @($manifestFiles)
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $readyRoot 'artifact-manifest.json') -Encoding UTF8
+
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: georaeplan-desktop-installers
+          path: ${{ runner.temp }}\georaeplan-package-ready\*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

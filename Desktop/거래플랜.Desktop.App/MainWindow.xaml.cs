@@ -2629,7 +2629,10 @@ public partial class MainWindow : Window
     private Task OpenInventoryWindowAsync()
         => OpenInventoryWindowAsync(null, null);
 
-    private async Task OpenInventoryWindowAsync(Guid? targetItemId, Window? ownerOverride)
+    private async Task OpenInventoryWindowAsync(
+        Guid? targetItemId,
+        Window? ownerOverride,
+        Func<Task>? closedAsync = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new InventoryViewModel(_local, _session);
@@ -2638,7 +2641,8 @@ public partial class MainWindow : Window
             win,
             () => targetItemId.HasValue ? vm.LoadAndSelectItemAsync(targetItemId.Value) : vm.LoadAsync(),
             "품목/재고 관리",
-            "품목/재고 데이터를 불러오지 못했습니다.");
+            "품목/재고 데이터를 불러오지 못했습니다.",
+            closedAsync);
     }
 
     private Task OpenPaymentPopupAsync()
@@ -2772,11 +2776,58 @@ public partial class MainWindow : Window
         {
             Owner = ownerOverride ?? this
         };
+        window.ResolutionTargetRequested += (_, args) =>
+        {
+            ForgetWindowBackgroundTask(
+                () => OpenServerIntegrityResolutionTargetAsync(args, window, () =>
+                    diagnosticsViewModel.RecheckServerIntegrityIssueAsync(args.IssueCode)),
+                "INTEGRITY",
+                "서버 무결성 해결 화면 열기",
+                ex => MessageBox.Show(
+                    window,
+                    $"해결할 원본 화면을 열지 못했습니다.{Environment.NewLine}{ex.Message}",
+                    "무결성 문제 해결",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning));
+        };
         ShowModelessWithDeferredLoad(
             window,
             () => diagnosticsViewModel.LoadAsync(),
             "동기화 진단",
             "동기화 진단 데이터를 불러오지 못했습니다.");
+    }
+
+    private async Task OpenServerIntegrityResolutionTargetAsync(
+        ServerIntegrityResolutionRequestedEventArgs args,
+        Window owner,
+        Func<Task> afterClosedAsync)
+    {
+        switch (args.ActionKind)
+        {
+            case DataIntegrityDirectActionKind.OpenRentalBillingProfile:
+                await OpenRentalBillingWindowAsync(args.TargetEntityId, owner, afterClosedAsync);
+                break;
+            case DataIntegrityDirectActionKind.OpenRentalAsset:
+                await OpenRentalAssetWindowAsync(args.TargetEntityId, owner, afterClosedAsync);
+                break;
+            case DataIntegrityDirectActionKind.OpenInventoryItem:
+                await OpenInventoryWindowAsync(args.TargetEntityId, owner, afterClosedAsync);
+                break;
+            case DataIntegrityDirectActionKind.OpenCustomer:
+                await OpenCustomerEditorAsync(args.TargetEntityId, owner, afterClosedAsync);
+                break;
+            case DataIntegrityDirectActionKind.OpenInvoice:
+                await OpenInvoiceWindowAsync(args.TargetEntityId, owner, afterClosedAsync);
+                break;
+            default:
+                MessageBox.Show(
+                    owner,
+                    "이 항목은 상세 행만으로 안전한 수정 화면을 확정할 수 없습니다. 해결 창의 안내에 따라 원본 자료를 확인해 주세요.",
+                    "무결성 문제 해결",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                break;
+        }
     }
 
     private async Task OpenEnvironmentSettingsWindowAsync(EnvironmentSettingsInitialTab initialTab = EnvironmentSettingsInitialTab.General)
@@ -2997,7 +3048,10 @@ public partial class MainWindow : Window
             () => _vm.LoadInvoiceListCommand.ExecuteAsync(null));
     }
 
-    private async Task OpenRentalBillingWindowAsync(Guid? targetProfileId = null, Window? ownerOverride = null)
+    private async Task OpenRentalBillingWindowAsync(
+        Guid? targetProfileId = null,
+        Window? ownerOverride = null,
+        Func<Task>? closedAsync = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new RentalBillingViewModel(_rental, _local, _session, _api);
@@ -3017,7 +3071,12 @@ public partial class MainWindow : Window
             () => targetProfileId.HasValue ? vm.LoadAndSelectProfileAsync(targetProfileId.Value) : vm.LoadAsync(),
             "렌탈 청구관리",
             "렌탈 청구관리 데이터를 불러오지 못했습니다.",
-            () => _vm.LoadInvoiceListCommand.ExecuteAsync(null));
+            async () =>
+            {
+                await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+                if (closedAsync is not null)
+                    await closedAsync();
+            });
     }
 
     private async Task OpenRentalAssetWindowAsync(

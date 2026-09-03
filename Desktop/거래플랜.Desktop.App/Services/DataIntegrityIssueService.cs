@@ -134,6 +134,14 @@ public sealed class DataIntegrityIssueDetail
     public DataIntegrityItemDuplicateComparison? ItemDuplicateComparison { get; init; }
 
     public bool HasDirectAction => DirectActionKind != DataIntegrityDirectActionKind.None;
+    public bool IsInformational => DataIntegritySeverityFormatter.IsInformational(Severity);
+    public string ProblemExplanation => DiagnosticUserMessageFormatter.DescribeIntegrityIssue(Code, Title);
+    public string ImpactExplanation => DiagnosticUserMessageFormatter.BuildIntegrityImpact(Severity);
+    public string ActionSteps => DiagnosticUserMessageFormatter.BuildIntegrityActionSteps(
+        SuggestedAction,
+        HasDirectAction,
+        IsInformational);
+    public string TechnicalDetailText => Message;
     public bool CanMergeDuplicates => RelatedEntityIds.Count > 1 &&
                                       (string.Equals(Code, DataIntegrityIssueCodes.CustomerDuplicateCandidate, StringComparison.OrdinalIgnoreCase) ||
                                        (string.Equals(Code, DataIntegrityIssueCodes.ItemDuplicateCandidate, StringComparison.OrdinalIgnoreCase) &&
@@ -162,6 +170,7 @@ public sealed class DataIntegrityIssueDetail
                 : $"{target} · {SuggestedAction}";
         }
     }
+    public string ReviewInfoPlainText => DiagnosticUserMessageFormatter.HumanizeTerms(ReviewInfoDisplay);
     public string MergeActionText => CanMergeDuplicates
         ? "중복 병합"
         : CanReviewDuplicateCandidates

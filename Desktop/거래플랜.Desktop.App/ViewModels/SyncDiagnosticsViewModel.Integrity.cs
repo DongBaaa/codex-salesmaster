@@ -22,6 +22,7 @@ public sealed partial class SyncDiagnosticsViewModel
 
     [ObservableProperty] private SyncOutboxListItem? _selectedOutboxEntry;
     [ObservableProperty] private IntegrityIssueDto? _selectedServerIntegrityIssue;
+    [ObservableProperty] private IntegrityIssueDetailRowDto? _selectedServerIntegrityDetailRow;
     [ObservableProperty] private string _serverIntegritySummaryText = "서버 무결성 리포트를 아직 불러오지 않았습니다.";
     [ObservableProperty] private string _serverIntegrityStatusText = "미조회";
     [ObservableProperty] private string _serverIntegrityGeneratedAtText = "미조회";
@@ -221,10 +222,17 @@ public sealed partial class SyncDiagnosticsViewModel
 
     private void ApplyServerIntegrityDetailReport(IntegrityIssueDto issue, IntegrityIssueDetailResultDto? detail)
     {
+        var selectedEntityType = SelectedServerIntegrityDetailRow?.EntityType;
+        var selectedEntityId = SelectedServerIntegrityDetailRow?.EntityIdText;
         _loadedServerIntegrityDetailResult = detail;
         ServerIntegrityDetailRows.Clear();
         foreach (var row in detail?.Rows ?? new List<IntegrityIssueDetailRowDto>())
             ServerIntegrityDetailRows.Add(row);
+
+        SelectedServerIntegrityDetailRow = ServerIntegrityDetailRows.FirstOrDefault(row =>
+                                               string.Equals(row.EntityType, selectedEntityType, StringComparison.OrdinalIgnoreCase) &&
+                                               string.Equals(row.EntityIdText, selectedEntityId, StringComparison.OrdinalIgnoreCase))
+                                           ?? ServerIntegrityDetailRows.FirstOrDefault();
 
         ServerIntegrityDetailCount = detail?.DetailCount ?? 0;
         ServerIntegrityDetailSummaryText = BuildServerIntegrityDetailSummary(issue);
@@ -250,6 +258,7 @@ public sealed partial class SyncDiagnosticsViewModel
     {
         _loadedServerIntegrityDetailResult = null;
         ServerIntegrityDetailRows.Clear();
+        SelectedServerIntegrityDetailRow = null;
         ServerIntegrityDetailCount = 0;
         ServerIntegrityDetailSummaryText = issue is null
             ? "선택한 서버 무결성 이슈 없음"
@@ -258,7 +267,40 @@ public sealed partial class SyncDiagnosticsViewModel
     }
 
     private static string BuildServerIntegrityDetailSummary(IntegrityIssueDto issue)
-        => $"[{issue.Severity}] {issue.Message} ({issue.Count:N0}건)";
+        => $"[{DataIntegritySeverityFormatter.ToDisplayText(issue.Severity)}] {issue.Message} ({issue.Count:N0}건)";
+
+    public async Task RecheckServerIntegrityIssueAsync(string issueCode, CancellationToken ct = default)
+    {
+        if (IsBusy || string.IsNullOrWhiteSpace(issueCode))
+            return;
+
+        IsBusy = true;
+        try
+        {
+            await LoadServerIntegrityAsync(updateSummaryStatus: false, ct);
+            var refreshedIssue = ServerIntegrityIssues.FirstOrDefault(issue =>
+                string.Equals(issue.Code, issueCode, StringComparison.OrdinalIgnoreCase));
+            if (refreshedIssue is null)
+            {
+                SelectedServerIntegrityIssue = null;
+                ResetServerIntegrityDetailState(null, "해결 완료: 해당 문제가 서버 점검 결과에서 더 이상 확인되지 않습니다.");
+                SummaryStatusText = ServerIntegrityDetailStatusText;
+                return;
+            }
+
+            SelectedServerIntegrityIssue = refreshedIssue;
+            var detail = await LoadSelectedServerIntegrityDetailsCoreAsync(updateSummaryStatus: false, ct);
+            SummaryStatusText = detail is null
+                ? ServerIntegrityDetailStatusText
+                : detail.DetailCount == 0
+                    ? "해결 완료: 해당 문제의 상세 항목이 더 이상 확인되지 않습니다."
+                    : $"재점검 결과, 해당 문제 {detail.DetailCount:N0}건이 아직 남아 있습니다. 수정 내용을 다시 확인해 주세요.";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
 
     [RelayCommand]
     private async Task RefreshServerIntegrityAsync()

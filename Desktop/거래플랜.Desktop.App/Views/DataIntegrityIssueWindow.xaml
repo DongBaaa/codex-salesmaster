@@ -87,7 +87,7 @@
                 </Grid.ColumnDefinitions>
                 <StackPanel>
                     <TextBlock Text="운영 점검 상세" FontSize="30" FontWeight="Bold" Foreground="#5BD4FF"/>
-                    <TextBlock Text="동기화 후 확인된 데이터 확인 항목과 참고 정보를 목록으로 보고 원본 화면으로 바로 이동합니다." FontSize="15" Foreground="#B8C7D8" Margin="0,6,0,0"/>
+                    <TextBlock Text="무슨 문제인지, 현재 영향은 무엇인지, 어디서 무엇을 고쳐야 하는지 순서대로 안내합니다." FontSize="15" Foreground="#B8C7D8" Margin="0,6,0,0"/>
                     <TextBlock Text="{Binding ScanSummaryText}" FontSize="13" Foreground="#FFD56B" Margin="0,8,0,0"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
@@ -144,7 +144,7 @@
                         <DataGridTextColumn Header="현재값" Binding="{Binding CurrentValue}" Width="220"/>
                         <DataGridTextColumn Header="기준값" Binding="{Binding ExpectedValue}" Width="220"/>
                         <DataGridTextColumn Header="판단/참조" Binding="{Binding ReviewInfoDisplay}" Width="380"/>
-                        <DataGridTextColumn Header="내용" Binding="{Binding Message}" Width="420"/>
+                        <DataGridTextColumn Header="무슨 문제인가요?" Binding="{Binding ProblemExplanation}" Width="420"/>
                     </DataGrid.Columns>
                 </DataGrid>
             </Border>
@@ -160,16 +160,25 @@
                     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
                         <StackPanel DataContext="{Binding SelectedIssue}">
                             <TextBlock Text="{Binding Title}" FontSize="18" FontWeight="Bold" Foreground="#EAF4FF" TextWrapping="Wrap"/>
-                            <TextBlock Text="{Binding Message}" Foreground="#B8C7D8" TextWrapping="Wrap" Margin="0,8,0,16"/>
+                            <TextBlock Text="무슨 문제인가요?" Foreground="#8FB6D8" Margin="0,10,0,0"/>
+                            <TextBlock Text="{Binding ProblemExplanation}" Foreground="#EAF4FF" FontSize="15" TextWrapping="Wrap" Margin="0,4,0,12"/>
 
-                            <TextBlock Text="수정 방향" Foreground="#8FB6D8"/>
-                            <TextBlock Text="{Binding SuggestedAction}" Foreground="#7FD0FF" TextWrapping="Wrap" Margin="0,4,0,16"/>
+                            <TextBlock Text="{Binding ImpactExplanation}" Foreground="#FFD56B" TextWrapping="Wrap" Margin="0,0,0,16"/>
 
-                            <TextBlock Text="삭제/병합 판단 정보" Foreground="#8FB6D8"/>
-                            <TextBlock Text="{Binding ReviewInfoDisplay}" Foreground="#FFD56B" TextWrapping="Wrap" Margin="0,4,0,16"/>
+                            <TextBlock Text="지금 무엇을 해야 하나요?" Foreground="#8FB6D8"/>
+                            <TextBlock Text="{Binding ActionSteps}" Foreground="#7FD0FF" TextWrapping="Wrap" Margin="0,4,0,16"/>
 
-                            <TextBlock Text="관련 후보 ID" Foreground="#8FB6D8"/>
-                            <TextBlock Text="{Binding RelatedEntityIdText}" Foreground="#B8C7D8" TextWrapping="Wrap" Margin="0,4,0,16"/>
+                            <TextBlock Text="확인할 정보" Foreground="#8FB6D8"/>
+                            <TextBlock Text="{Binding ReviewInfoPlainText}" Foreground="#FFD56B" TextWrapping="Wrap" Margin="0,4,0,16"/>
+
+                            <Expander Header="기술 상세(지원용)" Foreground="#8FB6D8" Margin="0,0,0,16">
+                                <StackPanel Margin="0,8,0,0">
+                                    <TextBlock Text="원본 진단 내용" Foreground="#8FB6D8"/>
+                                    <TextBlock Text="{Binding TechnicalDetailText}" Foreground="#B8C7D8" TextWrapping="Wrap" Margin="0,4,0,10"/>
+                                    <TextBlock Text="관련 식별값" Foreground="#8FB6D8"/>
+                                    <TextBlock Text="{Binding RelatedEntityIdText}" Foreground="#B8C7D8" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                </StackPanel>
+                            </Expander>
 
                             <TextBlock Text="거래처" Foreground="#8FB6D8"/>
                             <TextBlock Text="{Binding CustomerName}" Foreground="#EAF4FF" Margin="0,4,0,12"/>
@@ -188,7 +197,7 @@
                                 Click="MergeSelectedButton_Click"
                                 IsEnabled="{Binding SelectedIssue.CanReviewDuplicateCandidates}"
                                 Style="{StaticResource TradePlanDangerButtonStyle}"/>
-                        <Button Content="해당 화면에서 수정"
+                        <Button Content="{Binding SelectedIssue.DirectActionText, FallbackValue=해당 화면에서 수정}"
                                 Style="{StaticResource TradePlanEditButtonStyle}"
                                 Click="FixSelectedButton_Click"
                                 IsEnabled="{Binding SelectedIssue.HasDirectAction}"

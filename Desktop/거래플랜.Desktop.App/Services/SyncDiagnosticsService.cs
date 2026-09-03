@@ -102,6 +102,23 @@ public sealed class SyncDiagnosticListItem
         : string.IsNullOrWhiteSpace(ReferenceEntityId)
             ? ReferenceEntityName
             : $"{ReferenceEntityName} {ReferenceEntityId}";
+    public string ProblemExplanation => DiagnosticUserMessageFormatter.DescribeSyncProblem(this);
+    public string ImpactExplanation => DiagnosticUserMessageFormatter.SyncImpactText(this);
+    public string ActionSteps => DiagnosticUserMessageFormatter.BuildSyncActionSteps(this);
+    public string SeverityDisplay => Severity?.Trim().ToUpperInvariant() switch
+    {
+        "ERROR" => "오류",
+        "WARNING" => "주의",
+        _ => "참고"
+    };
+    public string StatusDisplay => Status?.Trim().ToUpperInvariant() switch
+    {
+        "OPEN" => "미해결",
+        "RESOLVED" => "해결 확인",
+        "RECOVERED" => "자동 복구 완료",
+        _ => string.IsNullOrWhiteSpace(Status) ? "-" : Status
+    };
+    public string RecoveryAvailabilityDisplay => IsRecoverable ? "자동 복구 가능" : "수동 확인 필요";
 }
 
 public sealed class SyncDiagnosticsService
