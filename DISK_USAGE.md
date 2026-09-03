@@ -51,14 +51,14 @@
 
 ### Docker 로그 제한
 
-개발 및 Linux Compose 원본에 아래 기본 제한을 적용했다.
+개발 및 Linux Compose 원본과 운영 `/srv/georaeplan/ops/docker-compose.yml`에 아래 기본 제한을 적용했다.
 
 - driver: `json-file`
 - 파일당 최대 크기: `20m`
 - 보관 개수: `5`
 - 환경변수 조정: `DOCKER_LOG_MAX_SIZE`, `DOCKER_LOG_MAX_FILE`
 
-이미 실행 중인 운영 컨테이너에는 재생성 전까지 새 옵션이 적용되지 않는다. 이번 작업에서는 무중단 원칙 때문에 API/PostgreSQL 컨테이너를 재생성하지 않았다. 다음 거래플랜 단독 점검 시간에 Compose 원본과 운영용 Compose의 차이를 검토한 뒤 해당 컨테이너만 순차 재생성해야 한다. Docker 전체 재시작이나 전체 prune은 금지한다.
+운영 Compose 파일에는 정책이 반영되었지만 이미 실행 중인 컨테이너에는 재생성 전까지 새 옵션이 적용되지 않는다. 이번 작업에서는 무중단 원칙 때문에 API/PostgreSQL 컨테이너를 재생성하지 않았다. 다음 거래플랜 단독 점검 시간에 해당 컨테이너만 순차 재생성해야 한다. Docker 전체 재시작이나 전체 prune은 금지한다.
 
 ## 안전하게 정리한 데이터
 
