@@ -98,11 +98,11 @@ public static class DiagnosticUserMessageFormatter
     {
         var action = HumanizeTerms(Display(suggestedAction, "원본 화면에서 현재 상태를 확인해 주세요."));
         if (isInformational)
-            return $"1. 현재 업무에 영향이 없는 참고 항목인지 확인합니다.\n2. {action}\n3. 현재 자료가 정상이라면 별도로 수정하지 않아도 됩니다.";
+            return $"① 현재 업무에 영향이 없는 참고 항목인지 확인합니다.\n② 현재 자료가 정상이라면 수정하지 않아도 됩니다.\n\n확인할 내용\n{action}";
 
         return hasDirectAction
-            ? $"1. 아래 '해당 화면에서 수정' 버튼을 누릅니다.\n2. {action}\n3. 저장한 다음 이 창을 새로고침해 해결됐는지 확인합니다."
-            : $"1. 아래 '확인할 정보'와 기술 상세를 확인합니다.\n2. {action}\n3. 임의로 삭제하지 말고, 수정 후 운영 점검을 다시 실행합니다.";
+            ? $"① 아래 '해당 화면에서 수정' 버튼을 누릅니다.\n② '확인할 내용'을 보고 실제 업무 자료와 맞게 고친 뒤 저장합니다.\n③ 이 창을 새로고침해 해결됐는지 확인합니다.\n\n확인할 내용\n{action}"
+            : $"① '확인할 정보'를 보고 어느 자료인지 확인합니다.\n② 아래 안내를 따라 원본 화면에서 확인합니다.\n③ 임의로 삭제하지 말고, 수정했다면 운영 점검을 다시 실행합니다.\n\n확인할 내용\n{action}";
     }
 
     public static string BuildIntegrityImpact(string? severity)
@@ -124,6 +124,30 @@ public static class DiagnosticUserMessageFormatter
             "rental_assignment_historical_stale_reference_rows" => "과거 임대 이력의 원본 장비·거래처가 현재는 없지만 당시 표시 내용은 남아 있습니다. 현재 청구에 영향이 없는 참고 항목입니다.",
             _ => HumanizeTerms(Display(fallbackMessage, "저장된 데이터 사이에 맞지 않는 값이나 끊어진 연결이 확인되었습니다."))
         };
+
+    public static string BuildServerIntegrityActionSteps(
+        string? suggestedAction,
+        bool hasDirectAction,
+        bool isInformational)
+    {
+        var action = HumanizeTerms(Display(suggestedAction, "원본 화면에서 현재 상태를 확인해 주세요."));
+        if (isInformational)
+        {
+            return $"① 아래 대상이 현재 업무에 사용되는지 확인합니다.\n" +
+                   "② 과거 기록이고 현재 청구·재고에 영향이 없다면 그대로 둡니다.\n" +
+                   $"③ 정리할 근거가 명확할 때만 아래 안내를 따릅니다.\n\n세부 안내\n{action}";
+        }
+
+        return hasDirectAction
+            ? $"① '해당 화면 열기' 버튼을 누릅니다.\n" +
+              "② 실제 계약서·장비·거래처 정보와 비교해 올바른 값으로 고친 뒤 저장합니다.\n" +
+              "③ 편집창을 닫으면 자동으로 다시 검사됩니다.\n\n" +
+              $"세부 안내\n{action}"
+            : $"① 아래 '확인할 대상'에서 거래처·품목·장비 정보를 확인합니다.\n" +
+              "② 안전한 수정 대상을 자동으로 특정할 수 없으므로 임의 삭제하지 않습니다.\n" +
+              "③ 아래 안내를 따라 원본 자료를 확인한 뒤 '수정 후 다시 검사'를 누릅니다.\n\n" +
+              $"세부 안내\n{action}";
+    }
 
     public static string DescribeSyncProblem(SyncDiagnosticListItem item)
         => Normalize(item.Subcategory) switch
@@ -203,6 +227,9 @@ public static class DiagnosticUserMessageFormatter
             .Replace("canonical", "기준", StringComparison.OrdinalIgnoreCase)
             .Replace("BillingProfileId", "청구 설정 연결", StringComparison.OrdinalIgnoreCase)
             .Replace("IncludedAssetIds", "연결 장비 목록", StringComparison.OrdinalIgnoreCase)
+            .Replace("청구상태 미확인", "이 장비를 청구할지 아직 선택하지 않음", StringComparison.OrdinalIgnoreCase)
+            .Replace("템플릿 참조 없음", "청구서 품목에 장비 연결 없음", StringComparison.OrdinalIgnoreCase)
+            .Replace("revision", "서버 변경 번호", StringComparison.OrdinalIgnoreCase)
             .Replace("JSON", "내부 저장 내용", StringComparison.OrdinalIgnoreCase)
             .Replace("run", "청구 이력", StringComparison.OrdinalIgnoreCase);
 

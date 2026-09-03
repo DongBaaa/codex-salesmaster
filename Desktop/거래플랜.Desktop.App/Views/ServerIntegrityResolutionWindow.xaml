@@ -1,7 +1,7 @@
 ﻿<Window x:Class="거래플랜.Desktop.App.Views.ServerIntegrityResolutionWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="무결성 문제 해결"
+        Title="데이터 문제 확인 및 해결"
         Width="940"
         Height="720"
         MinWidth="720"
@@ -24,11 +24,11 @@
                 Padding="16"
                 Margin="0,0,0,12">
             <StackPanel>
-                <TextBlock Text="무결성 문제 해결"
+                <TextBlock Text="데이터 문제 확인 및 해결"
                            Foreground="#4FC3F7"
                            FontSize="24"
                            FontWeight="Bold"/>
-                <TextBlock Text="선택한 상세 항목의 원인과 해결 방법을 확인하고, 안전한 경우 기존 편집 화면으로 이동합니다."
+                <TextBlock Text="아래의 '무슨 문제인가요?', '업무에 어떤 영향이 있나요?', '지금 할 일'만 순서대로 확인하세요."
                            Foreground="#9FB3C8"
                            Margin="0,6,0,0"
                            TextWrapping="Wrap"/>
@@ -46,9 +46,11 @@
                         Padding="16"
                         Margin="0,0,0,12">
                     <StackPanel>
-                        <TextBlock Text="문제 요약" Foreground="#4FC3F7" FontSize="16" FontWeight="Bold"/>
+                        <TextBlock Text="무슨 문제인가요?" Foreground="#4FC3F7" FontSize="16" FontWeight="Bold"/>
                         <TextBlock Text="{Binding ProblemExplanation}" Foreground="#EAF2FF" FontSize="16" FontWeight="SemiBold" Margin="0,8,0,0" TextWrapping="Wrap"/>
-                        <TextBlock Text="{Binding SeverityText, StringFormat=심각도: {0}}" Foreground="#FFCC80" Margin="0,8,0,0"/>
+                        <TextBlock Text="{Binding SeverityText, StringFormat=분류: {0}}" Foreground="#9FB3C8" Margin="0,8,0,0"/>
+                        <TextBlock Text="업무에 어떤 영향이 있나요?" Foreground="#4FC3F7" FontSize="16" FontWeight="Bold" Margin="0,16,0,0"/>
+                        <TextBlock Text="{Binding ImpactExplanation}" Foreground="#FFCC80" Margin="0,8,0,0" TextWrapping="Wrap"/>
                     </StackPanel>
                 </Border>
 
@@ -72,17 +74,17 @@
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
-                        <TextBlock Grid.Row="0" Text="대상" Foreground="#9FB3C8" Margin="0,4,12,8"/>
+                        <TextBlock Grid.Row="0" Text="대상 종류" Foreground="#9FB3C8" Margin="0,4,12,8"/>
                         <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding Detail.EntityType}" Foreground="#EAF2FF" Margin="0,4,0,8" TextWrapping="Wrap"/>
-                        <TextBlock Grid.Row="1" Text="주요 정보" Foreground="#9FB3C8" Margin="0,4,12,8"/>
+                        <TextBlock Grid.Row="1" Text="거래처/대상" Foreground="#9FB3C8" Margin="0,4,12,8"/>
                         <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Detail.PrimaryText}" Foreground="#EAF2FF" Margin="0,4,0,8" TextWrapping="Wrap"/>
-                        <TextBlock Grid.Row="2" Text="보조 정보" Foreground="#9FB3C8" Margin="0,4,12,8"/>
+                        <TextBlock Grid.Row="2" Text="품목/상태" Foreground="#9FB3C8" Margin="0,4,12,8"/>
                         <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding Detail.SecondaryText}" Foreground="#EAF2FF" Margin="0,4,0,8" TextWrapping="Wrap"/>
-                        <TextBlock Grid.Row="3" Text="참조" Foreground="#9FB3C8" Margin="0,4,12,8"/>
+                        <TextBlock Grid.Row="3" Text="연결 정보" Foreground="#9FB3C8" Margin="0,4,12,8"/>
                         <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding Detail.ReferenceText}" Foreground="#EAF2FF" Margin="0,4,0,8" TextWrapping="Wrap"/>
-                        <TextBlock Grid.Row="4" Text="범위" Foreground="#9FB3C8" Margin="0,4,12,8"/>
+                        <TextBlock Grid.Row="4" Text="업체·지점" Foreground="#9FB3C8" Margin="0,4,12,8"/>
                         <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding Detail.ScopeText}" Foreground="#EAF2FF" Margin="0,4,0,8" TextWrapping="Wrap"/>
-                        <TextBlock Grid.Row="5" Text="상세" Foreground="#9FB3C8" Margin="0,4,12,0"/>
+                        <TextBlock Grid.Row="5" Text="추가 정보" Foreground="#9FB3C8" Margin="0,4,12,0"/>
                         <TextBox Grid.Row="5"
                                  Grid.Column="1"
                                  Text="{Binding Detail.DetailText}"
@@ -103,10 +105,8 @@
                         Padding="16"
                         Margin="0,0,0,12">
                     <StackPanel>
-                        <TextBlock Text="지금 무엇을 해야 하나요?" Foreground="#4FC3F7" FontSize="16" FontWeight="Bold"/>
-                        <TextBlock Text="{Binding SuggestedAction}" Foreground="#EAF2FF" Margin="0,8,0,0" TextWrapping="Wrap"/>
-                        <TextBlock Text="수정한 뒤 원본 편집창을 닫으면 이 문제를 자동으로 다시 검사합니다."
-                                   Foreground="#9FB3C8" Margin="0,10,0,0" TextWrapping="Wrap"/>
+                        <TextBlock Text="지금 할 일" Foreground="#4FC3F7" FontSize="16" FontWeight="Bold"/>
+                        <TextBlock Text="{Binding ActionSteps}" Foreground="#EAF2FF" Margin="0,8,0,0" TextWrapping="Wrap" LineHeight="24"/>
                     </StackPanel>
                 </Border>
 
@@ -131,7 +131,7 @@
                        TextWrapping="Wrap"
                        Margin="0,0,12,0"/>
             <WrapPanel Grid.Column="1" HorizontalAlignment="Right">
-                <Button Content="{Binding ActionButtonText}"
+                <Button Content="{Binding OpenActionButtonText}"
                         Style="{StaticResource TradePlanEditButtonStyle}"
                         IsEnabled="{Binding CanOpenTarget}"
                         Click="OpenTargetButton_Click"

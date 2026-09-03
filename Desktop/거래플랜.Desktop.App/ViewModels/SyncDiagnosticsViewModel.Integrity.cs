@@ -30,7 +30,7 @@ public sealed partial class SyncDiagnosticsViewModel
     [ObservableProperty] private string _serverIntegrityDetailSummaryText = "선택한 서버 무결성 이슈 없음";
     [ObservableProperty] private string _serverIntegrityDetailStatusText = "상세 목록을 보려면 서버 무결성 이슈를 선택하세요.";
     [ObservableProperty] private int _serverIntegrityDetailCount;
-    [ObservableProperty] private string _outboxSummaryText = "sync outbox를 아직 불러오지 않았습니다.";
+    [ObservableProperty] private string _outboxSummaryText = "서버 전송 대기 목록을 아직 불러오지 않았습니다.";
     [ObservableProperty] private string _outboxStatusText = "미조회";
     [ObservableProperty] private int _pendingOutboxCount;
     [ObservableProperty] private int _failedOutboxCount;
@@ -62,7 +62,7 @@ public sealed partial class SyncDiagnosticsViewModel
         catch (Exception ex)
         {
             OutboxStatusText = $"조회 실패: {GetCompactExceptionMessage(ex)}";
-            OutboxSummaryText = "sync outbox를 불러오지 못했습니다. 다시 시도하세요.";
+            OutboxSummaryText = "서버 전송 대기 목록을 불러오지 못했습니다. 잠시 후 새로고침하세요.";
         }
     }
 
@@ -82,8 +82,8 @@ public sealed partial class SyncDiagnosticsViewModel
         AcknowledgedOutboxCount = summary.AcknowledgedCount;
         OutboxStatusText = $"최근 새로고침 {DateTime.Now:yyyy-MM-dd HH:mm:ss}";
         OutboxSummaryText = summary.PendingCount == 0
-            ? "재시도 대기 중인 sync outbox 항목이 없습니다."
-            : $"대기 {summary.PendingCount:N0}건 / 실패 {summary.FailedCount:N0}건 / 완료 {summary.AcknowledgedCount:N0}건";
+            ? "서버로 보내지 못한 대기 항목이 없습니다."
+            : $"서버 전송 대기 {summary.PendingCount:N0}건(실패 {summary.FailedCount:N0}건 포함) / 전송 완료 {summary.AcknowledgedCount:N0}건";
     }
 
     private async Task LoadServerIntegrityAsync(bool updateSummaryStatus, CancellationToken ct = default)
@@ -267,7 +267,8 @@ public sealed partial class SyncDiagnosticsViewModel
     }
 
     private static string BuildServerIntegrityDetailSummary(IntegrityIssueDto issue)
-        => $"[{DataIntegritySeverityFormatter.ToDisplayText(issue.Severity)}] {issue.Message} ({issue.Count:N0}건)";
+        => $"[{DataIntegritySeverityFormatter.ToDisplayText(issue.Severity)}] " +
+           $"{DiagnosticUserMessageFormatter.DescribeServerIntegrityIssue(issue.Code, issue.Message)} ({issue.Count:N0}건)";
 
     public async Task RecheckServerIntegrityIssueAsync(string issueCode, CancellationToken ct = default)
     {

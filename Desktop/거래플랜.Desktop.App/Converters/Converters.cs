@@ -93,3 +93,26 @@ public sealed class WarehouseCodeDisplayConverter : IValueConverter
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         => value?.ToString() ?? string.Empty;
 }
+
+[ValueConversion(typeof(string), typeof(string))]
+public sealed class DiagnosticSeverityDisplayConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => DataIntegritySeverityFormatter.ToDisplayText(value?.ToString());
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+public sealed class ServerIntegrityIssueMessageConverter : IMultiValueConverter
+{
+    public object Convert(object[] values, Type targetType, object parameter, CultureInfo culture)
+    {
+        var code = values.Length > 0 ? values[0]?.ToString() : null;
+        var message = values.Length > 1 ? values[1]?.ToString() : null;
+        return DiagnosticUserMessageFormatter.DescribeServerIntegrityIssue(code, message);
+    }
+
+    public object[] ConvertBack(object value, Type[] targetTypes, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}

@@ -1,6 +1,7 @@
 <Window x:Class="거래플랜.Desktop.App.Views.SyncDiagnosticsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:converters="clr-namespace:거래플랜.Desktop.App.Converters"
         Title="동기화 진단"
         Height="980"
         Width="1600"
@@ -8,6 +9,8 @@
         Background="#151F2E"
         KeyDown="Window_KeyDown">
     <Window.Resources>
+        <converters:DiagnosticSeverityDisplayConverter x:Key="DiagnosticSeverityDisplayConverter"/>
+        <converters:ServerIntegrityIssueMessageConverter x:Key="ServerIntegrityIssueMessageConverter"/>
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="#EAF2FF"/>
             <Setter Property="FontFamily" Value="Malgun Gothic"/>
@@ -98,7 +101,7 @@
                 </Grid.RowDefinitions>
                 <StackPanel Grid.Row="0">
                     <TextBlock Text="동기화 진단" FontSize="22" FontWeight="Bold" Foreground="#4FC3F7"/>
-                    <TextBlock Text="동기화 확인 항목, 서버/로컬 무결성, sync outbox 재시도 상태를 한 화면에서 확인합니다."
+                    <TextBlock Text="동기화 확인 항목, 서버/로컬 데이터 점검, 서버 전송 대기 상태를 한 화면에서 확인합니다."
                                Foreground="#9FB3C8"
                                Margin="0,4,0,0"
                                TextWrapping="Wrap"/>
@@ -221,27 +224,57 @@
                         </WrapPanel>
                         <DataGrid Grid.Row="4" ItemsSource="{Binding ServerIntegrityIssues}" SelectedItem="{Binding SelectedServerIntegrityIssue}" IsReadOnly="True" BorderThickness="0">
                             <DataGrid.Columns>
-                                <DataGridTextColumn Header="심각도" Binding="{Binding Severity}" Width="90"/>
+                                <DataGridTextColumn Header="심각도" Binding="{Binding Severity, Converter={StaticResource DiagnosticSeverityDisplayConverter}}" Width="90"/>
                                 <DataGridTextColumn Header="건수" Binding="{Binding Count, StringFormat={}{0:N0}}" Width="70"/>
-                                <DataGridTextColumn Header="내용" Binding="{Binding Message}" Width="*"/>
+                                <DataGridTemplateColumn Header="무슨 문제인가요?" Width="*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock TextWrapping="Wrap">
+                                                <TextBlock.Text>
+                                                    <MultiBinding Converter="{StaticResource ServerIntegrityIssueMessageConverter}">
+                                                        <Binding Path="Code"/>
+                                                        <Binding Path="Message"/>
+                                                    </MultiBinding>
+                                                </TextBlock.Text>
+                                            </TextBlock>
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
                             </DataGrid.Columns>
                         </DataGrid>
-                        <StackPanel Grid.Row="5" Margin="0,10,0,6">
-                            <TextBlock Text="선택 이슈 상세 목록" Foreground="#4FC3F7" FontWeight="Bold"/>
-                            <TextBlock Text="{Binding ServerIntegrityDetailSummaryText}" Foreground="#EAF2FF" Margin="0,4,0,0" TextWrapping="Wrap"/>
-                            <TextBlock Text="{Binding ServerIntegrityDetailStatusText}" Foreground="#9FB3C8" Margin="0,4,0,0" TextWrapping="Wrap"/>
-                        </StackPanel>
+                        <Grid Grid.Row="5" Margin="0,10,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="선택 이슈 상세 목록" Foreground="#4FC3F7" FontWeight="Bold"/>
+                                <TextBlock Text="해결할 항목을 더블클릭하거나 선택 후 '해결 방법 열기'를 누르세요."
+                                           Foreground="#90CAF9" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                                <TextBlock Text="{Binding ServerIntegrityDetailSummaryText}" Foreground="#EAF2FF" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                                <TextBlock Text="{Binding ServerIntegrityDetailStatusText}" Foreground="#9FB3C8" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            <Button x:Name="OpenIntegrityResolutionButton"
+                                    Grid.Column="1"
+                                    Content="해결 방법 열기"
+                                    Style="{StaticResource TradePlanEditButtonStyle}"
+                                    Click="OpenIntegrityResolutionButton_Click"
+                                    IsEnabled="False"
+                                    Margin="12,0,0,0"
+                                    VerticalAlignment="Bottom"/>
+                        </Grid>
                         <DataGrid x:Name="ServerIntegrityDetailDataGrid"
                                   Grid.Row="6"
                                   ItemsSource="{Binding ServerIntegrityDetailRows}"
                                   SelectedItem="{Binding SelectedServerIntegrityDetailRow, Mode=TwoWay}"
+                                  SelectionChanged="ServerIntegrityDetailDataGrid_SelectionChanged"
                                   MouseDoubleClick="ServerIntegrityDetailDataGrid_MouseDoubleClick"
                                   ToolTip="항목을 더블클릭하면 문제 설명과 해결 방법을 열어 봅니다."
                                   IsReadOnly="True"
                                   BorderThickness="0">
                             <DataGrid.Columns>
-                                <DataGridTextColumn Header="엔터티" Binding="{Binding EntityType}" Width="100"/>
-                                <DataGridTextColumn Header="엔터티 ID" Binding="{Binding EntityIdText}" Width="180"/>
+                                <DataGridTextColumn Header="대상 종류" Binding="{Binding EntityType}" Width="100"/>
+                                <DataGridTextColumn Header="내부 ID(지원용)" Binding="{Binding EntityIdText}" Width="180"/>
                                 <DataGridTextColumn Header="주요 정보" Binding="{Binding PrimaryText}" Width="170"/>
                                 <DataGridTextColumn Header="보조 정보" Binding="{Binding SecondaryText}" Width="220"/>
                                 <DataGridTextColumn Header="참조" Binding="{Binding ReferenceText}" Width="200"/>
@@ -260,7 +293,7 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
-                        <TextBlock Text="Sync Outbox" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
+                        <TextBlock Text="서버 전송 대기열" Foreground="#4FC3F7" FontWeight="Bold" FontSize="16"/>
                         <WrapPanel Grid.Row="1" Margin="0,8,0,0">
                             <Border Background="#102039" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,0,8,0">
                                 <StackPanel>
@@ -333,7 +366,7 @@
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Text="Sync Outbox 최근 기록" Foreground="#4FC3F7" FontWeight="Bold"/>
+                                    <TextBlock Text="서버 전송 대기 최근 기록" Foreground="#4FC3F7" FontWeight="Bold"/>
                                     <TextBlock Grid.Column="1" Text="{Binding OutboxStatusText}" Foreground="#9FB3C8"/>
                                 </Grid>
                             </Border>
@@ -367,6 +400,11 @@
 
                                 <TextBlock Text="지금 무엇을 해야 하나요?" Foreground="#9FB3C8" FontSize="11"/>
                                 <TextBlock Text="{Binding SelectedEvent.ActionSteps}" Margin="0,4,0,14" TextWrapping="Wrap" Foreground="#90CAF9"/>
+
+                                <Border Background="#3A260F" BorderBrush="#A66A1F" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,0,0,14">
+                                    <TextBlock Text="위의 '무슨 문제인가요?'와 '지금 무엇을 해야 하나요?'를 먼저 보세요. 아래 정보는 지원 요청 때만 확인하면 됩니다."
+                                               Foreground="#FFD59A" TextWrapping="Wrap"/>
+                                </Border>
 
                                 <TextBlock Text="오류 분류(참고)" Foreground="#9FB3C8" FontSize="11"/>
                                 <Grid Margin="0,4,0,10">
@@ -426,17 +464,17 @@
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
-                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="서버 revision" Foreground="#9FB3C8"/>
+                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="서버 변경 번호" Foreground="#9FB3C8"/>
                                     <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedEvent.Snapshot.LastKnownSyncRevision, StringFormat={}{0:N0}}"/>
-                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="dirty(거래처/전표)" Foreground="#9FB3C8" Margin="0,6,0,0"/>
+                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="서버 반영 대기(거래처/전표)" Foreground="#9FB3C8" Margin="0,6,0,0"/>
                                     <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,6,0,0">
                                         <Run Text="거래처 "/><Run Text="{Binding SelectedEvent.Snapshot.DirtyCustomerCount}"/><Run Text="건 / 전표 "/><Run Text="{Binding SelectedEvent.Snapshot.DirtyInvoiceCount}"/><Run Text="건"/>
                                     </TextBlock>
-                                    <TextBlock Grid.Row="2" Grid.Column="0" Text="dirty(거래/첨부/결제)" Foreground="#9FB3C8" Margin="0,6,0,0"/>
+                                    <TextBlock Grid.Row="2" Grid.Column="0" Text="서버 반영 대기(거래/첨부/결제)" Foreground="#9FB3C8" Margin="0,6,0,0"/>
                                     <TextBlock Grid.Row="2" Grid.Column="1" Margin="0,6,0,0">
                                         <Run Text="거래 "/><Run Text="{Binding SelectedEvent.Snapshot.DirtyTransactionCount}"/><Run Text="건 / 첨부 "/><Run Text="{Binding SelectedEvent.Snapshot.DirtyAttachmentCount}"/><Run Text="건 / 결제 "/><Run Text="{Binding SelectedEvent.Snapshot.DirtyPaymentCount}"/><Run Text="건"/>
                                     </TextBlock>
-                                    <TextBlock Grid.Row="3" Grid.Column="0" Text="dirty(렌탈/이동)" Foreground="#9FB3C8" Margin="0,6,0,0"/>
+                                    <TextBlock Grid.Row="3" Grid.Column="0" Text="서버 반영 대기(렌탈/이동)" Foreground="#9FB3C8" Margin="0,6,0,0"/>
                                     <TextBlock Grid.Row="3" Grid.Column="1" Margin="0,6,0,0">
                                         <Run Text="렌탈 "/><Run Text="{Binding SelectedEvent.Snapshot.DirtyRentalAssetCount}"/><Run Text="건 / 재고이동 "/><Run Text="{Binding SelectedEvent.Snapshot.DirtyInventoryTransferCount}"/><Run Text="건"/>
                                     </TextBlock>
@@ -444,7 +482,7 @@
                                     <TextBlock Grid.Row="4" Grid.Column="1" Margin="0,6,0,0" TextWrapping="Wrap">
                                         <Run Text="고객 "/><Run Text="{Binding SelectedEvent.Snapshot.MissingCustomerReferenceCount}"/><Run Text="건 / 전표 "/><Run Text="{Binding SelectedEvent.Snapshot.MissingInvoiceReferenceCount}"/><Run Text="건 / 거래 "/><Run Text="{Binding SelectedEvent.Snapshot.MissingTransactionReferenceCount}"/><Run Text="건 / 렌탈항목 "/><Run Text="{Binding SelectedEvent.Snapshot.MissingRentalItemReferenceCount}"/><Run Text="건"/>
                                     </TextBlock>
-                                    <TextBlock Grid.Row="5" Grid.Column="0" Text="마지막 sync 확인 항목" Foreground="#9FB3C8" Margin="0,6,0,0"/>
+                                    <TextBlock Grid.Row="5" Grid.Column="0" Text="마지막 동기화 확인 항목" Foreground="#9FB3C8" Margin="0,6,0,0"/>
                                     <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding SelectedEvent.Snapshot.LastKnownSyncError}" Margin="0,6,0,0" TextWrapping="Wrap" AcceptsReturn="True" MinHeight="54" MaxHeight="140" VerticalScrollBarVisibility="Auto" IsReadOnly="True"/>
                                 </Grid>
 

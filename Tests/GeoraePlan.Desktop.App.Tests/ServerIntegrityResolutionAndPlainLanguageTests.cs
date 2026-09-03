@@ -94,6 +94,10 @@ public sealed class ServerIntegrityResolutionAndPlainLanguageTests
         Assert.Contains("서버의 최종 확인", sync.ProblemExplanation);
         Assert.Contains("선택 항목 복구", sync.ActionSteps);
         Assert.DoesNotContain("dirty", sync.ProblemExplanation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("①", operational.ActionSteps);
+        Assert.Contains("확인할 내용", operational.ActionSteps);
+        Assert.Contains("이 장비를 청구할지 아직 선택하지 않음",
+            DiagnosticUserMessageFormatter.HumanizeTerms("청구상태 미확인"));
     }
 
     [Fact]
@@ -119,6 +123,16 @@ public sealed class ServerIntegrityResolutionAndPlainLanguageTests
                 StringComparison.Ordinal));
         Assert.Equal("ServerIntegrityDetailDataGrid_MouseDoubleClick", (string?)detailGrid.Attribute("MouseDoubleClick"));
         Assert.Contains("SelectedServerIntegrityDetailRow", (string?)detailGrid.Attribute("SelectedItem"));
+        Assert.Equal("ServerIntegrityDetailDataGrid_SelectionChanged", (string?)detailGrid.Attribute("SelectionChanged"));
+
+        Assert.Contains(
+            document.Descendants(),
+            element => element.Name.LocalName == "Button" &&
+                       string.Equals((string?)element.Attribute("Content"), "해결 방법 열기", StringComparison.Ordinal));
+        Assert.Contains(
+            document.Descendants(),
+            element => element.Name.LocalName == "TextBlock" &&
+                       ((string?)element.Attribute("Text"))?.Contains("항목을 더블클릭", StringComparison.Ordinal) == true);
     }
 
     [Fact]
@@ -137,9 +151,16 @@ public sealed class ServerIntegrityResolutionAndPlainLanguageTests
             ((string?)element.Attribute("Width"))?.Contains("minmax", StringComparison.OrdinalIgnoreCase) == true);
 
         var buttons = document.Descendants().Where(element => element.Name.LocalName == "Button").ToArray();
-        Assert.Contains(buttons, button => ((string?)button.Attribute("Content"))?.Contains("ActionButtonText", StringComparison.Ordinal) == true);
+        Assert.Contains(buttons, button => ((string?)button.Attribute("Content"))?.Contains("OpenActionButtonText", StringComparison.Ordinal) == true);
         Assert.Contains(buttons, button => string.Equals((string?)button.Attribute("Content"), "수정 후 다시 검사", StringComparison.Ordinal));
         Assert.Contains(buttons, button => string.Equals((string?)button.Attribute("Content"), "닫기(F12)", StringComparison.Ordinal));
+
+        var visibleText = string.Join(" ", document.Descendants()
+            .Select(element => (string?)element.Attribute("Text"))
+            .Where(value => !string.IsNullOrWhiteSpace(value)));
+        Assert.Contains("무슨 문제인가요?", visibleText);
+        Assert.Contains("업무에 어떤 영향이 있나요?", visibleText);
+        Assert.Contains("지금 할 일", visibleText);
     }
 
     [Fact]

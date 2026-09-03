@@ -24,14 +24,31 @@ public partial class SyncDiagnosticsWindow : Window
     private async void ServerIntegrityDetailDataGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
         if (sender is not DataGrid grid ||
-            ItemsControl.ContainerFromElement(grid, e.OriginalSource as DependencyObject) is not DataGridRow ||
-            _viewModel.SelectedServerIntegrityIssue is null ||
-            _viewModel.SelectedServerIntegrityDetailRow is null)
+            ItemsControl.ContainerFromElement(grid, e.OriginalSource as DependencyObject) is not DataGridRow)
         {
             return;
         }
 
         e.Handled = true;
+        await OpenSelectedServerIntegrityResolutionAsync();
+    }
+
+    private async void OpenIntegrityResolutionButton_Click(object sender, RoutedEventArgs e)
+        => await OpenSelectedServerIntegrityResolutionAsync();
+
+    private void ServerIntegrityDetailDataGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        => OpenIntegrityResolutionButton.IsEnabled =
+            _viewModel.SelectedServerIntegrityIssue is not null &&
+            _viewModel.SelectedServerIntegrityDetailRow is not null;
+
+    private async Task OpenSelectedServerIntegrityResolutionAsync()
+    {
+        if (_viewModel.SelectedServerIntegrityIssue is null ||
+            _viewModel.SelectedServerIntegrityDetailRow is null)
+        {
+            return;
+        }
+
         var plan = ServerIntegrityResolutionPlan.Create(
             _viewModel.SelectedServerIntegrityIssue,
             _viewModel.SelectedServerIntegrityDetailRow);
