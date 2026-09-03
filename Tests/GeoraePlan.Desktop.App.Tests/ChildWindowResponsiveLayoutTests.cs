@@ -1796,7 +1796,7 @@ public sealed class ChildWindowResponsiveLayoutTests
             element =>
                 element.Name.LocalName == "TextBlock" &&
                 ((string?)element.Attribute("Text"))?.Contains(
-                    "sync outbox 재시도 상태",
+                    "서버 전송 대기 상태",
                     StringComparison.Ordinal) == true);
         Assert.Equal("Wrap", (string?)explanation.Attribute("TextWrapping"));
 
