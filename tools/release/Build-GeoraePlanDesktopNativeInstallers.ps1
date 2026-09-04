@@ -11,7 +11,7 @@ param(
     [string]$WixToolPath,
     [string]$WindowsSigningConfigPath,
     [switch]$RequireWindowsAuthenticode,
-    [int]$KeepVersionedInstallerCount = 2
+    [int]$KeepVersionedInstallerCount = 1
 )
 
 Set-StrictMode -Version Latest

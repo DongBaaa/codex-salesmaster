@@ -111,7 +111,7 @@ public sealed class ReleaseTempPathGuardTests
         Assert.DoesNotContain("Move-Item -LiteralPath $tempPath -Destination $TargetPath -Force", source, StringComparison.Ordinal);
         Assert.Contains("function Write-DurableGeoraePlanReleaseJournal", source, StringComparison.Ordinal);
         Assert.Contains("function Copy-GeoraePlanReleaseTransactionFileAtomically", source, StringComparison.Ordinal);
-        Assert.Contains("[int]$KeepDesktopPackageCount = 2", source, StringComparison.Ordinal);
+        Assert.Contains("[int]$KeepDesktopPackageCount = 0", source, StringComparison.Ordinal);
         Assert.Contains("[int]$KeepAndroidPackageCount = 2", source, StringComparison.Ordinal);
         Assert.Contains("$releaseJournalTypeDefinition = @'", source, StringComparison.Ordinal);
         Assert.Contains("if ($PSVersionTable.PSEdition -eq 'Core')", source, StringComparison.Ordinal);
@@ -129,7 +129,8 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("sha256 = $hash.Hash", source, StringComparison.Ordinal);
         Assert.Contains("fileSize = [int64]$fileInfo.Length", source, StringComparison.Ordinal);
 
-        Assert.Contains("$preservedDesktopFiles = Get-ManifestReferencedFileNames -ManifestRoot $manifestRoot -Platform 'desktop'", source, StringComparison.Ordinal);
+        Assert.Contains("function Get-PlatformReferencedFileNames", source, StringComparison.Ordinal);
+        Assert.Contains("$preservedDesktopFiles = Get-PlatformReferencedFileNames -Manifest $manifest -Platform 'desktop'", source, StringComparison.Ordinal);
         Assert.Contains("$preservedAndroidFiles = Get-ManifestReferencedFileNames -ManifestRoot $manifestRoot -Platform 'android'", source, StringComparison.Ordinal);
         Assert.Contains("-PreserveFileNames $preservedDesktopFiles", source, StringComparison.Ordinal);
         Assert.Contains("-PreserveFileNames $preservedAndroidFiles", source, StringComparison.Ordinal);
@@ -139,8 +140,17 @@ public sealed class ReleaseTempPathGuardTests
             "-SourcePath $deliveryManifestTransactionEntry.stagedPath",
             "-SourcePath $mainManifestTransactionEntry.stagedPath",
             "$journal.phase = 'Committed'",
-            "$preservedDesktopFiles = Get-ManifestReferencedFileNames -ManifestRoot $manifestRoot -Platform 'desktop'",
+            "$preservedDesktopFiles = Get-PlatformReferencedFileNames -Manifest $manifest -Platform 'desktop'",
             "$removedDesktopPackages = Remove-OldPackages");
+
+        var nativeInstallerSource = ReadRepositoryFile(
+            "tools",
+            "release",
+            "Build-GeoraePlanDesktopNativeInstallers.ps1");
+        Assert.Contains(
+            "[int]$KeepVersionedInstallerCount = 1",
+            nativeInstallerSource,
+            StringComparison.Ordinal);
     }
 
     [Fact]

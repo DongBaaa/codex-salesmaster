@@ -3,7 +3,7 @@ param(
     [string]$ProjectRoot,
     [string]$OutputRoot,
     [string]$Channel = 'stable',
-    [int]$KeepDesktopPackageCount = 2,
+    [int]$KeepDesktopPackageCount = 0,
     [int]$KeepAndroidPackageCount = 2,
     [switch]$SkipPackagePrune,
     [string]$DesktopPackagePath,
@@ -1786,6 +1786,37 @@ function Get-ManifestReferencedFileNames {
     return $fileNames
 }
 
+function Get-PlatformReferencedFileNames {
+    param(
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)][string]$Platform
+    )
+
+    $fileNames = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+    $platformNode = if ($Manifest -is [Collections.IDictionary]) {
+        $Manifest[$Platform]
+    }
+    else {
+        $Manifest.$Platform
+    }
+    if ($null -eq $platformNode) {
+        return $fileNames
+    }
+
+    $fileName = [string]$platformNode.fileName
+    if (-not [string]::IsNullOrWhiteSpace($fileName)) {
+        [void]$fileNames.Add($fileName.Trim())
+    }
+    foreach ($installer in @($platformNode.installers)) {
+        $installerFileName = [string]$installer.fileName
+        if (-not [string]::IsNullOrWhiteSpace($installerFileName)) {
+            [void]$fileNames.Add($installerFileName.Trim())
+        }
+    }
+
+    return $fileNames
+}
+
 function Remove-OldPackages {
     param(
         [Parameter(Mandatory = $true)][string]$DirectoryPath,
@@ -1793,7 +1824,7 @@ function Remove-OldPackages {
         $PreserveFileNames
     )
 
-    if ($KeepCount -lt 1 -or -not (Test-Path -LiteralPath $DirectoryPath)) {
+    if ($KeepCount -lt 0 -or -not (Test-Path -LiteralPath $DirectoryPath)) {
         return @()
     }
     Assert-GeoraePlanReleaseRegularDirectoryChain -Path $DirectoryPath
@@ -6053,8 +6084,8 @@ if ($startupRecoveryOutcome -eq 'Committed') {
         $startupRemovedAndroidPackages = @()
         if (-not $SkipPackagePrune) {
             $startupPreservedDesktopFiles =
-                Get-ManifestReferencedFileNames `
-                    -ManifestRoot $manifestRoot `
+                Get-PlatformReferencedFileNames `
+                    -Manifest $recoveredPointer.Manifest `
                     -Platform 'desktop'
             $startupPreservedAndroidFiles =
                 Get-ManifestReferencedFileNames `
@@ -6227,8 +6258,8 @@ if ($null -ne $requestReceiptEvidence) {
             $receiptRemovedAndroidPackages = @()
             if (-not $SkipPackagePrune) {
                 $receiptPreservedDesktopFiles =
-                    Get-ManifestReferencedFileNames `
-                        -ManifestRoot $manifestRoot `
+                    Get-PlatformReferencedFileNames `
+                        -Manifest $currentPointer.Manifest `
                         -Platform 'desktop'
                 $receiptPreservedAndroidFiles =
                     Get-ManifestReferencedFileNames `
@@ -7048,7 +7079,7 @@ Invoke-GeoraePlanReleaseTestKillPoint `
 $removedDesktopPackages = @()
 $removedAndroidPackages = @()
 if (-not $SkipPackagePrune) {
-    $preservedDesktopFiles = Get-ManifestReferencedFileNames -ManifestRoot $manifestRoot -Platform 'desktop'
+    $preservedDesktopFiles = Get-PlatformReferencedFileNames -Manifest $manifest -Platform 'desktop'
     $preservedAndroidFiles = Get-ManifestReferencedFileNames -ManifestRoot $manifestRoot -Platform 'android'
     $removedDesktopPackages = Remove-OldPackages -DirectoryPath (Join-Path $downloadsRoot 'desktop') -KeepCount $KeepDesktopPackageCount -PreserveFileNames $preservedDesktopFiles
     $removedAndroidPackages = Remove-OldPackages -DirectoryPath (Join-Path $downloadsRoot 'android') -KeepCount $KeepAndroidPackageCount -PreserveFileNames $preservedAndroidFiles
