@@ -44,8 +44,20 @@
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="Height" Value="28"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
-            <Setter Property="MinWidth" Value="180"/>
+            <Setter Property="MinWidth" Value="0"/>
             <Setter Property="HorizontalAlignment" Value="Stretch"/>
+        </Style>
+        <Style x:Key="SettlementAmountTextBoxStyle" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+            <Setter Property="Width" Value="180"/>
+            <Setter Property="MaxWidth" Value="180"/>
+            <Setter Property="MinWidth" Value="0"/>
+            <Setter Property="HorizontalAlignment" Value="Left"/>
+        </Style>
+        <Style x:Key="PaymentMethodAmountTextBoxStyle" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+            <Setter Property="Width" Value="260"/>
+            <Setter Property="MaxWidth" Value="260"/>
+            <Setter Property="MinWidth" Value="0"/>
+            <Setter Property="HorizontalAlignment" Value="Left"/>
         </Style>
         <Style x:Key="ReadOnlyInfoTextBoxStyle" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
             <Setter Property="IsReadOnly" Value="True"/>
@@ -332,7 +344,7 @@
                                 <ColumnDefinition Width="152"/>
                                 <ColumnDefinition Width="10"/>
                                 <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="260"/>
+                                <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="10"/>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="96"/>
@@ -355,6 +367,7 @@
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBox Grid.Column="0"
+                                         Style="{StaticResource SettlementAmountTextBoxStyle}"
                                          Height="28"
                                          Text="{Binding SettlementAmount, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}"
                                          IsEnabled="{Binding IsSettlementAmountEnabled}"/>
@@ -477,13 +490,13 @@
                                 </DatePicker.Resources>
                             </DatePicker>
                             <Label Grid.Row="1" Grid.Column="0" Content="현금수금"/>
-                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding CashReceipt, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
+                            <TextBox Grid.Row="1" Grid.Column="1" Style="{StaticResource PaymentMethodAmountTextBoxStyle}" Text="{Binding CashReceipt, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
                             <Label Grid.Row="2" Grid.Column="0" Content="카드수금"/>
-                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding CardReceipt, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" Style="{StaticResource PaymentMethodAmountTextBoxStyle}" Text="{Binding CardReceipt, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
                             <Label Grid.Row="3" Grid.Column="0" Content="통장수금"/>
-                            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding BankReceipt, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
+                            <TextBox Grid.Row="3" Grid.Column="1" Style="{StaticResource PaymentMethodAmountTextBoxStyle}" Text="{Binding BankReceipt, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
                             <Label Grid.Row="4" Grid.Column="0" Content="할인 처리"/>
-                            <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding DiscountApplied, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBox Grid.Row="4" Grid.Column="1" Style="{StaticResource PaymentMethodAmountTextBoxStyle}" Text="{Binding DiscountApplied, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}"/>
                         </Grid>
 
                         <Border Grid.Row="2"
@@ -556,13 +569,13 @@
                                 </DatePicker.Resources>
                             </DatePicker>
                             <Label Grid.Row="1" Grid.Column="0" Content="현금지급"/>
-                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding CashPayment, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
+                            <TextBox Grid.Row="1" Grid.Column="1" Style="{StaticResource PaymentMethodAmountTextBoxStyle}" Text="{Binding CashPayment, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
                             <Label Grid.Row="2" Grid.Column="0" Content="카드지급"/>
-                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding CardPayment, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
+                            <TextBox Grid.Row="2" Grid.Column="1" Style="{StaticResource PaymentMethodAmountTextBoxStyle}" Text="{Binding CardPayment, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
                             <Label Grid.Row="3" Grid.Column="0" Content="통장지급"/>
-                            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding BankPayment, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
+                            <TextBox Grid.Row="3" Grid.Column="1" Style="{StaticResource PaymentMethodAmountTextBoxStyle}" Text="{Binding BankPayment, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,5"/>
                             <Label Grid.Row="4" Grid.Column="0" Content="할인 받음"/>
-                            <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding DiscountReceived, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBox Grid.Row="4" Grid.Column="1" Style="{StaticResource PaymentMethodAmountTextBoxStyle}" Text="{Binding DiscountReceived, Converter={StaticResource DecimalToString}, ConverterParameter=emptyWhenZero, UpdateSourceTrigger=PropertyChanged}"/>
                         </Grid>
 
                         <Border Grid.Row="2"

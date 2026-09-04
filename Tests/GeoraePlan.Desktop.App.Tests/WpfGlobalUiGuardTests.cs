@@ -473,6 +473,30 @@ public sealed class WpfGlobalUiGuardTests
     }
 
     [Fact]
+    public void PaymentWindow_KeepsAmountEditorsCompactAndSettlementValueVisible()
+    {
+        var root = FindRepositoryRoot();
+        var xamlPath = Directory.EnumerateFiles(
+                Path.Combine(root, "Desktop"),
+                "PaymentWindow.xaml",
+                SearchOption.AllDirectories)
+            .Single();
+
+        var xaml = File.ReadAllText(xamlPath);
+
+        Assert.Contains("x:Key=\"SettlementAmountTextBoxStyle\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Key=\"PaymentMethodAmountTextBoxStyle\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Style=\"{StaticResource SettlementAmountTextBoxStyle}\"", xaml, StringComparison.Ordinal);
+        Assert.Equal(
+            8,
+            CountOccurrences(xaml, "Style=\"{StaticResource PaymentMethodAmountTextBoxStyle}\""));
+        Assert.Contains("<Setter Property=\"Width\" Value=\"180\"/>", xaml, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"Width\" Value=\"260\"/>", xaml, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"MinWidth\" Value=\"0\"/>", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("<ColumnDefinition Width=\"260\"/>\n                                <ColumnDefinition Width=\"10\"/>\n                                <ColumnDefinition Width=\"Auto\"/>\n                                <ColumnDefinition Width=\"96\"/>", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void OfficeWorkflowWindows_DoNotRepeatSameReadOnlySummaryValueInOnePanel()
     {
         var root = FindRepositoryRoot();
