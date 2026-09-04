@@ -161,6 +161,7 @@
                     </TabControl.Resources>
                     <TabItem Header="거래처정보">
                         <ScrollViewer x:Name="CustomerInfoScrollViewer"
+                              Style="{StaticResource ResponsiveDetailScrollViewerStyle}"
                                       HorizontalScrollBarVisibility="Disabled"
                                       VerticalScrollBarVisibility="Auto"
                                       HorizontalContentAlignment="Stretch">
@@ -205,6 +206,7 @@
 
                     <TabItem Header="렌탈 기본정보">
                         <ScrollViewer x:Name="RentalBasicsScrollViewer"
+                              Style="{StaticResource ResponsiveDetailScrollViewerStyle}"
                                       HorizontalScrollBarVisibility="Disabled"
                                       VerticalScrollBarVisibility="Auto"
                                       HorizontalContentAlignment="Stretch">
@@ -232,6 +234,7 @@
 
                     <TabItem Header="청구 설정">
                         <ScrollViewer x:Name="BillingSettingsScrollViewer"
+                              Style="{StaticResource ResponsiveDetailScrollViewerStyle}"
                                       HorizontalScrollBarVisibility="Disabled"
                                       VerticalScrollBarVisibility="Auto"
                                       HorizontalContentAlignment="Stretch">
@@ -469,6 +472,7 @@
 
                     <TabItem Header="최종 확인">
                         <ScrollViewer x:Name="FinalReviewScrollViewer"
+                              Style="{StaticResource ResponsiveDetailScrollViewerStyle}"
                                       HorizontalScrollBarVisibility="Disabled"
                                       VerticalScrollBarVisibility="Auto"
                                       HorizontalContentAlignment="Stretch">

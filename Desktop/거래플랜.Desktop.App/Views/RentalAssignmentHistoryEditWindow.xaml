@@ -72,10 +72,11 @@
 
         <Border Grid.Row="1" Background="#1C2B43" BorderBrush="#33517C" BorderThickness="1" CornerRadius="8" Padding="16">
             <ScrollViewer x:Name="RentalAssignmentHistoryBodyScrollViewer"
+                              Style="{StaticResource ResponsiveDetailScrollViewerStyle}"
                           HorizontalScrollBarVisibility="Auto"
                           VerticalScrollBarVisibility="Auto">
             <Grid x:Name="RentalAssignmentHistoryBodyContent"
-                  MinWidth="520"
+                  MinWidth="0"
                   Width="{Binding ViewportWidth, ElementName=RentalAssignmentHistoryBodyScrollViewer}">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="120"/>

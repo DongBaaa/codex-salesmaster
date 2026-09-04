@@ -35,7 +35,9 @@
             </StackPanel>
         </Border>
 
-        <ScrollViewer Grid.Row="1"
+        <ScrollViewer x:Name="ServerIntegrityResolutionScrollViewer"
+                      Style="{StaticResource ResponsiveDetailScrollViewerStyle}"
+                      Grid.Row="1"
                       VerticalScrollBarVisibility="Auto"
                       HorizontalScrollBarVisibility="Disabled">
             <StackPanel>

@@ -31,13 +31,14 @@
         </StackPanel>
 
         <ScrollViewer x:Name="RentalReturnReportBodyScrollViewer"
+                              Style="{StaticResource ResponsiveDetailScrollViewerStyle}"
                       Grid.Row="1"
                       HorizontalScrollBarVisibility="Auto"
                       VerticalScrollBarVisibility="Auto">
             <Grid x:Name="RentalReturnReportBodyContent"
-                  MinWidth="500"
-                  MinHeight="{Binding ViewportHeight, ElementName=RentalReturnReportBodyScrollViewer}"
-                  Width="{Binding ViewportWidth, ElementName=RentalReturnReportBodyScrollViewer}">
+                  MinWidth="0"
+                  Width="{Binding ViewportWidth, ElementName=RentalReturnReportBodyScrollViewer}"
+                  MinHeight="{Binding ViewportHeight, ElementName=RentalReturnReportBodyScrollViewer}">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="10"/>

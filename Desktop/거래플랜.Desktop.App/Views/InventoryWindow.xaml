@@ -272,9 +272,9 @@
 
         <Grid>
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="450" MinWidth="380"/>
+                <ColumnDefinition Width="450" MinWidth="0"/>
                 <ColumnDefinition Width="5"/>
-                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*" MinWidth="420"/>
             </Grid.ColumnDefinitions>
 
             <DataGrid x:Name="ItemsDataGrid"
@@ -339,12 +339,13 @@
                 </Border>
 
                 <ScrollViewer x:Name="InventoryDetailScrollViewer"
+                              Style="{StaticResource ResponsiveDetailScrollViewerStyle}"
                               Grid.Row="1"
                               Margin="8,8,8,0"
                               HorizontalScrollBarVisibility="Disabled"
                               VerticalScrollBarVisibility="Auto">
                     <StackPanel x:Name="InventoryDetailContent"
-                                MinWidth="650"
+                                MinWidth="0"
                                 Grid.IsSharedSizeScope="True">
                         <Border Background="#16263D"
                                 Padding="12"

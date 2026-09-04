@@ -182,7 +182,7 @@
                         <TextBlock Text="선택한 전표에 수금/지급 내역을 추가해 잔액을 처리합니다." Foreground="#B8C7D8" TextWrapping="Wrap" Margin="0,6,0,12"/>
                     </StackPanel>
 
-                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                    <ScrollViewer x:Name="DashboardBalanceDetailScrollViewer" Style="{StaticResource ResponsiveDetailScrollViewerStyle}" Grid.Row="1" VerticalScrollBarVisibility="Auto">
                         <StackPanel>
                             <TextBlock Text="선택 거래처" Foreground="#9FB3C8" FontSize="11"/>
                             <TextBlock Text="{Binding SelectedRow.CustomerName, FallbackValue=전표를 선택하세요}" FontSize="16" FontWeight="Bold" TextWrapping="Wrap" Margin="0,4,0,12"/>

@@ -153,10 +153,11 @@
         </Border>
 
         <ScrollViewer x:Name="CustomerBodyScrollViewer"
+                              Style="{StaticResource ResponsiveDetailScrollViewerStyle}"
                       HorizontalScrollBarVisibility="Disabled"
                       VerticalScrollBarVisibility="Auto">
             <Grid x:Name="CustomerBodyContent"
-                  MinWidth="780"
+                  MinWidth="0"
                   Margin="12,8,12,12"
                   Grid.IsSharedSizeScope="True">
                 <Grid.RowDefinitions>

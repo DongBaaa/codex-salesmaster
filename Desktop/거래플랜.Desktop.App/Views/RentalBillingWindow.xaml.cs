@@ -16,6 +16,7 @@ namespace 거래플랜.Desktop.App.Views;
 
 public partial class RentalBillingWindow : Window
 {
+    private const double BillingDetailMinimumWidth = 540d;
     private readonly EntityEditSessionMonitor? _editSessionMonitor;
     private readonly Func<Guid, Window?, Task>? _openInvoiceWindowAsync;
     private readonly Func<Guid, Window?, Task>? _openRentalAssetWindowAsync;
@@ -99,7 +100,7 @@ public partial class RentalBillingWindow : Window
         }
 
         BillingListColumn.MinWidth = 0;
-        BillingDetailColumn.MinWidth = 0;
+        BillingDetailColumn.MinWidth = BillingDetailMinimumWidth;
         BillingListColumn.Width = _billingListColumnWidth;
         BillingWorkspaceSplitterColumn.Width = new GridLength(10);
         BillingWorkspaceGridSplitter.Visibility = Visibility.Visible;

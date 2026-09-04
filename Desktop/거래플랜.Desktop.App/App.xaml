@@ -83,10 +83,14 @@
              상속하지 않고 현재 열의 가용 너비 안에서 축소됩니다. -->
         <Style x:Key="ResponsiveDetailTextBoxStyle" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
             <Setter Property="MinWidth" Value="0"/>
+            <Setter Property="Width" Value="Auto"/>
+            <Setter Property="MaxWidth" Value="Infinity"/>
             <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style x:Key="ResponsiveDetailComboBoxStyle" TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
             <Setter Property="MinWidth" Value="0"/>
+            <Setter Property="Width" Value="Auto"/>
+            <Setter Property="MaxWidth" Value="Infinity"/>
             <Setter Property="HorizontalAlignment" Value="Stretch"/>
         </Style>
         <Style x:Key="ResponsiveDetailDatePickerStyle" TargetType="DatePicker" BasedOn="{StaticResource {x:Type DatePicker}}">
@@ -94,6 +98,11 @@
             <Setter Property="Width" Value="Auto"/>
             <Setter Property="MaxWidth" Value="Infinity"/>
             <Setter Property="HorizontalAlignment" Value="Stretch"/>
+        </Style>
+        <!-- 우측 상세/본문 폼의 너비를 세로 스크롤바를 제외한 실제 viewport에 맞춥니다. -->
+        <Style x:Key="ResponsiveDetailScrollViewerStyle" TargetType="ScrollViewer">
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="infra:ResponsiveDetailViewport.ConstrainContentWidth" Value="True"/>
         </Style>
         <Style TargetType="ComboBoxItem">
             <Setter Property="FontFamily" Value="맑은 고딕"/>

@@ -220,6 +220,12 @@ public sealed class WpfGlobalUiGuardTests
     {
         var root = FindRepositoryRoot();
         var appXaml = File.ReadAllText(Path.Combine(root, "Desktop", "거래플랜.Desktop.App", "App.xaml"));
+        var viewportBehavior = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Infrastructure",
+            "ResponsiveDetailViewport.cs"));
         var viewRoot = Path.Combine(root, "Desktop", "거래플랜.Desktop.App", "Views");
         var responsiveViews = new[]
         {
@@ -227,6 +233,25 @@ public sealed class WpfGlobalUiGuardTests
             "RentalAssetWindow.xaml",
             "RentalAssetLinkDialog.xaml",
             "RentalCustomerOnboardingWindow.xaml"
+        };
+        var viewportConstrainedViews = new[]
+        {
+            "CustomerEditWindow.xaml",
+            "CustomerInvoiceLookupWindow.xaml",
+            "DashboardBalanceDetailsWindow.xaml",
+            "DataIntegrityIssueWindow.xaml",
+            "EnvironmentSettingsWindow.xaml",
+            "InventoryWindow.xaml",
+            "PrintEditWindow.xaml",
+            "RentalAssetLinkDialog.xaml",
+            "RentalAssetWindow.xaml",
+            "RentalAssignmentHistoryEditWindow.xaml",
+            "RentalBillingWindow.xaml",
+            "RentalContractEditorWindow.xaml",
+            "RentalCustomerOnboardingWindow.xaml",
+            "RentalEquipmentReplacementWindow.xaml",
+            "RentalReturnReportInputWindow.xaml",
+            "ServerIntegrityResolutionWindow.xaml"
         };
 
         var textBoxStyle = ExtractBlock(
@@ -243,13 +268,40 @@ public sealed class WpfGlobalUiGuardTests
             "</Style>");
 
         Assert.Contains("<Setter Property=\"MinWidth\" Value=\"0\"/>", textBoxStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"Width\" Value=\"Auto\"/>", textBoxStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"MaxWidth\" Value=\"Infinity\"/>", textBoxStyle, StringComparison.Ordinal);
         Assert.Contains("<Setter Property=\"HorizontalAlignment\" Value=\"Stretch\"/>", textBoxStyle, StringComparison.Ordinal);
         Assert.Contains("<Setter Property=\"MinWidth\" Value=\"0\"/>", comboBoxStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"Width\" Value=\"Auto\"/>", comboBoxStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"MaxWidth\" Value=\"Infinity\"/>", comboBoxStyle, StringComparison.Ordinal);
         Assert.Contains("<Setter Property=\"HorizontalAlignment\" Value=\"Stretch\"/>", comboBoxStyle, StringComparison.Ordinal);
         Assert.Contains("<Setter Property=\"MinWidth\" Value=\"0\"/>", datePickerStyle, StringComparison.Ordinal);
         Assert.Contains("<Setter Property=\"Width\" Value=\"Auto\"/>", datePickerStyle, StringComparison.Ordinal);
         Assert.Contains("<Setter Property=\"MaxWidth\" Value=\"Infinity\"/>", datePickerStyle, StringComparison.Ordinal);
         Assert.Contains("<Setter Property=\"HorizontalAlignment\" Value=\"Stretch\"/>", datePickerStyle, StringComparison.Ordinal);
+
+        var scrollViewerStyle = ExtractBlock(
+            appXaml,
+            "<Style x:Key=\"ResponsiveDetailScrollViewerStyle\"",
+            "</Style>");
+        Assert.Contains(
+            "infra:ResponsiveDetailViewport.ConstrainContentWidth\" Value=\"True\"",
+            scrollViewerStyle,
+            StringComparison.Ordinal);
+        Assert.Contains("scrollViewer.ViewportWidth", viewportBehavior, StringComparison.Ordinal);
+        Assert.Contains("scrollViewer.ViewportWidth - horizontalMargin", viewportBehavior, StringComparison.Ordinal);
+        Assert.Contains("FrameworkElement.MinWidthProperty, 0d", viewportBehavior, StringComparison.Ordinal);
+        Assert.Contains("FrameworkElement.MaxWidthProperty, availableWidth", viewportBehavior, StringComparison.Ordinal);
+        Assert.Contains("column.Width.IsStar", viewportBehavior, StringComparison.Ordinal);
+
+        foreach (var viewName in viewportConstrainedViews)
+        {
+            var xaml = File.ReadAllText(Path.Combine(viewRoot, viewName));
+            Assert.Contains(
+                "Style=\"{StaticResource ResponsiveDetailScrollViewerStyle}\"",
+                xaml,
+                StringComparison.Ordinal);
+        }
 
         foreach (var viewName in responsiveViews)
         {
@@ -276,7 +328,15 @@ public sealed class WpfGlobalUiGuardTests
         }
 
         var billingXaml = File.ReadAllText(Path.Combine(viewRoot, "RentalBillingWindow.xaml"));
+        var billingCode = File.ReadAllText(Path.Combine(viewRoot, "RentalBillingWindow.xaml.cs"));
         Assert.DoesNotContain("MinWidth=\"620\"", billingXaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"BillingListColumn\" Width=\"2.2*\" MinWidth=\"0\"", billingXaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"BillingDetailColumn\" Width=\"1.6*\" MinWidth=\"540\"", billingXaml, StringComparison.Ordinal);
+        Assert.Contains("private const double BillingDetailMinimumWidth = 540d;", billingCode, StringComparison.Ordinal);
+        Assert.Contains("BillingDetailColumn.MinWidth = BillingDetailMinimumWidth;", billingCode, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"RentalBillingDetailScrollViewer\"", billingXaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"RentalBillingDetailContent\"", billingXaml, StringComparison.Ordinal);
+        Assert.Contains("MinWidth=\"0\"", billingXaml, StringComparison.Ordinal);
         Assert.Contains(
             "BasedOn=\"{StaticResource ResponsiveDetailComboBoxStyle}\"",
             ExtractBlock(billingXaml, "<Style x:Key=\"BillingAnchorMonthComboBoxStyle\"", "</Style>"),
@@ -284,6 +344,9 @@ public sealed class WpfGlobalUiGuardTests
 
         var assetXaml = File.ReadAllText(Path.Combine(viewRoot, "RentalAssetWindow.xaml"));
         Assert.DoesNotContain("MinWidth=\"620\"", assetXaml, StringComparison.Ordinal);
+        Assert.Contains("<ColumnDefinition Width=\"2.35*\" MinWidth=\"0\"/>", assetXaml, StringComparison.Ordinal);
+        Assert.Contains("<ColumnDefinition Width=\"1.5*\" MinWidth=\"540\"/>", assetXaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"RentalAssetDetailViewportContent\"", assetXaml, StringComparison.Ordinal);
 
         var onboardingXaml = File.ReadAllText(Path.Combine(viewRoot, "RentalCustomerOnboardingWindow.xaml"));
         Assert.DoesNotContain("MinWidth=\"760\"", onboardingXaml, StringComparison.Ordinal);
@@ -293,6 +356,15 @@ public sealed class WpfGlobalUiGuardTests
             "<Setter Property=\"MinWidth\" Value=\"0\"/>",
             ExtractBlock(assetLinkXaml, "<Style x:Key=\"ReadOnlyInfoTextBoxStyle\"", "</Style>"),
             StringComparison.Ordinal);
+        Assert.Contains("<ColumnDefinition Width=\"2.3*\" MinWidth=\"0\"/>", assetLinkXaml, StringComparison.Ordinal);
+        Assert.Contains("<ColumnDefinition Width=\"1.2*\" MinWidth=\"380\"/>", assetLinkXaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"RentalAssetLinkDetailScrollViewer\"", assetLinkXaml, StringComparison.Ordinal);
+
+        foreach (var xaml in new[] { billingXaml, assetXaml, assetLinkXaml })
+        {
+            Assert.Contains("ClipToBounds=\"True\"", xaml, StringComparison.Ordinal);
+            Assert.Contains("<ColumnDefinition Width=\"*\" MinWidth=\"0\"/>", xaml, StringComparison.Ordinal);
+        }
     }
 
     [Fact]

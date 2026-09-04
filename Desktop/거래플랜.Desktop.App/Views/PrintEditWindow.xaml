@@ -126,7 +126,7 @@
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
+            <ScrollViewer x:Name="PrintEditFormScrollViewer" Style="{StaticResource ResponsiveDetailScrollViewerStyle}" Grid.Column="0" VerticalScrollBarVisibility="Auto">
                 <StackPanel>
                     <Border Background="#1A2B4A" BorderBrush="#2E4060" BorderThickness="1" Padding="8" Margin="0,0,0,8">
                         <Grid>

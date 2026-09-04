@@ -192,10 +192,11 @@
                 </Grid.ColumnDefinitions>
 
             <ScrollViewer x:Name="RentalContractEditorScrollViewer"
+                              Style="{StaticResource ResponsiveDetailScrollViewerStyle}"
                           Grid.Column="0"
                           HorizontalScrollBarVisibility="Auto"
                           VerticalScrollBarVisibility="Auto">
-                <StackPanel MinWidth="520">
+                <StackPanel MinWidth="0">
                     <Border Background="#1A2B4A" BorderBrush="#2E4060" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,0,0,8">
                         <StackPanel>
                             <TextBlock Text="계약 기본 정보" FontWeight="Bold" Foreground="#4FC3F7" Margin="0,0,0,8"/>

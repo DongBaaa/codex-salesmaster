@@ -161,7 +161,7 @@
                         <TextBlock Text="아래 순서대로 확인하세요. '기술 상세'는 지원 요청 때만 펼쳐보면 됩니다."
                                    Foreground="#8FB6D8" TextWrapping="Wrap" Margin="0,4,0,0"/>
                     </StackPanel>
-                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                    <ScrollViewer x:Name="DataIntegrityIssueDetailScrollViewer" Style="{StaticResource ResponsiveDetailScrollViewerStyle}" Grid.Row="1" VerticalScrollBarVisibility="Auto">
                         <StackPanel DataContext="{Binding SelectedIssue}">
                             <TextBlock Text="{Binding Title}" FontSize="18" FontWeight="Bold" Foreground="#EAF4FF" TextWrapping="Wrap"/>
                             <TextBlock Text="무슨 문제인가요?" Foreground="#8FB6D8" Margin="0,10,0,0"/>

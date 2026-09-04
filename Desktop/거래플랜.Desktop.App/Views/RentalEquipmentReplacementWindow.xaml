@@ -80,10 +80,11 @@
 
         <Border Grid.Row="1" Background="#1C2B43" BorderBrush="#33517C" BorderThickness="1" CornerRadius="8" Padding="16">
             <ScrollViewer x:Name="RentalEquipmentReplacementBodyScrollViewer"
+                              Style="{StaticResource ResponsiveDetailScrollViewerStyle}"
                           HorizontalScrollBarVisibility="Auto"
                           VerticalScrollBarVisibility="Auto">
             <Grid x:Name="RentalEquipmentReplacementBodyContent"
-                  MinWidth="540"
+                  MinWidth="0"
                   Width="{Binding ViewportWidth, ElementName=RentalEquipmentReplacementBodyScrollViewer}">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>

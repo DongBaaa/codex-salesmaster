@@ -47,6 +47,7 @@ jobs:
           $testFilter = @(
               'FullyQualifiedName~ServerIntegrityResolutionAndPlainLanguageTests',
               'FullyQualifiedName~ChildWindowResponsiveLayoutTests',
+              'FullyQualifiedName~WpfGlobalUiGuardTests.RentalDetailForms_KeepEditorsInsideTheirAvailablePanelWidth',
               'FullyQualifiedName~DataIntegrityIssueViewModelTests',
               'FullyQualifiedName~DataIntegrityRentalOperationalScopeTests',
               'FullyQualifiedName~DataIntegrityIssueServicePerformanceTests',
@@ -54,6 +55,7 @@ jobs:
               'FullyQualifiedName~MasterUiWiringGuardTests',
               'FullyQualifiedName~EnvironmentSettingsPermissionGuardTests',
               'FullyQualifiedName~UpdaterTransactionSafetyTests.DesktopUpdatePendingChanges',
+              'FullyQualifiedName~UpdaterTransactionSafetyTests.CompletedUpdate_RemovesOldDownloadCachesButProtectsActiveUpdaterDirectories',
               'FullyQualifiedName~UpdaterTransactionSafetyTests.CheckForUpdatesAsync_EquivalentVersionFormsReportCurrentVersion',
               'FullyQualifiedName~UpdaterTransactionSafetyTests.DesktopUpdateVersionPolicy_TreatsMissingRevisionAsZero'
           ) -join '|'

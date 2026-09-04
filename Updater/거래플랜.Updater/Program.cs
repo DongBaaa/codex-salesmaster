@@ -124,7 +124,11 @@ internal static class Program
                 EnsureGeneratedInstallRecoveryAbsent(options.InstallRoot);
                 TryLog(
                     $"SKIP requested={NormalizeVersionText(options.Version)} installed={NormalizeVersionText(installedVersion)}");
-                SchedulePostExitCleanup(GetCurrentUpdaterStagingRoot());
+                var currentUpdaterStagingRoot = GetCurrentUpdaterStagingRoot();
+                TryCleanupSupersededUpdateArtifacts(
+                    GetUpdateArtifactRoot(),
+                    currentUpdaterStagingRoot);
+                SchedulePostExitCleanup(currentUpdaterStagingRoot);
                 installWorkerLease.Dispose();
                 installOperationLease.Dispose();
                 installRootUpdateLock.Dispose();
@@ -222,9 +226,14 @@ internal static class Program
                 EnsureGeneratedInstallRecoveryAbsent(options.InstallRoot);
                 TryLog(
                     $"RECOVERED-SKIP requested={NormalizeVersionText(options.Version)} installed={NormalizeVersionText(recoveredInstalledVersion)}");
+                var currentUpdaterStagingRoot = GetCurrentUpdaterStagingRoot();
+                TryCleanupSupersededUpdateArtifacts(
+                    GetUpdateArtifactRoot(),
+                    workRoot,
+                    currentUpdaterStagingRoot);
                 SchedulePostExitCleanup(
                     workRoot,
-                    GetCurrentUpdaterStagingRoot());
+                    currentUpdaterStagingRoot);
                 installWorkerLease.Dispose();
                 installOperationLease.Dispose();
                 installRootUpdateLock.Dispose();
@@ -245,6 +254,11 @@ internal static class Program
             updaterOwnsInstallRootGate: true);
 
         EnsureGeneratedInstallRecoveryAbsent(options.InstallRoot);
+        var completedUpdaterStagingRoot = GetCurrentUpdaterStagingRoot();
+        TryCleanupSupersededUpdateArtifacts(
+            GetUpdateArtifactRoot(),
+            workRoot,
+            completedUpdaterStagingRoot);
         installWorkerLease.Dispose();
         installOperationLease.Dispose();
         installRootUpdateLock.Dispose();
@@ -255,7 +269,7 @@ internal static class Program
             LaunchExistingDesktop(options);
         }
 
-        SchedulePostExitCleanup(workRoot, GetCurrentUpdaterStagingRoot());
+        SchedulePostExitCleanup(workRoot, completedUpdaterStagingRoot);
         TryLog("SUCCESS");
     }
 
@@ -2118,6 +2132,101 @@ internal static class Program
                 // 다음 실행에서 다시 정리 시도
             }
         }
+    }
+
+    /// <summary>
+    /// Removes update-only cache directories after a verified installation or
+    /// a verified already-current version decision. Active updater directories
+    /// are explicitly protected and deleted by the post-exit cleanup instead.
+    /// </summary>
+    internal static int TryCleanupSupersededUpdateArtifacts(
+        string artifactRoot,
+        params string?[] protectedDirectoryPaths)
+    {
+        if (string.IsNullOrWhiteSpace(artifactRoot) ||
+            !Directory.Exists(artifactRoot))
+        {
+            return 0;
+        }
+
+        var safeArtifactRoot = Path.GetFullPath(artifactRoot)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var protectedPaths = protectedDirectoryPaths
+            .Where(static path => !string.IsNullOrWhiteSpace(path))
+            .Select(static path => Path.GetFullPath(path!))
+            .ToArray();
+        var removedCount = 0;
+
+        foreach (var categoryName in new[]
+                 {
+                     "prepared-updates",
+                     "updates",
+                     "updater-run"
+                 })
+        {
+            var categoryRoot = Path.GetFullPath(
+                Path.Combine(safeArtifactRoot, categoryName));
+            if (!IsSamePathOrDescendant(categoryRoot, safeArtifactRoot) ||
+                !Directory.Exists(categoryRoot))
+            {
+                continue;
+            }
+
+            string[] categoryDirectories;
+            try
+            {
+                categoryDirectories = Directory.GetDirectories(categoryRoot);
+            }
+            catch (Exception ex)
+            {
+                TryLog(
+                    $"CACHE-CLEANUP deferred={categoryRoot} reason={ex.GetType().Name}:{ex.Message}");
+                continue;
+            }
+
+            foreach (var directory in categoryDirectories)
+            {
+                var candidate = Path.GetFullPath(directory);
+                if (protectedPaths.Any(
+                        protectedPath =>
+                            IsSamePathOrDescendant(protectedPath, candidate)))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var attributes = File.GetAttributes(candidate);
+                    Directory.Delete(
+                        candidate,
+                        recursive: (attributes & FileAttributes.ReparsePoint) == 0);
+                    removedCount++;
+                    TryLog($"CACHE-CLEANUP removed={candidate}");
+                }
+                catch (Exception ex)
+                {
+                    TryLog(
+                        $"CACHE-CLEANUP deferred={candidate} reason={ex.GetType().Name}:{ex.Message}");
+                }
+            }
+        }
+
+        return removedCount;
+    }
+
+    private static bool IsSamePathOrDescendant(
+        string candidatePath,
+        string rootPath)
+    {
+        var candidate = Path.GetFullPath(candidatePath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var root = Path.GetFullPath(rootPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        return string.Equals(candidate, root, StringComparison.OrdinalIgnoreCase) ||
+               candidate.StartsWith(
+                   root + Path.DirectorySeparatorChar,
+                   StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? GetCurrentUpdaterStagingRoot()

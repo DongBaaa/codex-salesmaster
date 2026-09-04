@@ -280,17 +280,17 @@
 
         <Grid Margin="0,10,0,0">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*" MinWidth="0"/>
                 <ColumnDefinition Width="10"/>
-                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*" MinWidth="0"/>
                 <ColumnDefinition Width="10"/>
-                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*" MinWidth="0"/>
                 <ColumnDefinition Width="10"/>
-                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*" MinWidth="0"/>
                 <ColumnDefinition Width="10"/>
-                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*" MinWidth="0"/>
                 <ColumnDefinition Width="10"/>
-                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*" MinWidth="0"/>
             </Grid.ColumnDefinitions>
             <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12">
                 <StackPanel>
@@ -386,7 +386,7 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition x:Name="BillingListColumn" Width="2.2*" MinWidth="0"/>
                 <ColumnDefinition x:Name="BillingWorkspaceSplitterColumn" Width="10"/>
-                <ColumnDefinition x:Name="BillingDetailColumn" Width="1.6*" MinWidth="0"/>
+                <ColumnDefinition x:Name="BillingDetailColumn" Width="1.6*" MinWidth="540"/>
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
@@ -496,11 +496,16 @@
                           ShowsPreview="True"
                           ToolTip="드래그하여 거래처 목록과 상세 편집 영역의 너비를 조절합니다."/>
 
-            <Border Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12">
-                <ScrollViewer VerticalScrollBarVisibility="Auto"
+            <Border Grid.Column="2" MinWidth="0" ClipToBounds="True" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12">
+                <ScrollViewer x:Name="RentalBillingDetailScrollViewer"
+                              Style="{StaticResource ResponsiveDetailScrollViewerStyle}"
+                              VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Disabled"
-                              HorizontalContentAlignment="Stretch">
-                    <StackPanel>
+                              HorizontalContentAlignment="Stretch"
+                              PanningMode="VerticalOnly">
+                    <StackPanel x:Name="RentalBillingDetailContent"
+                                MinWidth="0"
+                                HorizontalAlignment="Left">
                         <TextBlock Text="렌탈 청구 상세" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,10"/>
 
                         <Border Background="#263A55"
@@ -538,7 +543,7 @@
                                         <ColumnDefinition Width="Auto"/>
                                         <ColumnDefinition Width="78"/>
                                         <ColumnDefinition Width="Auto"/>
-                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*" MinWidth="0"/>
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" Text="통일할 주기(개월)" VerticalAlignment="Center" Margin="0,0,8,0"/>
                                     <TextBox Grid.Column="1"
@@ -578,11 +583,11 @@
                                 <TextBlock Text="선택 청구 요약" Foreground="#4FC3F7" FontWeight="Bold"/>
                                 <Grid Margin="0,8,0,0">
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*" MinWidth="0"/>
                                         <ColumnDefinition Width="12"/>
-                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*" MinWidth="0"/>
                                         <ColumnDefinition Width="12"/>
-                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*" MinWidth="0"/>
                                     </Grid.ColumnDefinitions>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto"/>
@@ -700,10 +705,10 @@
                             </Grid.Resources>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="96"/>
-                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*" MinWidth="0"/>
                                 <ColumnDefinition Width="6"/>
                                 <ColumnDefinition Width="96"/>
-                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*" MinWidth="0"/>
                             </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
@@ -721,7 +726,7 @@
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="거래처명"/>
                             <Grid Grid.Row="0" Grid.Column="1" Margin="0,0,0,6">
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*" MinWidth="0"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBox Grid.Column="0" Text="{Binding EditCustomerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,6,0"/>
@@ -892,10 +897,10 @@
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="82"/>
-                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*" MinWidth="0"/>
                                         <ColumnDefinition Width="12"/>
                                         <ColumnDefinition Width="82"/>
-                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*" MinWidth="0"/>
                                     </Grid.ColumnDefinitions>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto"/>

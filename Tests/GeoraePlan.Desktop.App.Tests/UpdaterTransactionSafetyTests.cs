@@ -256,6 +256,80 @@ public sealed class UpdaterTransactionSafetyTests
     }
 
     [Fact]
+    public void CompletedUpdate_RemovesOldDownloadCachesButProtectsActiveUpdaterDirectories()
+    {
+        var artifactRoot = Path.Combine(
+            NewInstallRoot(),
+            "GeoraePlan-update-artifacts");
+        var oldPreparedOne = Path.Combine(
+            artifactRoot,
+            "prepared-updates",
+            "1.1.708-oldhash");
+        var oldPreparedTwo = Path.Combine(
+            artifactRoot,
+            "prepared-updates",
+            "1.1.709-oldhash");
+        var oldWorkRoot = Path.Combine(
+            artifactRoot,
+            "updates",
+            "old-work");
+        var currentWorkRoot = Path.Combine(
+            artifactRoot,
+            "updates",
+            "current-work");
+        var oldUpdaterRun = Path.Combine(
+            artifactRoot,
+            "updater-run",
+            "old-run");
+        var currentUpdaterRun = Path.Combine(
+            artifactRoot,
+            "updater-run",
+            "current-run");
+        var unrelatedDirectory = Path.Combine(
+            artifactRoot,
+            "user-files");
+
+        try
+        {
+            foreach (var directory in new[]
+                     {
+                         oldPreparedOne,
+                         oldPreparedTwo,
+                         oldWorkRoot,
+                         currentWorkRoot,
+                         oldUpdaterRun,
+                         currentUpdaterRun,
+                         unrelatedDirectory
+                     })
+            {
+                Directory.CreateDirectory(directory);
+                File.WriteAllText(
+                    Path.Combine(directory, "artifact.bin"),
+                    "test");
+            }
+
+            var removedCount = Program.TryCleanupSupersededUpdateArtifacts(
+                artifactRoot,
+                currentWorkRoot,
+                Path.Combine(currentUpdaterRun, "updater.exe"));
+
+            Assert.Equal(4, removedCount);
+            Assert.False(Directory.Exists(oldPreparedOne));
+            Assert.False(Directory.Exists(oldPreparedTwo));
+            Assert.False(Directory.Exists(oldWorkRoot));
+            Assert.False(Directory.Exists(oldUpdaterRun));
+            Assert.True(Directory.Exists(currentWorkRoot));
+            Assert.True(Directory.Exists(currentUpdaterRun));
+            Assert.True(Directory.Exists(unrelatedDirectory));
+        }
+        finally
+        {
+            if (Directory.Exists(artifactRoot))
+                Directory.Delete(artifactRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ProcessIdentity_AllowsOnlyTheExpectedExecutableAndStartTime()
     {
         using var process = Process.GetCurrentProcess();
