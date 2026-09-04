@@ -189,6 +189,12 @@ public partial class App : Application
 
         CancelMainScopeBackgroundWork();
 
+        // The updater has already verified the handoff pipe identity before this
+        // method is scheduled. Transfer the install-root gate now instead of
+        // retaining it until OnExit: the updater owns the gate while it waits for
+        // this process to finish, so no install files can be mutated early.
+        ReleaseInstallRootUpdateGateForUpdateHandoff();
+
         AppLogger.Info("UPDATE", "업데이트 적용을 위해 앱 종료를 시작합니다. 업데이트 준비 단계에서 dirty 동기화는 이미 완료되었습니다.");
 
 
@@ -223,6 +229,15 @@ public partial class App : Application
 
         Shutdown(0);
 
+    }
+
+    private void ReleaseInstallRootUpdateGateForUpdateHandoff()
+    {
+        _installRootUpdateGate?.Dispose();
+        _installRootUpdateGate = null;
+        AppLogger.Info(
+            "UPDATE",
+            "신원이 확인된 업데이트 도우미에 설치 경로 잠금을 인계했습니다.");
     }
 
     internal static IReadOnlyList<string> GetInstallRecoveryStartupRoots(

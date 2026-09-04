@@ -4828,6 +4828,50 @@ public sealed class UpdaterTransactionSafetyTests
     }
 
     [Fact]
+    public void DesktopUpdateShutdown_ReleasesOnlyTheInstallGateBeforeWindowDrain()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var appSource = File.ReadAllText(Path.Combine(
+            repositoryRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "App.xaml.cs"));
+
+        var shutdownStart = appSource.IndexOf(
+            "private void BeginShutdownForUpdate()",
+            StringComparison.Ordinal);
+        var releaseGate = appSource.IndexOf(
+            "ReleaseInstallRootUpdateGateForUpdateHandoff();",
+            shutdownStart,
+            StringComparison.Ordinal);
+        var queueWindowDrain = appSource.IndexOf(
+            "TryQueueActiveMainWindowShutdown()",
+            shutdownStart,
+            StringComparison.Ordinal);
+        var releaseMethod = appSource.IndexOf(
+            "private void ReleaseInstallRootUpdateGateForUpdateHandoff()",
+            StringComparison.Ordinal);
+        var nextMethod = appSource.IndexOf(
+            "internal static IReadOnlyList<string> GetInstallRecoveryStartupRoots",
+            releaseMethod,
+            StringComparison.Ordinal);
+        var releaseMethodSource = appSource[releaseMethod..nextMethod];
+
+        Assert.True(shutdownStart >= 0);
+        Assert.True(
+            releaseGate > shutdownStart && releaseGate < queueWindowDrain,
+            "The verified updater must receive the install gate before window/background shutdown can drain.");
+        Assert.Contains(
+            "_installRootUpdateGate?.Dispose();",
+            releaseMethodSource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "_singleInstanceGuard?.Dispose();",
+            releaseMethodSource,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void DesktopUpdateReadiness_ReportsPendingAndFailedOutboxCountsSeparately()
     {
         var repositoryRoot = FindRepositoryRoot();
