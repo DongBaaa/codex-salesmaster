@@ -53,6 +53,7 @@ jobs:
               'FullyQualifiedName~SyncDiagnostics',
               'FullyQualifiedName~MasterUiWiringGuardTests',
               'FullyQualifiedName~EnvironmentSettingsPermissionGuardTests',
+              'FullyQualifiedName~UpdaterTransactionSafetyTests.DesktopUpdatePendingChanges',
               'FullyQualifiedName~UpdaterTransactionSafetyTests.CheckForUpdatesAsync_EquivalentVersionFormsReportCurrentVersion',
               'FullyQualifiedName~UpdaterTransactionSafetyTests.DesktopUpdateVersionPolicy_TreatsMissingRevisionAsZero'
           ) -join '|'

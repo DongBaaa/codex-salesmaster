@@ -4774,6 +4774,51 @@ public sealed class UpdaterTransactionSafetyTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void DesktopUpdatePendingChanges_CanBePreservedForConfirmedForceInstall()
+    {
+        var readiness = new UpdateReadinessResult(
+            CanProceed: false,
+            InitialDirtyCount: 158,
+            RemainingDirtyCount: 158,
+            InitialPendingOutboxCount: 91,
+            RemainingPendingOutboxCount: 91,
+            RemainingFailedOutboxCount: 3,
+            SyncAttempted: true,
+            Message: "동기화가 끝나지 않았습니다.");
+
+        Assert.True(readiness.HasPendingLocalChanges);
+        Assert.True(readiness.CanForceProceed);
+
+        var message = DesktopUpdatePendingChangesPrompt.BuildForceInstallMessage(
+            readiness,
+            "1.1.709");
+
+        Assert.Contains("이 PC에 그대로 남습니다", message, StringComparison.Ordinal);
+        Assert.Contains("삭제되지 않고", message, StringComparison.Ordinal);
+        Assert.Contains("다른 PC에서 최신 내용이 보이지 않을 수 있습니다", message, StringComparison.Ordinal);
+        Assert.Contains("서버 전송 대기: 91건", message, StringComparison.Ordinal);
+        Assert.Contains("전송 실패: 3건", message, StringComparison.Ordinal);
+        Assert.Contains("PC 버전 1.1.709", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DesktopUpdatePendingChanges_ForceInstallIsUnavailableBeforeSyncAttempt()
+    {
+        var readiness = new UpdateReadinessResult(
+            CanProceed: false,
+            InitialDirtyCount: 1,
+            RemainingDirtyCount: 1,
+            InitialPendingOutboxCount: 1,
+            RemainingPendingOutboxCount: 1,
+            RemainingFailedOutboxCount: 0,
+            SyncAttempted: false,
+            Message: "로그인 세션을 확인할 수 없습니다.");
+
+        Assert.True(readiness.HasPendingLocalChanges);
+        Assert.False(readiness.CanForceProceed);
+    }
+
     [Theory]
     [InlineData("2.0.0", "1.0.0", "3.0.0")]
     [InlineData("2.0.0", "2.0.0", "2.0.0")]

@@ -8,7 +8,16 @@ public sealed record UpdateReadinessResult(
     int RemainingPendingOutboxCount,
     int RemainingFailedOutboxCount,
     bool SyncAttempted,
-    string Message);
+    string Message)
+{
+    public bool HasPendingLocalChanges =>
+        RemainingDirtyCount > 0 ||
+        RemainingPendingOutboxCount > 0 ||
+        RemainingFailedOutboxCount > 0;
+
+    public bool CanForceProceed =>
+        !CanProceed && SyncAttempted && HasPendingLocalChanges;
+}
 
 public static class UpdateReadinessService
 {

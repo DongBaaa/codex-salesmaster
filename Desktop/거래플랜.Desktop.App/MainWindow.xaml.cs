@@ -3208,11 +3208,21 @@ public partial class MainWindow : Window
         }
 
         _vm.SyncStatus = readiness.Message;
-        MessageBox.Show(
-            readiness.Message + Environment.NewLine + Environment.NewLine + "모든 dirty 데이터가 중앙 서버에 반영된 뒤에만 업데이트를 시작할 수 있습니다.",
-            "업데이트 보류",
-            MessageBoxButton.OK,
-            MessageBoxImage.Warning);
+        if (DesktopUpdatePendingChangesPrompt.ConfirmForceInstall(readiness, targetVersion))
+        {
+            _vm.SyncStatus = "미전송 자료를 보존하고 업데이트를 계속합니다.";
+            return true;
+        }
+
+        if (!readiness.CanForceProceed)
+        {
+            MessageBox.Show(
+                readiness.Message,
+                "업데이트를 시작할 수 없음",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+
         return false;
     }
 

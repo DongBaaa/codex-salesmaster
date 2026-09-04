@@ -141,7 +141,7 @@ public sealed partial class MainViewModel
 
         var confirm = MessageBox.Show(
             $"PC 버전 {package.Version} 업데이트를 적용하기 위해 거래플랜을 재시작합니다.{Environment.NewLine}{Environment.NewLine}" +
-            "현재 작업을 저장한 뒤 진행하세요. 업데이트 전 미동기화 자료를 먼저 확인합니다.",
+            "현재 작업을 저장한 뒤 진행하세요. 미전송 자료가 남으면 이 PC에 보존한 채 설치할지 다시 확인합니다.",
             "거래플랜 PC 업데이트",
             MessageBoxButton.YesNo,
             MessageBoxImage.Information);
@@ -162,18 +162,28 @@ public sealed partial class MainViewModel
             var readiness = await UpdateReadinessService.EnsureReadyForUpdateAsync(_local, _sync, _session, readinessCts.Token);
             if (!readiness.CanProceed)
             {
-                MessageBox.Show(
-                    readiness.Message,
-                    "업데이트 전 동기화 확인 필요",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-                UpdateDesktopUpdateUi(() =>
+                if (!DesktopUpdatePendingChangesPrompt.ConfirmForceInstall(readiness, package.Version))
                 {
-                    IsDesktopUpdatePreparing = false;
-                    DesktopUpdateActionText = IsDesktopUpdateReady ? "재시작 후 적용" : "다운로드 후 재시작";
-                    DesktopUpdateStatusText = readiness.Message;
-                });
-                return;
+                    if (!readiness.CanForceProceed)
+                    {
+                        MessageBox.Show(
+                            readiness.Message,
+                            "업데이트를 시작할 수 없음",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
+                    }
+
+                    UpdateDesktopUpdateUi(() =>
+                    {
+                        IsDesktopUpdatePreparing = false;
+                        DesktopUpdateActionText = IsDesktopUpdateReady ? "재시작 후 적용" : "다운로드 후 재시작";
+                        DesktopUpdateStatusText = readiness.Message;
+                    });
+                    return;
+                }
+
+                UpdateDesktopUpdateUi(() =>
+                    DesktopUpdateStatusText = "미전송 자료를 보존하고 업데이트를 계속합니다.");
             }
 
             if (string.IsNullOrWhiteSpace(_preparedDesktopUpdatePackagePath) || !File.Exists(_preparedDesktopUpdatePackagePath))
