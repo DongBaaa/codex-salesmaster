@@ -1,0 +1,10 @@
+{
+  "renew-and-deploy.sh": "42d8dcbecf9bf8f8c47c67a801635c07a163a1d4e8cce8d9cd7a80ab6a681ac5",
+  "native_deploy.py": "92107f26756ab021532debdc3d63327670c647bc2b360969d1a1d827993f8051",
+  "native_api.py": "c69df9498b67a084a2f74ed6992715446e95c781b586698bc5818f51ef340b71",
+  "transaction.py": "bb44a250b80297a54493f4db4e1f4735a488826ace69233b6982988ed82010ce",
+  "install_support.py": "991f48c936849d0562126a37ef9072a9623524c74196dd73133a922ec44e0437",
+  "install_trade.py": "f9bf86a3ab6c95b53c3b62bae2b60e768ab4b0cca63e99a0e10fef6dcfedd243",
+  "payload-hashes.json": "9e6047b1b349cedde90b7feb681756de81f2ca0506ca9ab0f0b707ee67f49df0",
+  "dsm-command.sh": "d4d881d94e86a6dcd6e83831b1f71ae8019efc3d5be5b3c29f43dcf2538c0080"
+}
