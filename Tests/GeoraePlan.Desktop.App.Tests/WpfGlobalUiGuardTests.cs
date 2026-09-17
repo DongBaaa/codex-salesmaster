@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
 using Xunit;
@@ -216,6 +217,158 @@ public sealed class WpfGlobalUiGuardTests
     }
 
     [Fact]
+    public void RentalDetailForms_KeepEditorsInsideTheirAvailablePanelWidth()
+    {
+        var root = FindRepositoryRoot();
+        var appXaml = File.ReadAllText(Path.Combine(root, "Desktop", "거래플랜.Desktop.App", "App.xaml"));
+        var viewportBehavior = File.ReadAllText(Path.Combine(
+            root,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Infrastructure",
+            "ResponsiveDetailViewport.cs"));
+        var viewRoot = Path.Combine(root, "Desktop", "거래플랜.Desktop.App", "Views");
+        var responsiveViews = new[]
+        {
+            "RentalBillingWindow.xaml",
+            "RentalAssetWindow.xaml",
+            "RentalAssetLinkDialog.xaml",
+            "RentalCustomerOnboardingWindow.xaml"
+        };
+        var viewportConstrainedViews = new[]
+        {
+            "CustomerEditWindow.xaml",
+            "CustomerInvoiceLookupWindow.xaml",
+            "DashboardBalanceDetailsWindow.xaml",
+            "DataIntegrityIssueWindow.xaml",
+            "EnvironmentSettingsWindow.xaml",
+            "InventoryWindow.xaml",
+            "PrintEditWindow.xaml",
+            "RentalAssetLinkDialog.xaml",
+            "RentalAssetWindow.xaml",
+            "RentalAssignmentHistoryEditWindow.xaml",
+            "RentalBillingWindow.xaml",
+            "RentalContractEditorWindow.xaml",
+            "RentalCustomerOnboardingWindow.xaml",
+            "RentalEquipmentReplacementWindow.xaml",
+            "RentalReturnReportInputWindow.xaml",
+            "ServerIntegrityResolutionWindow.xaml"
+        };
+
+        var textBoxStyle = ExtractBlock(
+            appXaml,
+            "<Style x:Key=\"ResponsiveDetailTextBoxStyle\"",
+            "</Style>");
+        var comboBoxStyle = ExtractBlock(
+            appXaml,
+            "<Style x:Key=\"ResponsiveDetailComboBoxStyle\"",
+            "</Style>");
+        var datePickerStyle = ExtractBlock(
+            appXaml,
+            "<Style x:Key=\"ResponsiveDetailDatePickerStyle\"",
+            "</Style>");
+
+        Assert.Contains("<Setter Property=\"MinWidth\" Value=\"0\"/>", textBoxStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"Width\" Value=\"Auto\"/>", textBoxStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"MaxWidth\" Value=\"Infinity\"/>", textBoxStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"HorizontalAlignment\" Value=\"Stretch\"/>", textBoxStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"MinWidth\" Value=\"0\"/>", comboBoxStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"Width\" Value=\"Auto\"/>", comboBoxStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"MaxWidth\" Value=\"Infinity\"/>", comboBoxStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"HorizontalAlignment\" Value=\"Stretch\"/>", comboBoxStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"MinWidth\" Value=\"0\"/>", datePickerStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"Width\" Value=\"Auto\"/>", datePickerStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"MaxWidth\" Value=\"Infinity\"/>", datePickerStyle, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"HorizontalAlignment\" Value=\"Stretch\"/>", datePickerStyle, StringComparison.Ordinal);
+
+        var scrollViewerStyle = ExtractBlock(
+            appXaml,
+            "<Style x:Key=\"ResponsiveDetailScrollViewerStyle\"",
+            "</Style>");
+        Assert.Contains(
+            "infra:ResponsiveDetailViewport.ConstrainContentWidth\" Value=\"True\"",
+            scrollViewerStyle,
+            StringComparison.Ordinal);
+        Assert.Contains("scrollViewer.ViewportWidth", viewportBehavior, StringComparison.Ordinal);
+        Assert.Contains("scrollViewer.ViewportWidth - horizontalMargin", viewportBehavior, StringComparison.Ordinal);
+        Assert.Contains("FrameworkElement.MinWidthProperty, 0d", viewportBehavior, StringComparison.Ordinal);
+        Assert.Contains("FrameworkElement.MaxWidthProperty, availableWidth", viewportBehavior, StringComparison.Ordinal);
+        Assert.Contains("column.Width.IsStar", viewportBehavior, StringComparison.Ordinal);
+
+        foreach (var viewName in viewportConstrainedViews)
+        {
+            var xaml = File.ReadAllText(Path.Combine(viewRoot, viewName));
+            Assert.Contains(
+                "Style=\"{StaticResource ResponsiveDetailScrollViewerStyle}\"",
+                xaml,
+                StringComparison.Ordinal);
+        }
+
+        foreach (var viewName in responsiveViews)
+        {
+            var xaml = File.ReadAllText(Path.Combine(viewRoot, viewName));
+            Assert.Contains(
+                "<Style TargetType=\"TextBox\" BasedOn=\"{StaticResource ResponsiveDetailTextBoxStyle}\"/>",
+                xaml,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "<Style TargetType=\"ComboBox\" BasedOn=\"{StaticResource ResponsiveDetailComboBoxStyle}\"/>",
+                xaml,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "<Style TargetType=\"DatePicker\" BasedOn=\"{StaticResource ResponsiveDetailDatePickerStyle}\"/>",
+                xaml,
+                StringComparison.Ordinal);
+        }
+
+        foreach (var viewName in responsiveViews.Take(3))
+        {
+            var xaml = File.ReadAllText(Path.Combine(viewRoot, viewName));
+            Assert.Contains("HorizontalScrollBarVisibility=\"Disabled\"", xaml, StringComparison.Ordinal);
+            Assert.Contains("HorizontalContentAlignment=\"Stretch\"", xaml, StringComparison.Ordinal);
+        }
+
+        var billingXaml = File.ReadAllText(Path.Combine(viewRoot, "RentalBillingWindow.xaml"));
+        var billingCode = File.ReadAllText(Path.Combine(viewRoot, "RentalBillingWindow.xaml.cs"));
+        Assert.DoesNotContain("MinWidth=\"620\"", billingXaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"BillingListColumn\" Width=\"2.2*\" MinWidth=\"0\"", billingXaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"BillingDetailColumn\" Width=\"1.6*\" MinWidth=\"540\"", billingXaml, StringComparison.Ordinal);
+        Assert.Contains("private const double BillingDetailMinimumWidth = 540d;", billingCode, StringComparison.Ordinal);
+        Assert.Contains("BillingDetailColumn.MinWidth = BillingDetailMinimumWidth;", billingCode, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"RentalBillingDetailScrollViewer\"", billingXaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"RentalBillingDetailContent\"", billingXaml, StringComparison.Ordinal);
+        Assert.Contains("MinWidth=\"0\"", billingXaml, StringComparison.Ordinal);
+        Assert.Contains(
+            "BasedOn=\"{StaticResource ResponsiveDetailComboBoxStyle}\"",
+            ExtractBlock(billingXaml, "<Style x:Key=\"BillingAnchorMonthComboBoxStyle\"", "</Style>"),
+            StringComparison.Ordinal);
+
+        var assetXaml = File.ReadAllText(Path.Combine(viewRoot, "RentalAssetWindow.xaml"));
+        Assert.DoesNotContain("MinWidth=\"620\"", assetXaml, StringComparison.Ordinal);
+        Assert.Contains("<ColumnDefinition Width=\"2.35*\" MinWidth=\"0\"/>", assetXaml, StringComparison.Ordinal);
+        Assert.Contains("<ColumnDefinition Width=\"1.5*\" MinWidth=\"540\"/>", assetXaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"RentalAssetDetailViewportContent\"", assetXaml, StringComparison.Ordinal);
+
+        var onboardingXaml = File.ReadAllText(Path.Combine(viewRoot, "RentalCustomerOnboardingWindow.xaml"));
+        Assert.DoesNotContain("MinWidth=\"760\"", onboardingXaml, StringComparison.Ordinal);
+
+        var assetLinkXaml = File.ReadAllText(Path.Combine(viewRoot, "RentalAssetLinkDialog.xaml"));
+        Assert.Contains(
+            "<Setter Property=\"MinWidth\" Value=\"0\"/>",
+            ExtractBlock(assetLinkXaml, "<Style x:Key=\"ReadOnlyInfoTextBoxStyle\"", "</Style>"),
+            StringComparison.Ordinal);
+        Assert.Contains("<ColumnDefinition Width=\"2.3*\" MinWidth=\"0\"/>", assetLinkXaml, StringComparison.Ordinal);
+        Assert.Contains("<ColumnDefinition Width=\"1.2*\" MinWidth=\"380\"/>", assetLinkXaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"RentalAssetLinkDetailScrollViewer\"", assetLinkXaml, StringComparison.Ordinal);
+
+        foreach (var xaml in new[] { billingXaml, assetXaml, assetLinkXaml })
+        {
+            Assert.Contains("ClipToBounds=\"True\"", xaml, StringComparison.Ordinal);
+            Assert.Contains("<ColumnDefinition Width=\"*\" MinWidth=\"0\"/>", xaml, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void DataIntegrityAlertWindow_KeepsScrollableBodyAndWiresVisibleActionButtons()
     {
         var root = FindRepositoryRoot();
@@ -390,6 +543,30 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("NormalizeLinkedPaymentNote(payment.Note, transactionKind)", localState, StringComparison.Ordinal);
         Assert.Contains("ResolvePulledPaymentTransactionKind(invoice)", syncService, StringComparison.Ordinal);
         Assert.Contains("NormalizeLinkedPaymentNote(payment.Note, transactionKind)", syncService, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PaymentWindow_KeepsAmountEditorsCompactAndSettlementValueVisible()
+    {
+        var root = FindRepositoryRoot();
+        var xamlPath = Directory.EnumerateFiles(
+                Path.Combine(root, "Desktop"),
+                "PaymentWindow.xaml",
+                SearchOption.AllDirectories)
+            .Single();
+
+        var xaml = File.ReadAllText(xamlPath);
+
+        Assert.Contains("x:Key=\"SettlementAmountTextBoxStyle\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Key=\"PaymentMethodAmountTextBoxStyle\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Style=\"{StaticResource SettlementAmountTextBoxStyle}\"", xaml, StringComparison.Ordinal);
+        Assert.Equal(
+            8,
+            CountOccurrences(xaml, "Style=\"{StaticResource PaymentMethodAmountTextBoxStyle}\""));
+        Assert.Contains("<Setter Property=\"Width\" Value=\"180\"/>", xaml, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"Width\" Value=\"260\"/>", xaml, StringComparison.Ordinal);
+        Assert.Contains("<Setter Property=\"MinWidth\" Value=\"0\"/>", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("<ColumnDefinition Width=\"260\"/>\n                                <ColumnDefinition Width=\"10\"/>\n                                <ColumnDefinition Width=\"Auto\"/>\n                                <ColumnDefinition Width=\"96\"/>", xaml, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -591,7 +768,13 @@ public sealed class WpfGlobalUiGuardTests
         AssertReadOnlyCheckBoxColumn(root, "CustomerManagementWindow.xaml", "Header=\"변경됨\"");
         AssertReadOnlyCheckBoxColumn(root, "RentalAssetWindow.xaml", "Header=\"이상\"");
         AssertReadOnlyCheckBoxColumn(root, "RentalSettingsWindow.xaml", "Header=\"자동\"");
-        AssertReadOnlyCheckBoxColumn(root, "SyncDiagnosticsWindow.xaml", "Header=\"복구\"");
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        var syncWindow = XDocument.Load(Path.Combine(root, "Desktop", "거래플랜.Desktop.App", "Views", "SyncDiagnosticsWindow.xaml"));
+        var eventGrid = Assert.Single(syncWindow.Descendants(presentation + "DataGrid"),
+            element => (string?)element.Attribute("SelectedItem") == "{Binding SelectedEvent}");
+        Assert.Equal("True", (string?)eventGrid.Attribute("IsReadOnly"));
+        Assert.Single(eventGrid.Descendants(presentation + "DataGridTextColumn"),
+            element => (string?)element.Attribute("Binding") == "{Binding RecoveryAvailabilityDisplay}");
     }
 
     [Fact]
@@ -719,7 +902,9 @@ public sealed class WpfGlobalUiGuardTests
             "IsEnabled=\"{Binding DataContext.CanSelectAssetsForMutation, RelativeSource={RelativeSource AncestorType=DataGrid}}\"",
             assetXaml,
             StringComparison.Ordinal);
-        Assert.Contains("<Grid IsEnabled=\"{Binding CanEditAssetDetails}\">", assetXaml, StringComparison.Ordinal);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        Assert.Single(XDocument.Parse(assetXaml).Descendants(presentation + "Grid"),
+            element => (string?)element.Attribute("IsEnabled") == "{Binding CanEditAssetDetails}");
         Assert.Contains("Style=\"{StaticResource TradePlanSubToolbarStyle}\"", billingXaml, StringComparison.Ordinal);
         Assert.Contains("Text=\"{Binding RentalScopeGuidanceText}\"", billingXaml, StringComparison.Ordinal);
         Assert.Contains(

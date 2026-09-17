@@ -356,7 +356,14 @@ public sealed class SyncService : IDisposable
                 ? Task.FromResult(true)
                 : StartSyncAsync(waitForRunningSync: false, ct);
 
-    public async Task<bool> TryAuthoritativePullOnlyAsync(
+    public Task<bool> TryAuthoritativePullOnlyAsync(CancellationToken ct = default)
+        => TryAuthoritativePullOnlyAsync(globalOperationHeld: false, ct);
+
+    internal Task<bool> TryAuthoritativePullOnlyInsideGlobalOperationAsync(CancellationToken ct = default)
+        => TryAuthoritativePullOnlyAsync(globalOperationHeld: true, ct);
+
+    private async Task<bool> TryAuthoritativePullOnlyAsync(
+        bool globalOperationHeld,
         CancellationToken ct = default)
     {
         if (_disposed ||
@@ -378,11 +385,12 @@ public sealed class SyncService : IDisposable
             return false;
         var operationToken = compatibilityCts.Token;
 
-        return await ExecuteWithGlobalSyncOperationLockAsync(
-            () => ExecuteUsingIsolatedRuntimeScopeAsync(
+        Task<bool> PullAsync() => ExecuteUsingIsolatedRuntimeScopeAsync(
                 child => child.TryAuthoritativePullOnlyCoreAsync(operationToken),
-                () => TryAuthoritativePullOnlyCoreAsync(operationToken)),
-            operationToken);
+                () => TryAuthoritativePullOnlyCoreAsync(operationToken));
+        return globalOperationHeld
+            ? await PullAsync()
+            : await ExecuteWithGlobalSyncOperationLockAsync(PullAsync, operationToken);
     }
 
     private async Task<bool> TryAuthoritativePullOnlyCoreAsync(
@@ -579,6 +587,7 @@ public sealed class SyncService : IDisposable
 
                 var officeSession = new SessionState();
                 officeSession.SetSession(login.Token, login.User, login.ExpiresAtUtc);
+                await _local.ResumeOutboxAfterOnlineLoginAsync(officeSession, ct);
                 using var officeHttpClient =
                     CreateOfficeSessionHttpClient();
                 var officeApi = new ErpApiClient(officeHttpClient, officeSession);
@@ -814,7 +823,11 @@ public sealed class SyncService : IDisposable
             return false;
         }
 
-        var currentScopeDirtyCount = await _local.CountDirtyAsync(_session, ct);
+        // Replacement clears the whole local business cache, including records
+        // that a recently restricted user can no longer upload.
+        var currentScopeDirtyCount = replaceLocalBusinessCache
+            ? await _local.CountDirtyAsync(ct)
+            : await _local.CountDirtyAsync(_session, ct);
         if (currentScopeDirtyCount > 0)
         {
             SetStatus($"현재 업체 DB에 미동기화 변경 {currentScopeDirtyCount:N0}건이 남아 있어 범위 재구성을 건너뜁니다.");
@@ -1164,6 +1177,13 @@ public sealed class SyncService : IDisposable
     private async Task<IReadOnlyList<string>> GetAdministrativeBusinessDatabaseNamesAsync(
         CancellationToken ct)
     {
+        if (!_session.HasSystemConfigurationScope)
+        {
+            // The API ignores tenant overrides without system configuration scope.
+            // Keep the cache revision keyed to the database the server actually reads.
+            return [TenantScopeCatalog.GetDatabaseName(_session.AuthenticatedTenantCode)];
+        }
+
         var tenantCodes = TenantScopeCatalog.AllTenants.ToList();
         try
         {
@@ -1500,6 +1520,7 @@ public sealed class SyncService : IDisposable
 
     private async Task<bool> RunSyncCoreLockedAsync(CancellationToken ct)
     {
+        var completionOwner = CaptureSyncOperationOwnerBoundary();
         _itemWarehouseStockReplayPullGuard = null;
         _itemWarehouseStockReplayGuardValidatedBeforeMirrorReset =
             false;
@@ -1530,18 +1551,32 @@ public sealed class SyncService : IDisposable
             await RetryDeferredPurgeRecordsAsync(ct);
             await ExecuteWithRetryAsync(PullNewAsync, "다운로드", ct);
 
-            var remainingDirtyCount = await _local.CountDirtyAsync(_session, ct);
+            SyncAttemptCompletion? completion = null;
+            var completionApplied = await TryRunPostCommitEffectsForCurrentOwnerAsync(
+                completionOwner,
+                async completionToken =>
+                {
+                    // A separate tracker prevents completion metadata from saving
+                    // unrelated edits still tracked by the caller. The shared
+                    // connection also supports isolated in-memory runtimes.
+                    var options = new DbContextOptionsBuilder<LocalDbContext>()
+                        .UseSqlite(_db.Database.GetDbConnection())
+                        .Options;
+                    await using var completionDb = new LocalDbContext(options);
+                    completion = await _diagnostics.RecordSyncAttemptCompletionAsync(
+                        completionDb, _lastSyncStartedUtc, completionToken);
+                    if (completion.Succeeded)
+                        _lastSyncCompletedUtc = DateTime.UtcNow;
+                },
+                () => TryPublishOwnerBoundStatus(completionOwner, completion!.Message));
+            if (!completionApplied || completion is null)
+                return false;
 
-            await TrySetSettingSafeAsync("Sync.LastSuccessAt", DateTime.Now.ToString("O"), CancellationToken.None);
-            await TrySetSettingSafeAsync("Sync.LastError", string.Empty, CancellationToken.None);
-            await _diagnostics.ResolveOpenIssuesAsync(ct: CancellationToken.None);
-            _lastSyncCompletedUtc = DateTime.UtcNow;
-            if (remainingDirtyCount > 0)
-                await ReportRemainingDirtyOfficesAsync("동기화는 완료했지만 아직 미동기화 변경이 남아 있습니다.", null, ct);
+            if (completion.Succeeded)
+                AppLogger.Info("SYNC", completion.Message);
             else
-                SetStatus($"동기화 완료 {DateTime.Now:HH:mm:ss}");
-            AppLogger.Info("SYNC", "동기화 완료");
-            return true;
+                AppLogger.Warn("SYNC", completion.Message);
+            return completion.Succeeded;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -2301,6 +2336,7 @@ public sealed class SyncService : IDisposable
                 var officeSession = new SessionState();
                 officeSession.SetSession(login.Token, login.User, login.ExpiresAtUtc);
 
+                await _local.ResumeOutboxAfterOnlineLoginAsync(officeSession, ct);
                 var officeDirtyCount = await _local.CountDirtyAsync(officeSession, ct);
                 if (officeDirtyCount == 0)
                     continue;
@@ -2420,6 +2456,7 @@ public sealed class SyncService : IDisposable
 
                 var officeSession = new SessionState();
                 officeSession.SetSession(login.Token, login.User, login.ExpiresAtUtc);
+                await _local.ResumeOutboxAfterOnlineLoginAsync(officeSession, ct);
                 candidates = await GetCandidatesAsync();
                 var officeSessionHasPendingOutbox =
                     HasPendingOutboxForSession(officeSession, candidates);
@@ -2646,21 +2683,31 @@ public sealed class SyncService : IDisposable
                     persistedSnapshot))
             {
                 var key = new SyncEntityKey(localEntityName, entity.Id);
-                if (serverEntity.Revision > 0 &&
+                // A pull is not acceptance of an unsaved edit. Advance its base only
+                // when the server still matches the saved payload being reconciled.
+                if (serverEntity.Revision > entity.Revision &&
+                    IsStaleDirtyMatch(entity, serverEntity) &&
+                    IsStaleDirtyPayloadMatch(entity, serverEntity) &&
                     _trackedMutationsPreservedDuringSync.TryGetValue(key, out var preservation))
                 {
-                    await _db.Set<TLocal>()
+                    var savedRevision = entity.Revision;
+                    var savedUpdatedAtUtc = NormalizeMutationUtc(entity.UpdatedAtUtc);
+                    var savedIsDeleted = entity.IsDeleted;
+                    var rebased = await _db.Set<TLocal>()
                         .IgnoreQueryFilters()
                         .Where(current =>
                             current.Id == entity.Id &&
                             current.IsDirty &&
-                            current.Revision < serverEntity.Revision)
+                            current.Revision == savedRevision &&
+                            current.UpdatedAtUtc == savedUpdatedAtUtc &&
+                            current.IsDeleted == savedIsDeleted)
                         .ExecuteUpdateAsync(
                             setters => setters.SetProperty(
                                 current => current.Revision,
                                 serverEntity.Revision),
                             ct);
-                    preservation.RebaseAcceptedRevision(serverEntity.Revision);
+                    if (rebased > 0)
+                        preservation.RebaseAcceptedRevision(serverEntity.Revision);
                 }
 
                 continue;
@@ -2678,14 +2725,22 @@ public sealed class SyncService : IDisposable
             var expectedUpdatedAtUtc = NormalizeMutationUtc(entity.UpdatedAtUtc);
             var expectedIsDeleted = entity.IsDeleted;
             var serverUpdatedAtUtc = NormalizeMutationUtc(serverEntity.UpdatedAtUtc);
-            var affected = await _db.Set<TLocal>()
+            var cleanupQuery = _db.Set<TLocal>()
                 .IgnoreQueryFilters()
                 .Where(current =>
                     current.Id == entity.Id &&
                     current.IsDirty &&
                     current.Revision == expectedRevision &&
                     current.UpdatedAtUtc == expectedUpdatedAtUtc &&
-                    current.IsDeleted == expectedIsDeleted)
+                    current.IsDeleted == expectedIsDeleted);
+            if (typeof(TLocal) == typeof(LocalPayment))
+            {
+                // An unchanged Payment is still required in the next atomic
+                // command while its Transaction has unsubmitted channel edits.
+                cleanupQuery = cleanupQuery.Where(current => !_db.Transactions
+                    .IgnoreQueryFilters().Any(transaction => transaction.Id == current.Id && transaction.IsDirty));
+            }
+            var affected = await cleanupQuery
                 .ExecuteUpdateAsync(
                     setters => setters
                         .SetProperty(current => current.Revision, serverEntity.Revision)
@@ -2925,7 +2980,7 @@ public sealed class SyncService : IDisposable
         };
 
     private static bool AreEquivalentUtc(DateTime left, DateTime right)
-        => Math.Abs((left.ToUniversalTime() - right.ToUniversalTime()).TotalSeconds) < 1;
+        => Math.Abs((NormalizeMutationUtc(left) - NormalizeMutationUtc(right)).TotalSeconds) < 1;
 
     private async Task ReportRemainingDirtyOfficesAsync(string? prefix, string? diagnosticReason, CancellationToken ct)
     {
@@ -3988,6 +4043,18 @@ public sealed class SyncService : IDisposable
                 dependencyOnlyKeys,
                 currentPushReceipts,
                 ct);
+            try
+            {
+                await HandleInvoiceStockAtomicityRollbackAsync(
+                    req, result, session, preparedMutationSnapshots, ct);
+            }
+            catch (Exception ex) when (ex is not SyncPullBlockedException &&
+                                       ex is not DesktopClientUpgradeRequiredException &&
+                                       !ct.IsCancellationRequested)
+            {
+                throw new SyncPullBlockedException(
+                    "전표·재고 전체 취소 응답을 처리하지 못해 미전송 데이터를 보존하고 pull을 중단했습니다.", ex);
+            }
             var inventoryTransferPurgeAcknowledgements =
                 SelectVerifiedInventoryTransferPurgeAcknowledgements(
                     req,
@@ -4130,19 +4197,6 @@ public sealed class SyncService : IDisposable
                     await SelectCleanCanonicalRentalCompanyFallbacksAsync(
                         dependencyOnlyRentalCompanyIdentities,
                         ct);
-                var dependencyOnlyConflicts = result.Conflicts
-                    .Where(conflict => IsDependencyOnlyConflict(
-                        conflict,
-                        dependencyOnlyKeys,
-                        cleanCanonicalRentalCompanyFallbacks))
-                    .ToList();
-                if (dependencyOnlyConflicts.Count > 0)
-                {
-                    await RebasePreservedConcurrentConflictsAsync(
-                        dependencyOnlyConflicts,
-                        ct);
-                }
-
                 var locallyActionableConflicts = result.Conflicts
                     .Where(conflict => !IsDependencyOnlyConflict(
                         conflict,
@@ -4165,12 +4219,8 @@ public sealed class SyncService : IDisposable
                         automaticConflicts.Add(conflict);
                     }
                 }
-                if (preservedConcurrentConflicts.Count > 0)
-                {
-                    await RebasePreservedConcurrentConflictsAsync(
-                        preservedConcurrentConflicts,
-                        ct);
-                }
+                // A rejected payload keeps its original concurrency base, including UI edits
+                // made during the request. Only a validated acceptance may advance it.
                 var serverNewerConflicts = automaticConflicts
                     .Where(conflict => string.Equals(conflict.Reason, "Server version is newer.", StringComparison.OrdinalIgnoreCase))
                     .ToList();
@@ -5363,6 +5413,11 @@ public sealed class SyncService : IDisposable
         if (!AreEquivalentConflictPayloads(localSnapshot, clientSnapshot, EquivalentConflictIgnoredPropertyNames))
             return false;
 
+        // A newer local timestamp or the same account does not establish that
+        // another device's business changes can be overwritten.
+        if (!AreEquivalentConflictPayloads(localSnapshot, serverSnapshot))
+            return false;
+
         var localUpdatedAtUtc = NormalizeMutationUtc(localSnapshot.UpdatedAtUtc);
         var serverUpdatedAtUtc = NormalizeMutationUtc(serverSnapshot.UpdatedAtUtc);
         if (localUpdatedAtUtc < serverUpdatedAtUtc)
@@ -5413,6 +5468,11 @@ public sealed class SyncService : IDisposable
         if (!string.Equals(conflict.EntityName, "Customer", StringComparison.OrdinalIgnoreCase))
             return false;
 
+        // Keep the original receipt for authoritative reconciliation. A retry of
+        // an already matching payload would overwrite its ExpectedRevision.
+        if (IsEquivalentRevisionConflict(conflict))
+            return false;
+
         var reason = (conflict.Reason ?? string.Empty).Trim();
         if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
             return false;
@@ -5447,6 +5507,11 @@ public sealed class SyncService : IDisposable
 
         var localSnapshot = LocalMappings.ToDto(customer);
         if (!AreEquivalentConflictPayloads(localSnapshot, clientSnapshot, EquivalentConflictIgnoredPropertyNames))
+            return false;
+
+        // A newer local timestamp or the same account does not establish that
+        // another device's business changes can be overwritten.
+        if (!AreEquivalentConflictPayloads(localSnapshot, serverSnapshot))
             return false;
 
         var localUpdatedAtUtc = NormalizeMutationUtc(localSnapshot.UpdatedAtUtc);
@@ -5489,6 +5554,52 @@ public sealed class SyncService : IDisposable
             return false;
 
         return true;
+    }
+
+    private async Task HandleInvoiceStockAtomicityRollbackAsync(
+        SyncPushRequest request,
+        SyncPushResult result,
+        SessionState session,
+        IReadOnlyDictionary<SyncEntityKey, PreparedMutationSnapshot> preparedMutationSnapshots,
+        CancellationToken ct)
+    {
+        const string code = "invoice-stock-atomicity-rollback";
+        if (!result.Notices.Any(notice => string.Equals(notice.Code, code, StringComparison.Ordinal)))
+            return;
+
+        // A whole-push rollback cannot carry any committed side effects, including
+        // purge receipts. Validate it before any acknowledgement changes local state.
+        var notice = result.Notices.Count == 1 ? result.Notices[0] : null;
+        if (notice is null || notice.EntityName != "Invoice" || notice.EntityId != string.Empty ||
+            result.AcceptedCount != 0 || result.DuplicateMutationCount != 0 ||
+            result.AcceptedRevisions.Count != 0 || result.AcceptedItemWarehouseStockKeys.Count != 0 ||
+            result.AssignedInvoiceNumbers.Count != 0 || result.AssignedTaxInvoiceNumbers.Count != 0 ||
+            result.PurgeRecords.Count != 0 || result.ConflictCount <= 0 ||
+            result.ConflictCount != result.Conflicts.Count ||
+            result.Conflicts.Any(conflict =>
+                !string.Equals(conflict.EntityName, "Invoice", StringComparison.OrdinalIgnoreCase) ||
+                !Guid.TryParse(conflict.EntityId, out var id) || id == Guid.Empty ||
+                request.Invoices.Count(invoice => invoice.Id == id) != 1))
+        {
+            throw new SyncPullBlockedException(
+                "전표·재고 전체 취소 응답의 정합성을 확인하지 못해 미전송 데이터를 보존하고 동기화를 중단했습니다.");
+        }
+
+        var prepared = 0;
+        foreach (var conflict in result.Conflicts)
+        {
+            if (!await ShouldPreserveConcurrentConflictAsync(conflict, preparedMutationSnapshots, ct) &&
+                await TryPrepareInvoiceRevisionRetryAsync(conflict, request.DeviceId, session, ct))
+            {
+                prepared++;
+            }
+        }
+
+        // Keep the entire rolled-back batch dirty. A normal pull must not replace
+        // its uncommitted stock snapshots before the next durable push succeeds.
+        var detail = $"서버가 전표·재고 저장 전체를 취소했습니다. 동일 내용 전표 {prepared}건의 리비전 재시도를 준비했고, 미전송 변경은 모두 보존했습니다.";
+        await AppendConflictSummaryAsync(detail);
+        throw new SyncPullBlockedException(detail);
     }
 
     private async Task<List<ConflictLogDto>> PrepareInvoiceRevisionRetriesAsync(
@@ -5551,7 +5662,19 @@ public sealed class SyncService : IDisposable
             return false;
 
         var localSnapshot = LocalMappings.ToDto(invoice);
-        if (!AreEquivalentConflictPayloads(localSnapshot, clientSnapshot, EquivalentConflictIgnoredPropertyNames))
+        // CustomerName is enriched for transport; CustomerId remains part of
+        // the comparison and the invoice scope checks below.
+        var invoiceIgnoredProperties = new HashSet<string>(
+            EquivalentConflictIgnoredPropertyNames, StringComparer.OrdinalIgnoreCase)
+        {
+            nameof(InvoiceDto.CustomerName)
+        };
+        if (!AreEquivalentConflictPayloads(localSnapshot, clientSnapshot, invoiceIgnoredProperties))
+            return false;
+
+        // A newer local timestamp or the same account does not establish that
+        // another device's business changes can be overwritten.
+        if (!AreEquivalentConflictPayloads(localSnapshot, serverSnapshot, invoiceIgnoredProperties))
             return false;
 
         var localUpdatedAtUtc = NormalizeMutationUtc(localSnapshot.UpdatedAtUtc);
@@ -5638,9 +5761,6 @@ public sealed class SyncService : IDisposable
         if (!reason.StartsWith("Expected revision mismatch.", StringComparison.OrdinalIgnoreCase))
             return false;
 
-        if (!IsServerConflictActorCurrentSessionOrUnknown(conflict, session))
-            return false;
-
         if (!Guid.TryParse(conflict.EntityId, out var paymentId) || paymentId == Guid.Empty)
             return false;
 
@@ -5668,6 +5788,12 @@ public sealed class SyncService : IDisposable
 
         var localSnapshot = LocalMappings.ToDto(payment);
         if (!AreEquivalentConflictPayloads(localSnapshot, clientSnapshot, EquivalentConflictIgnoredPropertyNames))
+            return false;
+
+        // Require the same business payload even when the actor is this account.
+        // Equivalent payment state from another actor is also safe to rebase;
+        // keep it pending so its dirty Transaction companion can retry atomically.
+        if (!AreEquivalentConflictPayloads(localSnapshot, serverSnapshot))
             return false;
 
         var localUpdatedAtUtc = NormalizeMutationUtc(localSnapshot.UpdatedAtUtc);
@@ -5768,6 +5894,11 @@ public sealed class SyncService : IDisposable
 
         var localSnapshot = LocalMappings.ToDto(transaction);
         if (!AreEquivalentConflictPayloads(localSnapshot, clientSnapshot, EquivalentConflictIgnoredPropertyNames))
+            return false;
+
+        // A newer local timestamp or the same account does not establish that
+        // another device's business changes can be overwritten.
+        if (!AreEquivalentConflictPayloads(localSnapshot, serverSnapshot))
             return false;
 
         var localUpdatedAtUtc = NormalizeMutationUtc(localSnapshot.UpdatedAtUtc);
@@ -5910,6 +6041,11 @@ public sealed class SyncService : IDisposable
         if (!AreEquivalentConflictPayloads(localSnapshot, clientSnapshot, EquivalentConflictIgnoredPropertyNames))
             return false;
 
+        // A newer local timestamp or the same account does not establish that
+        // another device's business changes can be overwritten.
+        if (!AreEquivalentConflictPayloads(localSnapshot, serverSnapshot))
+            return false;
+
         var localUpdatedAtUtc = NormalizeMutationUtc(localSnapshot.UpdatedAtUtc);
         var serverUpdatedAtUtc = NormalizeMutationUtc(serverSnapshot.UpdatedAtUtc);
         if (localUpdatedAtUtc < serverUpdatedAtUtc)
@@ -6008,6 +6144,11 @@ public sealed class SyncService : IDisposable
 
         var localSnapshot = LocalMappings.ToDto(transfer);
         if (!AreEquivalentConflictPayloads(localSnapshot, clientSnapshot, EquivalentConflictIgnoredPropertyNames))
+            return false;
+
+        // A newer local timestamp or the same account does not establish that
+        // another device's business changes can be overwritten.
+        if (!AreEquivalentConflictPayloads(localSnapshot, serverSnapshot))
             return false;
 
         var localUpdatedAtUtc = NormalizeMutationUtc(localSnapshot.UpdatedAtUtc);
@@ -6139,6 +6280,11 @@ public sealed class SyncService : IDisposable
         if (!AreEquivalentConflictPayloads(localSnapshot, clientSnapshot, EquivalentConflictIgnoredPropertyNames))
             return false;
 
+        // A newer local timestamp or the same account does not establish that
+        // another device's business changes can be overwritten.
+        if (!HaveEquivalentItemRetryPayloads(localSnapshot, serverSnapshot))
+            return false;
+
         var localUpdatedAtUtc = NormalizeMutationUtc(localSnapshot.UpdatedAtUtc);
         var serverUpdatedAtUtc = NormalizeMutationUtc(serverSnapshot.UpdatedAtUtc);
         if (localUpdatedAtUtc < serverUpdatedAtUtc)
@@ -6162,6 +6308,27 @@ public sealed class SyncService : IDisposable
 
         await _db.SaveChangesAsync(ct);
         return true;
+    }
+
+    private static bool HaveEquivalentItemRetryPayloads(ItemDto outgoing, ItemDto server)
+    {
+        // Null optional extension fields are omitted writes, not replacements.
+        var ignored = new HashSet<string>(EquivalentConflictIgnoredPropertyNames, StringComparer.OrdinalIgnoreCase);
+        if (!outgoing.BoxQuantity.HasValue)
+            ignored.Add(nameof(ItemDto.BoxQuantity));
+        if (outgoing.StorageLocation is null)
+            ignored.Add(nameof(ItemDto.StorageLocation));
+        if (!outgoing.LastPurchaseDate.HasValue && outgoing.LastPurchaseDateSpecified != true)
+        {
+            ignored.Add(nameof(ItemDto.LastPurchaseDate));
+            ignored.Add(nameof(ItemDto.LastPurchaseDateSpecified));
+        }
+        if (!outgoing.LastSaleDate.HasValue && outgoing.LastSaleDateSpecified != true)
+        {
+            ignored.Add(nameof(ItemDto.LastSaleDate));
+            ignored.Add(nameof(ItemDto.LastSaleDateSpecified));
+        }
+        return AreEquivalentConflictPayloads(outgoing, server, ignored);
     }
 
     private static bool HaveCompatibleItemScope(ItemDto localSnapshot, ItemDto serverSnapshot)
@@ -6218,6 +6385,11 @@ public sealed class SyncService : IDisposable
         var prepared = new List<ConflictLogDto>();
         foreach (var conflict in conflicts)
         {
+            // The server already contains this payload. Rebasing would replace the original
+            // ExpectedRevision and prevent the subsequent authoritative pull from reconciling
+            // the pending receipt (which requires a strictly newer server revision).
+            if (IsEquivalentRevisionConflict(conflict))
+                continue;
             if (await TryPrepareGenericRevisionRetryAsync(conflict, deviceId, session, ct))
                 prepared.Add(conflict);
         }
@@ -6438,6 +6610,11 @@ public sealed class SyncService : IDisposable
 
         var localSnapshot = mapToDto(localEntity);
         if (!AreEquivalentConflictPayloads(localSnapshot, clientSnapshot, EquivalentConflictIgnoredPropertyNames))
+            return false;
+
+        // A newer local timestamp or the same account does not establish that
+        // another device's business changes can be overwritten.
+        if (!AreEquivalentConflictPayloads(localSnapshot, serverSnapshot))
             return false;
 
         var localUpdatedAtUtc = NormalizeMutationUtc(localSnapshot.UpdatedAtUtc);
@@ -8473,6 +8650,27 @@ public sealed class SyncService : IDisposable
         CancellationToken ct)
         where TDto : SyncEntityDto
     {
+        // Retry receipts must use the same parent-derived scope as the next push.
+        var scopeRequest = new SyncPushRequest();
+        switch (entity)
+        {
+            case CustomerContractDto contract:
+                scopeRequest.CustomerContracts.Add(contract);
+                break;
+            case ItemPriceGradeDto price:
+                scopeRequest.ItemPriceGrades.Add(price);
+                break;
+            case PaymentDto payment:
+                scopeRequest.Payments.Add(payment);
+                break;
+            case TransactionAttachmentDto attachment:
+                scopeRequest.TransactionAttachments.Add(attachment);
+                break;
+        }
+        var scopeLookup = await BuildPreparedMutationScopeLookupAsync(
+            _db, scopeRequest, session, ct);
+        var scope = ResolvePreparedMutationScope(entity, session, scopeLookup);
+
         entity.ExpectedRevision = Math.Max(0, entity.Revision);
         entity.MutationCreatedAtUtc = NormalizeMutationUtc(entity.UpdatedAtUtc);
         entity.MutationId = BuildMutationId(deviceId, entityName, entity);
@@ -8509,7 +8707,6 @@ public sealed class SyncService : IDisposable
         foreach (var duplicate in duplicateMutationRows)
             _db.SyncOutboxEntries.Remove(duplicate);
 
-        var scope = ResolvePreparedMutationScope(entity, session, new PreparedMutationScopeLookup());
         primary.MutationId = entity.MutationId;
         primary.ExpectedRevision = entity.ExpectedRevision;
         primary.TenantCode = scope.TenantCode;
@@ -9969,7 +10166,8 @@ public sealed class SyncService : IDisposable
         SynchronizeTrackedAcceptedRevisionState<T>(
             revisionsById,
             cleanedIds,
-            preservedDirtyIds);
+            preservedDirtyIds,
+            locallyModifiedAfterPush);
         return locallyModifiedAfterPush;
     }
 
@@ -9982,7 +10180,9 @@ public sealed class SyncService : IDisposable
 
     private bool HasPendingTrackedUserChanges()
     {
-        _db.ChangeTracker.DetectChanges();
+        // Entries performs full detection when automatic change detection is enabled.
+        if (!_db.ChangeTracker.AutoDetectChangesEnabled)
+            _db.ChangeTracker.DetectChanges();
         var hasLocalChanges = _db.ChangeTracker.Entries()
             .Any(entry =>
                 entry.Entity is not LocalSyncOutboxEntry &&
@@ -10018,7 +10218,8 @@ public sealed class SyncService : IDisposable
     private bool HasTrackedUserChangesSinceBoundary(
         IReadOnlyDictionary<object, TrackedEntryPushBaseline> trackedState)
     {
-        _db.ChangeTracker.DetectChanges();
+        if (!_db.ChangeTracker.AutoDetectChangesEnabled)
+            _db.ChangeTracker.DetectChanges();
         var hasLocalChanges = _db.ChangeTracker.Entries()
             .Where(entry =>
                 entry.Entity is not LocalSyncOutboxEntry &&
@@ -10044,7 +10245,8 @@ public sealed class SyncService : IDisposable
 
     private IReadOnlyDictionary<object, TrackedEntryPushBaseline> CaptureTrackedStateBeforePush()
     {
-        _db.ChangeTracker.DetectChanges();
+        if (!_db.ChangeTracker.AutoDetectChangesEnabled)
+            _db.ChangeTracker.DetectChanges();
         return _db.ChangeTracker.Entries()
             .ToDictionary(
                 entry => entry.Entity,
@@ -10055,8 +10257,11 @@ public sealed class SyncService : IDisposable
     private void CaptureTrackedChangesBeforePreparedMutationBoundary(
         IReadOnlyDictionary<SyncEntityKey, PreparedMutationSnapshot> preparedMutationSnapshots)
     {
-        _db.ChangeTracker.DetectChanges();
-        var changedEntries = _db.ChangeTracker.Entries()
+        if (!_db.ChangeTracker.AutoDetectChangesEnabled)
+            _db.ChangeTracker.DetectChanges();
+        var trackedEntries = _db.ChangeTracker.Entries().ToList();
+        var graphs = new TrackedMutationGraphSnapshot(trackedEntries);
+        var changedEntries = trackedEntries
             .Where(entry =>
                 entry.Entity is not LocalSyncOutboxEntry &&
                 entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
@@ -10074,12 +10279,12 @@ public sealed class SyncService : IDisposable
                 root.Id);
             if (IsExactPreparedMutation(root, key, preparedMutationSnapshots))
             {
-                foreach (var entry in GetTrackedMutationGraphEntries(root))
+                foreach (var entry in graphs.GetEntries(root))
                     exactPreparedMutationEntities.Add(entry.Entity);
                 return;
             }
 
-            PreserveTrackedMutationForSync(key, root);
+            PreserveTrackedMutationForSync(key, root, graphs.GetEntries(root));
         }
 
         foreach (var root in changedEntries
@@ -10095,7 +10300,7 @@ public sealed class SyncService : IDisposable
                      .Select(entry => entry.Entity)
                      .ToList())
         {
-            var root = FindTrackedMutationRootForDependent(dependent);
+            var root = graphs.FindRoot(dependent);
             if (root is not null)
                 PreserveIfNewerThanPrepared(root);
         }
@@ -10146,8 +10351,11 @@ public sealed class SyncService : IDisposable
         if (preparedMutationSnapshots.Count == 0)
             return;
 
-        _db.ChangeTracker.DetectChanges();
-        var roots = _db.ChangeTracker.Entries()
+        if (!_db.ChangeTracker.AutoDetectChangesEnabled)
+            _db.ChangeTracker.DetectChanges();
+        var trackedEntries = _db.ChangeTracker.Entries().ToList();
+        var graphs = new TrackedMutationGraphSnapshot(trackedEntries);
+        var roots = trackedEntries
             .Where(entry => entry.Entity is ILocalSyncEntity)
             .ToList();
         foreach (var rootEntry in roots)
@@ -10162,7 +10370,7 @@ public sealed class SyncService : IDisposable
                 continue;
             }
 
-            var graphEntries = GetTrackedMutationGraphEntries(root);
+            var graphEntries = graphs.GetEntries(root);
             if (graphEntries.Any(entry =>
                     entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted))
             {
@@ -10175,8 +10383,11 @@ public sealed class SyncService : IDisposable
         IReadOnlyDictionary<object, TrackedEntryPushBaseline> trackedStateBeforePush,
         bool includeExistingChanges)
     {
-        _db.ChangeTracker.DetectChanges();
-        var changedEntries = _db.ChangeTracker.Entries()
+        if (!_db.ChangeTracker.AutoDetectChangesEnabled)
+            _db.ChangeTracker.DetectChanges();
+        var trackedEntries = _db.ChangeTracker.Entries().ToList();
+        var graphs = new TrackedMutationGraphSnapshot(trackedEntries);
+        var changedEntries = trackedEntries
             .Where(entry =>
                 entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
             .Where(entry =>
@@ -10196,7 +10407,7 @@ public sealed class SyncService : IDisposable
             var key = new SyncEntityKey(
                 NormalizeSyncEntityName(root.GetType().Name),
                 root.Id);
-            PreserveTrackedMutationForSync(key, root);
+            PreserveTrackedMutationForSync(key, root, graphs.GetEntries(root));
         }
 
         foreach (var dependent in changedEntries
@@ -10204,14 +10415,14 @@ public sealed class SyncService : IDisposable
                      .Select(entry => entry.Entity)
                      .ToList())
         {
-            var root = FindTrackedMutationRootForDependent(dependent);
+            var root = graphs.FindRoot(dependent);
             if (root is null)
                 continue;
 
             var key = new SyncEntityKey(
                 NormalizeSyncEntityName(root.GetType().Name),
                 root.Id);
-            PreserveTrackedMutationForSync(key, root);
+            PreserveTrackedMutationForSync(key, root, graphs.GetEntries(root));
         }
 
         var preservedMutationEntities = _trackedMutationsPreservedDuringSync.Values
@@ -10233,17 +10444,47 @@ public sealed class SyncService : IDisposable
         }
     }
 
-    private ILocalSyncEntity? FindTrackedMutationRootForDependent(object dependent)
-        => dependent switch
+    // A synchronous push boundary detects changes once before constructing this
+    // index. EntityEntry states remain live as graphs are detached; the index is
+    // never retained across an await or reused by another boundary.
+    private sealed class TrackedMutationGraphSnapshot
+    {
+        private readonly ILookup<SyncEntityKey, EntityEntry> _entries;
+
+        public TrackedMutationGraphSnapshot(IEnumerable<EntityEntry> entries)
+            => _entries = entries
+                .Where(entry => entry.Entity is ILocalSyncEntity or LocalInvoiceLine or LocalInventoryTransferLine)
+                .ToLookup(entry => entry.Entity switch
+                {
+                    LocalInvoiceLine line => new SyncEntityKey("Invoice", line.InvoiceId),
+                    LocalInventoryTransferLine line => new SyncEntityKey("InventoryTransfer", line.TransferId),
+                    ILocalSyncEntity root => RootKey(root),
+                    _ => throw new InvalidOperationException("Unsupported tracked graph entry.")
+                });
+
+        public List<EntityEntry> GetEntries(ILocalSyncEntity root)
+            => _entries[RootKey(root)]
+                .Where(entry => entry.State != EntityState.Detached &&
+                                IsTrackedMutationGraphEntity(root, entry.Entity))
+                .ToList();
+
+        public ILocalSyncEntity? FindRoot(object dependent)
         {
-            LocalInvoiceLine line => _db.ChangeTracker.Entries<LocalInvoice>()
-                .Select(entry => entry.Entity)
-                .FirstOrDefault(invoice => invoice.Id == line.InvoiceId),
-            LocalInventoryTransferLine line => _db.ChangeTracker.Entries<LocalInventoryTransfer>()
-                .Select(entry => entry.Entity)
-                .FirstOrDefault(transfer => transfer.Id == line.TransferId),
-            _ => null
-        };
+            SyncEntityKey? key = dependent switch
+            {
+                LocalInvoiceLine line => new SyncEntityKey("Invoice", line.InvoiceId),
+                LocalInventoryTransferLine line => new SyncEntityKey("InventoryTransfer", line.TransferId),
+                _ => null
+            };
+            return key.HasValue
+                ? _entries[key.Value].Where(entry => entry.State != EntityState.Detached)
+                    .Select(entry => entry.Entity).OfType<ILocalSyncEntity>().FirstOrDefault()
+                : null;
+        }
+
+        private static SyncEntityKey RootKey(ILocalSyncEntity root)
+            => new(NormalizeSyncEntityName(root.GetType().Name), root.Id);
+    }
 
     private static bool TryBuildConflictEntityKey(
         ConflictLogDto conflict,
@@ -10377,9 +10618,6 @@ public sealed class SyncService : IDisposable
             }
 
             preservedConflicts.Add(conflict);
-            await RebasePreservedConcurrentConflictsAsync(
-                [conflict],
-                ct);
         }
 
         return new ServerNewerConflictResolution(
@@ -10396,82 +10634,6 @@ public sealed class SyncService : IDisposable
         IReadOnlySet<SyncEntityKey>? excludedKeys,
         CancellationToken ct)
         => Task.FromResult(false);
-
-    private async Task RebasePreservedConcurrentConflictsAsync(
-        IReadOnlyCollection<ConflictLogDto> conflicts,
-        CancellationToken ct)
-    {
-        foreach (var conflict in conflicts)
-        {
-            if (!TryBuildConflictEntityKey(conflict, out var key) ||
-                !TryReadConflictServerRevision(conflict.ServerJson, out var serverRevision) ||
-                serverRevision <= 0)
-            {
-                continue;
-            }
-
-            await RebasePersistedDirtyMutationRevisionAsync(
-                key,
-                serverRevision,
-                ct);
-            if (_trackedMutationsPreservedDuringSync.TryGetValue(
-                    key,
-                    out var preservation))
-            {
-                preservation.RebaseAcceptedRevision(serverRevision);
-            }
-
-        }
-    }
-
-    private Task RebasePersistedDirtyMutationRevisionAsync(
-        SyncEntityKey key,
-        long serverRevision,
-        CancellationToken ct)
-        => key.EntityName switch
-        {
-            "CompanyProfile" => RebasePersistedDirtyMutationRevisionAsync<LocalCompanyProfile>(key.EntityId, serverRevision, ct),
-            "Unit" => RebasePersistedDirtyMutationRevisionAsync<LocalUnit>(key.EntityId, serverRevision, ct),
-            "CustomerCategory" => RebasePersistedDirtyMutationRevisionAsync<LocalCustomerCategory>(key.EntityId, serverRevision, ct),
-            "PriceGradeOption" => RebasePersistedDirtyMutationRevisionAsync<LocalPriceGradeOption>(key.EntityId, serverRevision, ct),
-            "TradeTypeOption" => RebasePersistedDirtyMutationRevisionAsync<LocalTradeTypeOption>(key.EntityId, serverRevision, ct),
-            "ItemCategoryOption" => RebasePersistedDirtyMutationRevisionAsync<LocalItemCategoryOption>(key.EntityId, serverRevision, ct),
-            "CustomerMaster" => RebasePersistedDirtyMutationRevisionAsync<LocalCustomerMaster>(key.EntityId, serverRevision, ct),
-            "Customer" => RebasePersistedDirtyMutationRevisionAsync<LocalCustomer>(key.EntityId, serverRevision, ct),
-            "CustomerContract" => RebasePersistedDirtyMutationRevisionAsync<LocalCustomerContract>(key.EntityId, serverRevision, ct),
-            "Item" => RebasePersistedDirtyMutationRevisionAsync<LocalItem>(key.EntityId, serverRevision, ct),
-            "ItemPriceGrade" => RebasePersistedDirtyMutationRevisionAsync<LocalItemPriceGrade>(key.EntityId, serverRevision, ct),
-            "TransactionRecord" => RebasePersistedDirtyMutationRevisionAsync<LocalTransaction>(key.EntityId, serverRevision, ct),
-            "TransactionAttachment" => RebasePersistedDirtyMutationRevisionAsync<LocalTransactionAttachment>(key.EntityId, serverRevision, ct),
-            "InventoryTransfer" => RebasePersistedDirtyMutationRevisionAsync<LocalInventoryTransfer>(key.EntityId, serverRevision, ct),
-            "RentalManagementCompany" => RebasePersistedDirtyMutationRevisionAsync<LocalRentalManagementCompany>(key.EntityId, serverRevision, ct),
-            "RentalBillingProfile" => RebasePersistedDirtyMutationRevisionAsync<LocalRentalBillingProfile>(key.EntityId, serverRevision, ct),
-            "RentalAsset" => RebasePersistedDirtyMutationRevisionAsync<LocalRentalAsset>(key.EntityId, serverRevision, ct),
-            "RentalAssetAssignmentHistory" => RebasePersistedDirtyMutationRevisionAsync<LocalRentalAssetAssignmentHistory>(key.EntityId, serverRevision, ct),
-            "RentalBillingLog" => RebasePersistedDirtyMutationRevisionAsync<LocalRentalBillingLog>(key.EntityId, serverRevision, ct),
-            "Invoice" => RebasePersistedDirtyMutationRevisionAsync<LocalInvoice>(key.EntityId, serverRevision, ct),
-            "Payment" => RebasePersistedDirtyMutationRevisionAsync<LocalPayment>(key.EntityId, serverRevision, ct),
-            _ => Task.CompletedTask
-        };
-
-    private async Task RebasePersistedDirtyMutationRevisionAsync<T>(
-        Guid entityId,
-        long serverRevision,
-        CancellationToken ct)
-        where T : class, ILocalSyncEntity
-    {
-        await _db.Set<T>()
-            .IgnoreQueryFilters()
-            .Where(entity =>
-                entity.Id == entityId &&
-                entity.IsDirty &&
-                entity.Revision < serverRevision)
-            .ExecuteUpdateAsync(
-                setters => setters.SetProperty(
-                    entity => entity.Revision,
-                    serverRevision),
-                ct);
-    }
 
     private static bool TryReadConflictServerRevision(
         string? serverJson,
@@ -10595,7 +10757,8 @@ public sealed class SyncService : IDisposable
         PreparedMutationSnapshot prepared)
         where T : class, ILocalSyncEntity
     {
-        _db.ChangeTracker.DetectChanges();
+        if (!_db.ChangeTracker.AutoDetectChangesEnabled)
+            _db.ChangeTracker.DetectChanges();
         var key = new SyncEntityKey(
             NormalizeSyncEntityName(entityName),
             entityId);
@@ -10717,7 +10880,8 @@ public sealed class SyncService : IDisposable
             preservedInvoice = candidate;
         }
 
-        _db.ChangeTracker.DetectChanges();
+        if (!_db.ChangeTracker.AutoDetectChangesEnabled)
+            _db.ChangeTracker.DetectChanges();
         var trackedEntry = _db.ChangeTracker.Entries<LocalInvoice>()
             .FirstOrDefault(entry => entry.Entity.Id == invoiceId);
         if (trackedEntry is not null)
@@ -10884,46 +11048,56 @@ public sealed class SyncService : IDisposable
     private void SynchronizeTrackedAcceptedRevisionState<T>(
         IReadOnlyDictionary<Guid, SyncAcceptedRevisionDto> revisionsById,
         IReadOnlySet<Guid> cleanedIds,
-        IReadOnlySet<Guid> preservedDirtyIds)
+        IReadOnlySet<Guid> preservedDirtyIds,
+        ISet<SyncEntityKey> locallyModifiedAfterPush)
         where T : class, ILocalSyncEntity
     {
         if (revisionsById.Count == 0)
             return;
 
-        foreach (var entry in _db.ChangeTracker.Entries<T>().ToList())
+        // SQL acceptance can yield after the payload check. Detect again at this
+        // synchronous boundary so late root/line edits are not accepted as clean.
+        if (!_db.ChangeTracker.AutoDetectChangesEnabled)
+            _db.ChangeTracker.DetectChanges();
+        var trackedEntries = _db.ChangeTracker.Entries().ToList();
+        var graphs = new TrackedMutationGraphSnapshot(trackedEntries);
+        foreach (var entry in trackedEntries.Where(entry => entry.Entity is T))
         {
-            if (!revisionsById.TryGetValue(entry.Entity.Id, out var accepted))
+            var entity = (T)entry.Entity;
+            if (!revisionsById.TryGetValue(entity.Id, out var accepted))
                 continue;
 
-            if (preservedDirtyIds.Contains(entry.Entity.Id))
+            var graphEntries = graphs.GetEntries(entity);
+            if ((cleanedIds.Contains(entity.Id) || preservedDirtyIds.Contains(entity.Id)) &&
+                graphEntries.Any(candidate =>
+                    candidate.State is EntityState.Added or EntityState.Modified or EntityState.Deleted))
             {
-                if (entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
-                {
-                    // 동일 DbContext에만 존재하는 미저장 편집은 절대 detach/clean하지 않는다.
-                    // 서버가 승인한 revision만 rebase하고 사용자의 변경 상태를 그대로 유지한다.
-                    if (accepted.Revision > 0 && accepted.Revision >= entry.Entity.Revision)
-                        entry.Entity.Revision = accepted.Revision;
-                    entry.Entity.IsDirty = true;
-                }
-                else
-                {
-                    // 이 인스턴스는 push 준비 당시 값일 수 있다. 새 DbContext가 저장한 최신
-                    // payload를 뒤이은 SaveChanges가 덮지 않도록 tracker에서 분리한다.
-                    entry.State = EntityState.Detached;
-                }
+                var key = new SyncEntityKey(NormalizeSyncEntityName(typeof(T).Name), entity.Id);
+                PreserveTrackedMutationForSync(key, entity, graphEntries);
+                _trackedMutationsPreservedDuringSync[key].RebaseAcceptedRevision(accepted.Revision);
+                locallyModifiedAfterPush.Add(key);
                 continue;
             }
 
-            if (!cleanedIds.Contains(entry.Entity.Id))
+            if (preservedDirtyIds.Contains(entity.Id))
+            {
+                // Pending graphs were preserved above. This unchanged instance
+                // can be stale after another context saved a newer payload.
+                entry.State = EntityState.Detached;
+                continue;
+            }
+
+            if (!cleanedIds.Contains(entity.Id))
                 continue;
 
-            if (accepted.Revision > 0 && accepted.Revision >= entry.Entity.Revision)
-                entry.Entity.Revision = accepted.Revision;
+            if (accepted.Revision > 0 && accepted.Revision >= entity.Revision)
+                entity.Revision = accepted.Revision;
 
             if (accepted.UpdatedAtUtc != default)
-                entry.Entity.UpdatedAtUtc = NormalizeMutationUtc(accepted.UpdatedAtUtc);
+                entity.UpdatedAtUtc = NormalizeMutationUtc(accepted.UpdatedAtUtc);
 
-            entry.Entity.IsDirty = false;
+            entity.IsDirty = false;
+            entry.OriginalValues.SetValues(entry.CurrentValues);
             entry.State = EntityState.Unchanged;
         }
     }
@@ -11361,7 +11535,16 @@ public sealed class SyncService : IDisposable
                         serverMirrorRequestBoundary);
                 if (!applied)
                 {
-                    await DeferPullForChangedOperationOwnerAsync();
+                    if (!IsSyncOperationOwnerCurrent(operationOwner))
+                        await DeferPullForChangedOperationOwnerAsync();
+                    else
+                    {
+                        const string deferredMessage =
+                            "미전송 변경 또는 새로고침 요청을 보존하기 위해 서버 다운로드 반영을 보류했습니다. 동기화 상태를 확인한 뒤 다시 시도합니다.";
+                        AppLogger.Warn("SYNC", deferredMessage);
+                        SetStatus(deferredMessage);
+                        ScheduleTransientFailureRetry();
+                    }
                     return false;
                 }
             }
@@ -11477,6 +11660,7 @@ public sealed class SyncService : IDisposable
             AppPaths.AttachmentsDir);
         var commitAttempted = false;
         var itemInvoiceHistoryChanged = false;
+        using var customerStateChangeCapture = _local.CaptureCustomerStateChanges();
         using var inventoryStateChangeCapture =
             _local.CaptureInventoryStateChanges();
 
@@ -11541,6 +11725,15 @@ public sealed class SyncService : IDisposable
 
             if (replaceLocalBusinessCache)
             {
+                // Recheck inside the mutation transaction before clearing data.
+                // Permission-filtered dirty counts cannot protect revoked edits.
+                if (await _local.CountDirtyAsync(ct) > 0)
+                {
+                    await transaction.RollbackAsync(CancellationToken.None);
+                    attachmentFiles.Rollback();
+                    _db.ChangeTracker.Clear();
+                    return false;
+                }
                 await _local.ResetBusinessDataCacheWithAttachmentJournalAsync(
                     attachmentFiles,
                     ct);
@@ -11557,7 +11750,10 @@ public sealed class SyncService : IDisposable
                 publishRentalStateChanges: false,
                 applyCompleteItemWarehouseStockSnapshot:
                     applyCompleteItemWarehouseStockSnapshot,
-                purgeOwner);
+                purgeOwner,
+                forceInventoryCostRefresh: replaceLocalBusinessCache);
+            if (replaceLocalBusinessCache)
+                _local.RecordCustomerStateChanged();
 
             if (rejectPulledDirtyCollisions &&
                 (HasPendingTrackedUserChanges() ||
@@ -11666,6 +11862,7 @@ public sealed class SyncService : IDisposable
                     () => TryPublishOwnerBoundItemInvoiceHistory(
                         expectedOwner,
                         itemInvoiceHistoryChanged),
+                    () => TryPublishOwnerBoundCustomerState(expectedOwner, customerStateChangeCapture.HasChanges),
                     () => TryPublishOwnerBoundInventoryState(
                         expectedOwner,
                         inventoryStateChangeCapture.HasChanges));
@@ -11679,6 +11876,8 @@ public sealed class SyncService : IDisposable
             return true;
         }
 
+        if (customerStateChangeCapture.HasChanges)
+            _local.TryPublishCustomerStateChanged();
         _rental.PublishSynchronizedStateChanges(
             pull.RentalAssets.Select(asset => asset.Id),
             pull.RentalBillingProfiles.Select(profile => profile.Id));
@@ -11797,7 +11996,8 @@ public sealed class SyncService : IDisposable
         AttachmentFileJournal? attachmentFileJournal,
         bool publishRentalStateChanges,
         bool applyCompleteItemWarehouseStockSnapshot = true,
-        SyncOperationOwnerBoundary? purgeOwner = null)
+        SyncOperationOwnerBoundary? purgeOwner = null,
+        bool forceInventoryCostRefresh = false)
     {
         await ApplyItemCatalogExtensionCapabilityAsync(
             pull.ItemCatalogExtensionVersion,
@@ -11885,6 +12085,13 @@ public sealed class SyncService : IDisposable
                 pull.RentalBillingProfiles.Select(profile => profile.Id));
         }
 
+        var customerScopeChanged = await _local.ApplyServerCustomerScopeSnapshotAsync(
+            pull.CustomerScopeSnapshot, _session, ct);
+        if (customerScopeChanged)
+            LastPullChangeCount = Math.Max(1, LastPullChangeCount);
+        if (customerScopeChanged || pull.Customers.Count > 0 || pull.CustomerContracts.Count > 0 ||
+            pull.CustomerCategories.Count > 0 || pull.CustomerMasters.Count > 0 || pull.PurgeRecords.Count > 0)
+            _local.RecordCustomerStateChanged();
         if (updateSyncRevision && pull.LatestRevision > sinceRev)
         {
             await _local.SetSettingAsync(
@@ -11892,6 +12099,8 @@ public sealed class SyncService : IDisposable
                 pull.LatestRevision.ToString(CultureInfo.InvariantCulture),
                 ct);
         }
+
+        await _local.RefreshInventoryCostAfterPullAsync(forceInventoryCostRefresh, ct);
 
         return ShouldPublishItemInvoiceHistoryChanged(
             pull.Invoices.Count > 0,
@@ -12855,7 +13064,7 @@ public sealed class SyncService : IDisposable
                     transaction.IsDeleted = true;
                     transaction.IsDirty = false;
                     transaction.UpdatedAtUtc = payment.UpdatedAtUtc;
-                    transaction.Revision = Math.Max(transaction.Revision, payment.Revision);
+                    // A Payment tombstone does not acknowledge a Transaction revision.
                 }
 
                 continue;
@@ -12869,7 +13078,6 @@ public sealed class SyncService : IDisposable
                     transaction.IsDeleted = true;
                     transaction.IsDirty = false;
                     transaction.UpdatedAtUtc = payment.UpdatedAtUtc;
-                    transaction.Revision = Math.Max(transaction.Revision, payment.Revision);
                 }
 
                 continue;
@@ -12899,6 +13107,15 @@ public sealed class SyncService : IDisposable
         LocalInvoice invoice,
         LocalTransaction transaction)
     {
+        var amount = Math.Max(0m, payment.Amount);
+        var isPayment = invoice.VoucherType is VoucherType.Purchase or VoucherType.Procurement;
+        // Payment carries no channel breakdown. Preserve the canonical Transaction's
+        // channels, using the same legacy amount-change policy as the server.
+        var channels = isPayment
+            ? ResolvePulledPaymentChannels(transaction.CashPayment, transaction.CardPayment,
+                transaction.BankPayment, transaction.DiscountReceived, amount)
+            : ResolvePulledPaymentChannels(transaction.CashReceipt, transaction.CardReceipt,
+                transaction.BankReceipt, transaction.DiscountApplied, amount);
         transaction.CustomerId = invoice.CustomerId;
         transaction.TenantCode = invoice.TenantCode;
         transaction.OfficeCode = invoice.OfficeCode;
@@ -12912,7 +13129,7 @@ public sealed class SyncService : IDisposable
             : invoice.InvoiceNumber;
         transaction.LinkedRentalBillingProfileId = invoice.LinkedRentalBillingProfileId;
         transaction.LinkedRentalBillingRunId = invoice.LinkedRentalBillingRunId;
-        transaction.SettlementAmount = Math.Max(0m, payment.Amount);
+        transaction.SettlementAmount = amount;
         transaction.AdvanceDelta = 0m;
         transaction.PrepaidDelta = 0m;
         transaction.CashReceipt = 0m;
@@ -12925,21 +13142,44 @@ public sealed class SyncService : IDisposable
         transaction.BankPayment = 0m;
         transaction.DiscountReceived = 0m;
         transaction.PaymentTotal = 0m;
-        if (invoice.VoucherType == VoucherType.Purchase)
+        if (isPayment)
         {
-            transaction.BankPayment = Math.Max(0m, payment.Amount);
-            transaction.PaymentTotal = Math.Max(0m, payment.Amount);
+            transaction.CashPayment = channels.Cash;
+            transaction.CardPayment = channels.Card;
+            transaction.BankPayment = channels.Bank;
+            transaction.DiscountReceived = channels.Discount;
+            transaction.PaymentTotal = amount;
         }
         else
         {
-            transaction.BankReceipt = Math.Max(0m, payment.Amount);
-            transaction.ReceiptTotal = Math.Max(0m, payment.Amount);
+            transaction.CashReceipt = channels.Cash;
+            transaction.CardReceipt = channels.Card;
+            transaction.BankReceipt = channels.Bank;
+            transaction.DiscountApplied = channels.Discount;
+            transaction.ReceiptTotal = amount;
         }
 
         transaction.Note = PaymentFlowConstants.NormalizeLinkedPaymentNote(payment.Note, transactionKind);
         transaction.IsDeleted = false;
         transaction.IsDirty = false;
         transaction.UpdatedAtUtc = payment.UpdatedAtUtc;
+    }
+
+    private static (decimal Cash, decimal Card, decimal Bank, decimal Discount) ResolvePulledPaymentChannels(
+        decimal cash, decimal card, decimal bank, decimal discount, decimal amount)
+    {
+        if (cash >= 0m && card >= 0m && bank >= 0m && discount >= 0m &&
+            cash + card + bank + discount == amount)
+        {
+            return (cash, card, bank, discount);
+        }
+
+        if (cash != 0m && card == 0m && bank == 0m && discount == 0m)
+            return (amount, 0m, 0m, 0m);
+        if (card != 0m && cash == 0m && bank == 0m && discount == 0m)
+            return (0m, amount, 0m, 0m);
+
+        return (0m, 0m, amount, 0m);
     }
 
     private static string ResolvePulledPaymentTransactionKind(LocalInvoice invoice)
@@ -13539,7 +13779,9 @@ public sealed class SyncService : IDisposable
                 continue;
             }
 
-            if (!existing.IsDirty || local.Revision >= existing.Revision)
+            // A newer server revision does not acknowledge a pending local edit.
+            // Preserve it until the matching push response or conflict handling.
+            if (!existing.IsDirty)
                 _db.Entry(existing).CurrentValues.SetValues(local);
         }
 
@@ -15297,13 +15539,14 @@ public sealed class SyncService : IDisposable
                     .Distinct()
                     .ToList();
 
-                _db.ChangeTracker.Clear();
                 await _db.RentalManagementCompanies.IgnoreQueryFilters()
                     .Where(company => staleConflictIds.Contains(company.Id))
                     .ExecuteDeleteAsync(ct);
-                _db.ChangeTracker.Clear();
-
-                existingCompanies = await _db.RentalManagementCompanies.IgnoreQueryFilters().ToListAsync(ct);
+                // Earlier companies in this batch and other pulled entities can
+                // still be pending in the tracker. Detach only rows just deleted.
+                foreach (var conflict in conflictingCompanies)
+                    _db.Entry(conflict).State = EntityState.Detached;
+                existingCompanies.RemoveAll(company => staleConflictIds.Contains(company.Id));
 
                 AppLogger.Warn(
                     "SYNC",
@@ -15600,9 +15843,11 @@ public sealed class SyncService : IDisposable
 
         var removedItemIds = await RemovePulledItemWarehouseStocksMissingFromServerAsync(pulledKeys, ct);
         affectedItemIds.UnionWith(removedItemIds);
-        await _db.SaveChangesAsync(ct);
+        var inventoryStateChanged = await _db.SaveChangesAsync(ct) > 0;
         await RecalculatePulledItemCurrentStocksAsync(affectedItemIds, ct);
-        await _db.SaveChangesAsync(ct);
+        inventoryStateChanged |= await _db.SaveChangesAsync(ct) > 0;
+        if (inventoryStateChanged)
+            _local.RecordInventoryStateChanged();
     }
 
     private async Task<HashSet<Guid>> RemovePulledItemWarehouseStocksMissingFromServerAsync(
@@ -16062,6 +16307,12 @@ public sealed class SyncService : IDisposable
             EnterOwnerBoundCallbackScope);
     }
 
+    private bool TryPublishOwnerBoundCustomerState(SyncOperationOwnerBoundary expectedOwner, bool changed)
+        => changed
+            ? _local.TryPublishCustomerStateChanged(
+                () => IsSyncOperationOwnerCurrent(expectedOwner, scopeLeaseHeld: true), EnterOwnerBoundCallbackScope)
+            : IsSyncOperationOwnerCurrent(expectedOwner, scopeLeaseHeld: true);
+
     private bool TryPublishOwnerBoundInventoryState(
         SyncOperationOwnerBoundary expectedOwner,
         bool inventoryStateChanged)
@@ -16262,6 +16513,7 @@ public sealed class SyncService : IDisposable
                     AppPaths.AttachmentFileJournalDir,
                     AppPaths.AttachmentsDir);
                 var itemInvoiceHistoryChanged = false;
+                using var customerStateChangeCapture = _local.CaptureCustomerStateChanges();
                 using var inventoryStateChangeCapture =
                     _local.CaptureInventoryStateChanges();
                 using (_local.SuppressSyncDispatch())
@@ -16283,11 +16535,13 @@ public sealed class SyncService : IDisposable
                             ct,
                             updateSyncRevision: true,
                             attachmentFileJournal: attachmentFiles,
-                            publishRentalStateChanges: false);
+                            publishRentalStateChanges: false,
+                            forceInventoryCostRefresh: true);
                         // A successful full mirror replaces the entire invoice
                         // snapshot. Even an empty response can remove history
                         // that an open item screen is still displaying.
                         itemInvoiceHistoryChanged = true;
+                        _local.RecordCustomerStateChanged();
                     }
                     finally
                     {
@@ -16381,19 +16635,6 @@ public sealed class SyncService : IDisposable
                             await _local.ClearServerMirrorRefreshRequiredAsync(
                                     CancellationToken.None)
                                 .ConfigureAwait(false);
-                            await TrySetSettingSafeAsync(
-                                    "Sync.LastSuccessAt",
-                                    DateTime.Now.ToString("O"),
-                                    CancellationToken.None)
-                                .ConfigureAwait(false);
-                            await TrySetSettingSafeAsync(
-                                    "Sync.LastError",
-                                    string.Empty,
-                                    CancellationToken.None)
-                                .ConfigureAwait(false);
-                            await _diagnostics.ResolveOpenIssuesAsync(
-                                    ct: CancellationToken.None)
-                                .ConfigureAwait(false);
                             _lastSyncCompletedUtc = DateTime.UtcNow;
                         },
                         () => TryPublishOwnerBoundRentalState(
@@ -16403,6 +16644,7 @@ public sealed class SyncService : IDisposable
                         () => TryPublishOwnerBoundItemInvoiceHistory(
                             operationOwner,
                             itemInvoiceHistoryChanged),
+                        () => TryPublishOwnerBoundCustomerState(operationOwner, customerStateChangeCapture.HasChanges),
                         () => TryPublishOwnerBoundInventoryState(
                             operationOwner,
                             inventoryStateChanged: true),
@@ -16529,6 +16771,7 @@ public sealed class SyncService : IDisposable
 
         for (var attempt = 0; attempt < 2; attempt++)
         {
+            var mirrorRefreshBoundary = _local.CaptureServerMirrorRefreshRequestBoundary();
             var operationOwner =
                 CaptureSyncOperationOwnerBoundary();
             var trackedStateBeforePull = CaptureTrackedStateBeforePush();
@@ -16574,7 +16817,10 @@ public sealed class SyncService : IDisposable
                 SetStatus("서버 응답 대기 중 저장되지 않은 편집이 발생해 현재 업체 캐시 새로고침을 중단했습니다.");
                 return false;
             }
-            if (await _local.CountDirtyAsync(_session, ct) > 0)
+            var pendingCacheChanges = replaceLocalBusinessCache
+                ? await _local.CountDirtyAsync(ct)
+                : await _local.CountDirtyAsync(_session, ct);
+            if (pendingCacheChanges > 0)
             {
                 SetStatus("서버 응답 대기 중 저장된 미동기화 변경이 발생해 현재 업체 캐시 새로고침을 중단했습니다.");
                 return false;
@@ -16623,19 +16869,8 @@ public sealed class SyncService : IDisposable
                         operationOwner,
                         async _ =>
                         {
-                            await TrySetSettingSafeAsync(
-                                    "Sync.LastSuccessAt",
-                                    DateTime.Now.ToString("O"),
-                                    CancellationToken.None)
-                                .ConfigureAwait(false);
-                            await TrySetSettingSafeAsync(
-                                    "Sync.LastError",
-                                    string.Empty,
-                                    CancellationToken.None)
-                                .ConfigureAwait(false);
-                            await _diagnostics.ResolveOpenIssuesAsync(
-                                    ct: CancellationToken.None)
-                                .ConfigureAwait(false);
+                            if (!_local.HasServerMirrorRefreshRequestSince(mirrorRefreshBoundary))
+                                await _local.ClearServerMirrorRefreshRequiredAsync(CancellationToken.None).ConfigureAwait(false);
                             _lastSyncCompletedUtc = DateTime.UtcNow;
                         },
                         () => TryPublishOwnerBoundStatus(
@@ -17851,57 +18086,61 @@ public sealed class SyncService : IDisposable
 
         var now = DateTime.UtcNow;
         var rowIds = new List<Guid>();
-        foreach (var (mutationId, outgoing) in outgoingByMutationId)
+        // Hold one runtime epoch lease for these local receipt writes only.
+        await _db.ExecuteRuntimeMutationOperationAsync(async () =>
         {
-            if (!currentPushReceipts.TryGetValue(mutationId, out var receipt) ||
-                !receipt.IsDurable ||
-                receipt.EntityKey != new SyncEntityKey(
-                    NormalizeSyncEntityName(outgoing.EntityName),
-                    outgoing.Entity.Id) ||
-                receipt.ExpectedRevision != outgoing.Entity.ExpectedRevision ||
-                !string.Equals(
-                    receipt.PayloadHash,
-                    ComputePreparedMutationPayloadHash(
-                        outgoing.EntityName,
-                        outgoing.Entity),
-                    StringComparison.Ordinal))
+            foreach (var (mutationId, outgoing) in outgoingByMutationId)
             {
-                throw new SyncPullBlockedException(
-                    "동기화 전송 영수증과 현재 변경 payload가 달라 응답 반영을 중단했습니다.");
-            }
+                if (!currentPushReceipts.TryGetValue(mutationId, out var receipt) ||
+                    !receipt.IsDurable ||
+                    receipt.EntityKey != new SyncEntityKey(
+                        NormalizeSyncEntityName(outgoing.EntityName),
+                        outgoing.Entity.Id) ||
+                    receipt.ExpectedRevision != outgoing.Entity.ExpectedRevision ||
+                    !string.Equals(
+                        receipt.PayloadHash,
+                        ComputePreparedMutationPayloadHash(
+                            outgoing.EntityName,
+                            outgoing.Entity),
+                        StringComparison.Ordinal))
+                {
+                    throw new SyncPullBlockedException(
+                        "동기화 전송 영수증과 현재 변경 payload가 달라 응답 반영을 중단했습니다.");
+                }
 
-            var affected = await _db.SyncOutboxEntries
-                .Where(entry =>
-                    entry.Id == receipt.OutboxRowId &&
-                    entry.Status != "Acknowledged" &&
-                    entry.MutationId == receipt.MutationId &&
-                    entry.EntityName == outgoing.EntityName &&
-                    entry.EntityId == outgoing.Entity.Id &&
-                    entry.ExpectedRevision == receipt.ExpectedRevision &&
-                    entry.DeviceId == receipt.DeviceId &&
-                    entry.BusinessDatabaseName == receipt.BusinessDatabaseName &&
-                    entry.TenantCode == receipt.TenantCode &&
-                    entry.OfficeCode == receipt.OfficeCode &&
-                    entry.ResponsibleOfficeCode == receipt.ResponsibleOfficeCode &&
-                    entry.SessionId == receipt.SessionId &&
-                    entry.UserId == receipt.UserId &&
-                    entry.PreparedAtUtc == receipt.PreparedAtUtc)
-                .ExecuteUpdateAsync(
-                    setters => setters
-                        .SetProperty(entry => entry.Status, "Sent")
-                        .SetProperty(entry => entry.SentAtUtc, now)
-                        .SetProperty(entry => entry.AcknowledgedAtUtc, (DateTime?)null)
-                        .SetProperty(entry => entry.AcceptedRevision, 0L)
-                        .SetProperty(entry => entry.AcceptedUpdatedAtUtc, (DateTime?)null),
-                    ct);
-            if (affected != 1)
-            {
-                throw new SyncPullBlockedException(
-                    "동기화 전송 영수증의 outbox 행이 변경되어 응답 반영을 중단했습니다.");
-            }
+                var affected = await _db.SyncOutboxEntries
+                    .Where(entry =>
+                        entry.Id == receipt.OutboxRowId &&
+                        entry.Status != "Acknowledged" &&
+                        entry.MutationId == receipt.MutationId &&
+                        entry.EntityName == outgoing.EntityName &&
+                        entry.EntityId == outgoing.Entity.Id &&
+                        entry.ExpectedRevision == receipt.ExpectedRevision &&
+                        entry.DeviceId == receipt.DeviceId &&
+                        entry.BusinessDatabaseName == receipt.BusinessDatabaseName &&
+                        entry.TenantCode == receipt.TenantCode &&
+                        entry.OfficeCode == receipt.OfficeCode &&
+                        entry.ResponsibleOfficeCode == receipt.ResponsibleOfficeCode &&
+                        entry.SessionId == receipt.SessionId &&
+                        entry.UserId == receipt.UserId &&
+                        entry.PreparedAtUtc == receipt.PreparedAtUtc)
+                    .ExecuteUpdateAsync(
+                        setters => setters
+                            .SetProperty(entry => entry.Status, "Sent")
+                            .SetProperty(entry => entry.SentAtUtc, now)
+                            .SetProperty(entry => entry.AcknowledgedAtUtc, (DateTime?)null)
+                            .SetProperty(entry => entry.AcceptedRevision, 0L)
+                            .SetProperty(entry => entry.AcceptedUpdatedAtUtc, (DateTime?)null),
+                        ct);
+                if (affected != 1)
+                {
+                    throw new SyncPullBlockedException(
+                        "동기화 전송 영수증의 outbox 행이 변경되어 응답 반영을 중단했습니다.");
+                }
 
-            rowIds.Add(receipt.OutboxRowId);
-        }
+                rowIds.Add(receipt.OutboxRowId);
+            }
+        }, ct);
 
         DetachTrackedOutboxEntries(rowIds);
     }
@@ -18049,44 +18288,61 @@ public sealed class SyncService : IDisposable
                 entry.Status != "Acknowledged")
             .ToListAsync(ct);
 
+        var supersedeCandidatesByEntity = supersedeCandidates.ToLookup(candidate =>
+            new SyncEntityKey(NormalizeSyncEntityName(candidate.EntityName), candidate.EntityId));
         var acknowledgedRowIds = new List<Guid>();
-        foreach (var row in acknowledgedRows)
+        var completedAnchors = new List<LocalSyncOutboxEntry>();
+        // Batch current acknowledgements under one epoch lease. Older receipt
+        // reconciliation remains outside it so concurrent writers are rechecked.
+        await _db.ExecuteRuntimeMutationOperationAsync(async () =>
+        {
+            foreach (var row in acknowledgedRows)
+            {
+                var key = new SyncEntityKey(
+                    NormalizeSyncEntityName(row.EntityName),
+                    row.EntityId);
+                var accepted = acceptedRevisionByKey[key];
+                var affected = await _db.SyncOutboxEntries
+                    .Where(entry =>
+                        entry.Id == row.Id &&
+                        entry.Status == "Sent" &&
+                        entry.MutationId == row.MutationId &&
+                        entry.EntityName == row.EntityName &&
+                        entry.EntityId == row.EntityId &&
+                        entry.ExpectedRevision == row.ExpectedRevision &&
+                        entry.DeviceId == row.DeviceId &&
+                        entry.BusinessDatabaseName == row.BusinessDatabaseName &&
+                        entry.TenantCode == row.TenantCode &&
+                        entry.OfficeCode == row.OfficeCode &&
+                        entry.ResponsibleOfficeCode == row.ResponsibleOfficeCode &&
+                        entry.SessionId == row.SessionId &&
+                        entry.UserId == row.UserId &&
+                        entry.PreparedAtUtc == row.PreparedAtUtc)
+                    .ExecuteUpdateAsync(
+                        setters => setters
+                            .SetProperty(entry => entry.Status, "Acknowledged")
+                            .SetProperty(entry => entry.AcknowledgedAtUtc, now)
+                            .SetProperty(entry => entry.AcceptedRevision, accepted.Revision)
+                            .SetProperty(
+                                entry => entry.AcceptedUpdatedAtUtc,
+                                (DateTime?)NormalizeMutationUtc(accepted.UpdatedAtUtc))
+                            .SetProperty(entry => entry.ErrorMessage, string.Empty),
+                        ct);
+                if (affected != 1)
+                    continue;
+
+                acknowledgedRowIds.Add(row.Id);
+                completedAnchors.Add(row);
+            }
+        }, ct);
+
+        foreach (var row in completedAnchors)
         {
             var key = new SyncEntityKey(
                 NormalizeSyncEntityName(row.EntityName),
                 row.EntityId);
             var accepted = acceptedRevisionByKey[key];
-            var affected = await _db.SyncOutboxEntries
-                .Where(entry =>
-                    entry.Id == row.Id &&
-                    entry.Status == "Sent" &&
-                    entry.MutationId == row.MutationId &&
-                    entry.EntityName == row.EntityName &&
-                    entry.EntityId == row.EntityId &&
-                    entry.ExpectedRevision == row.ExpectedRevision &&
-                    entry.DeviceId == row.DeviceId &&
-                    entry.BusinessDatabaseName == row.BusinessDatabaseName &&
-                    entry.TenantCode == row.TenantCode &&
-                    entry.OfficeCode == row.OfficeCode &&
-                    entry.ResponsibleOfficeCode == row.ResponsibleOfficeCode &&
-                    entry.SessionId == row.SessionId &&
-                    entry.UserId == row.UserId &&
-                    entry.PreparedAtUtc == row.PreparedAtUtc)
-                .ExecuteUpdateAsync(
-                    setters => setters
-                        .SetProperty(entry => entry.Status, "Acknowledged")
-                        .SetProperty(entry => entry.AcknowledgedAtUtc, now)
-                        .SetProperty(entry => entry.AcceptedRevision, accepted.Revision)
-                        .SetProperty(
-                            entry => entry.AcceptedUpdatedAtUtc,
-                            (DateTime?)NormalizeMutationUtc(accepted.UpdatedAtUtc))
-                        .SetProperty(entry => entry.ErrorMessage, string.Empty),
-                    ct);
-            if (affected != 1)
-                continue;
-
-            acknowledgedRowIds.Add(row.Id);
-            var olderSameScopeRows = supersedeCandidates
+            var olderSameScopeRows = supersedeCandidatesByEntity[key]
                 .Where(candidate =>
                     candidate.Id != row.Id &&
                     new SyncEntityKey(
@@ -18417,6 +18673,25 @@ public sealed class SyncService : IDisposable
                     group => group.Key,
                     group => group.Single(),
                     StringComparer.OrdinalIgnoreCase);
+            var receiptRowIds = currentPushReceipts.Values
+                .Where(receipt => receipt.IsDurable)
+                .Select(receipt => receipt.OutboxRowId)
+                .Distinct()
+                .ToList();
+            if (receiptRowIds.Count == 0 || outgoingByMutationId.Count == 0)
+                return;
+
+            // A partially accepted push can leave thousands of already acknowledged
+            // receipts. Avoid one no-op UPDATE (and runtime epoch check) per receipt.
+            // This is only a candidate filter: the full anchor and status predicates
+            // below must still protect against another writer after this query.
+            var pendingRowIds = (await _db.SyncOutboxEntries
+                    .AsNoTracking()
+                    .Where(entry => receiptRowIds.Contains(entry.Id) &&
+                                    entry.Status != "Acknowledged")
+                    .Select(entry => entry.Id)
+                    .ToListAsync(ct))
+                .ToHashSet();
             var rowIds = new List<Guid>();
             foreach (var (mutationId, outgoing) in outgoingByMutationId)
             {
@@ -18424,6 +18699,7 @@ public sealed class SyncService : IDisposable
                         mutationId,
                         out var receipt) ||
                     !receipt.IsDurable ||
+                    !pendingRowIds.Contains(receipt.OutboxRowId) ||
                     receipt.EntityKey != new SyncEntityKey(
                         NormalizeSyncEntityName(outgoing.EntityName),
                         outgoing.Entity.Id) ||
@@ -19057,13 +19333,31 @@ public sealed class SyncService : IDisposable
             else if (!existing.IsDirty)
             {
                 AddPulledInvoiceRentalTarget(existing, rentalSettlementTargets);
+                // CostStatus is a local inventory calculation, absent from InvoiceDto.
+                // Keep it for unchanged calculation inputs; changed inputs remain Pending
+                // until the inventory calculation runs. Never manufacture Settled here.
+                if (HasSameInvoiceCostInputs(existing, local))
+                    local.CostStatus = existing.CostStatus;
+                // InvoiceDto has no local editor identity. A pull echo of an already
+                // acknowledged invoice must not manufacture a different editor/stamp.
+                // A new revision or different invoice payload still invalidates it.
+                if (IsAcknowledgedInvoiceEcho(existing, local))
+                {
+                    local.ConcurrencyStamp = existing.ConcurrencyStamp;
+                    local.LastSavedByUsername = existing.LastSavedByUsername;
+                    local.LastSavedAtUtc = existing.LastSavedAtUtc;
+                    local.CreatedByUsername = existing.CreatedByUsername;
+                }
                 _db.Entry(existing).CurrentValues.SetValues(local);
 
                 foreach (var line in local.Lines)
                 {
                     var exLine = existing.Lines.FirstOrDefault(l => l.Id == line.Id);
                     if (exLine is null)
+                    {
                         existing.Lines.Add(line);
+                        _db.InvoiceLines.Add(line);
+                    }
                     else
                         _db.Entry(exLine).CurrentValues.SetValues(line);
                 }
@@ -19075,7 +19369,10 @@ public sealed class SyncService : IDisposable
                 {
                     var exPay = existing.Payments.FirstOrDefault(p => p.Id == pay.Id);
                     if (exPay is null)
+                    {
                         existing.Payments.Add(pay);
+                        _db.Payments.Add(pay);
+                    }
                     else if (!exPay.IsDirty)
                         _db.Entry(exPay).CurrentValues.SetValues(pay);
                 }
@@ -19094,6 +19391,56 @@ public sealed class SyncService : IDisposable
             ct,
             markDirty: false,
             preserveDirtyProfiles: true);
+    }
+
+    private static bool HasSameInvoiceCostInputs(LocalInvoice existing, LocalInvoice incoming)
+    {
+        var left = LocalMappings.ToDto(existing);
+        var right = LocalMappings.ToDto(incoming);
+        if (left.Id != right.Id ||
+            left.TenantCode != right.TenantCode ||
+            left.OfficeCode != right.OfficeCode ||
+            left.ResponsibleOfficeCode != right.ResponsibleOfficeCode ||
+            left.VersionGroupId != right.VersionGroupId ||
+            left.VersionNumber != right.VersionNumber ||
+            left.PreviousVersionId != right.PreviousVersionId ||
+            left.IsLatestVersion != right.IsLatestVersion ||
+            left.IsDeleted != right.IsDeleted ||
+            existing.IsConfirmed != incoming.IsConfirmed ||
+            left.VoucherType != right.VoucherType ||
+            left.SourceWarehouseCode != right.SourceWarehouseCode ||
+            left.InvoiceDate != right.InvoiceDate ||
+            NormalizeMutationUtc(left.CreatedAtUtc) != NormalizeMutationUtc(right.CreatedAtUtc) ||
+            left.PurchaseReceivingRequired != right.PurchaseReceivingRequired ||
+            left.PurchaseReceivingStatus != right.PurchaseReceivingStatus)
+        {
+            return false;
+        }
+
+        // ToDto orders active lines by OrderIndex/Id. Line identity/order matters
+        // because repeated item lines can consume different FIFO stock layers.
+        return left.Lines.Select(line => (
+                line.Id, line.ItemId, line.Quantity, line.UnitPrice, line.LineAmount,
+                line.ItemTrackingType, line.OrderIndex))
+            .SequenceEqual(right.Lines.Select(line => (
+                line.Id, line.ItemId, line.Quantity, line.UnitPrice, line.LineAmount,
+                line.ItemTrackingType, line.OrderIndex)));
+    }
+
+    private static bool IsAcknowledgedInvoiceEcho(LocalInvoice existing, LocalInvoice incoming)
+    {
+        if (existing.Revision <= 0 || existing.Revision != incoming.Revision)
+            return false;
+
+        var existingDto = LocalMappings.ToDto(existing);
+        var incomingDto = LocalMappings.ToDto(incoming);
+        // SQLite reloads UTC columns as Unspecified; compare the same UTC instant.
+        existingDto.CreatedAtUtc = NormalizeMutationUtc(existingDto.CreatedAtUtc);
+        incomingDto.CreatedAtUtc = NormalizeMutationUtc(incomingDto.CreatedAtUtc);
+        return string.Equals(
+            ComputePreparedMutationPayloadHash("Invoice", existingDto),
+            ComputePreparedMutationPayloadHash("Invoice", incomingDto),
+            StringComparison.Ordinal);
     }
 
     private static void AddPulledInvoiceRentalTarget(

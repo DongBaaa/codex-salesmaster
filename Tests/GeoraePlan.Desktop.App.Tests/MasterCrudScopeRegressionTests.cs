@@ -9,7 +9,7 @@ using \uAC70\uB798\uD50C\uB79C.Shared.Contracts;
 
 namespace GeoraePlan.Desktop.App.Tests;
 
-public sealed class MasterCrudScopeRegressionTests
+public sealed partial class MasterCrudScopeRegressionTests
 {
     [Fact]
     public async Task CustomerMutations_RequireCustomerEditPermissionInsideOfficeScope()

@@ -12,18 +12,6 @@ public sealed record StartupIntegrityRunResult(
 
 public sealed class StartupIntegrityService
 {
-    private static readonly HashSet<string> AutoRepairableInventoryIssueCodes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "inventory_current_stock_snapshot_mismatch",
-        "inventory_nonstock_snapshot_residue",
-        "inventory_deleted_item_stock_residue",
-        "cross_tenant_inventory_transfers",
-        "orphan_item_warehouse_stock_refs",
-        "orphan_stock_layer_item_refs",
-        "orphan_inventory_movement_item_refs",
-        "orphan_serial_ledger_item_refs"
-    };
-
     private readonly LocalStateService _local;
     private readonly SyncService _sync;
     private readonly BackupService _backup;
@@ -44,7 +32,6 @@ public sealed class StartupIntegrityService
     public async Task<StartupIntegrityRunResult> RunAsync(CancellationToken ct = default)
     {
         var autoRepairMessages = new List<string>();
-        string? autoRepairBackupPath = null;
         var outboxRecovery = await _local.RecoverStaleSyncOutboxEntriesAsync(ct);
         if (outboxRecovery.RecoveredAny)
             autoRepairMessages.Add(outboxRecovery.BuildSummaryText());
@@ -58,19 +45,9 @@ public sealed class StartupIntegrityService
             autoRepairMessages.Add($"공유 선택옵션 ID 표기 {normalizedSharedOptionIdCount:N0}건을 자동 정리했습니다.");
 
         var report = await _local.BuildIntegrityReportAsync(_session, ct);
-        if (ShouldAutoRepairInventoryIssues(report, _session))
-        {
-            autoRepairBackupPath = await _backup.BackupNowWithPathAsync(ct);
-            var repairResult = await _local.RepairInventoryIntegrityForStartupAsync(_session, ct);
-            if (repairResult.RepairedAny)
-            {
-                autoRepairMessages.Add(repairResult.BuildSummaryText(
-                    string.IsNullOrWhiteSpace(autoRepairBackupPath)
-                        ? null
-                        : Path.GetFileName(autoRepairBackupPath)));
-                report = await _local.BuildIntegrityReportAsync(_session, ct);
-            }
-        }
+        // Even an administrator can have only part of the document history locally.
+        // Resolve inventory discrepancies through the guarded server refresh below;
+        // replaying that history could erase stock and create a dirty master update.
 
         var autoRepairSummary = string.Join(" ", autoRepairMessages);
         if (!report.RequiresFullMirrorRefresh)
@@ -81,7 +58,7 @@ public sealed class StartupIntegrityService
                 RefreshSucceeded: false,
                 RequiresUserAttention: false,
                 Message: autoRepairSummary,
-                BackupPath: autoRepairBackupPath);
+                BackupPath: null);
         }
 
         if (_session.IsOfflineMode)
@@ -116,7 +93,7 @@ public sealed class StartupIntegrityService
                 RefreshSucceeded: false,
                 RequiresUserAttention: true,
                 Message: CombineMessages(autoRepairSummary, "시작 시 중앙 서버 기준 전체 재동기화를 자동 실행했지만 실패했습니다.\n환경설정 > 동기화에서 전체 재동기화를 다시 실행하고, 필요하면 동기화 진단 리포트를 저장하세요."),
-                BackupPath: backupPath ?? autoRepairBackupPath);
+                BackupPath: backupPath);
         }
 
         var refreshedReport = await _local.BuildIntegrityReportAsync(_session, ct);
@@ -128,7 +105,7 @@ public sealed class StartupIntegrityService
                 RefreshSucceeded: true,
                 RequiresUserAttention: true,
                 Message: CombineMessages(autoRepairSummary, "시작 시 중앙 서버 기준 전체 재동기화를 자동 실행했지만 일부 점검 항목이 남아 있습니다.\n환경설정 > 동기화 > 무결성 리포트로 세부 내용을 확인하세요.\n\n" + refreshedReport.BuildSummaryText()),
-                BackupPath: backupPath ?? autoRepairBackupPath);
+                BackupPath: backupPath);
         }
 
         var successMessage = string.IsNullOrWhiteSpace(backupPath)
@@ -141,7 +118,7 @@ public sealed class StartupIntegrityService
             RefreshSucceeded: true,
             RequiresUserAttention: false,
             Message: CombineMessages(autoRepairSummary, successMessage),
-            BackupPath: backupPath ?? autoRepairBackupPath);
+            BackupPath: backupPath);
     }
 
     private static string CombineMessages(string primary, string secondary)
@@ -154,13 +131,4 @@ public sealed class StartupIntegrityService
         return primary + Environment.NewLine + Environment.NewLine + secondary;
     }
 
-    private static bool ShouldAutoRepairInventoryIssues(LocalIntegrityReport report, SessionState session)
-    {
-        if (report.PendingServerMirrorRefresh || report.DirtyCount > 0 || report.Issues.Count == 0)
-            return false;
-        if (!session.IsLoggedIn || session.IsOfflineMode || !session.HasAdministrativePrivileges)
-            return false;
-
-        return report.Issues.All(issue => AutoRepairableInventoryIssueCodes.Contains(issue.Code));
-    }
 }

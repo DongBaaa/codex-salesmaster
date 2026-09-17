@@ -255,7 +255,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
             Category: "전체",
             Status: "Open",
             Severity: "전체",
-            OnlyRecoverable: false));
+            OnlyRecoverable: true));
 
         await ExecuteRepairPlanAsync(openEvents, selectedOnly: false);
     }
@@ -272,6 +272,8 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
         }
 
         var plan = BuildRecoveryPlan(events);
+        var scopeEpoch = _session.SyncScopeEpoch;
+        var allStepsSucceeded = true;
         IsBusy = true;
         try
         {
@@ -333,12 +335,14 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
             if (plan.RefreshSharedCache)
             {
                 var refreshOk = await _sync.RefreshSharedMirrorFromServerAsync();
+                allStepsSucceeded &= refreshOk;
                 summaryParts.Add(refreshOk ? "공유 캐시 재구성 완료" : "공유 캐시 재구성 실패");
             }
 
             if (plan.RetrySync)
             {
                 var syncOk = await _sync.TrySyncAsync();
+                allStepsSucceeded &= syncOk;
                 summaryParts.Add(syncOk ? "동기화 재시도 완료" : "동기화 재시도 실패");
             }
 
@@ -352,17 +356,34 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
                 ? "수행할 자동 복구 작업이 없었습니다."
                 : string.Join(" / ", summaryParts);
 
+            var dirtyCount = await _local.CountDirtyAsync(_session);
+            var outbox = await _local.GetSyncOutboxSummaryAsync(_session);
+            var remainingTargets = await _diagnostics.CountUnconfirmedRecoveryTargetsAsync(
+                events.Select(item => item.Id).ToArray());
+            if (scopeEpoch != _session.SyncScopeEpoch || !CanManageSyncMaintenance)
+            {
+                SummaryStatusText = "계정 또는 업체 범위가 변경되어 복구 결과 확인을 중단했습니다. 현재 범위에서 다시 확인하세요.";
+                return;
+            }
+
+            var completion = SyncRepairCompletion.Evaluate(
+                allStepsSucceeded,
+                plan.RetrySync || plan.RefreshSharedCache,
+                plan.RequiresManualReview || plan.ExportDiagnosticReport,
+                dirtyCount,
+                outbox.PendingCount + outbox.FailedCount,
+                remainingTargets);
             await _diagnostics.RecordIssueAsync(
                 phase: selectedOnly ? "selected-repair" : "manual-repair",
-                rawMessage: $"자동 복구 실행 완료. {RepairSummaryText}",
+                rawMessage: $"{completion.Message} {RepairSummaryText}",
                 severity: "Warning",
                 recoveryAttempted: true,
-                recoverySucceeded: true);
+                recoverySucceeded: completion.Succeeded);
 
             await RefreshAllPanelsAsync(refreshServerIntegrity: true);
-            SummaryStatusText = selectedOnly
-                ? $"{plan.Title} 복구를 완료했습니다. 필요 시 동기화를 다시 시도해 주세요."
-                : "미해결 확인 항목 유형별 자동 복구를 완료했습니다. 필요 시 동기화를 다시 시도해 주세요.";
+            SummaryStatusText = scopeEpoch == _session.SyncScopeEpoch
+                ? completion.Message
+                : "계정 또는 업체 범위가 변경되어 복구 결과 확인을 중단했습니다. 현재 범위에서 다시 확인하세요.";
         }
         finally
         {
@@ -424,6 +445,11 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
                     plan.RetrySync = true;
                     break;
 
+                case "동시성 충돌" when item.Subcategory == "revision_conflict":
+                    plan.RequiresManualReview = true;
+                    plan.RetrySync = true;
+                    break;
+
                 case "동시성 충돌":
                 case "시작 복구 오류":
                     plan.RefreshSharedCache = true;
@@ -469,7 +495,9 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
         return plan with
         {
             Title = stepLabels.Count == 0 ? "기본 복구" : stepLabels[0],
-            Description = stepLabels.Count == 0
+            Description = plan.RequiresManualReview
+                ? "서버와 로컬의 기준 버전이 다릅니다. 재시도 후에도 미전송 변경이 남으면 내용을 비교해 수동으로 확인해야 합니다. 재시도만으로 충돌이 해결된 것으로 처리하지 않습니다."
+                : stepLabels.Count == 0
                 ? "현재 선택한 오류는 자동 복구 대상이 명확하지 않아 기본 재시도만 권장됩니다."
                 : $"권장 복구 순서: {string.Join(" → ", stepLabels)}"
         };
@@ -494,6 +522,7 @@ public sealed partial class SyncDiagnosticsViewModel : ObservableObject, IDispos
         public bool RefreshSharedCache { get; set; }
         public bool RetrySync { get; set; }
         public bool ExportDiagnosticReport { get; set; }
+        public bool RequiresManualReview { get; set; }
     }
 
     [RelayCommand]

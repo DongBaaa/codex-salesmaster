@@ -555,6 +555,7 @@ internal static class RentalBillingProfileMutationGate
 
 public sealed class RentalBillingEditorDraftModel
 {
+    public bool PoolMeterAllowance { get; set; }
     public Guid EditId { get; set; }
     public long Revision { get; set; }
     public Guid? CustomerId { get; set; }
@@ -768,6 +769,10 @@ public sealed class RentalBillingViewRow : INotifyPropertyChanged
     public string CurrentBillingPeriodLabel { get; init; } = string.Empty;
     public string CurrentBillingRunStatus { get; init; } = string.Empty;
     public decimal CurrentBilledAmount { get; init; }
+    public bool HasCurrentBillingConflict => string.Equals(CurrentBillingRunStatus, "확인 필요", StringComparison.Ordinal);
+    public string CurrentBilledAmountDisplay => HasCurrentBillingConflict ? "확인 필요" : CurrentBilledAmount.ToString("N0");
+    public string SettledAmountDisplay => HasCurrentBillingConflict ? "확인 필요" : SettledAmount.ToString("N0");
+    public string OutstandingAmountDisplay => HasCurrentBillingConflict ? "확인 필요" : OutstandingAmount.ToString("N0");
     public List<RentalBillingHistoryRow> BillingHistoryRows { get; init; } = new();
     public int PastUnresolvedCount { get; init; }
     public decimal PastUnresolvedAmount { get; init; }
@@ -814,6 +819,8 @@ public sealed class RentalBillingViewRow : INotifyPropertyChanged
     {
         get
         {
+            if (HasCurrentBillingConflict)
+                return "확인 필요";
             if (RequiresBillingProfileCreation)
                 return "청구 전";
             if (string.Equals(SettlementStatus, "생성필요", StringComparison.OrdinalIgnoreCase))

@@ -13,8 +13,66 @@ using Xunit;
 
 namespace GeoraePlan.Server.Api.Tests;
 
-public sealed class InventoryTransferScopeGuardTests : IDisposable
+public sealed partial class InventoryTransferScopeGuardTests : IDisposable
 {
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task Push_InvoiceVersionConflictDoesNotCommitItsStockSnapshot(bool validRevision, bool sharedStock)
+    {
+        var itemId = Guid.NewGuid();
+        var otherItemId = Guid.NewGuid();
+        var customerId = Guid.NewGuid();
+        var parentId = Guid.NewGuid();
+        long parentRevision;
+        await using (var seed = CreateDbContext(CreateAdminUser()))
+        {
+            seed.Items.Add(CreateStockItem(itemId, "invoice stock item", 0m));
+            seed.Items.Add(CreateStockItem(otherItemId, "independent stock item", 0m));
+            seed.Customers.Add(new Customer { Id = customerId, TenantCode = TenantScopeCatalog.UsenetGroup, OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet, NameOriginal = "invoice stock customer", TradeType = "매입" });
+            var parent = new Invoice { Id = parentId, CustomerId = customerId, TenantCode = TenantScopeCatalog.UsenetGroup, OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet, VersionGroupId = parentId, VersionNumber = 1, IsLatestVersion = true, VoucherType = VoucherType.Purchase, PurchaseReceivingRequired = true, PurchaseReceivingStatus = InvoiceReceivingStatuses.Pending, SourceWarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse, TotalAmount = 100m, SupplyAmount = 100m };
+            parent.Lines.Add(new InvoiceLine { Id = Guid.NewGuid(), ItemId = itemId, ItemNameOriginal = "invoice stock item", Quantity = 1m, UnitPrice = 100m, LineAmount = 100m, ItemTrackingType = ItemTrackingTypes.Stock });
+            seed.Invoices.Add(parent);
+            await seed.SaveChangesAsync();
+            parentRevision = parent.Revision;
+        }
+        var admin = CreateInventoryDeliveryAdminUser("invoice-stock-admin", OfficeCodeCatalog.Usenet);
+        var invoice = BuildInventoryInvoiceDto(Guid.NewGuid(), customerId, itemId, "invoice stock item", VoucherType.Purchase, 1m, admin.Username, DateTime.UtcNow);
+        invoice.VersionGroupId = parentId;
+        invoice.PreviousVersionId = parentId;
+        invoice.VersionNumber = 2;
+        invoice.ExpectedRevision = validRevision ? parentRevision : 0;
+        invoice.PurchaseReceivingRequired = true;
+        invoice.PurchaseReceivingStatus = InvoiceReceivingStatuses.Confirmed;
+        var stockItemId = sharedStock ? itemId : otherItemId;
+        await using var db = CreateDbContext(admin);
+        var response = await CreateController(db, admin).Push(new SyncPushRequest
+        {
+            DeviceId = "invoice-stock-test",
+            Invoices = [invoice],
+            ItemWarehouseStocks = [new ItemWarehouseStockDto { ItemId = stockItemId, WarehouseCode = OfficeCodeCatalog.UsenetMainWarehouse, Quantity = 1m, UpdatedAtUtc = DateTime.UtcNow }]
+        }, CancellationToken.None);
+        var result = Assert.IsType<SyncPushResult>(Assert.IsType<OkObjectResult>(response.Result).Value);
+        var rolledBack = !validRevision && sharedStock;
+        Assert.Equal(rolledBack, result.Notices.Any(notice => notice.Code == "invoice-stock-atomicity-rollback"));
+        db.ChangeTracker.Clear();
+        Assert.Equal(validRevision, await db.Invoices.IgnoreQueryFilters().AnyAsync(row => row.Id == invoice.Id));
+        Assert.Equal(rolledBack ? 0m : 1m, await db.Items.Where(row => row.Id == stockItemId).Select(row => row.CurrentStock).SingleAsync());
+        if (rolledBack)
+        {
+            Assert.Equal(0, result.AcceptedCount);
+            Assert.Empty(result.AcceptedItemWarehouseStockKeys);
+            Assert.Empty(result.AcceptedRevisions);
+            Assert.Empty(await db.ItemWarehouseStocks.ToListAsync());
+            Assert.Empty(await db.ProcessedSyncMutations.ToListAsync());
+        }
+        else
+        {
+            Assert.NotEmpty(result.AcceptedItemWarehouseStockKeys);
+        }
+    }
+
     private readonly SqliteConnection _connection;
 
     public InventoryTransferScopeGuardTests()
@@ -5652,6 +5710,63 @@ public sealed class InventoryTransferScopeGuardTests : IDisposable
         Assert.Equal(existingLine.ReceivedQuantity, storedLine.ReceivedQuantity);
         Assert.Equal(existingLine.QuantityDifference, storedLine.QuantityDifference);
         Assert.Equal(existingLine.ReceiptRemark, storedLine.ReceiptRemark);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Push_ExactFinalReceiptHttpReplay_WithOffsetTimestamps_PreservesStock(bool reject)
+    {
+        var itemId = Guid.NewGuid();
+        var transferId = Guid.NewGuid();
+        var lineId = Guid.NewGuid();
+        await SeedPendingTransferAsync(itemId, transferId, lineId, "Offset receipt replay", sourceStockQuantity: 8m);
+        var actor = CreateDeliveryUser("yeonsu-offset-receipt", OfficeCodeCatalog.Yeonsu);
+        string originalJson;
+        await using (var db = CreateDbContext(actor))
+        {
+            var existing = await db.InventoryTransfers.IgnoreQueryFilters().Include(t => t.Lines).SingleAsync(t => t.Id == transferId);
+            var dto = BuildReceiptDto(existing, actor.Username, 2m);
+            if (reject)
+            {
+                dto.TransferStatus = InventoryTransferStatusNormalizer.Rejected;
+                dto.RejectedByUsername = actor.Username;
+                dto.RejectedAtUtc = dto.ReceivedAtUtc;
+                dto.RejectReason = "isolated rejection";
+                dto.ReceivedByUsername = existing.ReceivedByUsername;
+                dto.ReceivedAtUtc = existing.ReceivedAtUtc;
+                dto.ReceiveMemo = existing.ReceiveMemo;
+            }
+            // Emulate HTTP JSON with explicit offsets. The original body must survive
+            // independently of controller-side DTO mutations and be deserialized again.
+            var document = System.Text.Json.Nodes.JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(dto))!.AsObject();
+            foreach (var property in typeof(InventoryTransferDto).GetProperties())
+            {
+                if (property.GetValue(dto) is DateTime timestamp)
+                    document[property.Name] = new DateTimeOffset(DateTime.SpecifyKind(timestamp, DateTimeKind.Utc)).ToString("O");
+            }
+            originalJson = document.ToJsonString();
+            var initial = System.Text.Json.JsonSerializer.Deserialize<InventoryTransferDto>(originalJson)!;
+            var result = Assert.IsType<SyncPushResult>(Assert.IsType<OkObjectResult>((await CreateController(db, actor).Push(
+                new SyncPushRequest { DeviceId = "offset-receipt-device", InventoryTransfers = [initial] }, CancellationToken.None)).Result).Value);
+            Assert.Equal(0, result.ConflictCount);
+            Assert.Equal(1, result.AcceptedCount);
+        }
+        await using var verify = CreateDbContext(actor);
+        var storedBefore = await verify.InventoryTransfers.IgnoreQueryFilters().AsNoTracking().SingleAsync(t => t.Id == transferId);
+        var ledgerBefore = await verify.InventoryLedgerEntries.CountAsync(t => t.ItemId == itemId);
+        var stockBefore = await verify.ItemWarehouseStocks.Where(t => t.ItemId == itemId).OrderBy(t => t.WarehouseCode).Select(t => t.Quantity).ToArrayAsync();
+        var replay = System.Text.Json.JsonSerializer.Deserialize<InventoryTransferDto>(originalJson)!;
+        var repeated = Assert.IsType<SyncPushResult>(Assert.IsType<OkObjectResult>((await CreateController(verify, actor).Push(
+            new SyncPushRequest { DeviceId = "offset-receipt-device", InventoryTransfers = [replay] }, CancellationToken.None)).Result).Value);
+        Assert.Equal(0, repeated.ConflictCount);
+        Assert.Equal(1, repeated.DuplicateMutationCount);
+        Assert.Equal(stockBefore, await verify.ItemWarehouseStocks.Where(t => t.ItemId == itemId).OrderBy(t => t.WarehouseCode).Select(t => t.Quantity).ToArrayAsync());
+        Assert.Equal(ledgerBefore, await verify.InventoryLedgerEntries.CountAsync(t => t.ItemId == itemId));
+        var storedAfter = await verify.InventoryTransfers.IgnoreQueryFilters().AsNoTracking().SingleAsync(t => t.Id == transferId);
+        Assert.Equal(storedBefore.Revision, storedAfter.Revision);
+        Assert.Equal(storedBefore.ReceivedAtUtc, storedAfter.ReceivedAtUtc);
+        Assert.Equal(storedBefore.RejectedAtUtc, storedAfter.RejectedAtUtc);
     }
 
     [Fact]

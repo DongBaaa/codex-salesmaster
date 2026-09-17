@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Linq;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -21,6 +21,21 @@ public sealed partial class EnvironmentSettingsViewModel
     [ObservableProperty] private BackupSnapshotRow? _selectedBackupSnapshot;
     [ObservableProperty] private string _backupDataStatus = "로컬 백업 목록을 불러오는 중...";
 
+    private Task? _backupListReloadTask;
+    internal Func<Task<IReadOnlyList<BackupSnapshotInfo>>> BackupSnapshotReader { get; set; } = null!;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanUseBackupActions))]
+    [NotifyPropertyChangedFor(nameof(CanReloadBackupList))]
+    [NotifyCanExecuteChangedFor(nameof(CreateBackupSnapshotCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ScheduleSelectedBackupRestoreCommand))]
+    [NotifyCanExecuteChangedFor(nameof(RunBackupCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ReloadBackupSnapshotsCommand))]
+    private bool _isBackupListLoading;
+
+    public bool CanReloadBackupList => !IsBusy && !IsBackupListLoading;
+    public bool CanUseBackupActions => CanManageBackupData && CanReloadBackupList;
+
     public ObservableCollection<BackupSnapshotRow> BackupSnapshots { get; } = new();
 
     public bool CanManageBackupData => _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.DataBackupRestore);
@@ -32,33 +47,60 @@ public sealed partial class EnvironmentSettingsViewModel
             : "백업/복원은 관리자 또는 Data.BackupRestore 권한이 있는 계정만 사용할 수 있습니다.";
     }
 
-    [RelayCommand]
-    private async Task ReloadBackupSnapshotsAsync()
+    [RelayCommand(CanExecute = nameof(CanReloadBackupList))]
+    internal Task ReloadBackupSnapshotsAsync()
     {
-        var snapshots = await _backup.GetBackupSnapshotsAsync();
-        BackupSnapshots.Clear();
-        foreach (var snapshot in snapshots)
-        {
-            BackupSnapshots.Add(new BackupSnapshotRow
-            {
-                FilePath = snapshot.FilePath,
-                DisplayName = snapshot.DisplayName,
-                FileName = snapshot.FileName,
-                CreatedAtText = snapshot.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss"),
-                SizeText = snapshot.SizeText
-            });
-        }
-
-        BackupDataStatus = BackupSnapshots.Count == 0
-            ? "저장된 로컬 DB 백업이 없습니다."
-            : $"로컬 DB 백업 {BackupSnapshots.Count:N0}건을 불러왔습니다. 오늘 백업은 모두 보관하고 지난 날짜는 일별 최신 1개만 보관하며 30일 초과 백업은 자동 정리됩니다.";
-
-        SelectedBackupSnapshot ??= BackupSnapshots.FirstOrDefault();
+        if (_backupListReloadTask is { IsCompleted: false })
+            return _backupListReloadTask;
+        return _backupListReloadTask = ReloadBackupSnapshotsCoreAsync();
     }
 
-    [RelayCommand]
+    private async Task ReloadBackupSnapshotsCoreAsync()
+    {
+        IsBackupListLoading = true;
+        SelectedBackupSnapshot = null;
+        BackupDataStatus = "백업 파일을 검증하는 중입니다. 다른 설정은 계속 사용할 수 있습니다.";
+        try
+        {
+            var snapshots = await BackupSnapshotReader();
+            BackupSnapshots.Clear();
+            foreach (var snapshot in snapshots)
+            {
+                BackupSnapshots.Add(new BackupSnapshotRow
+                {
+                    FilePath = snapshot.FilePath,
+                    DisplayName = snapshot.DisplayName,
+                    FileName = snapshot.FileName,
+                    CreatedAtText = snapshot.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss"),
+                    SizeText = snapshot.SizeText
+                });
+            }
+
+            BackupDataStatus = BackupSnapshots.Count == 0
+                ? "저장된 로컬 DB 백업이 없습니다."
+                : $"로컬 DB 백업 {BackupSnapshots.Count:N0}건을 불러왔습니다. 오늘 백업은 모두 보관하고 지난 날짜는 일별 최신 1개만 보관하며 30일 초과 백업은 자동 정리됩니다.";
+
+            SelectedBackupSnapshot = BackupSnapshots.FirstOrDefault();
+        }
+        catch
+        {
+            SelectedBackupSnapshot = null;
+            BackupSnapshots.Clear();
+            BackupDataStatus = "백업 목록을 불러오지 못했습니다. 목록 새로고침으로 다시 확인하세요.";
+            throw;
+        }
+        finally
+        {
+            IsBackupListLoading = false;
+        }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanUseBackupActions))]
     private async Task CreateBackupSnapshotAsync()
     {
+        if (IsBusy || IsBackupListLoading)
+            return;
+
         if (!CanManageBackupData)
         {
             BackupDataStatus = "백업은 관리자 또는 Data.BackupRestore 권한이 있는 계정만 실행할 수 있습니다.";
@@ -102,9 +144,12 @@ public sealed partial class EnvironmentSettingsViewModel
         StatusMessage = BackupDataStatus;
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanUseBackupActions))]
     private Task ScheduleSelectedBackupRestoreAsync()
     {
+        if (IsBusy || IsBackupListLoading)
+            return Task.CompletedTask;
+
         if (!CanManageBackupData)
         {
             BackupDataStatus = "백업 복원 예약은 관리자 또는 Data.BackupRestore 권한이 있는 계정만 사용할 수 있습니다.";

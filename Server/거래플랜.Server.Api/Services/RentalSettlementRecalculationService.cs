@@ -1122,7 +1122,7 @@ public sealed class RentalSettlementRecalculationService
             profile.ContractDate,
             profile.LastBilledDate,
             referenceDate);
-        var scheduledDate = RentalBillingScheduleRules.ResolveConfiguredBillingDate(
+        var billingPlan = RentalBillingScheduleRules.ResolveConfiguredBillingPlan(
             profile.BillingDay,
             profile.BillingDayMode,
             cycleMonths,
@@ -1136,7 +1136,8 @@ public sealed class RentalSettlementRecalculationService
                 profile.BillingStartDate,
                 profile.ContractStartDate,
                 profile.ContractDate));
-        var period = RentalBillingScheduleRules.ResolveBillingPeriod(cycleMonths, profile.BillingAdvanceMode, scheduledDate);
+        var scheduledDate = billingPlan.BillingDate ?? referenceDate;
+        var period = (StartDate: billingPlan.PeriodStartDate, EndDate: billingPlan.PeriodEndDate);
 
         return new RentalBillingRunSnapshot
         {

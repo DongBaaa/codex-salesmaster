@@ -1627,6 +1627,86 @@ public sealed class OfficeScopeAndPagingTests : IDisposable
             .SingleAsync());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NestedInvoicePayments_RespectIndependentPaymentSharing_AndPreserveStoredRows(bool sharePayments)
+    {
+        var customerId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var attachmentId = Guid.NewGuid();
+        await using (var seed = CreateDbContext(CreateAdminUser()))
+        {
+            seed.DataSharingPolicies.Add(new DataSharingPolicy
+            {
+                SourceTenantCode = TenantScopeCatalog.UsenetGroup,
+                SourceOfficeCode = OfficeCodeCatalog.Usenet,
+                TargetTenantCode = TenantScopeCatalog.UsenetGroup,
+                TargetOfficeCode = OfficeCodeCatalog.Yeonsu,
+                ShareCustomers = true, ShareInvoices = true, SharePayments = sharePayments,
+                IsActive = true
+            });
+            seed.Customers.Add(new Customer
+            {
+                Id = customerId, NameOriginal = "Shared customer", NameMatchKey = "SHARED",
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet
+            });
+            seed.Invoices.Add(new Invoice
+            {
+                Id = invoiceId, CustomerId = customerId, InvoiceNumber = "SHARED-INVOICE",
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                InvoiceDate = new DateOnly(2026, 9, 8), TotalAmount = 11000m
+            });
+            seed.Payments.Add(new Payment
+            {
+                Id = paymentId, InvoiceId = invoiceId, Amount = 5000m,
+                PaymentDate = new DateOnly(2026, 9, 8), Note = "Private receipt"
+            });
+            seed.PaymentAttachments.Add(new PaymentAttachment
+            {
+                Id = attachmentId, PaymentId = paymentId, FileName = "receipt.pdf",
+                MimeType = "application/pdf", FileSize = 12, FileHash = "hash"
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        var user = new TestCurrentUserContext { OfficeCode = OfficeCodeCatalog.Yeonsu };
+        await using var db = CreateDbContext(user);
+        var scope = new OfficeScopeService(user, db);
+        var invoices = new InvoicesController(db, user, new InvoiceNumberService(db), scope,
+            new InventoryLedgerService(db), new InvoiceStockSnapshotService(db, new RevisionClock()),
+            new RentalSettlementRecalculationService(db));
+        var customers = new CustomersController(db, scope, new StubCentralFileStorage());
+        var detail = Assert.IsType<InvoiceDto>(Assert.IsType<OkObjectResult>(
+            (await invoices.GetById(invoiceId, CancellationToken.None)).Result).Value);
+        var list = Assert.IsType<List<InvoiceDto>>(Assert.IsType<OkObjectResult>(
+            (await invoices.GetAll(customerId, null, 200, CancellationToken.None)).Result).Value);
+        var customer = Assert.IsType<CustomerDetailDto>(Assert.IsType<OkObjectResult>(
+            (await customers.GetDetail(customerId, CancellationToken.None)).Result).Value);
+        foreach (var invoice in new[] { detail, Assert.Single(list), Assert.Single(customer.RecentInvoices) })
+        {
+            Assert.Equal(invoiceId, invoice.Id);
+            Assert.Equal(11000m, invoice.TotalAmount);
+            if (sharePayments)
+            {
+                var payment = Assert.Single(invoice.Payments);
+                Assert.Equal(paymentId, payment.Id);
+                Assert.Equal(5000m, payment.Amount);
+                Assert.Equal("Private receipt", payment.Note);
+                Assert.Equal(attachmentId, Assert.Single(payment.Attachments).Id);
+            }
+            else Assert.Empty(invoice.Payments);
+        }
+        Assert.Equal(sharePayments ? 1 : 0, customer.RecentPayments.Count);
+        Assert.False(db.ChangeTracker.HasChanges());
+        await using var verify = CreateDbContext(CreateAdminUser());
+        Assert.Equal(5000m, (await verify.Payments.SingleAsync(payment => payment.Id == paymentId)).Amount);
+        Assert.Equal("receipt.pdf", (await verify.PaymentAttachments.SingleAsync(row => row.Id == attachmentId)).FileName);
+    }
+
     public void Dispose()
     {
         _connection.Dispose();

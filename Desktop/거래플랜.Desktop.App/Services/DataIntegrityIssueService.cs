@@ -134,6 +134,14 @@ public sealed class DataIntegrityIssueDetail
     public DataIntegrityItemDuplicateComparison? ItemDuplicateComparison { get; init; }
 
     public bool HasDirectAction => DirectActionKind != DataIntegrityDirectActionKind.None;
+    public bool IsInformational => DataIntegritySeverityFormatter.IsInformational(Severity);
+    public string ProblemExplanation => DiagnosticUserMessageFormatter.DescribeIntegrityIssue(Code, Title);
+    public string ImpactExplanation => DiagnosticUserMessageFormatter.BuildIntegrityImpact(Severity);
+    public string ActionSteps => DiagnosticUserMessageFormatter.BuildIntegrityActionSteps(
+        SuggestedAction,
+        HasDirectAction,
+        IsInformational);
+    public string TechnicalDetailText => Message;
     public bool CanMergeDuplicates => RelatedEntityIds.Count > 1 &&
                                       (string.Equals(Code, DataIntegrityIssueCodes.CustomerDuplicateCandidate, StringComparison.OrdinalIgnoreCase) ||
                                        (string.Equals(Code, DataIntegrityIssueCodes.ItemDuplicateCandidate, StringComparison.OrdinalIgnoreCase) &&
@@ -162,6 +170,7 @@ public sealed class DataIntegrityIssueDetail
                 : $"{target} · {SuggestedAction}";
         }
     }
+    public string ReviewInfoPlainText => DiagnosticUserMessageFormatter.HumanizeTerms(ReviewInfoDisplay);
     public string MergeActionText => CanMergeDuplicates
         ? "중복 병합"
         : CanReviewDuplicateCandidates
@@ -380,8 +389,8 @@ public sealed class DataIntegrityScanResult
     {
         var counts = $"오류 {ErrorIssueCount:N0}건, 주의 {WarningIssueCount:N0}건, 참고 {InformationalIssueCount:N0}건";
         return ErrorIssueCount > 0
-            ? $"운영 점검 알림: {counts}입니다. 오류가 있어 모든 업무가 안전하다고 볼 수 없습니다. 영향받을 수 있는 저장·청구 업무 전 환경설정 > 동기화 진단 > 무결성 리포트에서 상세 내용을 확인하세요."
-            : $"운영 점검 알림: {counts}입니다. 업무는 계속할 수 있으며, 상세 내용은 환경설정 > 동기화 진단 > 무결성 리포트에서 확인하세요.";
+            ? $"운영 점검 알림: {counts}입니다. 오류가 있어 모든 업무가 안전하다고 볼 수 없습니다. 영향받을 수 있는 저장·청구 업무 전 환경설정 > 동기화 > 운영점검 알림창에서 상세 내용을 확인하세요."
+            : $"운영 점검 알림: {counts}입니다. 업무는 계속할 수 있으며, 상세 내용은 환경설정 > 동기화 > 운영점검 알림창에서 확인하세요.";
     }
 }
 
@@ -777,11 +786,12 @@ public sealed class DataIntegrityIssueService
         var sessionTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
             session.TenantCode,
             session.OfficeCode);
-        var activeTenantWarehouses = (await SelectIntegrityWarehouseProjection(
+        var activeWarehouses = await SelectIntegrityWarehouseProjection(
                 _db.Warehouses
                     .AsNoTracking()
                     .Where(warehouse => !warehouse.IsDeleted && warehouse.IsActive))
-            .ToListAsync(ct))
+            .ToListAsync(ct);
+        var activeTenantWarehouses = activeWarehouses
             .Where(warehouse => IsConsistentWarehouseReferenceInTenant(
                 warehouse,
                 sessionTenantCode))
@@ -959,7 +969,7 @@ public sealed class DataIntegrityIssueService
             scopedCustomers,
             scopedItems,
             scopedWarehouses,
-            activeTenantWarehouses,
+            activeWarehouses,
             scopedInvoices,
             invoiceLineTotalsByInvoiceId,
             invoicePaymentTotalsByInvoiceId,
@@ -6099,7 +6109,7 @@ public sealed class DataIntegrityIssueService
         IReadOnlyCollection<LocalCustomer> customers,
         IReadOnlyCollection<LocalItem> items,
         IReadOnlyCollection<LocalWarehouse> warehouses,
-        IReadOnlyCollection<LocalWarehouse> activeTenantWarehouses,
+        IReadOnlyCollection<LocalWarehouse> activeWarehouses,
         IReadOnlyCollection<IntegrityInvoiceSnapshot> invoices,
         IReadOnlyDictionary<Guid, decimal> invoiceLineTotalsByInvoiceId,
         IReadOnlyDictionary<Guid, decimal> invoicePaymentTotalsByInvoiceId,
@@ -6275,18 +6285,27 @@ public sealed class DataIntegrityIssueService
                 reviewInfo: BuildItemScopeReviewInfo(item, itemScope));
         }
 
-        var activeWarehouseCodes = activeTenantWarehouses
-            .Select(warehouse => NormalizeWarehouseReferenceCodeForIntegrity(
-                warehouse.Code,
-                warehouse.OfficeCode))
-            .Where(code => !string.IsNullOrWhiteSpace(code))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // Global administrators may inspect items from more than one business cache.
+        // Validate each reference against its item's tenant, including cross-tenant rejection.
+        var activeWarehouseCodesByTenant = itemScopeById.Values
+            .Select(scope => scope.TenantCode)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                tenantCode => tenantCode,
+                tenantCode => activeWarehouses
+                    .Where(warehouse => IsConsistentWarehouseReferenceInTenant(warehouse, tenantCode))
+                    .Select(warehouse => NormalizeWarehouseReferenceCodeForIntegrity(
+                        warehouse.Code, warehouse.OfficeCode))
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase),
+                StringComparer.OrdinalIgnoreCase);
         foreach (var stock in itemWarehouseStocks.Where(stock => scopedItemIds.Contains(stock.ItemId)))
         {
+            var referenceScope = itemScopeById[stock.ItemId];
             var warehouseCode = NormalizeWarehouseReferenceCodeForIntegrity(
                 stock.WarehouseCode,
-                session.OfficeCode);
-            if (activeWarehouseCodes.Contains(warehouseCode))
+                referenceScope.OfficeCode);
+            if (activeWarehouseCodesByTenant[referenceScope.TenantCode].Contains(warehouseCode))
                 continue;
 
             AddGeneralIssue(issues, DataIntegrityIssueCodes.InventoryWarehouseReferenceMissing,
@@ -6307,10 +6326,11 @@ public sealed class DataIntegrityIssueService
 
         foreach (var movement in inventoryMovements.Where(movement => movement.ItemId.HasValue && scopedItemIds.Contains(movement.ItemId.Value)))
         {
+            var referenceScope = itemScopeById[movement.ItemId!.Value];
             var warehouseCode = NormalizeWarehouseReferenceCodeForIntegrity(
                 movement.WarehouseCode,
-                session.OfficeCode);
-            if (activeWarehouseCodes.Contains(warehouseCode))
+                referenceScope.OfficeCode);
+            if (activeWarehouseCodesByTenant[referenceScope.TenantCode].Contains(warehouseCode))
                 continue;
 
             AddGeneralIssue(issues, DataIntegrityIssueCodes.InventoryWarehouseReferenceMissing,
@@ -6412,7 +6432,7 @@ public sealed class DataIntegrityIssueService
 
         return string.Join('|',
             TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(item.TenantCode, item.OfficeCode),
-            OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(item.OfficeCode, OfficeCodeCatalog.Shared),
+            OfficeCodeCatalog.NormalizeOfficeScopeOrDefault(item.OfficeCode, OfficeCodeCatalog.Usenet),
             itemName,
             NormalizeExactDuplicateText(item.SpecificationOriginal));
     }

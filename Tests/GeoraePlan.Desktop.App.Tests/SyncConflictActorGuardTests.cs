@@ -11,8 +11,11 @@ namespace GeoraePlan.Desktop.App.Tests;
 
 public sealed class SyncConflictActorGuardTests
 {
-    [Fact]
-    public async Task PrepareCustomerRevisionRetry_DoesNotRequeue_WhenServerActorIsDifferentUser()
+    [Theory]
+    [InlineData("different")]
+    [InlineData("same")]
+    [InlineData("unknown")]
+    public async Task PrepareCustomerRevisionRetry_DoesNotRequeueDifferentPayload_EvenForSameOrUnknownActor(string serverActor)
     {
         PrepareAppRoot("georaeplan-sync-conflict-actor-guard");
 
@@ -82,8 +85,8 @@ public sealed class SyncConflictActorGuardTests
                 Reason = $"Expected revision mismatch. client={localRevision}, server={serverRevision}",
                 ClientJson = JsonSerializer.Serialize(clientSnapshot),
                 ServerJson = JsonSerializer.Serialize(serverSnapshot),
-                ServerUserId = otherUserId,
-                ServerUsername = "other-user"
+                ServerUserId = serverActor == "unknown" ? null : serverActor == "same" ? currentUserId : otherUserId,
+                ServerUsername = serverActor == "unknown" ? string.Empty : serverActor == "same" ? "admin" : "other-user"
             };
 
             using var sync = CreateSyncService(db, session);

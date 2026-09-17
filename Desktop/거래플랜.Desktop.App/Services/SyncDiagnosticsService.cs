@@ -11,6 +11,8 @@ using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
 
+internal sealed record SyncAttemptCompletion(bool Succeeded, int DirtyCount, int PendingCount, int FailedCount, string Message);
+
 public sealed record SyncDiagnosticSnapshot(
     long LastKnownSyncRevision,
     string LastKnownSyncError,
@@ -48,6 +50,7 @@ public sealed class SyncDiagnosticListItem
     public Guid Id { get; init; }
     public DateTime OccurredAtUtc { get; init; }
     public DateTime LastOccurredAtUtc { get; init; }
+    public DateTime LastOccurredAtLocal => LastOccurredAtUtc.ToLocalTime();
     public int OccurrenceCount { get; init; }
     public string Severity { get; init; } = string.Empty;
     public string Category { get; init; } = string.Empty;
@@ -102,6 +105,23 @@ public sealed class SyncDiagnosticListItem
         : string.IsNullOrWhiteSpace(ReferenceEntityId)
             ? ReferenceEntityName
             : $"{ReferenceEntityName} {ReferenceEntityId}";
+    public string ProblemExplanation => DiagnosticUserMessageFormatter.DescribeSyncProblem(this);
+    public string ImpactExplanation => DiagnosticUserMessageFormatter.SyncImpactText(this);
+    public string ActionSteps => DiagnosticUserMessageFormatter.BuildSyncActionSteps(this);
+    public string SeverityDisplay => Severity?.Trim().ToUpperInvariant() switch
+    {
+        "ERROR" => "오류",
+        "WARNING" => "주의",
+        _ => "참고"
+    };
+    public string StatusDisplay => Status?.Trim().ToUpperInvariant() switch
+    {
+        "OPEN" => "미해결",
+        "RESOLVED" => "해결 확인",
+        "RECOVERED" => "자동 복구 완료",
+        _ => string.IsNullOrWhiteSpace(Status) ? "-" : Status
+    };
+    public string RecoveryAvailabilityDisplay => IsRecoverable ? "자동 복구 가능" : "수동 확인 필요";
 }
 
 public sealed class SyncDiagnosticsService
@@ -190,6 +210,15 @@ public sealed class SyncDiagnosticsService
             existing.LastOccurredAtUtc = nowUtc;
             existing.OccurrenceCount += 1;
             existing.RawMessage = detail;
+            existing.Severity = classification.Severity;
+            existing.Category = classification.Category;
+            existing.Subcategory = classification.Subcategory;
+            existing.IsRecoverable = classification.IsRecoverable;
+            existing.RecoveryAction = classification.RecoveryAction;
+            existing.RecoveryAttempted = recoveryAttempted;
+            existing.RecoverySucceeded = recoverySucceeded;
+            existing.Status = recoverySucceeded ? "Recovered" : "Open";
+            existing.ResolvedAtUtc = recoverySucceeded ? nowUtc : null;
             existing.StackTrace = exception?.ToString() ?? existing.StackTrace;
             existing.LastKnownSyncRevision = snapshot.LastKnownSyncRevision;
             existing.LastKnownSyncError = snapshot.LastKnownSyncError;
@@ -235,6 +264,70 @@ public sealed class SyncDiagnosticsService
 
         await db.SaveChangesAsync(ct);
         DiagnosticsChanged?.Invoke();
+    }
+
+    // The caller holds the session's scope commit lease. Keep the pending-state
+    // read, diagnostic resolution, and completion metadata in one SQLite write
+    // transaction so a concurrent local save cannot slip between these steps.
+    internal async Task<SyncAttemptCompletion> RecordSyncAttemptCompletionAsync(
+        LocalDbContext db, DateTime attemptStartedAtUtc, CancellationToken ct = default)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), _session);
+        var dirtySummary = await local.GetDirtyScopeSummaryAsync(ct);
+        var dirtyCount = dirtySummary.Buckets
+            .Where(bucket => CanCurrentSessionAccessPendingSyncScope(bucket.ScopeKey, null, null))
+            .Sum(bucket => bucket.Count);
+        var outbox = await local.GetSyncOutboxSummaryAsync(_session, ct);
+        var succeeded = dirtyCount == 0 && outbox.PendingCount == 0 && outbox.FailedCount == 0;
+        var message = succeeded
+            ? $"동기화 완료 {DateTime.Now:HH:mm:ss}"
+            : $"동기화 확인 필요: 미전송 변경 {dirtyCount:N0}건 / 전송 대기 {outbox.PendingCount:N0}건 / 실패 {outbox.FailedCount:N0}건";
+        var resolvedCount = 0;
+        if (succeeded)
+        {
+            // A clean successful exchange only confirms earlier transport and
+            // pending-scope problems. Integrity, revision conflicts, repairs,
+            // and issues created during this attempt need their own evidence.
+            var candidates = await db.SyncDiagnosticEvents
+                .Where(current => current.Status == "Open" && current.IsRecoverable)
+                .ToListAsync(ct);
+            foreach (var current in candidates.Where(CanCurrentSessionAccessEvent))
+            {
+                if (current.LastOccurredAtUtc > attemptStartedAtUtc ||
+                    current.OccurredAtUtc > attemptStartedAtUtc)
+                    continue;
+                var confirmedTransport = current.Subcategory == "network_timeout" &&
+                    string.IsNullOrEmpty(current.EntityName) &&
+                    (current.SyncPhase == "sync" || current.SyncPhase == "manual-sync" ||
+                     current.SyncPhase == "push" || current.SyncPhase == "pull");
+                var confirmedPendingScope = current.SyncPhase == "pending-scope" &&
+                    (current.Subcategory == "missing_sync_credential" || current.Subcategory == "remaining_dirty");
+                if (!confirmedTransport && !confirmedPendingScope)
+                    continue;
+                current.Status = "Resolved";
+                current.ResolvedAtUtc = DateTime.UtcNow;
+                current.RecoveryAttempted = true;
+                current.RecoverySucceeded = true;
+                resolvedCount++;
+            }
+            await SetCompletionSettingAsync("Sync.LastSuccessAt", DateTime.Now.ToString("O"));
+        }
+        await SetCompletionSettingAsync("Sync.LastError", succeeded ? string.Empty : message);
+        await db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
+        if (resolvedCount > 0)
+            DiagnosticsChanged?.Invoke();
+        return new SyncAttemptCompletion(succeeded, dirtyCount, outbox.PendingCount, outbox.FailedCount, message);
+
+        async Task SetCompletionSettingAsync(string key, string value)
+        {
+            var setting = await db.Settings.SingleOrDefaultAsync(current => current.Key == key, ct);
+            if (setting is null)
+                db.Settings.Add(new LocalSetting { Key = key, Value = value });
+            else
+                setting.Value = value;
+        }
     }
 
     public async Task ResolveOpenIssuesAsync(string? phase = null, CancellationToken ct = default)
@@ -338,6 +431,18 @@ public sealed class SyncDiagnosticsService
             .ToList();
 
         return rows.Select(ToListItem).ToList();
+    }
+
+    internal async Task<int> CountUnconfirmedRecoveryTargetsAsync(IReadOnlyCollection<Guid> eventIds, CancellationToken ct = default)
+    {
+        var ids = eventIds.Distinct().ToArray();
+        if (ids.Length == 0)
+            return 0;
+        await using var db = CreateDbContext();
+        var confirmed = await db.SyncDiagnosticEvents.AsNoTracking()
+            .Where(item => ids.Contains(item.Id) && (item.Status == "Resolved" || item.Status == "Recovered"))
+            .ToListAsync(ct);
+        return ids.Length - confirmed.Count(CanCurrentSessionAccessEvent);
     }
 
     public async Task<string> ExportReportAsync(IReadOnlyCollection<Guid>? eventIds = null, CancellationToken ct = default)
@@ -930,6 +1035,11 @@ public sealed class SyncDiagnosticsService
         if (referenceMatch.Success)
         {
             return new SyncDiagnosticClassification(syncPhase, resolvedSeverity, "참조 누락 오류", $"missing_{referenceEntityName.ToLowerInvariant()}", entityName, entityId, referenceEntityName, referenceEntityId, normalized, true, "자동 복구 실행 후 동기화를 다시 시도하세요.");
+        }
+
+        if (detail.Contains("Expected revision mismatch", StringComparison.OrdinalIgnoreCase))
+        {
+            return new SyncDiagnosticClassification(syncPhase, resolvedSeverity, "동시성 충돌", "revision_conflict", entityName, entityId, referenceEntityName, referenceEntityId, normalized, false, "서버와 로컬의 기준 버전이 다릅니다. 미전송 변경과 서버 내용을 비교해 수동으로 확인하세요. 캐시 재구성으로 미전송 변경을 지우지 마세요.");
         }
 
         if (detail.Contains("DbUpdateConcurrencyException", StringComparison.OrdinalIgnoreCase)

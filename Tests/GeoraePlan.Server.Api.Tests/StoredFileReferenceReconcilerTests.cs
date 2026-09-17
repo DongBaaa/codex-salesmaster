@@ -555,33 +555,34 @@ public sealed class StoredFileReferenceReconcilerTests : IDisposable
                 firstDescription,
                 clientAttachmentId,
                 CancellationToken.None);
-            await firstSaveEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
-
-            Microsoft.AspNetCore.Mvc.ActionResult<PaymentAttachmentDto> secondResponse;
+            Task<Microsoft.AspNetCore.Mvc.ActionResult<PaymentAttachmentDto>>? secondUpload = null;
             try
             {
-                secondResponse = await secondController.UploadAttachment(
+                await firstSaveEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                secondUpload = secondController.UploadAttachment(
                     payment.Id,
                     CreatePdfFormFile("second.pdf", "second winner"),
                     "receipt",
                     "second winner",
                     clientAttachmentId,
                     CancellationToken.None);
+                await Task.WhenAny(secondUpload, Task.Delay(100));
             }
             finally
             {
                 releaseFirstSave.TrySetResult();
             }
-            var firstResponse = await firstUpload;
+            var firstResponse = await firstUpload.WaitAsync(TimeSpan.FromSeconds(10));
+            var secondResponse = await secondUpload!.WaitAsync(TimeSpan.FromSeconds(10));
 
             var ok = Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(
-                secondResponse.Result);
+                firstResponse.Result);
             var winner = Assert.IsType<PaymentAttachmentDto>(ok.Value);
             Assert.Equal(clientAttachmentId, winner.Id);
             if (exactReplay)
             {
                 var firstOk = Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(
-                    firstResponse.Result);
+                    secondResponse.Result);
                 var recoveredWinner = Assert.IsType<PaymentAttachmentDto>(firstOk.Value);
                 Assert.Equal(clientAttachmentId, recoveredWinner.Id);
                 Assert.Equal(winner.FileHash, recoveredWinner.FileHash);
@@ -593,7 +594,7 @@ public sealed class StoredFileReferenceReconcilerTests : IDisposable
             else
             {
                 var firstConflict = Assert.IsType<Microsoft.AspNetCore.Mvc.ConflictObjectResult>(
-                    firstResponse.Result);
+                    secondResponse.Result);
                 Assert.Contains(
                     "client_attachment_payload_conflict",
                     System.Text.Json.JsonSerializer.Serialize(firstConflict.Value),
@@ -605,12 +606,12 @@ public sealed class StoredFileReferenceReconcilerTests : IDisposable
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .SingleAsync(current => current.Id == clientAttachmentId);
-            Assert.Equal(2, storage.SavedFileIds.Count);
-            Assert.Equal(2, storage.SavedFileIds.Distinct().Count());
+            Assert.Single(storage.SavedFileIds);
+            Assert.Single(storage.SavedFileIds.Distinct());
             Assert.DoesNotContain(clientAttachmentId, storage.SavedFileIds);
-            Assert.Contains(storage.SavedPaths[0], storage.DeletedPaths);
+            Assert.Empty(storage.DeletedPaths);
             Assert.DoesNotContain(stored.StoragePath, storage.DeletedPaths);
-            Assert.Equal(storage.SavedPaths[1], stored.StoragePath);
+            Assert.Equal(storage.SavedPaths[0], stored.StoragePath);
             Assert.True(FileContentIntegrityVerifier.HasExpectedIntegrity(
                 storage.ReadBytes(stored.StoragePath, stored.FileContent),
                 stored.FileSize,

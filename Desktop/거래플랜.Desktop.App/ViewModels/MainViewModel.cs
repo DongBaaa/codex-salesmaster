@@ -3200,6 +3200,7 @@ public sealed partial class MainViewModel : ObservableObject
     [RelayCommand]
     private async Task PrintStatementAsync()
     {
+        var preparedByOwner = PrintDocumentAuthorization.CaptureOwner(_session);
         try
         {
             var target = StatementInvoice ?? SelectedInvoiceRow;
@@ -3218,11 +3219,11 @@ public sealed partial class MainViewModel : ObservableObject
                 return;
             }
 
-            var customer = _allCustomers.FirstOrDefault(c => c.Id == inv.CustomerId)
-                ?? await _local.GetCustomerAsync(inv.CustomerId);
+            // Recheck server exclusions even when an older customer remains in the screen cache.
+            var customer = await _local.GetCustomerAsync(inv.CustomerId, _session);
             if (customer is null)
             {
-                System.Windows.MessageBox.Show("거래처 정보를 찾을 수 없습니다.", "오류", System.Windows.MessageBoxButton.OK);
+                System.Windows.MessageBox.Show("거래처 정보를 조회할 권한이 없거나 정보를 찾을 수 없습니다.", "출력 불가", System.Windows.MessageBoxButton.OK);
                 return;
             }
 
@@ -3233,6 +3234,7 @@ public sealed partial class MainViewModel : ObservableObject
                 printWithDate: true,
                 printWithPrice: true);
             var previewDocument = _invoicePrintService.BuildFixedDocument(printModel);
+            PrintDocumentAuthorization.Attach(previewDocument, _local.CreateInvoicePrintAuthorization(inv.Id, customer.Id, _session, preparedByOwner));
             var printDocumentName = inv.VoucherType switch
             {
                 VoucherType.Purchase => "매입 명세서",

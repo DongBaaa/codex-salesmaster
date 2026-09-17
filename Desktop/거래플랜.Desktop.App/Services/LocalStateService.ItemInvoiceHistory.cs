@@ -2,8 +2,13 @@ namespace 거래플랜.Desktop.App.Services;
 
 public sealed class DesktopDataChangeNotifier
 {
+    public event EventHandler? CustomerStateChanged;
     public event EventHandler? InventoryStateChanged;
     public event EventHandler? ItemInvoiceHistoryChanged;
+
+    internal bool TryPublishCustomerStateChanged(object sender, Func<bool>? canPublish = null,
+        Func<IDisposable>? enterCallbackScope = null)
+        => TryPublish(CustomerStateChanged, sender, canPublish, enterCallbackScope);
 
     internal bool TryPublishInventoryStateChanged(
         object sender,

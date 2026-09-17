@@ -92,7 +92,7 @@ public sealed class DatabaseInitializationGateMiddlewareTests
     }
 
     [Fact]
-    public void HostedPipeline_AppliesCommonResponseMiddlewareBeforeGate_AndGatesBeforeAuthentication()
+    public void HostedPipeline_GatesBeforeAuthentication_AndAppliesRateLimitsToValidatedIdentity()
     {
         var programSource = File.ReadAllText(Path.Combine(
             FindRepositoryRoot().FullName,
@@ -129,7 +129,7 @@ public sealed class DatabaseInitializationGateMiddlewareTests
         Assert.True(forwardedHeaders >= 0 && forwardedHeaders < securityHeaders);
         Assert.True(securityHeaders < routing);
         Assert.True(routing >= 0 && routing < gate);
-        Assert.True(rateLimiter < 0 || (routing < rateLimiter && rateLimiter < cors));
+        Assert.True(rateLimiter < 0 || (authentication < rateLimiter && rateLimiter < authorization));
         Assert.True(cors >= 0 && cors < gate);
         Assert.True(swagger < 0 || (gate < swagger && swagger < authentication));
         Assert.True(gate < authentication);

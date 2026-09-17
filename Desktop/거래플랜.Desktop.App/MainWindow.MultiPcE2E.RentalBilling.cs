@@ -354,7 +354,8 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(username))
             username = "anonymous";
 
-        return $"Rental.BillingEditorDraft.{officeCode}.{username}".ToUpperInvariant();
+        var databaseName = TenantScopeCatalog.GetDatabaseName(_session.SelectedBusinessDatabaseName);
+        return $"Rental.BillingEditorDraft.{databaseName}.{officeCode}.{username}".ToUpperInvariant();
     }
 
     private static RentalBillingEditorDraftModel? DeserializeMultiPcRentalBillingDraft(string? payload)

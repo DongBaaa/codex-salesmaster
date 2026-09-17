@@ -42,6 +42,79 @@ public sealed class DbInitializerRegressionTests : IDisposable
         _dbContext.Database.EnsureCreated();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RentalLinkageRepair_RepeatedStartupWithItworldOwnerAndUsenetCustomer_DoesNotTouchUnchangedRecords(bool pendingFeeChange)
+    {
+        var customerId = Guid.NewGuid();
+        var profileId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        _dbContext.Customers.Add(new Customer
+        {
+            Id = customerId, TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Startup cross-office customer", NameMatchKey = "STARTUPCROSSOFFICECUSTOMER"
+        });
+        var profile = new RentalBillingProfile
+        {
+            Id = profileId, TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld, ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet, CustomerId = customerId,
+            CustomerName = "Startup cross-office customer", InstallSiteName = "Startup site",
+            ItemName = "Printer", MonthlyAmount = 100000m, BillingTemplateJson = "[]"
+        };
+        var asset = new RentalAsset
+        {
+            Id = assetId, TenantCode = TenantScopeCatalog.Itworld,
+            OfficeCode = OfficeCodeCatalog.Itworld, ManagementCompanyCode = OfficeCodeCatalog.Itworld,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet, CustomerId = customerId,
+            BillingProfileId = profileId, AssetKey = "ITWORLD|STARTUP-IDEMPOTENCY",
+            CustomerName = "Startup cross-office customer", CurrentCustomerName = "Startup cross-office customer",
+            InstallLocation = "Startup site", InstallSiteName = "Startup site", ItemName = "Printer",
+            ManagementNumber = "STARTUP-IDEMPOTENCY", AssetStatus = "ACTIVE", MonthlyFee = 100000m
+        };
+        _dbContext.RentalBillingProfiles.Add(profile);
+        _dbContext.RentalAssets.Add(asset);
+        await _dbContext.SaveChangesAsync();
+        var method = typeof(DbInitializer).GetMethod("RepairRentalCustomerLinkageAsync", BindingFlags.NonPublic | BindingFlags.Static)!;
+        async Task RepairAsync()
+        {
+            await (Task)method.Invoke(null, [_dbContext, CancellationToken.None])!;
+            await _dbContext.SaveChangesAsync();
+        }
+        string Snapshot(object entity) => JsonSerializer.Serialize(_dbContext.Entry(entity).CurrentValues.Properties
+            .OrderBy(p => p.Name).ToDictionary(p => p.Name, p => _dbContext.Entry(entity).CurrentValues[p]));
+
+        await RepairAsync();
+        Assert.Equal(OfficeCodeCatalog.Itworld, profile.OfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, profile.ResponsibleOfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Itworld, asset.OfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Usenet, asset.ResponsibleOfficeCode);
+        var profileBefore = Snapshot(profile);
+        var assetBefore = Snapshot(asset);
+        if (pendingFeeChange)
+        {
+            asset.MonthlyFee = 101000m;
+            asset.UpdatedAtUtc = DateTime.UtcNow;
+        }
+        await Task.Delay(5);
+        await RepairAsync();
+        if (pendingFeeChange)
+        {
+            Assert.Equal(101000m, profile.MonthlyAmount);
+            Assert.Equal(101000m, asset.MonthlyFee);
+            Assert.NotEqual(profileBefore, Snapshot(profile));
+            Assert.NotEqual(assetBefore, Snapshot(asset));
+            profileBefore = Snapshot(profile);
+            assetBefore = Snapshot(asset);
+            await Task.Delay(5);
+            await RepairAsync();
+        }
+        Assert.Equal(profileBefore, Snapshot(profile));
+        Assert.Equal(assetBefore, Snapshot(asset));
+    }
+
     [Fact]
     public void SeedUsersOptions_UpdateExistingAdminPassword_DefaultsToFalse()
     {

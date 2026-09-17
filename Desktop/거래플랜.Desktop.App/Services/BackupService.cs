@@ -134,9 +134,12 @@ public sealed class BackupService
     public IReadOnlyList<BackupSnapshotInfo> GetBackupSnapshots()
     {
         Directory.CreateDirectory(AppPaths.BackupDir);
-        TrimManagedBackups();
+        var verification = new BackupVerificationReuseScope<BackupArtifactVerificationStatus>(
+            path => GetBackupArtifactVerificationStatus(path),
+            BackupArtifactVerificationStatus.Verified);
+        TrimManagedBackups(AppPaths.BackupDir, GetPendingRestoreMarkerPath(), verification);
 
-        return GetVerifiedPublishedBackupFiles(AppPaths.BackupDir)
+        return GetVerifiedPublishedBackupFiles(AppPaths.BackupDir, verification)
             .OrderByDescending(file => file.LastWriteTimeUtc)
             .Select(file => new BackupSnapshotInfo(
                 file.FullName,
@@ -2551,10 +2554,15 @@ public sealed class BackupService
            BackupArtifactVerificationStatus.Verified;
 
     private static BackupArtifactVerificationStatus GetBackupArtifactVerificationStatus(
-        string backupPath)
+        string backupPath,
+        BackupVerificationReuseScope<BackupArtifactVerificationStatus>? verification = null)
     {
         try
         {
+            // Legacy SQLite files can depend on sidecars; only self-contained packages qualify.
+            if (verification is not null &&
+                string.Equals(Path.GetExtension(backupPath), BackupPackageExtension, StringComparison.OrdinalIgnoreCase))
+                return verification.Verify(backupPath);
             if (IsLegacyDatabaseBackup(backupPath))
                 ValidateLegacyDatabaseBackupOrThrow(backupPath);
             else
@@ -2846,13 +2854,19 @@ public sealed class BackupService
     }
 
     internal static IReadOnlyList<FileInfo> GetVerifiedPublishedBackupFiles(string backupDirectory)
+        => GetVerifiedPublishedBackupFiles(backupDirectory, verification: null);
+
+    private static IReadOnlyList<FileInfo> GetVerifiedPublishedBackupFiles(
+        string backupDirectory,
+        BackupVerificationReuseScope<BackupArtifactVerificationStatus>? verification)
     {
         if (!Directory.Exists(backupDirectory))
             return [];
 
         return EnumeratePublishedBackupCandidates(backupDirectory)
             .Select(path => new FileInfo(path))
-            .Where(file => IsVerifiedBackupArtifact(file.FullName))
+            .Where(file => GetBackupArtifactVerificationStatus(file.FullName, verification) ==
+                BackupArtifactVerificationStatus.Verified)
             .ToList();
     }
 
@@ -2887,6 +2901,12 @@ public sealed class BackupService
         => TrimManagedBackups(AppPaths.BackupDir, GetPendingRestoreMarkerPath());
 
     internal static void TrimManagedBackups(string backupDirectory, string markerPath)
+        => TrimManagedBackups(backupDirectory, markerPath, verification: null);
+
+    private static void TrimManagedBackups(
+        string backupDirectory,
+        string markerPath,
+        BackupVerificationReuseScope<BackupArtifactVerificationStatus>? verification)
     {
         Directory.CreateDirectory(backupDirectory);
 
@@ -2899,7 +2919,7 @@ public sealed class BackupService
         var classifiedBackups = backups
             .Select(file => (
                 File: file,
-                Status: GetBackupArtifactVerificationStatus(file.FullName)))
+                Status: GetBackupArtifactVerificationStatus(file.FullName, verification)))
             .ToList();
         var verifiedBackups = classifiedBackups
             .Where(candidate =>

@@ -29,11 +29,15 @@ public sealed class EnvironmentSettingsBackupResponsivenessTests
         Assert.Contains("RunBackupWorkOffUiThreadAsync", asyncListMethod, StringComparison.Ordinal);
         Assert.Contains("GetBackupSnapshots()", asyncListMethod, StringComparison.Ordinal);
 
+        var mainSource = await File.ReadAllTextAsync(Path.Combine(repositoryRoot,
+            "Desktop", "거래플랜.Desktop.App", "ViewModels", "EnvironmentSettingsViewModel.cs"));
+        Assert.Contains("BackupSnapshotReader = () => _backup.GetBackupSnapshotsAsync();", mainSource, StringComparison.Ordinal);
+
         var reloadMethod = GetRequiredBlock(
             viewModelSource,
-            "private async Task ReloadBackupSnapshotsAsync()",
+            "private async Task ReloadBackupSnapshotsCoreAsync()",
             "private async Task CreateBackupSnapshotAsync()");
-        const string awaitedEnumeration = "var snapshots = await _backup.GetBackupSnapshotsAsync();";
+        const string awaitedEnumeration = "var snapshots = await BackupSnapshotReader();";
         Assert.Contains(awaitedEnumeration, reloadMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("_backup.GetBackupSnapshots()", reloadMethod, StringComparison.Ordinal);
         Assert.True(

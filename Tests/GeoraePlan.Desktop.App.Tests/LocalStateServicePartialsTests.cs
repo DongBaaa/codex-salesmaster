@@ -123,8 +123,10 @@ public sealed class LocalStateServicePartialsTests
     [InlineData("old-epoch", true)]
     [InlineData("2026-05-27-rental-asset-mirror", true)]
     [InlineData(" 2026-05-27-rental-asset-mirror ", true)]
-    [InlineData("2026-05-27-lightweight-full-sync-mirror", false)]
-    [InlineData(" 2026-05-27-lightweight-full-sync-mirror ", false)]
+    [InlineData("2026-05-27-lightweight-full-sync-mirror", true)]
+    [InlineData(" 2026-05-27-lightweight-full-sync-mirror ", true)]
+    [InlineData("2026-09-15-received-item-access", false)]
+    [InlineData(" 2026-09-15-received-item-access ", false)]
     public void VersionChangeMaintenance_CacheMirrorRepair_RunsUntilCurrentEpochRecorded(
         string? lastRepairEpoch,
         bool expected)
@@ -365,7 +367,7 @@ public sealed class LocalStateServicePartialsTests
         Assert.Contains("오류 1건, 주의 1건, 참고 1건", message, StringComparison.Ordinal);
         Assert.Contains("모든 업무가 안전하다고 볼 수 없습니다", message, StringComparison.Ordinal);
         Assert.Contains("저장·청구 업무 전", message, StringComparison.Ordinal);
-        Assert.Contains("동기화 진단 > 무결성 리포트", message, StringComparison.Ordinal);
+        Assert.Contains("환경설정 > 동기화 > 운영점검 알림창", message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -383,7 +385,7 @@ public sealed class LocalStateServicePartialsTests
 
         Assert.Contains("오류 0건, 주의 1건, 참고 1건", message, StringComparison.Ordinal);
         Assert.Contains("업무는 계속할 수 있으며", message, StringComparison.Ordinal);
-        Assert.Contains("동기화 진단 > 무결성 리포트", message, StringComparison.Ordinal);
+        Assert.Contains("환경설정 > 동기화 > 운영점검 알림창", message, StringComparison.Ordinal);
         Assert.DoesNotContain("모든 업무가 안전하다고 볼 수 없습니다", message, StringComparison.Ordinal);
     }
 
@@ -2715,8 +2717,11 @@ public sealed class LocalStateServicePartialsTests
         }
     }
 
-    [Fact]
-    public async Task RentalStateService_SaveAsset_AdminCanSaveItworldAssetScope()
+    [Theory]
+    [InlineData(TenantScopeCatalog.ScopeAdmin, true)]
+    [InlineData(TenantScopeCatalog.ScopeTenantAll, false)]
+    [InlineData(TenantScopeCatalog.ScopeOfficeOnly, false)]
+    public async Task RentalStateService_SaveAsset_AdminScopeControlsForeignTenantCreation(string scope, bool canSave)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-rental-asset-itworld-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -2735,7 +2740,7 @@ public sealed class LocalStateServicePartialsTests
                 Role = DomainConstants.RoleAdmin,
                 TenantCode = TenantScopeCatalog.UsenetGroup,
                 OfficeCode = OfficeCodeCatalog.Usenet,
-                ScopeType = TenantScopeCatalog.ScopeOfficeOnly
+                ScopeType = scope
             });
 
             var service = new RentalStateService(db);
@@ -2757,7 +2762,14 @@ public sealed class LocalStateServicePartialsTests
                 BillingEligibilityStatus = "미확인"
             }, session);
 
-            Assert.True(result.Success, result.Message);
+            Assert.Equal(canSave, result.Success);
+            if (!canSave)
+            {
+                Assert.Contains("권한", result.Message);
+                Assert.Empty(await db.RentalAssets.IgnoreQueryFilters().ToListAsync());
+                Assert.Empty(await db.SyncOutboxEntries.ToListAsync());
+                return;
+            }
 
             var persisted = await db.RentalAssets.IgnoreQueryFilters().SingleAsync(asset => asset.Id == assetId);
             Assert.Equal(OfficeCodeCatalog.Itworld, persisted.ResponsibleOfficeCode);
@@ -4813,8 +4825,10 @@ public sealed class LocalStateServicePartialsTests
         }
     }
 
-    [Fact]
-    public async Task SyncService_PrepareGenericRevisionRetry_RebasesRentalBillingProfileAndRequeuesOutbox()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SyncService_PrepareGenericRevisionRetry_PreservesReceiptUntilAuthoritativeReconciliation(bool differentPayload)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-generic-rental-profile-retry-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -4899,9 +4913,12 @@ public sealed class LocalStateServicePartialsTests
             var serverSnapshot = LocalMappings.ToDto(profile);
             serverSnapshot.Revision = serverRevision;
             serverSnapshot.UpdatedAtUtc = updatedAtUtc.AddMinutes(-10);
-            serverSnapshot.MonthlyAmount = 120_000m;
-            serverSnapshot.OutstandingAmount = 120_000m;
-            serverSnapshot.Notes = "서버에 먼저 저장된 이전 메모";
+            if (differentPayload)
+                serverSnapshot.MonthlyAmount = 120_000m;
+            if (differentPayload)
+                serverSnapshot.OutstandingAmount = 120_000m;
+            if (differentPayload)
+                serverSnapshot.Notes = "서버에 먼저 저장된 이전 메모";
 
             var conflict = new ConflictLogDto
             {
@@ -4937,21 +4954,17 @@ public sealed class LocalStateServicePartialsTests
                 session,
                 CancellationToken.None);
 
-            Assert.NotNull(prepared);
-            Assert.Single(prepared!);
-
-            var storedProfile = await db.RentalBillingProfiles.IgnoreQueryFilters()
-                .SingleAsync(current => current.Id == profileId);
-            var outboxRow = await db.SyncOutboxEntries.AsNoTracking()
-                .SingleAsync(entry => entry.EntityName == nameof(LocalRentalBillingProfile) && entry.EntityId == profileId);
-
-            Assert.Equal(serverRevision, storedProfile.Revision);
-            Assert.True(storedProfile.IsDirty);
-            Assert.Equal(150_000m, storedProfile.MonthlyAmount);
-            Assert.Equal("로컬에서 월요금과 메모를 수정", storedProfile.Notes);
-            Assert.Equal("Prepared", outboxRow.Status);
-            Assert.Null(outboxRow.SentAtUtc);
-            Assert.Equal(serverRevision, outboxRow.ExpectedRevision);
+            Assert.Equal(!differentPayload, InvokePrivateStatic<bool>(typeof(SyncService), "IsEquivalentRevisionConflict", conflict));
+            {
+                Assert.Empty(prepared!);
+                var preserved = await db.Set<LocalRentalBillingProfile>().IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == profileId);
+                Assert.Equal(localRevision, preserved.Revision);
+                Assert.True(preserved.IsDirty);
+                var pending = await db.SyncOutboxEntries.AsNoTracking().SingleAsync(x => x.EntityId == profileId);
+                Assert.Equal("Sent", pending.Status);
+                Assert.Equal(localRevision, pending.ExpectedRevision);
+                Assert.Equal(clientSnapshot.MutationId, pending.MutationId);
+            }
         }
         finally
         {
@@ -5350,7 +5363,8 @@ public sealed class LocalStateServicePartialsTests
             }
             else
             {
-                Assert.True(synced);
+                // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+                Assert.False(synced, await SyncAttemptCompletionTests.DescribeAsync(sync));
                 Assert.True(
                     handler.Operations.Count >= 4,
                     $"operations={string.Join(",", handler.Operations)}");
@@ -6490,7 +6504,8 @@ public sealed class LocalStateServicePartialsTests
                 dispatcher,
                 new SyncDiagnosticsService(session));
 
-            Assert.True(await sync.TrySyncAsync());
+            // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+            Assert.False(await sync.TrySyncAsync(), await SyncAttemptCompletionTests.DescribeAsync(sync));
 
             Assert.Equal(
                 ["push:1", "pull:1", "pull:2"],
@@ -6994,8 +7009,12 @@ public sealed class LocalStateServicePartialsTests
         Assert.Null(arguments[2]);
     }
 
-    [Fact]
-    public async Task SyncService_PrepareCustomerRevisionRetry_RebasesRevisionAndRequeuesOutbox()
+    [Theory]
+    [InlineData(false, 150L)]
+    [InlineData(true, 150L)]
+    [InlineData(false, 250L)]
+    [InlineData(true, 250L)]
+    public async Task SyncService_PrepareCustomerRevisionRetry_PreservesOriginalReceiptAndDifferentPayload(bool differentPayload, long serverRevision)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-customer-retry-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -7009,7 +7028,6 @@ public sealed class LocalStateServicePartialsTests
 
             var customerId = Guid.Parse("70222222-2222-2222-2222-222222222222");
             var localRevision = 200L;
-            var serverRevision = 150L;
             var updatedAtUtc = new DateTime(2026, 5, 27, 10, 30, 0, DateTimeKind.Utc);
             const string deviceId = "DESKTOP-VGCK877:sync-test";
 
@@ -7062,7 +7080,8 @@ public sealed class LocalStateServicePartialsTests
             var serverSnapshot = LocalMappings.ToDto(customer);
             serverSnapshot.Revision = serverRevision;
             serverSnapshot.UpdatedAtUtc = updatedAtUtc.AddMinutes(-5);
-            serverSnapshot.Phone = "032-000-0000";
+            if (differentPayload)
+                serverSnapshot.Phone = "032-000-0000";
 
             var conflict = new ConflictLogDto
             {
@@ -7098,19 +7117,15 @@ public sealed class LocalStateServicePartialsTests
                 session,
                 CancellationToken.None);
 
-            Assert.True(prepared);
-
-            var storedCustomer = await db.Customers.IgnoreQueryFilters()
-                .SingleAsync(current => current.Id == customerId);
-            var outboxRow = await db.SyncOutboxEntries.AsNoTracking()
-                .SingleAsync(entry => entry.EntityName == nameof(LocalCustomer) && entry.EntityId == customerId);
-
-            Assert.Equal(serverRevision, storedCustomer.Revision);
-            Assert.True(storedCustomer.IsDirty);
-            Assert.Equal("로컬에서 수정한 거래처 메모", storedCustomer.Notes);
-            Assert.Equal("Prepared", outboxRow.Status);
-            Assert.Null(outboxRow.SentAtUtc);
-            Assert.Equal(serverRevision, outboxRow.ExpectedRevision);
+            Assert.False(prepared);
+            var preserved = await db.Set<LocalCustomer>().IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == customerId);
+            Assert.Equal(localRevision, preserved.Revision);
+            Assert.True(preserved.IsDirty);
+            var pending = await db.SyncOutboxEntries.AsNoTracking().SingleAsync(x => x.EntityId == customerId);
+            Assert.Equal("Sent", pending.Status);
+            Assert.Equal(localRevision, pending.ExpectedRevision);
+            Assert.Equal(clientSnapshot.MutationId, pending.MutationId);
+            Assert.Equal(updatedAtUtc.AddMinutes(1), pending.SentAtUtc);
         }
         finally
         {
@@ -7119,8 +7134,10 @@ public sealed class LocalStateServicePartialsTests
         }
     }
 
-    [Fact]
-    public async Task SyncService_PrepareInvoiceRevisionRetry_RebasesRevisionAndRequeuesOutbox()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SyncService_PrepareInvoiceRevisionRetry_RebasesOnlyEquivalentPayloadRevisionAndRequeuesOutbox(bool differentPayload)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-invoice-retry-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -7223,7 +7240,8 @@ public sealed class LocalStateServicePartialsTests
             var serverSnapshot = LocalMappings.ToDto(invoice);
             serverSnapshot.Revision = serverRevision;
             serverSnapshot.UpdatedAtUtc = updatedAtUtc.AddMinutes(-5);
-            serverSnapshot.Memo = "서버에 먼저 저장된 전표 메모";
+            if (differentPayload)
+                serverSnapshot.Memo = "서버에 먼저 저장된 전표 메모";
 
             var conflict = new ConflictLogDto
             {
@@ -7259,6 +7277,19 @@ public sealed class LocalStateServicePartialsTests
                 session,
                 CancellationToken.None);
 
+            if (differentPayload)
+            {
+                Assert.False(prepared);
+                var preserved = await db.Set<LocalInvoice>().IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == invoiceId);
+                Assert.Equal(localRevision, preserved.Revision);
+                Assert.True(preserved.IsDirty);
+                var pending = await db.SyncOutboxEntries.AsNoTracking().SingleAsync(x => x.EntityId == invoiceId);
+                Assert.Equal("Sent", pending.Status);
+                Assert.Equal(localRevision, pending.ExpectedRevision);
+                Assert.Equal(clientSnapshot.MutationId, pending.MutationId);
+                return;
+            }
+
             Assert.True(prepared);
 
             var storedInvoice = await db.Invoices.IgnoreQueryFilters()
@@ -7293,8 +7324,10 @@ public sealed class LocalStateServicePartialsTests
         }
     }
 
-    [Fact]
-    public async Task SyncService_PreparePaymentRevisionRetry_RebasesRevisionAndRequeuesOutbox()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SyncService_PreparePaymentRevisionRetry_RebasesOnlyEquivalentPayloadRevisionAndRequeuesOutbox(bool differentPayload)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-payment-retry-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -7395,7 +7428,8 @@ public sealed class LocalStateServicePartialsTests
             var serverSnapshot = LocalMappings.ToDto(payment);
             serverSnapshot.Revision = serverRevision;
             serverSnapshot.UpdatedAtUtc = updatedAtUtc.AddMinutes(-5);
-            serverSnapshot.Note = "서버에 먼저 저장된 수금 메모";
+            if (differentPayload)
+                serverSnapshot.Note = "서버에 먼저 저장된 수금 메모";
 
             var conflict = new ConflictLogDto
             {
@@ -7431,6 +7465,19 @@ public sealed class LocalStateServicePartialsTests
                 session,
                 CancellationToken.None);
 
+            if (differentPayload)
+            {
+                Assert.False(prepared);
+                var preserved = await db.Set<LocalPayment>().IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == paymentId);
+                Assert.Equal(localRevision, preserved.Revision);
+                Assert.True(preserved.IsDirty);
+                var pending = await db.SyncOutboxEntries.AsNoTracking().SingleAsync(x => x.EntityId == paymentId);
+                Assert.Equal("Sent", pending.Status);
+                Assert.Equal(localRevision, pending.ExpectedRevision);
+                Assert.Equal(clientSnapshot.MutationId, pending.MutationId);
+                return;
+            }
+
             Assert.True(prepared);
 
             var storedPayment = await db.Payments.IgnoreQueryFilters()
@@ -7463,8 +7510,10 @@ public sealed class LocalStateServicePartialsTests
         }
     }
 
-    [Fact]
-    public async Task SyncService_PrepareTransactionRevisionRetry_RebasesRevisionAndRequeuesOutbox()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SyncService_PrepareTransactionRevisionRetry_RebasesOnlyEquivalentPayloadRevisionAndRequeuesOutbox(bool differentPayload)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-transaction-retry-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -7574,7 +7623,8 @@ public sealed class LocalStateServicePartialsTests
             var serverSnapshot = LocalMappings.ToDto(transaction);
             serverSnapshot.Revision = serverRevision;
             serverSnapshot.UpdatedAtUtc = updatedAtUtc.AddMinutes(-5);
-            serverSnapshot.Memo = "서버에 먼저 저장된 거래내역 메모";
+            if (differentPayload)
+                serverSnapshot.Memo = "서버에 먼저 저장된 거래내역 메모";
 
             var conflict = new ConflictLogDto
             {
@@ -7610,6 +7660,19 @@ public sealed class LocalStateServicePartialsTests
                 session,
                 CancellationToken.None);
 
+            if (differentPayload)
+            {
+                Assert.False(prepared);
+                var preserved = await db.Set<LocalTransaction>().IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == transactionId);
+                Assert.Equal(localRevision, preserved.Revision);
+                Assert.True(preserved.IsDirty);
+                var pending = await db.SyncOutboxEntries.AsNoTracking().SingleAsync(x => x.EntityId == transactionId);
+                Assert.Equal("Sent", pending.Status);
+                Assert.Equal(localRevision, pending.ExpectedRevision);
+                Assert.Equal(clientSnapshot.MutationId, pending.MutationId);
+                return;
+            }
+
             Assert.True(prepared);
 
             var storedTransaction = await db.Transactions.IgnoreQueryFilters()
@@ -7642,8 +7705,10 @@ public sealed class LocalStateServicePartialsTests
         }
     }
 
-    [Fact]
-    public async Task SyncService_PrepareTransactionAttachmentRevisionRetry_RebasesRevisionAndRequeuesOutbox()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SyncService_PrepareTransactionAttachmentRevisionRetry_RebasesOnlyEquivalentPayloadRevisionAndRequeuesOutbox(bool differentPayload)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-transaction-attachment-retry-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -7749,7 +7814,8 @@ public sealed class LocalStateServicePartialsTests
             var serverSnapshot = LocalMappings.ToDto(attachment, Encoding.UTF8.GetBytes("server copy"));
             serverSnapshot.Revision = serverRevision;
             serverSnapshot.UpdatedAtUtc = updatedAtUtc.AddMinutes(-5);
-            serverSnapshot.Description = "서버에 먼저 저장된 증빙 설명";
+            if (differentPayload)
+                serverSnapshot.Description = "서버에 먼저 저장된 증빙 설명";
 
             var conflict = new ConflictLogDto
             {
@@ -7785,6 +7851,19 @@ public sealed class LocalStateServicePartialsTests
                 session,
                 CancellationToken.None);
 
+            if (differentPayload)
+            {
+                Assert.False(prepared);
+                var preserved = await db.Set<LocalTransactionAttachment>().IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == attachmentId);
+                Assert.Equal(localRevision, preserved.Revision);
+                Assert.True(preserved.IsDirty);
+                var pending = await db.SyncOutboxEntries.AsNoTracking().SingleAsync(x => x.EntityId == attachmentId);
+                Assert.Equal("Sent", pending.Status);
+                Assert.Equal(localRevision, pending.ExpectedRevision);
+                Assert.Equal(clientSnapshot.MutationId, pending.MutationId);
+                return;
+            }
+
             Assert.True(prepared);
 
             var storedAttachment = await db.TransactionAttachments.IgnoreQueryFilters()
@@ -7817,8 +7896,10 @@ public sealed class LocalStateServicePartialsTests
         }
     }
 
-    [Fact]
-    public async Task SyncService_PrepareInventoryTransferRevisionRetry_RebasesRevisionAndRequeuesOutbox()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SyncService_PrepareInventoryTransferRevisionRetry_RebasesOnlyEquivalentPayloadRevisionAndRequeuesOutbox(bool differentPayload)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-inventory-transfer-retry-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -7917,7 +7998,8 @@ public sealed class LocalStateServicePartialsTests
             var serverSnapshot = LocalMappings.ToDto(transfer);
             serverSnapshot.Revision = serverRevision;
             serverSnapshot.UpdatedAtUtc = updatedAtUtc.AddMinutes(-5);
-            serverSnapshot.Memo = "서버에 먼저 저장된 재고이동 메모";
+            if (differentPayload)
+                serverSnapshot.Memo = "서버에 먼저 저장된 재고이동 메모";
 
             var conflict = new ConflictLogDto
             {
@@ -7952,6 +8034,19 @@ public sealed class LocalStateServicePartialsTests
                 deviceId,
                 session,
                 CancellationToken.None);
+
+            if (differentPayload)
+            {
+                Assert.False(prepared);
+                var preserved = await db.Set<LocalInventoryTransfer>().IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == transferId);
+                Assert.Equal(localRevision, preserved.Revision);
+                Assert.True(preserved.IsDirty);
+                var pending = await db.SyncOutboxEntries.AsNoTracking().SingleAsync(x => x.EntityId == transferId);
+                Assert.Equal("Sent", pending.Status);
+                Assert.Equal(localRevision, pending.ExpectedRevision);
+                Assert.Equal(clientSnapshot.MutationId, pending.MutationId);
+                return;
+            }
 
             Assert.True(prepared);
 
@@ -8611,6 +8706,7 @@ public sealed class LocalStateServicePartialsTests
                 OfficeCode = OfficeCodeCatalog.Usenet,
                 NameOriginal = "전표 purge 고아 품목",
                 NameMatchKey = "전표purge고아품목",
+                IsDirty = false,
                 TrackingType = ItemTrackingTypes.Stock,
                 Unit = "EA",
                 PurchasePrice = 1000m,
@@ -8729,8 +8825,12 @@ public sealed class LocalStateServicePartialsTests
             Assert.False(await db.InventoryMovements.AnyAsync(movement => movement.InvoiceId == invoiceId));
             Assert.False(await db.StockLayers.AnyAsync(layer => layer.SourceInvoiceId == invoiceId));
             Assert.False(await db.CostAllocations.AnyAsync(cost => cost.SalesInvoiceId == invoiceId || cost.PurchaseInvoiceId == invoiceId));
-            Assert.False(await db.ItemWarehouseStocks.AnyAsync(stock => stock.ItemId == itemId));
-            Assert.Equal(0m, (await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == itemId)).CurrentStock);
+            // A warehouse baseline has no invoice FK. Missing local history cannot
+            // establish that this stock belongs to the purged invoice.
+            Assert.Equal(1m, (await db.ItemWarehouseStocks.SingleAsync(stock => stock.ItemId == itemId)).Quantity);
+            var preservedItem = await db.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == itemId);
+            Assert.Equal(1m, preservedItem.CurrentStock);
+            Assert.False(preservedItem.IsDirty);
         }
         finally
         {
@@ -10023,10 +10123,12 @@ public sealed class LocalStateServicePartialsTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
     public async Task SyncService_TryPrepareItemRevisionRetryAsync_RebasesItemCatalogExtensionWireShapeAndRequeuesOutbox(
-        bool catalogExtensionSyncPending)
+        bool catalogExtensionSyncPending, bool differentPayload)
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-sync-item-retry-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempRoot);
@@ -10115,8 +10217,17 @@ public sealed class LocalStateServicePartialsTests
             await db.SaveChangesAsync();
 
             var serverSnapshot = LocalMappings.ToDto(item);
-            serverSnapshot.CategoryName = string.Empty;
-            serverSnapshot.Unit = string.Empty;
+            if (differentPayload) serverSnapshot.CategoryName = string.Empty;
+            if (differentPayload) serverSnapshot.Unit = string.Empty;
+            if (!catalogExtensionSyncPending)
+            {
+                serverSnapshot.BoxQuantity = 25m;
+                serverSnapshot.StorageLocation = "Peer warehouse extension";
+                serverSnapshot.LastPurchaseDate = DateOnly.FromDateTime(serverUpdatedAtUtc.AddDays(-1));
+                serverSnapshot.LastPurchaseDateSpecified = true;
+                serverSnapshot.LastSaleDate = DateOnly.FromDateTime(serverUpdatedAtUtc.AddDays(-2));
+                serverSnapshot.LastSaleDateSpecified = true;
+            }
             serverSnapshot.Revision = serverRevision;
             serverSnapshot.UpdatedAtUtc = serverUpdatedAtUtc;
             serverSnapshot.ExpectedRevision = 0;
@@ -10157,6 +10268,19 @@ public sealed class LocalStateServicePartialsTests
                 deviceId,
                 session,
                 CancellationToken.None);
+
+            if (differentPayload)
+            {
+                Assert.False(prepared);
+                var preserved = await db.Items.AsNoTracking().SingleAsync(x => x.Id == itemId);
+                Assert.Equal(localRevision, preserved.Revision);
+                Assert.True(preserved.IsDirty);
+                var pending = await db.SyncOutboxEntries.AsNoTracking().SingleAsync(x => x.EntityId == itemId);
+                Assert.Equal(localRevision, pending.ExpectedRevision);
+                Assert.Equal("Sent", pending.Status);
+                Assert.Equal(clientSnapshot.MutationId, pending.MutationId);
+                return;
+            }
 
             Assert.True(prepared);
 

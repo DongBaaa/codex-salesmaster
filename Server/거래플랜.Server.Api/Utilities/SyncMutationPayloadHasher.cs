@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Server.Api.Utilities;
@@ -8,6 +9,7 @@ namespace 거래플랜.Server.Api.Utilities;
 public static class SyncMutationPayloadHasher
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions CanonicalSerializerOptions = CreateCanonicalSerializerOptions();
 
     public static string Compute(SyncEntityDto dto)
     {
@@ -15,7 +17,8 @@ public static class SyncMutationPayloadHasher
         return ComputeWithMutationId(
             dto,
             ProcessedSyncMutationRecorder.NormalizeMutationId(dto.MutationId),
-            canonicalizeSemanticPayload: true);
+            canonicalizeSemanticPayload: true,
+            canonicalizeUtcTimestamps: true);
     }
 
     public static bool Matches(
@@ -79,17 +82,33 @@ public static class SyncMutationPayloadHasher
                 ComputeWithMutationId(
                     dto,
                     trimmedLegacyMutationId,
-                    canonicalizeSemanticPayload: true),
+                    canonicalizeSemanticPayload: true,
+                    canonicalizeUtcTimestamps: true),
                 StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
 
-        // 기존 receipt는 파생 표시값/중복 자식 컬렉션까지 포함한 전체 DTO를 해시했다.
-        // 전환 이후에도 동일한 과거 payload 재전송은 계속 인정한다.
+        // UTC 표기를 정규화하기 전의 의미 기반 해시와, 파생 표시값까지 포함한
+        // 더 오래된 전체 DTO 해시를 보존한다. 과거 payload의 정확한 재전송만
+        // 대조하며 기존 receipt를 추정하여 다시 쓰지는 않는다.
         var normalizedMutationId =
             ProcessedSyncMutationRecorder.NormalizeMutationId(dto.MutationId);
         var legacyPayloadMatches = string.Equals(
+                   storedPayloadHash,
+                   ComputeWithMutationId(
+                       dto,
+                       normalizedMutationId,
+                       canonicalizeSemanticPayload: true),
+                   StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(
+                   storedPayloadHash,
+                   ComputeWithMutationId(
+                       dto,
+                       trimmedLegacyMutationId,
+                       canonicalizeSemanticPayload: true),
+                   StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(
                    storedPayloadHash,
                    ComputeWithMutationId(
                        dto,
@@ -184,12 +203,13 @@ public static class SyncMutationPayloadHasher
     private static string ComputeWithMutationId(
         SyncEntityDto dto,
         string mutationId,
-        bool canonicalizeSemanticPayload)
+        bool canonicalizeSemanticPayload,
+        bool canonicalizeUtcTimestamps = false)
     {
         var canonicalPayload = JsonSerializer.SerializeToNode(
             dto,
             dto.GetType(),
-            SerializerOptions);
+            canonicalizeUtcTimestamps ? CanonicalSerializerOptions : SerializerOptions);
         if (canonicalPayload is JsonObject payloadObject)
         {
             if (canonicalizeSemanticPayload)
@@ -207,6 +227,29 @@ public static class SyncMutationPayloadHasher
         }
 
         return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+    }
+
+    private static JsonSerializerOptions CreateCanonicalSerializerOptions()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        options.Converters.Add(new UtcDateTimeHashConverter());
+        return options;
+    }
+
+    private sealed class UtcDateTimeHashConverter : JsonConverter<DateTime>
+    {
+        public override DateTime Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+            => throw new NotSupportedException("This converter is only used to write mutation hashes.");
+
+        public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options)
+        {
+            // Sync DTO DateTime fields represent UTC instants. Unspecified values
+            // follow the same UTC convention as server conflict normalization.
+            var utc = value.Kind == DateTimeKind.Local
+                ? value.ToUniversalTime()
+                : DateTime.SpecifyKind(value, DateTimeKind.Utc);
+            writer.WriteStringValue(utc);
+        }
     }
 
     private static void CanonicalizeSemanticPayload(

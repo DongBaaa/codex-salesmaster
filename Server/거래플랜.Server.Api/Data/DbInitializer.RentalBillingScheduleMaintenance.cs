@@ -48,11 +48,11 @@ public static partial class DbInitializer
             }
 
             var normalizedCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(profile.BillingCycleMonths);
-            var shouldTreatAsEndOfMonth = profile.BillingDay == 31 || string.Equals((profile.BillingDayMode ?? string.Empty).Trim(), RentalBillingScheduleRules.BillingDayModeEndOfMonth, StringComparison.Ordinal);
+            var shouldTreatAsEndOfMonth = !RentalBillingScheduleRules.IsNoFixedBillingDay(profile.BillingDayMode) && (profile.BillingDay == 31 || string.Equals((profile.BillingDayMode ?? string.Empty).Trim(), RentalBillingScheduleRules.BillingDayModeEndOfMonth, StringComparison.Ordinal));
             profile.BillingDayMode = shouldTreatAsEndOfMonth
                 ? RentalBillingScheduleRules.BillingDayModeEndOfMonth
                 : RentalBillingScheduleRules.NormalizeBillingDayMode(profile.BillingDayMode);
-            profile.BillingDay = RentalBillingScheduleRules.NormalizeBillingDay(profile.BillingDay);
+            profile.BillingDay = RentalBillingScheduleRules.NormalizeBillingDay(profile.BillingDay, profile.BillingDayMode);
             profile.BillingCycleMonths = normalizedCycleMonths;
             profile.BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
                 normalizedCycleMonths,

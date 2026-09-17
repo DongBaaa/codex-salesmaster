@@ -1,5 +1,6 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
+using 거래플랜.Desktop.App.Data;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using 거래플랜.Desktop.App.Infrastructure;
@@ -54,6 +55,7 @@ public sealed partial class CustomerManagementViewModel : ObservableObject, IDis
         _selectedOfficeFilter = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(_session.OfficeCode, DomainConstants.OfficeUsenet);
         SortOptions.Add(SortByNameOption);
         SortOptions.Add(SortByOfficeOption);
+        SubscribeCustomerChanges();
     }
 
     public void Dispose()
@@ -62,13 +64,24 @@ public sealed partial class CustomerManagementViewModel : ObservableObject, IDis
             return;
 
         _isDisposed = true;
+        _local.CustomerStateChanged -= OnCustomerStateChanged;
+        _session.BusinessDatabaseChanged -= OnCustomerStateChanged;
         _filterDebouncer.Dispose();
         DetachRowHandlers();
     }
 
     public async Task InitializeAsync()
     {
-        await ReloadAsync();
+        try
+        {
+            await ReloadAsync();
+        }
+        catch
+        {
+            // Some callers load before creating a window and its Closed handler.
+            Dispose();
+            throw;
+        }
     }
 
     [RelayCommand]
@@ -77,39 +90,57 @@ public sealed partial class CustomerManagementViewModel : ObservableObject, IDis
         if (_isDisposed)
             return;
 
-        IsBusy = true;
+        await _officeSaveLock.WaitAsync();
         try
         {
-            await _local.EnsureCustomerCategoryIntegrityAsync();
-            await ReloadOfficeCodesAsync();
-            await ReloadCategoryFiltersAsync();
+            if (_isDisposed) return;
+            if (!IsCustomerOwnerCurrent) { InvalidateCustomerList(); return; }
+            IsBusy = true;
+            await _local.OwnerScopeDataGate.WaitAsync();
+            try
+            {
+                if (_isDisposed) return;
+                if (!IsCustomerOwnerCurrent) { InvalidateCustomerList(); return; }
+                var offices = await _local.GetOfficesAsync();
+                var categories = await _local.GetCategoriesAsync();
 
-            var customers = _session.HasGlobalDataScope
-                ? await _local.GetCustomersAsync()
-                : await _local.GetCustomersAsync(_session);
-            _contractSummaryMap = await _local.GetCustomerContractSummaryMapAsync(_session, ContractAlertWindowDays);
-            var alertItems = await _local.GetCustomerContractAlertsAsync(_session, ContractAlertWindowDays);
+                var customers = _session.HasGlobalDataScope
+                    ? await _local.GetCustomersAsync()
+                    : await _local.GetCustomersAsync(_session);
+                var contractSummaries = await _local.GetCustomerContractSummaryMapAsync(_session, ContractAlertWindowDays);
+                var alertItems = await _local.GetCustomerContractAlertsAsync(_session, ContractAlertWindowDays);
 
-            if (_isDisposed)
-                return;
+                if (_isDisposed)
+                    return;
 
-            DetachRowHandlers();
-            _allRows.Clear();
-            _allRows.AddRange(customers.Select(customer => new EnvironmentCustomerRow(
-                customer,
-                ResolveCategoryName(customer.CategoryId, customer.TradeType),
-                ResolveContractSummary(customer.Id))));
-            if (!_isDisposed)
-                AttachRowHandlers();
-            ReloadOfficeFilters();
-            RefreshContractAlertState(alertItems);
-            ApplyFilter();
-            StatusMessage = BuildStatusMessage();
+                if (!IsCustomerOwnerCurrent) { InvalidateCustomerList(); return; }
+                IsRefreshingRows = true;
+                ReloadOfficeCodes(offices);
+                ReloadCategoryFilters(categories);
+                _contractSummaryMap = contractSummaries;
+                var drafts = _allRows.Where(row => row.IsModified).ToDictionary(row => row.Id);
+                DetachRowHandlers();
+                _allRows.Clear();
+                _allRows.AddRange(customers.Select(customer => drafts.TryGetValue(customer.Id, out var draft)
+                    ? draft
+                    : new EnvironmentCustomerRow(
+                        customer,
+                        ResolveCategoryName(customer.CategoryId, customer.TradeType),
+                        ResolveContractSummary(customer.Id))));
+                if (!_isDisposed)
+                    AttachRowHandlers();
+                ReloadOfficeFilters();
+                RefreshContractAlertState(alertItems);
+                ApplyFilter();
+                StatusMessage = BuildStatusMessage();
+            }
+            finally { IsRefreshingRows = false; _local.OwnerScopeDataGate.Release(); }
         }
         finally
         {
             if (!_isDisposed)
                 IsBusy = false;
+            _officeSaveLock.Release();
         }
     }
 
@@ -151,7 +182,8 @@ public sealed partial class CustomerManagementViewModel : ObservableObject, IDis
         await _officeSaveLock.WaitAsync();
         try
         {
-            var pending = targets.Where(row => row.IsModified).ToList();
+            if (_isDisposed || !IsCustomerOwnerCurrent) return;
+            var pending = targets.Where(row => row.IsModified && _allRows.Contains(row)).ToList();
             if (pending.Count == 0)
             {
                 if (!immediate)
@@ -212,10 +244,9 @@ public sealed partial class CustomerManagementViewModel : ObservableObject, IDis
         ApplyFilter();
     }
 
-    private async Task ReloadOfficeCodesAsync()
+    private void ReloadOfficeCodes(IReadOnlyList<LocalOffice> offices)
     {
         OfficeCodes.Clear();
-        var offices = await _local.GetOfficesAsync();
         var readableOfficeCodes = _local.GetReadableOfficeCodesForSession(_session)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var officeCode in offices
@@ -275,9 +306,8 @@ public sealed partial class CustomerManagementViewModel : ObservableObject, IDis
         SelectedOfficeFilter = selectedFilter;
     }
 
-    private async Task ReloadCategoryFiltersAsync()
+    private void ReloadCategoryFilters(IReadOnlyList<LocalCustomerCategory> categories)
     {
-        var categories = await _local.GetCategoriesAsync();
 
         _categoryNames = categories
             .Where(category => !string.IsNullOrWhiteSpace(category.Name))
@@ -291,13 +321,15 @@ public sealed partial class CustomerManagementViewModel : ObservableObject, IDis
             .OrderBy(name => name, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
 
+        var selectedFilter = SelectedCategoryFilter;
         CategoryFilters.Clear();
         CategoryFilters.Add(AllCategoriesOption);
         foreach (var item in filterItems)
             CategoryFilters.Add(item);
 
-        if (!CategoryFilters.Contains(SelectedCategoryFilter, StringComparer.CurrentCultureIgnoreCase))
-            SelectedCategoryFilter = AllCategoriesOption;
+        SelectedCategoryFilter = CategoryFilters.Contains(selectedFilter, StringComparer.CurrentCultureIgnoreCase)
+            ? selectedFilter
+            : AllCategoriesOption;
     }
 
     private void ApplyFilter()
@@ -401,19 +433,18 @@ public sealed partial class CustomerManagementViewModel : ObservableObject, IDis
 
         OnPropertyChanged(nameof(HasContractAlerts));
 
-        CustomersWithContractsCount = _contractSummaryMap.Values.Count(summary => summary.ContractCount > 0);
+        CustomersWithContractsCount = _contractSummaryMap.Values.Count(summary => summary.RegisteredFileCount > 0);
         ExpiredContractCount = _contractSummaryMap.Values.Count(summary => summary.HasExpiredContract);
         ExpiringSoonContractCount = _contractSummaryMap.Values.Count(summary => summary.ExpiringSoonCount > 0);
-        ContractAlertSummary = ContractAlerts.Count == 0
-            ? "계약서 만료 알림이 없습니다."
-            : $"계약서 보유 거래처 {CustomersWithContractsCount:N0}곳 / 만료 계약 {ExpiredContractCount:N0}곳 / {ContractAlertWindowDays}일 내 만료 예정 {ExpiringSoonContractCount:N0}곳";
+        ContractAlertSummary = CustomerContractSummaryFormatter.Format(
+            _contractSummaryMap.Values, ContractAlerts, ContractAlertWindowDays);
     }
 
     private string BuildStatusMessage()
     {
         var baseText = $"거래처 {_allRows.Count:N0}건을 불러왔습니다.";
         return ContractAlerts.Count == 0
-            ? $"{baseText} 계약서 알림은 없습니다."
+            ? baseText
             : $"{baseText} 만료 계약 {ExpiredContractCount:N0}곳, {ContractAlertWindowDays}일 내 만료 예정 {ExpiringSoonContractCount:N0}곳입니다.";
     }
 

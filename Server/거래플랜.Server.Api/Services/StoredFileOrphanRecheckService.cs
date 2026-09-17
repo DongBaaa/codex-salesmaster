@@ -359,19 +359,68 @@ internal static class StoredFileDirectoryDurability
 
         if (OperatingSystem.IsLinux())
         {
-            using var handle = File.OpenHandle(
-                fullPath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete,
-                FileOptions.None);
-            RandomAccess.FlushToDisk(handle);
+            FlushLinuxDirectory(fullPath);
             return;
         }
 
         throw new PlatformNotSupportedException(
             "Stored-file directory durability is supported only on Windows and Linux.");
     }
+
+    private static void FlushLinuxDirectory(string directoryPath)
+    {
+        // File.OpenHandle rejects directories on Unix. Open a directory descriptor
+        // without following a final symlink, and do not inherit it in child processes.
+        var (directoryOnly, noFollow) = RuntimeInformation.ProcessArchitecture switch
+        {
+            Architecture.X86 or Architecture.X64 => (0x10000, 0x20000),
+            Architecture.Arm or Architecture.Arm64 => (0x4000, 0x8000),
+            _ => throw new PlatformNotSupportedException(
+                "Stored-file directory durability requires an x86 or ARM Linux ABI.")
+        };
+        const int closeOnExec = 0x80000;
+        const int interrupted = 4;
+        int descriptor;
+        int error;
+        do
+        {
+            descriptor = OpenLinuxDirectory(directoryPath, directoryOnly | noFollow | closeOnExec);
+            error = Marshal.GetLastPInvokeError();
+        } while (descriptor < 0 && error == interrupted);
+
+        if (descriptor < 0)
+            throw new IOException($"Stored-file coordination directory open failed. error={error}");
+
+        try
+        {
+            int result;
+            do
+            {
+                result = FlushLinuxDescriptor(descriptor);
+                error = Marshal.GetLastPInvokeError();
+            } while (result != 0 && error == interrupted);
+
+            if (result != 0)
+                throw new IOException($"Stored-file coordination directory flush failed. error={error}");
+        }
+        finally
+        {
+            // Linux releases the descriptor even when close reports EINTR.
+            // Retrying could close a descriptor already reused by another thread.
+            _ = CloseLinuxDescriptor(descriptor);
+        }
+    }
+
+    [DllImport("libc", EntryPoint = "open", SetLastError = true)]
+    private static extern int OpenLinuxDirectory(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+        int flags);
+
+    [DllImport("libc", EntryPoint = "fsync", SetLastError = true)]
+    private static extern int FlushLinuxDescriptor(int descriptor);
+
+    [DllImport("libc", EntryPoint = "close", SetLastError = true)]
+    private static extern int CloseLinuxDescriptor(int descriptor);
 
     private static void FlushWindowsDirectory(string directoryPath)
     {

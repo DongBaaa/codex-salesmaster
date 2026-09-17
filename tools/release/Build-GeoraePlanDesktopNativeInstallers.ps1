@@ -2,7 +2,9 @@
 param(
     [string]$ProjectRoot,
     [string]$SourceFolder,
+    [string]$PreparedPayloadManifestPath,
     [string]$OutputRoot,
+    [string]$StagingRoot,
     [string]$PackageName,
     [string]$AppDisplayName,
     [string]$Manufacturer,
@@ -11,11 +13,40 @@ param(
     [string]$WixToolPath,
     [string]$WindowsSigningConfigPath,
     [switch]$RequireWindowsAuthenticode,
-    [int]$KeepVersionedInstallerCount = 2
+    [int]$KeepVersionedInstallerCount = 1
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'DesktopRuntimePolicy.ps1')
+
+function New-InstallerStagingDirectory {
+    param([string]$RequestedPath)
+
+    if ([string]::IsNullOrWhiteSpace($RequestedPath)) {
+        # Keep WiX paths short while isolating concurrent and previous builds.
+        $tempVolume = [IO.Path]::GetPathRoot([IO.Path]::GetTempPath())
+        $RequestedPath = Join-Path $tempVolume ('GeoraePlanInstallerBuild-' + [Guid]::NewGuid().ToString('N'))
+    }
+    if (-not [IO.Path]::IsPathRooted($RequestedPath)) {
+        throw 'Installer staging path must be absolute.'
+    }
+    $resolved = [IO.Path]::GetFullPath($RequestedPath)
+    if (Test-Path -LiteralPath $resolved) {
+        throw "Installer staging path already exists; preserve or inspect it before a new build: $resolved"
+    }
+    $parent = Split-Path -Parent $resolved
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        throw "Installer staging parent must already exist: $parent"
+    }
+    for ($ancestor = Get-Item -LiteralPath $parent -Force; $null -ne $ancestor; $ancestor = $ancestor.Parent) {
+        if (($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Installer staging parent must not traverse a reparse point: $($ancestor.FullName)"
+        }
+    }
+    $created = New-Item -ItemType Directory -Path $resolved -ErrorAction Stop
+    return $created.FullName
+}
 
 function Resolve-DotnetCommand {
     param([Parameter(Mandatory = $true)][string]$ProjectRoot)
@@ -247,7 +278,7 @@ function Publish-DesktopApplication {
     Remove-Item -LiteralPath $PublishRoot -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $PublishRoot | Out-Null
 
-    & $DotnetExe publish $desktopProject -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $PublishRoot | Out-Null
+    & $DotnetExe publish $desktopProject -c Release -r win-x64 --self-contained true "-p:RuntimeFrameworkVersion=$(Get-DesktopRuntimeFrameworkVersion)" -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $PublishRoot | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw 'Failed to publish desktop application for installer packaging.'
     }
@@ -263,10 +294,20 @@ function Prepare-InstallerSourceFolder {
         [Parameter(Mandatory = $true)][string]$LaunchExeName,
         [Parameter(Mandatory = $true)][string]$AppDisplayName,
         [Parameter(Mandatory = $true)][string]$ShortcutIconPath,
-        [Parameter(Mandatory = $true)][string]$DotnetExe
+        [Parameter(Mandatory = $true)][string]$DotnetExe,
+        [object]$PreparedPayloadManifest
     )
 
     $installerSourceRoot = Join-Path $StagingRoot 'installer-source'
+    if ($null -ne $PreparedPayloadManifest) {
+        Assert-DesktopPayloadManifest -SourceRoot $OriginalSourceFolder -Manifest $PreparedPayloadManifest -Version $Version
+        Invoke-RobocopyMirror -Source $OriginalSourceFolder -Destination $installerSourceRoot
+        Assert-DesktopPayloadManifest -SourceRoot $installerSourceRoot -Manifest $PreparedPayloadManifest -Version $Version
+        return [pscustomobject]@{
+            SourceRoot = $installerSourceRoot
+            ShortcutIconFileName = [string]$PreparedPayloadManifest.IconFileName
+        }
+    }
     Invoke-RobocopyMirror -Source $OriginalSourceFolder -Destination $installerSourceRoot
 
     $shortcutIconFileName = Split-Path -Leaf $ShortcutIconPath
@@ -293,6 +334,24 @@ function Prepare-InstallerSourceFolder {
     $publishedPdb = $publishedPdbCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
     if (-not [string]::IsNullOrWhiteSpace($publishedPdb)) {
         Copy-Item -LiteralPath $publishedPdb -Destination (Join-Path $installerSourceRoot '거래플랜.Desktop.App.pdb') -Force
+    }
+
+    # A direct native build must refresh the updater as well as the app.
+    $updaterProject = Join-Path $ProjectRoot 'Updater\거래플랜.Updater\거래플랜.Updater.csproj'
+    if (-not (Test-Path -LiteralPath $updaterProject -PathType Leaf)) {
+        throw "Updater project not found: $updaterProject"
+    }
+    $updaterPublishRoot = Join-Path $StagingRoot 'updater-publish'
+    New-Item -ItemType Directory -Path $updaterPublishRoot -ErrorAction Stop | Out-Null
+    & $DotnetExe publish $updaterProject -c Release -r win-x64 --self-contained true "-p:RuntimeFrameworkVersion=$(Get-DesktopRuntimeFrameworkVersion)" -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $updaterPublishRoot | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to publish updater for native packaging.' }
+    $publishedUpdater = Join-Path $updaterPublishRoot '거래플랜.Updater.exe'
+    Assert-DesktopBundledRuntime -Path $publishedUpdater | Out-Null
+    $updaterDestination = Join-Path $installerSourceRoot 'Updater'
+    Invoke-RobocopyMirror -Source $updaterPublishRoot -Destination $updaterDestination
+    $updaterAlias = Join-Path $updaterDestination "$AppDisplayName.Updater.exe"
+    if (-not [string]::Equals($updaterAlias, (Join-Path $updaterDestination '거래플랜.Updater.exe'), [StringComparison]::OrdinalIgnoreCase)) {
+        Copy-Item -LiteralPath $publishedUpdater -Destination $updaterAlias -Force
     }
 
     return [pscustomobject]@{
@@ -765,7 +824,7 @@ function Build-BootstrapperExe {
     Remove-Item -LiteralPath $PublishRoot -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $PublishRoot | Out-Null
 
-    & $DotnetExe publish $BootstrapperProjectPath -c Release -r win-x86 --self-contained true -p:PublishSingleFile=true -o $PublishRoot | Out-Null
+    & $DotnetExe publish $BootstrapperProjectPath -c Release -r win-x86 --self-contained true "-p:RuntimeFrameworkVersion=$(Get-DesktopRuntimeFrameworkVersion)" -p:PublishSingleFile=true -o $PublishRoot | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw 'Failed to build installer bootstrapper executable.'
     }
@@ -775,6 +834,7 @@ function Build-BootstrapperExe {
         throw "Bootstrapper executable not found: $bootstrapperExe"
     }
 
+    Assert-DesktopBundledRuntime -Path $bootstrapperExe | Out-Null
     return $bootstrapperExe
 }
 
@@ -848,54 +908,49 @@ function Invoke-WindowsArtifactSigning {
     }
 }
 
-function Remove-OldVersionedInstallerArchives {
-    param(
-        [Parameter(Mandatory = $true)][string]$ArchiveRoot,
-        [Parameter(Mandatory = $true)][string]$PackageName,
-        [Parameter(Mandatory = $true)][int]$KeepVersionCount
-    )
-
-    if ($KeepVersionCount -lt 1 -or -not (Test-Path -LiteralPath $ArchiveRoot)) {
-        return @()
-    }
-
-    $escapedPackageName = [regex]::Escape($PackageName)
-    $versionedFiles = Get-ChildItem -LiteralPath $ArchiveRoot -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match "^$escapedPackageName-v(?<version>\d+\.\d+\.\d+)\.(exe|msi)(\.sha256\.txt)?$" }
-
-    $versionsToKeep = $versionedFiles |
-        ForEach-Object {
-            if ($_.Name -match "^$escapedPackageName-v(?<version>\d+\.\d+\.\d+)\.") {
-                [pscustomobject]@{
-                    Version = [version]$Matches.version
-                    Text = $Matches.version
+function Assert-PreparedPayloadSignatures {
+    param([string]$ProjectRoot, [string[]]$Paths, [string]$ConfigPath, [switch]$RequireSigning)
+    if ([string]::IsNullOrWhiteSpace($ConfigPath) -and -not $RequireSigning) { return }
+    $verifyScript = Join-Path $ProjectRoot 'tools\release\Test-GeoraePlanWindowsSigning.ps1'
+    if (-not (Test-Path -LiteralPath $verifyScript -PathType Leaf)) { throw 'Prepared payload signing verifier not found.' }
+    # Optional signing may legitimately have skipped an unavailable certificate
+    # in the outer builder. Only a truly unsigned file can take that path;
+    # an existing invalid signature must still fail strict verification.
+    $pathsToVerify = @($Paths)
+    if (-not $RequireSigning) {
+        $securityModulePath = Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1'
+        Import-Module -Name $securityModulePath -ErrorAction Stop
+        $pathsToVerify = @(
+            foreach ($path in $Paths) {
+                if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Prepared signature input file is missing.' }
+                $signature = Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $path
+                if ($signature.Status -eq [System.Management.Automation.SignatureStatus]::NotSigned) {
+                    Write-Warning 'Prepared payload contains an unsigned file; this optional-signing build is not signed for release.'
                 }
+                else { $path }
             }
-        } |
-        Sort-Object Version -Descending -Unique |
-        Select-Object -First $KeepVersionCount
-
-    $keepVersionTextSet = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($versionToKeep in $versionsToKeep) {
-        [void]$keepVersionTextSet.Add($versionToKeep.Text)
-    }
-
-    $removed = New-Object System.Collections.Generic.List[string]
-    foreach ($file in $versionedFiles) {
-        if ($file.Name -notmatch "^$escapedPackageName-v(?<version>\d+\.\d+\.\d+)\.") {
-            continue
+        )
+        if ($pathsToVerify.Count -eq 0) {
+            Write-Host 'prepared_payload_signing=OPTIONAL_UNSIGNED'
+            return
         }
-
-        if ($keepVersionTextSet.Contains($Matches.version)) {
-            continue
-        }
-
-        Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
-        $removed.Add($file.Name) | Out-Null
     }
-
-    return $removed
+    $arguments = @{ ProjectRoot = $ProjectRoot; Paths = $pathsToVerify; RequireSigned = $true; RequireTimestamp = $true }
+    if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
+        $config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($pair in @(
+            @('certificateThumbprint', 'ExpectedSignerThumbprint'),
+            @('certificateSubjectContains', 'ExpectedSignerSubjectContains'),
+            @('timestampSubjectContains', 'ExpectedTimestampSubjectContains'))) {
+            $property = $config.PSObject.Properties[$pair[0]]
+            if ($null -ne $property -and $null -ne $property.Value) { $arguments[$pair[1]] = $property.Value }
+        }
+    }
+    & $verifyScript @arguments
+    if ($LASTEXITCODE -ne 0) { throw 'Prepared desktop payload signature verification failed.' }
 }
+
+. (Join-Path $PSScriptRoot 'DesktopNativePackage.ps1')
 
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = (Resolve-Path (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\..')).Path
@@ -938,6 +993,12 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
 }
 
 $SourceFolder = (Resolve-Path -LiteralPath $SourceFolder).Path
+$preparedPayloadManifest = $null
+if (-not [string]::IsNullOrWhiteSpace($PreparedPayloadManifestPath)) {
+    . (Join-Path $PSScriptRoot 'DesktopPayloadManifest.ps1')
+    $preparedPayloadManifest = Get-Content -LiteralPath $PreparedPayloadManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert-DesktopPayloadManifest -SourceRoot $SourceFolder -Manifest $preparedPayloadManifest -Version $Version
+}
 New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
 $OutputRoot = (Resolve-Path -LiteralPath $OutputRoot).Path
 $adminOutputRoot = Join-Path $OutputRoot '관리자용'
@@ -969,19 +1030,32 @@ Ensure-WixExtensions -WixExePath $wixExe
 $appIconsRoot = Get-AppIconsRoot -ProjectRoot $ProjectRoot
 $shortcutIconPath = Get-WindowsIconAsset -AppIconsRoot $appIconsRoot
 
-$stagingRoot = Join-Path ([System.IO.Path]::GetPathRoot($ProjectRoot)) 'GeoraePlanInstallerBuild'
-Remove-Item -LiteralPath $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
+$stagingRoot = New-InstallerStagingDirectory -RequestedPath $StagingRoot
+Write-Host "installer_staging_root=$stagingRoot"
 
-$preparedSource = Prepare-InstallerSourceFolder -ProjectRoot $ProjectRoot -OriginalSourceFolder $SourceFolder -StagingRoot $stagingRoot -LaunchExeName $LaunchExeName -AppDisplayName $AppDisplayName -ShortcutIconPath $shortcutIconPath -DotnetExe $dotnetExe
+$preparedSource = Prepare-InstallerSourceFolder -ProjectRoot $ProjectRoot -OriginalSourceFolder $SourceFolder -StagingRoot $stagingRoot -LaunchExeName $LaunchExeName -AppDisplayName $AppDisplayName -ShortcutIconPath $shortcutIconPath -DotnetExe $dotnetExe -PreparedPayloadManifest $preparedPayloadManifest
 $sourceForPackaging = $preparedSource.SourceRoot
+
+foreach ($runtimeExe in (@('거래플랜.Desktop.App.exe', $LaunchExeName, 'Updater\거래플랜.Updater.exe') | Select-Object -Unique)) {
+    Assert-DesktopBundledRuntime -Path (Join-Path $sourceForPackaging $runtimeExe) | Out-Null
+}
+
 $appIconForPackage = Join-Path $sourceForPackaging $preparedSource.ShortcutIconFileName
 
+if ($null -eq $preparedPayloadManifest) {
 Invoke-WindowsArtifactSigning -ProjectRoot $ProjectRoot -WindowsSigningConfigPath $WindowsSigningConfigPath -Paths @(
     (Join-Path $sourceForPackaging '거래플랜.Desktop.App.exe'),
     (Join-Path $sourceForPackaging $LaunchExeName),
     (Join-Path $sourceForPackaging 'Updater\거래플랜.Updater.exe')
 ) -RequireSigning:$RequireWindowsAuthenticode
+}
+else {
+    Assert-PreparedPayloadSignatures -ProjectRoot $ProjectRoot -ConfigPath $WindowsSigningConfigPath -Paths @(
+        (Join-Path $sourceForPackaging '거래플랜.Desktop.App.exe'),
+        (Join-Path $sourceForPackaging $LaunchExeName),
+        (Join-Path $sourceForPackaging 'Updater\거래플랜.Updater.exe')
+    ) -RequireSigning:$RequireWindowsAuthenticode
+}
 
 $productWxsPath = Join-Path $stagingRoot 'Product.wxs'
 $generatedWxsPath = Join-Path $stagingRoot 'GeneratedFiles.wxs'
@@ -1009,6 +1083,10 @@ finally {
 
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $tempMsiPath)) {
     throw 'Failed to build MSI installer.'
+}
+if ($null -ne $preparedPayloadManifest) {
+    Assert-DesktopPayloadManifest -SourceRoot $sourceForPackaging -Manifest $preparedPayloadManifest -Version $Version
+    Assert-DesktopPayloadManifest -SourceRoot $SourceFolder -Manifest $preparedPayloadManifest -Version $Version
 }
 
 $versionedMsiPath = Join-Path $archiveOutputRoot ("{0}-v{1}.msi" -f $PackageName, $Version)

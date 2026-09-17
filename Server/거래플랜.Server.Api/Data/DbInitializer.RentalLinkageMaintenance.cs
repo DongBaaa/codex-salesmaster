@@ -30,6 +30,19 @@ public static partial class DbInitializer
         var assets = await dbContext.RentalAssets.IgnoreQueryFilters().ToListAsync(cancellationToken);
         var billingLogs = await dbContext.RentalBillingLogs.IgnoreQueryFilters().ToListAsync(cancellationToken);
 
+        // Scope normalization and customer linkage can temporarily select
+        // different responsible offices, then end at the original value.
+        // Preserve the entry-time timestamp only when every other scalar value
+        // is unchanged. Entry-time snapshots retain earlier pending edits.
+        var repairSnapshots = profiles.Cast<object>().Concat(assets).Concat(billingLogs)
+            .Select(entity =>
+            {
+                var entry = dbContext.Entry(entity);
+                return (Entry: entry, Values: entry.CurrentValues.Clone(),
+                    Modified: entry.Properties.ToDictionary(property => property.Metadata.Name, property => property.IsModified));
+            })
+            .ToList();
+
         await RepairMfcL8900CategoryAsync(dbContext, now, cancellationToken);
 
         foreach (var profile in profiles.Where(profile => !profile.IsDeleted))
@@ -447,6 +460,21 @@ public static partial class DbInitializer
 
             if (changed)
                 TouchTrackedEntity(log, now);
+        }
+
+        foreach (var snapshot in repairSnapshots)
+        {
+            var values = snapshot.Entry.CurrentValues;
+            if (values.Properties.All(property => property.Name == "UpdatedAtUtc" ||
+                    Equals(values[property], snapshot.Values[property])))
+            {
+                values["UpdatedAtUtc"] = snapshot.Values["UpdatedAtUtc"];
+                // DetectChanges may have observed an intermediate value during
+                // later queries. Returning a value alone does not clear its
+                // already-recorded modified flag. Retain pre-existing flags.
+                foreach (var property in snapshot.Entry.Properties)
+                    property.IsModified = snapshot.Modified[property.Metadata.Name];
+            }
         }
     }
 

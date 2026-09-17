@@ -21,11 +21,15 @@ public sealed class OperationalLogScopeService
         int requestedTake,
         CancellationToken cancellationToken)
         => await TakeVisibleLogsAsync(
-            orderedQuery,
+            orderedQuery.OrderByDescending(log => log.CreatedAtUtc).ThenByDescending(log => log.Id),
+            (query, last) => query.Where(log => log.CreatedAtUtc <= last.CreatedAtUtc &&
+                (log.CreatedAtUtc < last.CreatedAtUtc ||
+                 (log.CreatedAtUtc == last.CreatedAtUtc && log.Id.CompareTo(last.Id) < 0))),
             requestedTake,
             maxTake: 1000,
             log => log.EntityName,
             log => log.EntityId,
+            log => log.Id,
             cancellationToken);
 
     public async Task<List<ConflictLog>> TakeVisibleConflictLogsAsync(
@@ -33,11 +37,18 @@ public sealed class OperationalLogScopeService
         int requestedTake,
         CancellationToken cancellationToken)
         => await TakeVisibleLogsAsync(
-            orderedQuery,
+            orderedQuery.OrderBy(log => log.Status == "Resolved" ? 1 : 0)
+                .ThenByDescending(log => log.CreatedAtUtc).ThenByDescending(log => log.Id),
+            (query, last) => query.Where(log =>
+                (log.Status == "Resolved" ? 1 : 0) > (last.Status == "Resolved" ? 1 : 0) ||
+                ((log.Status == "Resolved" ? 1 : 0) == (last.Status == "Resolved" ? 1 : 0) &&
+                 (log.CreatedAtUtc < last.CreatedAtUtc ||
+                  (log.CreatedAtUtc == last.CreatedAtUtc && log.Id.CompareTo(last.Id) < 0)))),
             requestedTake,
             maxTake: 500,
             log => log.EntityName,
             log => log.EntityId,
+            log => log.Id,
             cancellationToken);
 
     public Task<bool> CanReadLogTargetAsync(string? entityName, string? entityId, CancellationToken cancellationToken)
@@ -50,10 +61,12 @@ public sealed class OperationalLogScopeService
 
     private async Task<List<TLog>> TakeVisibleLogsAsync<TLog>(
         IQueryable<TLog> orderedQuery,
+        Func<IQueryable<TLog>, TLog, IQueryable<TLog>> afterRow,
         int requestedTake,
         int maxTake,
         Func<TLog, string?> entityNameSelector,
         Func<TLog, string?> entityIdSelector,
+        Func<TLog, Guid> logIdSelector,
         CancellationToken cancellationToken)
         where TLog : class
     {
@@ -66,21 +79,33 @@ public sealed class OperationalLogScopeService
 
         var pageSize = Math.Clamp(limit * 4, 50, maxTake);
         var visible = new List<TLog>(limit);
-        var offset = 0;
+        var visibleIds = new HashSet<Guid>();
+        TLog? lastRead = null;
 
         while (visible.Count < limit)
         {
-            var batch = await orderedQuery
-                .Skip(offset)
+            var pageQuery = lastRead is null ? orderedQuery : afterRow(orderedQuery, lastRead);
+            var batch = await pageQuery
                 .Take(pageSize)
                 .ToListAsync(cancellationToken);
 
             if (batch.Count == 0)
                 break;
 
+            // Repeated targets share a decision only within this page, never across requests.
+            var pageVisibility = new Dictionary<(string? EntityName, string? EntityId), bool>();
             foreach (var log in batch)
             {
-                if (await CanReadScopedLogTargetAsync(entityNameSelector(log), entityIdSelector(log), cancellationToken))
+                cancellationToken.ThrowIfCancellationRequested();
+                var target = (EntityName: entityNameSelector(log), EntityId: entityIdSelector(log));
+                if (!pageVisibility.TryGetValue(target, out var canRead))
+                {
+                    canRead = await CanReadScopedLogTargetAsync(target.EntityName, target.EntityId, cancellationToken);
+                    pageVisibility.Add(target, canRead);
+                }
+
+                // Resolving a conflict can move a previously returned row to a later sort group.
+                if (canRead && visibleIds.Add(logIdSelector(log)))
                 {
                     visible.Add(log);
                     if (visible.Count >= limit)
@@ -91,7 +116,7 @@ public sealed class OperationalLogScopeService
             if (batch.Count < pageSize)
                 break;
 
-            offset += batch.Count;
+            lastRead = batch[^1];
         }
 
         return visible;

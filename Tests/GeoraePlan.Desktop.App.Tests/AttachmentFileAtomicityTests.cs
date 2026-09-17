@@ -15,6 +15,47 @@ namespace GeoraePlan.Desktop.App.Tests;
 
 public sealed class AttachmentFileAtomicityTests
 {
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1024)]
+    public async Task SaveTransactionAttachment_TruncatedPdfReturnsDeniedWithoutWrites(int prefixLength)
+    {
+        using var scope = new TemporaryDirectory();
+        var sourcePath = Path.Combine(scope.Path, "truncated.pdf");
+        var sourceBytes = System.Text.Encoding.ASCII.GetBytes(new string(' ', prefixLength) + "%PDF");
+        await File.WriteAllBytesAsync(sourcePath, sourceBytes);
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<LocalDbContext>().UseSqlite(connection).Options;
+        await using var db = new LocalDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+        var transactionId = Guid.NewGuid();
+        db.Transactions.Add(new LocalTransaction
+        {
+            Id = transactionId,
+            CustomerId = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            TransactionKind = PaymentFlowConstants.TransactionKindReceipt,
+            ReceiptTotal = 100m,
+            IsDirty = false
+        });
+        await db.SaveChangesAsync();
+        var session = CreateAdminSession();
+        var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+        var result = await service.SaveTransactionAttachmentAsync(transactionId, sourcePath, "입금확인증", "invalid", session);
+
+        Assert.False(result.Success);
+        Assert.Contains("형식과 일치하지 않습니다", result.Message, StringComparison.Ordinal);
+        Assert.False(await db.TransactionAttachments.IgnoreQueryFilters().AnyAsync());
+        Assert.False(await db.SyncOutboxEntries.AnyAsync());
+        Assert.False((await db.Transactions.SingleAsync()).IsDirty);
+        Assert.False(Directory.Exists(Path.Combine(AppPaths.TransactionAttachmentsDir, transactionId.ToString("N"))));
+        Assert.Equal(sourceBytes, await File.ReadAllBytesAsync(sourcePath));
+    }
+
+
     [Fact]
     public void AppStartupAndEmptyPull_WireDurableAttachmentJournalRecovery()
     {

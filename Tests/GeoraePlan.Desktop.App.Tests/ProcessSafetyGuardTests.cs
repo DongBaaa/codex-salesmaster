@@ -26,6 +26,12 @@ public sealed class ProcessSafetyGuardTests
     [Fact]
     public void AppPaths_FailClosedWhenATestProcessHasNoIsolatedRoot()
     {
+        if (Environment.GetEnvironmentVariable("GEORAEPLAN_APP_PATHS_PROBE_CHILD") != "1")
+        {
+            RunFailClosedPathProbeInChild();
+            return;
+        }
+
         var previousAppRoot = Environment.GetEnvironmentVariable("GEORAEPLAN_APP_ROOT");
         var loadContext = new AssemblyLoadContext(
             $"app-paths-fail-closed-{Guid.NewGuid():N}",
@@ -55,6 +61,68 @@ public sealed class ProcessSafetyGuardTests
         {
             Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", previousAppRoot);
             loadContext.Unload();
+        }
+    }
+
+    // Loading another copy of the WPF assembly can replace its process-wide
+    // resource cache. Keep the intentional AppPaths initialization failure in
+    // a child test host so later window tests see the original assembly.
+    private static void RunFailClosedPathProbeInChild()
+    {
+        var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH");
+        Assert.False(string.IsNullOrWhiteSpace(dotnet));
+        Assert.True(File.Exists(dotnet));
+        var assemblyPath = typeof(ProcessSafetyGuardTests).Assembly.Location;
+        var probeParent = Path.Combine(Path.GetPathRoot(assemblyPath)!,
+            "DevCaches", "georaeplan-v1-tests", "app-paths-probe");
+        var probeRoot = Path.Combine(probeParent, Guid.NewGuid().ToString("N"));
+        Assert.True(AppPaths.HasNoExistingReparsePointInPathChain(probeRoot));
+        Directory.CreateDirectory(probeRoot);
+        try
+        {
+            var start = new ProcessStartInfo(dotnet!)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            const string testName = "GeoraePlan.Desktop.App.Tests.ProcessSafetyGuardTests.AppPaths_FailClosedWhenATestProcessHasNoIsolatedRoot";
+            foreach (var argument in new[]
+            {
+                "vstest", assemblyPath, "/TestCaseFilter:FullyQualifiedName=" + testName,
+                "/Logger:trx;LogFileName=probe.trx", "/ResultsDirectory:" + probeRoot
+            })
+                start.ArgumentList.Add(argument);
+            start.Environment["GEORAEPLAN_APP_PATHS_PROBE_CHILD"] = "1";
+            start.Environment["GEORAEPLAN_APP_ROOT"] = Path.Combine(probeRoot, "app");
+            start.Environment["GEORAEPLAN_TEMP_ROOT"] = Path.Combine(probeRoot, "temp");
+            start.Environment["GEORAEPLAN_DOWNLOADS_ROOT"] = Path.Combine(probeRoot, "downloads");
+            using var process = Process.Start(start)
+                ?? throw new InvalidOperationException("The isolated AppPaths probe did not start.");
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(60_000))
+            {
+                process.Kill(entireProcessTree: true);
+                Assert.True(process.WaitForExit(10_000), "The AppPaths probe did not stop.");
+                throw new TimeoutException("The isolated AppPaths probe timed out.");
+            }
+            Assert.True(Task.WhenAll(stdout, stderr).Wait(TimeSpan.FromSeconds(5)),
+                "The AppPaths probe output did not close.");
+            Assert.True(process.ExitCode == 0, stdout.Result + Environment.NewLine + stderr.Result);
+            var result = System.Xml.Linq.XDocument.Load(Path.Combine(probeRoot, "probe.trx"));
+            var ns = result.Root!.GetDefaultNamespace();
+            var row = Assert.Single(result.Descendants(ns + "UnitTestResult"));
+            Assert.Equal(testName, (string?)row.Attribute("testName"));
+            Assert.Equal("Passed", (string?)row.Attribute("outcome"));
+        }
+        finally
+        {
+            Assert.True(TestProcessIsolation.IsWithin(probeRoot, probeParent));
+            Assert.True(AppPaths.HasNoExistingReparsePointInPathChain(probeRoot));
+            if (Directory.Exists(probeRoot))
+                Directory.Delete(probeRoot, recursive: true);
         }
     }
 

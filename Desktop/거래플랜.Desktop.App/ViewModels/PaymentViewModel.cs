@@ -130,7 +130,7 @@ public sealed partial class PaymentViewModel : ObservableObject
         (_linkedInvoice is not null && PaymentFlowConstants.IsGeneralSettlementKind(SelectedTransactionKind));
     public bool ShowSettlementGuide => IsSettlementAmountEnabled && (_linkedInvoice is not null || _linkedRentalProfile is not null);
     public string SettlementGuideText => _linkedRentalProfile is not null
-        ? "기본값은 미수 전체입니다. 분할입금이면 이번 입금분만 입력하세요."
+        ? "이번 입금액을 입력하세요. 결제수단을 비워 두면 청구 설정의 결제수단으로 기록됩니다. 나눠 입력할 때는 아래 합계를 맞추세요."
         : _linkedInvoice is not null
             ? "기본값은 잔액 전체입니다. 분할 수금/지급이면 이번 처리분만 입력하세요."
             : string.Empty;
@@ -826,12 +826,15 @@ public sealed partial class PaymentViewModel : ObservableObject
 
         ApplySuggestedAmountChanges(() =>
         {
-            SettlementAmount = Math.Max(0m, summary.OutstandingAmount > 0m ? summary.OutstandingAmount : summary.BilledAmount);
-            if (!forceResetAmounts)
-                return;
+            if (forceResetAmounts)
+            {
+                // Apply the selected billing method at save time so changing
+                // only the requested amount cannot retain an older receipt.
+                CashReceipt = CardReceipt = BankReceipt = DiscountApplied = ReceiptTotal = 0m;
+                CashPayment = CardPayment = BankPayment = DiscountReceived = PaymentTotal = 0m;
+            }
 
-            CashPayment = CardPayment = BankPayment = DiscountReceived = PaymentTotal = 0m;
-            ApplyRentalReceiptAmountByBillingMethod(SettlementAmount);
+            SettlementAmount = Math.Max(0m, summary.OutstandingAmount);
         });
     }
 
@@ -1263,6 +1266,12 @@ public sealed partial class PaymentViewModel : ObservableObject
                     if (_linkedRentalProfile is null)
                     {
                         StatusMessage = "렌탈수금은 연결 청구건이 필요합니다.";
+                        return;
+                    }
+
+                    if (ReceiptTotal > 0m && ReceiptTotal != SettlementAmount)
+                    {
+                        StatusMessage = "수금/지급 금액과 결제수단별 수금 합계가 다릅니다. 이번 입금액에 맞게 금액을 확인하세요.";
                         return;
                     }
 

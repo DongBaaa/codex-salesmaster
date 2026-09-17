@@ -321,12 +321,12 @@ public sealed class WpfInvoicePrintService : IPrintService
         for (var row = 0; row < visibleRows; row++)
             table.RowDefinitions.Add(new RowDefinition { Height = new GridLength(30) });
 
-        AddTableCell(table, 0, 0, "No", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill);
-        AddTableCell(table, 0, 1, "품명 / 규격", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill);
-        AddTableCell(table, 0, 2, "단위", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill);
-        AddTableCell(table, 0, 3, "수량", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill);
-        AddTableCell(table, 0, 4, "공급단가", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill);
-        AddTableCell(table, 0, 5, "공급가액", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill);
+        AddTableCell(table, 0, 0, "No", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill, foreground: Brushes.Black);
+        AddTableCell(table, 0, 1, "품명 / 규격", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill, foreground: Brushes.Black);
+        AddTableCell(table, 0, 2, "단위", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill, foreground: Brushes.Black);
+        AddTableCell(table, 0, 3, "수량", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill, foreground: Brushes.Black);
+        AddTableCell(table, 0, 4, "공급단가", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill, foreground: Brushes.Black);
+        AddTableCell(table, 0, 5, "공급가액", PurchaseBorder, isHeader: true, center: true, background: PurchaseHeaderFill, foreground: Brushes.Black);
 
         for (var row = 0; row < visibleRows; row++)
         {
@@ -364,17 +364,18 @@ public sealed class WpfInvoicePrintService : IPrintService
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(74) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(116) });
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(28) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto, MinHeight = 28 });
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(28) });
 
+        var showAmounts = isFinalPage && model.PrintWithPrice;
         AddTotalsPair(grid, 0, 0, "전표메모", isFinalPage ? model.Memo : string.Empty, PurchaseBorder, false, false, labelBackground: PurchaseHeaderFill);
-        AddTotalsPair(grid, 0, 2, "공급가", isFinalPage ? FormatMoney(model.SupplyAmount) : string.Empty, PurchaseBorder, true, true, labelBackground: PurchaseHeaderFill);
-        AddTotalsPair(grid, 0, 4, "부가세", isFinalPage ? FormatMoney(model.VatAmount) : string.Empty, PurchaseBorder, true, true, labelBackground: PurchaseHeaderFill);
-        AddTotalsPair(grid, 0, 6, "합계", isFinalPage ? FormatMoney(model.TotalAmount) : string.Empty, PurchaseBorder, true, true, labelBackground: PurchaseHeaderFill);
+        AddTotalsPair(grid, 0, 2, "공급가", showAmounts ? FormatMoney(model.SupplyAmount) : string.Empty, PurchaseBorder, true, true, labelBackground: PurchaseHeaderFill);
+        AddTotalsPair(grid, 0, 4, "부가세", showAmounts ? FormatMoney(model.VatAmount) : string.Empty, PurchaseBorder, true, true, labelBackground: PurchaseHeaderFill);
+        AddTotalsPair(grid, 0, 6, "합계", showAmounts ? FormatMoney(model.TotalAmount) : string.Empty, PurchaseBorder, true, true, labelBackground: PurchaseHeaderFill);
 
-        AddTotalsPair(grid, 1, 0, "전미지급", isFinalPage ? "0" : string.Empty, PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
-        AddTotalsPair(grid, 1, 2, "지급액", isFinalPage ? FormatMoney(model.PaidAmount) : string.Empty, PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
-        AddTotalsPair(grid, 1, 4, "미지급잔액", isFinalPage ? FormatSignedMoney(model.BalanceAmount) : string.Empty, PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
+        AddTotalsPair(grid, 1, 0, "전미지급", showAmounts ? "0" : string.Empty, PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
+        AddTotalsPair(grid, 1, 2, "지급액", showAmounts ? FormatMoney(model.PaidAmount) : string.Empty, PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
+        AddTotalsPair(grid, 1, 4, "미지급잔액", showAmounts ? FormatSignedMoney(model.BalanceAmount) : string.Empty, PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
         AddTotalsPair(grid, 1, 6, string.Empty, isFinalPage ? string.Empty : "다음 페이지 계속", PurchaseBorder, false, true, labelBackground: PurchaseHeaderFill);
 
         return new Border
@@ -695,7 +696,7 @@ public sealed class WpfInvoicePrintService : IPrintService
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(64) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(22) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto, MinHeight = 22 });
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(22) });
 
         AddTotalsPair(grid, 0, 0, "전표메모", model.Memo, accent, false, false);
@@ -811,6 +812,9 @@ public sealed class WpfInvoicePrintService : IPrintService
         };
         Grid.SetRow(valueBorder, row);
         Grid.SetColumn(valueBorder, labelColumn + 1);
+        // Memo rows grow to fit their text instead of clipping wrapped lines.
+        if (grid.RowDefinitions[row].Height.IsAuto && valueBorder.Child is TextBlock valueText)
+            valueText.TextWrapping = TextWrapping.Wrap;
         grid.Children.Add(valueBorder);
     }
 

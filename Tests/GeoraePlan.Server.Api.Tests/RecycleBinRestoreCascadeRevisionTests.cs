@@ -13,7 +13,7 @@ using Xunit;
 
 namespace GeoraePlan.Server.Api.Tests;
 
-public sealed class RecycleBinRestoreCascadeRevisionTests : IDisposable
+public sealed partial class RecycleBinRestoreCascadeRevisionTests : IDisposable
 {
     private readonly SqliteConnection _connection;
     private readonly TestCurrentUserContext _currentUser = new();

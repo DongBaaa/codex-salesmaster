@@ -2,7 +2,7 @@
 
 namespace 거래플랜.Shared.Contracts;
 
-public static class RentalBillingScheduleRules
+public static partial class RentalBillingScheduleRules
 {
     public const string BillingDayModeFixedDay = "고정일";
     public const string BillingDayModeEndOfMonth = "말일";
@@ -13,7 +13,8 @@ public static class RentalBillingScheduleRules
     public const string DocumentIssueModePreviousMonthEnd = "전월 말일";
 
     public static string NormalizeBillingDayMode(string? value)
-        => string.Equals((value ?? string.Empty).Trim(), BillingDayModeEndOfMonth, StringComparison.Ordinal)
+        => IsNoFixedBillingDay(value) ? BillingDayModeNoFixedDay
+            : string.Equals((value ?? string.Empty).Trim(), BillingDayModeEndOfMonth, StringComparison.Ordinal)
             ? BillingDayModeEndOfMonth
             : BillingDayModeFixedDay;
 
@@ -32,6 +33,9 @@ public static class RentalBillingScheduleRules
 
     public static int NormalizeBillingDay(int day)
         => Math.Clamp(day <= 0 ? 25 : day, 1, 31);
+
+    public static int NormalizeBillingDay(int day, string? billingDayMode)
+        => IsNoFixedBillingDay(billingDayMode) ? 0 : NormalizeBillingDay(day);
 
     public static int NormalizeCycleMonths(int months)
         => Math.Max(1, months);
@@ -89,6 +93,8 @@ public static class RentalBillingScheduleRules
 
     public static DateOnly BuildBillingDate(int year, int month, int billingDay, string? billingDayMode)
     {
+        if (IsNoFixedBillingDay(billingDayMode))
+            throw new InvalidOperationException("지정일 없는 청구는 날짜 대신 청구 기간 계획으로 계산해야 합니다.");
         var resolvedMode = NormalizeBillingDayMode(billingDayMode);
         var lastDay = DateTime.DaysInMonth(year, month);
         var day = string.Equals(resolvedMode, BillingDayModeEndOfMonth, StringComparison.Ordinal)

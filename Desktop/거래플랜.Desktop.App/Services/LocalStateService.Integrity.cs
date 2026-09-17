@@ -422,9 +422,25 @@ public sealed partial class LocalStateService
             severity: "Error",
             directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
+        // A received document snapshot can precede access to the sender's item master.
+        // Exempt only synced, destination-owned pending documents with a valid same-tenant route.
+        var knownItemIds = _db.Items.IgnoreQueryFilters().Select(item => item.Id);
+        var tenantOfficesForTransfer = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenantCode);
+        var snapshotOnlyTransferLineIds =
+            from line in _db.InventoryTransferLines.AsNoTracking()
+            join transfer in _db.InventoryTransfers.AsNoTracking() on line.TransferId equals transfer.Id
+            where !session.HasGlobalDataScope && !transfer.IsDeleted && transfer.Revision > 0 &&
+                transfer.TransferStatus == InventoryTransferStatusNormalizer.Pending &&
+                transfer.ToWarehouseCode == officeCode + "_MAIN" &&
+                transfer.FromWarehouseCode != transfer.ToWarehouseCode &&
+                tenantOfficesForTransfer.Select(office => office + "_MAIN").Contains(transfer.FromWarehouseCode) &&
+                line.ItemId.HasValue && !knownItemIds.Contains(line.ItemId.Value) &&
+                line.ItemNameOriginal != "" && line.Quantity > 0m
+            select line.Id;
         var orphanInventoryTransferLineItemCount = await _db.InventoryTransferLines
             .AsNoTracking()
-            .Where(line => !line.IsDeleted && line.ItemId.HasValue && !activeItemIds.Contains(line.ItemId.Value))
+            .Where(line => !line.IsDeleted && line.ItemId.HasValue && !activeItemIds.Contains(line.ItemId.Value) &&
+                !snapshotOnlyTransferLineIds.Contains(line.Id))
             .CountAsync(ct);
         AddIssueIfNeeded(
             issues,

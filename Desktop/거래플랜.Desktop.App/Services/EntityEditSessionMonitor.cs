@@ -31,6 +31,7 @@ public sealed class EntityEditSessionMonitor : IDisposable
     private bool _started;
     private bool _disposed;
     private bool _heartbeatInProgress;
+    private bool _subjectRefreshRequested;
     private bool _hasRegisteredSession;
     private string _lastWarningSignature = string.Empty;
     private string _suppressedSubjectKey = string.Empty;
@@ -137,6 +138,25 @@ public sealed class EntityEditSessionMonitor : IDisposable
             subject.DisplayName?.Trim() ?? string.Empty);
     }
 
+    public void RequestSubjectRefresh()
+    {
+        RefreshSubject();
+        if (_disposed || !_started || !_session.IsLoggedIn || _session.IsOfflineMode)
+            return;
+
+        // A subject can finish loading while its previous heartbeat is still in flight.
+        // Keep one refresh pending so that the latest subject is registered immediately.
+        _subjectRefreshRequested = true;
+        if (_heartbeatInProgress)
+            return;
+
+        UiTaskHelper.Forget(
+            () => SendHeartbeatAsync(CancellationToken.None),
+            "EDIT-SESSION",
+            $"{_screenName} 편집 대상 변경",
+            ex => AppLogger.Warn("EDIT-SESSION", $"{_screenName} 편집 대상 변경 실패: {ex.Message}"));
+    }
+
     internal static IReadOnlyList<EditSessionSubject> FindActiveLocalSubjects(
         string entityType,
         IReadOnlyCollection<Guid> entityIds)
@@ -183,6 +203,7 @@ public sealed class EntityEditSessionMonitor : IDisposable
             return;
 
         _heartbeatInProgress = true;
+        _subjectRefreshRequested = false;
         try
         {
             var subject = _subjectAccessor();
@@ -232,11 +253,14 @@ public sealed class EntityEditSessionMonitor : IDisposable
 
             ClearUnavailableSubjectSuppression();
             _hasRegisteredSession = true;
-            ApplyParticipants(subject, response?.OtherEditors ?? []);
+            if (!_subjectRefreshRequested)
+                ApplyParticipants(subject, response?.OtherEditors ?? []);
         }
         finally
         {
             _heartbeatInProgress = false;
+            if (_subjectRefreshRequested && !_disposed)
+                RequestSubjectRefresh();
         }
     }
 

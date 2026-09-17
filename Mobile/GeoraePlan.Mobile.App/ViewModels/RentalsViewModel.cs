@@ -884,7 +884,7 @@ public sealed class RentalBillingHistoryDisplayRow
             Title = string.IsNullOrWhiteSpace(profile?.CustomerName)
                 ? $"청구로그 {log.BillingYearMonth}"
                 : $"{profile.CustomerName} · {log.BillingYearMonth}",
-            Subtitle = $"{Normalize(profile?.ProfileKey, "프로필 미지정")} · {Normalize(log.Status, "예정")} · {log.BilledAmount:N0}원",
+            Subtitle = $"{(profile is null ? "프로필 미지정" : Normalize(profile.ItemName, "품명 미지정"))} · {Normalize(log.Status, "예정")} · {log.BilledAmount:N0}원",
             Meta = $"청구로그 / 예정일 {log.ScheduledDate:yyyy-MM-dd} / 처리일 {FormatDate(log.ProcessedDate)} / 지점 {ResolveOffice(log.ResponsibleOfficeCode, log.OfficeCode)}",
             Note = Normalize(log.Note, "메모 없음")
         };
@@ -930,7 +930,7 @@ public sealed class RentalBillingHistoryDisplayRow
             Title = string.IsNullOrWhiteSpace(profile.CustomerName)
                 ? $"청구회차 {scheduledDate:yyyy-MM-dd}"
                 : $"{profile.CustomerName} · {scheduledDate:yyyy-MM-dd}",
-            Subtitle = $"{Normalize(profile.ProfileKey, "프로필 미지정")} · {source} · 청구 {billedAmount:N0}원 · 수금 {settledAmount:N0}원",
+            Subtitle = $"{Normalize(profile.ItemName, "품명 미지정")} · {source} · 청구 {billedAmount:N0}원 · 수금 {settledAmount:N0}원",
             Meta = $"기간 {Normalize(run?.PeriodLabel, "기간 미지정")} / 예정일 {scheduledDate:yyyy-MM-dd} / 미수 {outstandingAmount:N0}원 / 지점 {Normalize(evidence.OfficeCode, ResolveOffice(profile.ResponsibleOfficeCode, profile.OfficeCode))}",
             Note = run is null
                 ? "전표/수금 근거로 복원된 청구 이력"

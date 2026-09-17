@@ -22,12 +22,22 @@ public sealed class OfficeScopeService
 
     private readonly ICurrentUserContext _currentUserContext;
     private readonly AppDbContext _dbContext;
+    private readonly ITenantDatabaseConnectionResolver? _connectionResolver;
     private IReadOnlyList<DataSharingPolicy>? _activePolicies;
 
     public OfficeScopeService(ICurrentUserContext currentUserContext, AppDbContext dbContext)
     {
         _currentUserContext = currentUserContext;
         _dbContext = dbContext;
+    }
+
+    public OfficeScopeService(
+        ICurrentUserContext currentUserContext,
+        AppDbContext dbContext,
+        ITenantDatabaseConnectionResolver connectionResolver)
+        : this(currentUserContext, dbContext)
+    {
+        _connectionResolver = connectionResolver;
     }
 
     public bool IsAdmin => _currentUserContext.IsAdmin;
@@ -317,9 +327,45 @@ public sealed class OfficeScopeService
 
         var tenantCode = CurrentTenantCode;
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Items);
+        var receivedItemIds = ReceivedInventoryItemIds();
         return query.Where(entity =>
             entity.TenantCode == tenantCode &&
-            (entity.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.OfficeCode)));
+            (entity.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.OfficeCode) ||
+             receivedItemIds.Contains(entity.Id)));
+    }
+
+    private IQueryable<Guid> ReceivedInventoryItemIds()
+    {
+        var tenant = CurrentTenantCode;
+        var office = CurrentOfficeCode;
+        var tenantOffices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenant);
+        // Receipt history grants use of this item, even after the received stock
+        // sells out. It never changes the item's owner or master-write scope.
+        return (from transfer in _dbContext.InventoryTransfers.IgnoreQueryFilters()
+                join line in _dbContext.InventoryTransferLines.IgnoreQueryFilters() on transfer.Id equals line.TransferId
+                join item in _dbContext.Items.IgnoreQueryFilters() on line.ItemId equals (Guid?)item.Id
+                where !transfer.IsDeleted && !line.IsDeleted && !item.IsDeleted &&
+                    transfer.TenantCode == tenant && item.TenantCode == tenant &&
+                    transfer.TargetOfficeCode == office && transfer.SourceOfficeCode != office &&
+                    tenantOffices.Contains(transfer.SourceOfficeCode) && item.OfficeCode == transfer.SourceOfficeCode &&
+                    transfer.FromWarehouseCode == transfer.SourceOfficeCode + "_MAIN" &&
+                    transfer.ToWarehouseCode == office + "_MAIN" &&
+                    (transfer.TransferStatus == InventoryTransferStatusNormalizer.Received ||
+                     (transfer.TransferStatus != InventoryTransferStatusNormalizer.Pending &&
+                      transfer.TransferStatus != InventoryTransferStatusNormalizer.Rejected &&
+                      transfer.RejectedAtUtc == null && transfer.RejectedByUsername == "" &&
+                      (transfer.ReceivedAtUtc != null || transfer.ReceivedByUsername != ""))) &&
+                    (line.ReceivedQuantity ?? line.Quantity) > 0m &&
+                    (line.ReceivedQuantity ?? line.Quantity) <= line.Quantity
+                select item.Id).Distinct();
+    }
+
+    public async Task<HashSet<Guid>> GetReadableItemIdsAsync(IEnumerable<Guid> itemIds, CancellationToken cancellationToken)
+    {
+        var ids = itemIds.Distinct().ToList();
+        return (await ApplyItemScope(_dbContext.Items.IgnoreQueryFilters().AsNoTracking())
+            .Where(item => ids.Contains(item.Id) && !item.IsDeleted)
+            .Select(item => item.Id).ToListAsync(cancellationToken)).ToHashSet();
     }
 
     public IQueryable<Item> ApplySyncItemScope(IQueryable<Item> query)
@@ -571,12 +617,14 @@ public sealed class OfficeScopeService
             .Distinct()
             .ToList();
         var readableOffices = ResolveReadableOfficeCodes(DataArea.Items);
+        var receivedItemIds = ReceivedInventoryItemIds();
         return query.Where(entity =>
             readableWarehouses.Contains(entity.WarehouseCode) &&
             entity.Item != null &&
             !entity.Item.IsDeleted &&
             entity.Item.TenantCode == tenantCode &&
-            (entity.Item.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.Item.OfficeCode)));
+            (entity.Item.OfficeCode == OfficeCodeCatalog.Shared || readableOffices.Contains(entity.Item.OfficeCode) ||
+             receivedItemIds.Contains(entity.ItemId)));
     }
 
     public IQueryable<ItemPriceGrade> ApplyItemPriceGradeScope(IQueryable<ItemPriceGrade> query)
@@ -1040,33 +1088,48 @@ public sealed class OfficeScopeService
         if (_activePolicies is not null)
             return _activePolicies;
 
-        _activePolicies = _dbContext.DataSharingPolicies.IgnoreQueryFilters()
+        if (_connectionResolver is null)
+            return _activePolicies = LoadActivePolicies(_dbContext);
+
+        // Business databases contain initialization copies of configuration.
+        // Resolve authorization from the control plane on each scoped request;
+        // a central read failure must not fall back to a stale business grant.
+        var central = _connectionResolver.ResolveCentral();
+        var options = new DbContextOptionsBuilder<AppDbContext>();
+        if (central.UseSqlite)
+            options.UseSqlite(central.ConnectionString);
+        else
+            options.UseNpgsql(central.ConnectionString);
+
+        using var policyDb = new AppDbContext(options.Options, _currentUserContext, new RevisionClock());
+        return _activePolicies = LoadActivePolicies(policyDb);
+    }
+
+    private static IReadOnlyList<DataSharingPolicy> LoadActivePolicies(AppDbContext policyDb)
+        => policyDb.DataSharingPolicies.IgnoreQueryFilters()
             .AsNoTracking()
             .Where(policy =>
                 !policy.IsDeleted &&
                 policy.IsActive &&
-                _dbContext.TenantDefinitions.IgnoreQueryFilters().Any(tenant =>
+                policyDb.TenantDefinitions.IgnoreQueryFilters().Any(tenant =>
                     !tenant.IsDeleted &&
                     tenant.IsActive &&
                     tenant.TenantCode == policy.SourceTenantCode) &&
-                _dbContext.TenantDefinitions.IgnoreQueryFilters().Any(tenant =>
+                policyDb.TenantDefinitions.IgnoreQueryFilters().Any(tenant =>
                     !tenant.IsDeleted &&
                     tenant.IsActive &&
                     tenant.TenantCode == policy.TargetTenantCode) &&
-                _dbContext.TenantOfficeDefinitions.IgnoreQueryFilters().Any(office =>
+                policyDb.TenantOfficeDefinitions.IgnoreQueryFilters().Any(office =>
                     !office.IsDeleted &&
                     office.IsActive &&
                     office.TenantCode == policy.SourceTenantCode &&
                     office.OfficeCode == policy.SourceOfficeCode) &&
-                _dbContext.TenantOfficeDefinitions.IgnoreQueryFilters().Any(office =>
+                policyDb.TenantOfficeDefinitions.IgnoreQueryFilters().Any(office =>
                     !office.IsDeleted &&
                     office.IsActive &&
                     office.TenantCode == policy.TargetTenantCode &&
                     office.OfficeCode == policy.TargetOfficeCode))
             .ToList();
-
-        return _activePolicies;
-    }
 
     private static bool IsPolicyEnabled(DataSharingPolicy policy, DataArea area)
         => area switch

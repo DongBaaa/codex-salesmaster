@@ -153,10 +153,11 @@
         </Border>
 
         <ScrollViewer x:Name="CustomerBodyScrollViewer"
+                              Style="{StaticResource ResponsiveDetailScrollViewerStyle}"
                       HorizontalScrollBarVisibility="Disabled"
                       VerticalScrollBarVisibility="Auto">
             <Grid x:Name="CustomerBodyContent"
-                  MinWidth="780"
+                  MinWidth="0"
                   Margin="12,8,12,12"
                   Grid.IsSharedSizeScope="True">
                 <Grid.RowDefinitions>
@@ -394,7 +395,7 @@
                                                         <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
                                                             <Setter Property="Foreground" Value="#FFCC80"/>
                                                             <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding HasAttachedPdf}" Value="True">
+                                                                <DataTrigger Binding="{Binding HasRegisteredPdf}" Value="True">
                                                                     <Setter Property="Foreground" Value="#A5D6A7"/>
                                                                 </DataTrigger>
                                                                 <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=DataGridCell}, Path=IsSelected}" Value="True">

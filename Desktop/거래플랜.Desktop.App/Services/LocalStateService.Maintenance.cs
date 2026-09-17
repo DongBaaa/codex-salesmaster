@@ -156,6 +156,14 @@ public sealed partial class LocalStateService
                 Message: "로그인 세션이 없어 계정 범위 등록을 건너뜁니다.");
         }
 
+        Guid loginSessionId;
+        long loginScopeEpoch;
+        using (session.AcquireSyncScopeSnapshotLease())
+        {
+            loginSessionId = session.SessionId;
+            loginScopeEpoch = session.SyncScopeEpoch;
+        }
+
         var username = NormalizeLoginScopePart(session.User?.Username, "unknown");
         var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
             session.TenantCode,
@@ -175,6 +183,9 @@ public sealed partial class LocalStateService
         }
 
         await PersistLoginScopeSettingsIndependentAsync(
+            session,
+            loginSessionId,
+            loginScopeEpoch,
             username,
             currentScopeKey,
             tenantCode,
@@ -193,6 +204,9 @@ public sealed partial class LocalStateService
     }
 
     private async Task PersistLoginScopeSettingsIndependentAsync(
+        SessionState session,
+        Guid loginSessionId,
+        long loginScopeEpoch,
         string username,
         string currentScopeKey,
         string tenantCode,
@@ -224,6 +238,11 @@ public sealed partial class LocalStateService
             await settingsDb.BeginRuntimeMutationTransactionAsync(ct);
         try
         {
+            // Keep the same DB -> session lease order used by sync commits.
+            using var loginLease = await session.AcquireSyncScopeCommitLeaseAsync(ct);
+            if (session.SessionId != loginSessionId || session.SyncScopeEpoch != loginScopeEpoch)
+                throw new InvalidOperationException("로그인 계정 범위가 변경되어 미전송 기록 인계를 중단했습니다.");
+
             var settingsToRemove = scopeChanged
                 ? await settingsDb.Settings
                     .Where(setting =>
@@ -248,6 +267,7 @@ public sealed partial class LocalStateService
             foreach (var pair in values)
                 UpsertSetting(settingsDb, existing, pair.Key, pair.Value);
 
+            await ResumeLoginOutboxOwnershipAsync(settingsDb, session, ct);
             await settingsDb.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
         }

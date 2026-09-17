@@ -112,7 +112,10 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         SelectedItem is not null &&
         (_session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.ItemEdit)) &&
         _local.CanWriteItemScope(SelectedItem.Source, _session);
-    private bool CanSaveItems => _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.ItemEdit);
+    public bool CanSaveItems => CanSaveItemScope(_editTenantCode, _editOfficeCode);
+    private bool CanSaveItemScope(string tenantCode, string officeCode) =>
+        (_session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.ItemEdit)) &&
+        _local.CanWriteItemScope(new LocalItem { TenantCode = tenantCode, OfficeCode = officeCode }, _session);
     public decimal BoxCurrentStock => EditBoxQty > 0 ? Math.Floor(EditSelectedOfficeStock / EditBoxQty) : 0;
     public decimal AssetValue => EditSelectedOfficeStock * EditPurchasePrice;
     public decimal ShortageStock => EditSelectedOfficeStock < EditSafetyStock ? EditSafetyStock - EditSelectedOfficeStock : 0;
@@ -213,9 +216,14 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
     public async Task ReloadItemCategoryOptionsAsync()
     {
+        var options = await _local.GetItemCategoryOptionsAsync();
+        var selectedCategoryName = EditCategoryName;
+        // ItemsSource를 비우면 WPF의 양방향 SelectedValue가 편집값을 null로 바꾼다.
+        // 조회를 마친 뒤 목록과 선택값을 함께 복원해 활성화/재조회가 자동저장을 만들지 않게 한다.
         ItemCategoryOptions.Clear();
-        foreach (var option in await _local.GetItemCategoryOptionsAsync())
+        foreach (var option in options)
             ItemCategoryOptions.Add(option);
+        EditCategoryName = selectedCategoryName;
     }
 
     private async Task ReloadPriceGradeOptionsAsync()
@@ -268,11 +276,17 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             (!selectedItemStillExists || !HasPendingChanges))
             ResetForNewItem();
 
+        // 기본 분류/가격등급 채우기는 사용자 편집이 아니다. 조회를 기다리는 동안
+        // 작성한 내용이 있다면 기존 기준을 유지해 닫기 시 저장 확인을 보존한다.
+        var initializeCleanDraft = SelectedItem is null && IsNew && !HasPendingChanges;
         if (SelectedItem is null && string.IsNullOrWhiteSpace(EditCategoryName))
             EditCategoryName = ItemCategoryOptions.FirstOrDefault()?.Name ?? string.Empty;
 
         if (SelectedItem is null && PriceGradeRows.Count == 0)
             ResetPriceGradeRows();
+
+        if (initializeCleanDraft)
+            ResetEditBaseline();
     }
 
     private void HandleInventoryStateChanged(object? sender, EventArgs e)
@@ -550,7 +564,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             EditName = initialItemName.Trim();
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanSaveItems))]
     private async Task SaveItemAsync()
     {
         var snapshot = CaptureEditSnapshot();
@@ -726,7 +740,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         await _autoSaveGate.WaitAsync();
         try
         {
-            if (!CanSaveItems)
+            if (!CanSaveItemScope(snapshot.EditTenantCode, snapshot.EditOfficeCode))
             {
                 StatusMessage = permissionDeniedMessage;
                 return false;
@@ -846,7 +860,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         try
         {
             var item = BuildItem(snapshot);
-            await _local.UpsertItemAsync(
+            await _local.SaveInventoryItemAsync(
                 item,
                 _session,
                 snapshot.PreferredOfficeCode,
@@ -1735,7 +1749,11 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     }
 
     private void ResetEditBaseline()
-        => _baselineStateSignature = BuildEditStateSignature(CaptureEditSnapshot());
+    {
+        _baselineStateSignature = BuildEditStateSignature(CaptureEditSnapshot());
+        OnPropertyChanged(nameof(CanSaveItems));
+        SaveItemCommand.NotifyCanExecuteChanged();
+    }
 
     private static string BuildEditStateSignature(InventoryEditSnapshot snapshot)
     {

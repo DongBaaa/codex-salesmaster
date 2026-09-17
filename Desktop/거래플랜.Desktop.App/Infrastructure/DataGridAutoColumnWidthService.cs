@@ -14,6 +14,16 @@ public static class DataGridAutoColumnWidthService
     private const int MaxAutoFitSampleCount = 100;
     private static bool _registered;
 
+    private static readonly DependencyProperty AutoFitScopeProperty =
+        DependencyProperty.RegisterAttached(
+            "AutoFitScope",
+            typeof(bool),
+            typeof(DataGridAutoColumnWidthService),
+            new FrameworkPropertyMetadata(
+                false,
+                FrameworkPropertyMetadataOptions.Inherits,
+                OnAutoFitScopeChanged));
+
     private static readonly DependencyProperty IsRegisteredProperty =
         DependencyProperty.RegisterAttached(
             "IsRegistered",
@@ -48,16 +58,42 @@ public static class DataGridAutoColumnWidthService
             return;
 
         EventManager.RegisterClassHandler(
-            typeof(DataGrid),
+            typeof(Window),
             FrameworkElement.LoadedEvent,
-            new RoutedEventHandler(OnDataGridLoaded));
-
-        EventManager.RegisterClassHandler(
-            typeof(DataGrid),
-            FrameworkElement.UnloadedEvent,
-            new RoutedEventHandler(OnDataGridUnloaded));
+            new RoutedEventHandler(OnWindowLoaded),
+            handledEventsToo: true);
 
         _registered = true;
+    }
+
+    private static void OnWindowLoaded(object sender, RoutedEventArgs e)
+    {
+        if (sender is Window window)
+            window.SetValue(AutoFitScopeProperty, true);
+    }
+
+    private static void OnAutoFitScopeChanged(
+        DependencyObject sender,
+        DependencyPropertyChangedEventArgs e)
+    {
+        if (sender is not DataGrid grid)
+            return;
+
+        // Loaded class handlers alone do not request WPF's loaded-event broadcast.
+        // An inherited scope also wires grids added after the window has loaded.
+        grid.Loaded -= OnDataGridLoaded;
+        grid.Unloaded -= OnDataGridUnloaded;
+        if (e.NewValue is true)
+        {
+            grid.Loaded += OnDataGridLoaded;
+            grid.Unloaded += OnDataGridUnloaded;
+            if (grid.IsLoaded)
+                OnDataGridLoaded(grid, new RoutedEventArgs());
+        }
+        else
+        {
+            OnDataGridUnloaded(grid, new RoutedEventArgs());
+        }
     }
 
     private static void OnDataGridLoaded(object sender, RoutedEventArgs e)
@@ -167,10 +203,20 @@ public static class DataGridAutoColumnWidthService
                 continue;
 
             var header = column.Header?.ToString() ?? string.Empty;
-            var minimumWidth = ResolveMinimumWidth(header, column);
+            var minimumWidth = Math.Min(
+                column.MaxWidth,
+                Math.Max(column.MinWidth, ResolveMinimumWidth(header, column)));
+            if (column is DataGridTemplateColumn && column.Width.IsStar)
+            {
+                // A template has no single text binding to measure. Preserve its
+                // proportional layout instead of freezing the initial header width.
+                column.MinWidth = minimumWidth;
+                continue;
+            }
+
             var desiredWidth = ResolveDesiredColumnWidth(grid, column, header, minimumWidth);
             column.MinWidth = minimumWidth;
-            column.Width = new DataGridLength(Math.Ceiling(desiredWidth));
+            column.Width = new DataGridLength(Math.Min(column.MaxWidth, Math.Ceiling(desiredWidth)));
         }
     }
 

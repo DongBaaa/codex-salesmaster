@@ -104,6 +104,11 @@ public static class ItemScopeInference
         IReadOnlyList<string> warehouseOfficeCodes,
         IReadOnlyList<string> invoiceOfficeCodes)
     {
+        // Stock possession and document usage do not transfer item-master ownership.
+        // Infer legacy scope only when no explicit canonical owner is present.
+        if (OfficeCodeCatalog.TryNormalizeOfficeCode(currentOfficeCode, out var currentOwner))
+            return currentOwner;
+
         var evidenceOfficeCodes = rentalOfficeCodes
             .Concat(warehouseOfficeCodes)
             .Concat(invoiceOfficeCodes)

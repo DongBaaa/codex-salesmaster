@@ -551,10 +551,15 @@ public sealed class RecycleBinController : ControllerBase
             RequestedCount = targets.Count
         };
 
+        var batch = new RecycleBinRestoreBatch(_dbContext);
         foreach (var target in targets)
         {
             var mutation = await TryRecycleBinMutationAsync(
-                () => ExecuteSerializedRestoreAsync(target, cancellationToken),
+                () => batch.ExecuteAsync(
+                    target,
+                    NormalizeKind(target.Kind),
+                    () => ExecuteSerializedRestoreAsync(target, cancellationToken),
+                    cancellationToken),
                 "복원 처리 중 오류가 발생했습니다.");
             result.Messages.Add(mutation.Message);
             result.Results.Add(new RecycleBinMutationItemResultDto
@@ -570,6 +575,7 @@ public sealed class RecycleBinController : ControllerBase
                 result.SucceededCount++;
         }
 
+        result.CommittedRestores = batch.GetCommittedRestores();
         return Ok(result);
     }
 
@@ -1051,6 +1057,16 @@ public sealed class RecycleBinController : ControllerBase
         if (!item.IsDeleted)
             return (true, "이미 활성 상태인 품목입니다.");
 
+        // Item deletion can clear the master's displayed total while retaining
+        // warehouse baselines. Restore from those rows, never from partial invoices.
+        var retainedQuantities = await _dbContext.ItemWarehouseStocks
+            .IgnoreQueryFilters()
+            .Where(stock => stock.ItemId == item.Id)
+            .Select(stock => stock.Quantity)
+            .ToListAsync(cancellationToken);
+        item.CurrentStock = ItemOperationalPolicy.SupportsInventory(item.TrackingType)
+            ? retainedQuantities.Sum()
+            : 0m;
         item.IsDeleted = false;
         await _dbContext.SaveChangesAsync(cancellationToken);
         return (true, "품목을 복원했습니다.");
@@ -3072,12 +3088,13 @@ public sealed class RecycleBinController : ControllerBase
             .Select(item => new { item.Id, item.OfficeCode, item.TenantCode })
             .ToDictionaryAsync(item => item.Id, cancellationToken);
 
+        var readableItemIds = await _officeScopeService.GetReadableItemIdsAsync(itemIds, cancellationToken);
         foreach (var itemId in itemIds)
         {
-            if (!items.TryGetValue(itemId, out var item))
+            if (!items.ContainsKey(itemId))
                 return (false, $"Referenced invoice line item was not found: {itemId}.");
 
-            if (!_officeScopeService.CanReadOfficeForItems(item.OfficeCode, item.TenantCode))
+            if (!readableItemIds.Contains(itemId))
                 return (false, $"Referenced invoice line item is outside the readable office scope: {itemId}.");
         }
 

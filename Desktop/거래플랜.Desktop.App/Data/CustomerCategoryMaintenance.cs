@@ -18,7 +18,7 @@ internal static class CustomerCategoryMaintenance
         foreach (var category in activeCategories)
         {
             var normalizedName = DefaultCustomerCategories.NormalizeName(category.Name);
-            TouchCanonicalCategory(category, normalizedName, isSystemDefault: false, now);
+            TouchCanonicalCategory(category, normalizedName, category.IsSystemDefault, now);
         }
 
         var groups = activeCategories
@@ -29,7 +29,7 @@ internal static class CustomerCategoryMaintenance
         foreach (var group in groups)
         {
             var canonical = ResolveCanonicalCategory(group);
-            TouchCanonicalCategory(canonical, DefaultCustomerCategories.NormalizeName(canonical.Name), isSystemDefault: false, now);
+            TouchCanonicalCategory(canonical, DefaultCustomerCategories.NormalizeName(canonical.Name), canonical.IsSystemDefault, now);
 
             var duplicateIds = group
                 .Where(category => category.Id != canonical.Id)

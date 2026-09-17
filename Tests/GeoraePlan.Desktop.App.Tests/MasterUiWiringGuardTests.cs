@@ -21,12 +21,14 @@ public sealed class MasterUiWiringGuardTests
             "Click=\"DeleteCustomerButton_Click\"",
             "Command=\"{Binding SaveOfficeChangesCommand}\"",
             "SelectionChanged=\"ResponsibleOfficeComboBox_SelectionChanged\"",
-            "SelectedItem=\"{Binding ResponsibleOfficeCode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}\"");
+            "SelectedItem=\"{Binding ResponsibleOfficeCode, Mode=OneWay}\"");
 
         AssertContainsAll(
             code,
             "new CustomerEditViewModel(_local, _session, _api)",
             "await customerVm.LoadAsync(_vm.SelectedCustomer.Source)",
+            "comboBox.SelectedItem is not string selectedOfficeCode",
+            "row.ResponsibleOfficeCode = selectedOfficeCode;",
             "() => _vm.SaveOfficeChangeAsync(row)",
             "await _local.DeleteCustomerAsync(selectedCustomer.Id, _session, selectedCustomer.Source.Revision)",
             "MessageBox.Show(result.Message, \"거래처 삭제\"");
@@ -119,7 +121,9 @@ public sealed class MasterUiWiringGuardTests
             "Command=\"{Binding CancelBillingCommand}\"",
             "IsEnabled=\"{Binding CanCancelSelected}\"",
             "현재 청구 주기를 취소 상태로 변경합니다. 청구 프로필과 기존 전표·입금 내역은 삭제하지 않습니다.",
-            "Text=\"{Binding EditBillingStatus, Mode=OneWay}\"",
+            "Text=\"{Binding SelectedRow.DisplayStatus, Mode=OneWay, FallbackValue=예정}\"",
+            "CurrentBillingConflictNotice",
+            "청구기간과 연결 전표·입금 기록이 서로 달라 현재 금액을 확정할 수 없습니다.",
             "IsReadOnly=\"True\"",
             "청구 상태는 청구서 만들기·청구 취소·입금 등록 결과와 기존 청구 이력에 따라 표시됩니다.",
             "전표/거래명세서 출력 라인을 먼저 확인하고, 선택한 행의 세부값은 아래에서 편집합니다.",
@@ -347,9 +351,9 @@ public sealed class MasterUiWiringGuardTests
             "var deleteResult = await _local.DeleteItemAsync(SelectedItem.Id, _session, _editRevision)",
             "public async Task<OfficeMutationResult> ResetSelectedInventoryValuesAsync(IReadOnlyCollection<InventoryItemRow> selectedItems)",
             "var result = await _local.ResetItemInventoryValuesAsync(selectedItemIds, _session)",
-            "if (!CanSaveItems)",
+            "if (!CanSaveItemScope(snapshot.EditTenantCode, snapshot.EditOfficeCode))",
             "catch (UnauthorizedAccessException ex)",
-            "await _local.UpsertItemAsync(",
+            "await _local.SaveInventoryItemAsync(",
             "BuildItemPriceGrades(snapshot))",
             "var allItems = await _local.GetItemsAsync(_session)");
     }
@@ -516,12 +520,12 @@ public sealed class MasterUiWiringGuardTests
                 .Distinct(StringComparer.Ordinal)
                 .OrderBy(command => command, StringComparer.Ordinal)
                 .ToArray();
-            var viewModelCommands = target.ViewModelPaths
-                .Select(path => ReadAppFile(appRoot, path))
-                .SelectMany(ExtractViewModelCommandNames)
-                .ToHashSet(StringComparer.Ordinal);
+            var viewModelName = Path.GetFileNameWithoutExtension(target.ViewModelPaths[0][^1]);
+            var viewModelType = typeof(거래플랜.Desktop.App.ViewModels.MainViewModel).Assembly
+                .GetType("거래플랜.Desktop.App.ViewModels." + viewModelName);
+            Assert.NotNull(viewModelType);
             var missingCommands = boundCommands
-                .Where(command => !viewModelCommands.Contains(command))
+                .Where(command => !ResolvesToCommand(viewModelType, command))
                 .ToArray();
 
             Assert.NotEmpty(boundCommands);
@@ -975,7 +979,7 @@ public sealed class MasterUiWiringGuardTests
             "(invoiceId, owner) => OpenInvoiceWindowAsync(invoiceId, owner),",
             "() => _vm.LoadInvoiceListCommand.ExecuteAsync(null))",
             "거래처 관리 닫기 후 거래처 목록 새로고침",
-            "환경설정 닫기 후 전표 목록 새로고침");
+            "환경설정 닫기 후 거래처·전표 목록 새로고침");
 
         Assert.DoesNotContain("ShowDialogWithDeferredLoad", mainWindow, StringComparison.Ordinal);
         Assert.DoesNotContain("win.ShowDialog();", mainWindow, StringComparison.Ordinal);
@@ -1102,6 +1106,20 @@ public sealed class MasterUiWiringGuardTests
     private static string ReadAppFile(string appRoot, params string[] pathParts)
         => File.ReadAllText(Path.Combine([appRoot, .. pathParts]));
 
+    private static bool ResolvesToCommand(Type rootType, string path)
+    {
+        var currentType = rootType;
+        foreach (var segment in path.Split('.'))
+        {
+            var property = currentType.GetProperty(segment,
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+            if (property is null || property.GetMethod?.IsPublic != true || property.GetIndexParameters().Length != 0)
+                return false;
+            currentType = property.PropertyType;
+        }
+        return typeof(System.Windows.Input.ICommand).IsAssignableFrom(currentType);
+    }
+
     private static IEnumerable<string> ExtractViewModelCommandNames(string source)
     {
         foreach (Match match in RelayCommandMethodRegex.Matches(source))
@@ -1144,7 +1162,7 @@ public sealed class MasterUiWiringGuardTests
     private sealed record WpfCommandBindingTarget(string[] XamlPath, string[][] ViewModelPaths);
 
     private static readonly Regex WpfCommandBindingRegex = new(
-        "Command=\"\\{Binding\\s+(?:DataContext\\.)?(?<command>[A-Za-z_][A-Za-z0-9_]*)",
+        "Command=\"\\{Binding\\s+(?:DataContext\\.)?(?<command>[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     private static readonly Regex RelayCommandMethodRegex = new(

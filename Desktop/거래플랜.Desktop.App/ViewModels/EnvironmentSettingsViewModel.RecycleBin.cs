@@ -15,7 +15,7 @@ public sealed partial class EnvironmentSettingsViewModel
     private const int RecycleBinServerMutationBatchSize = 40;
     private List<RecycleBinEntry> _allRecycleBinEntries = new();
 
-    private sealed class RecycleBinMirrorResult
+    internal sealed class RecycleBinMirrorResult
     {
         public List<RecycleBinEntry> SucceededEntries { get; } = new();
         public List<string> Failures { get; } = new();
@@ -422,14 +422,21 @@ public sealed partial class EnvironmentSettingsViewModel
                 return;
             }
 
-            var serverMirror = await MirrorRecycleBinMutationToServerAsync("복원", orderedEntries);
-            var localApply = await ApplyConfirmedServerRestoresLocallyAsync(
-                serverMirror.SucceededEntries,
-                serverMirror.RequiresAuthoritativeRefresh,
-                entry => _local.RestoreRecycleBinEntryAsync(entry.Kind, entry.EntityId, _session),
-                entry => _local.MarkRecycleBinServerMutationCleanAsync(entry.Kind, entry.EntityId),
-                () => _sync.TryAuthoritativePullOnlyAsync(),
-                ReloadRecycleBinAsync);
+            // Keep background push/pull out of the interval between a confirmed server
+            // restore, its local cascade, and marking the mirrored changes clean.
+            var (serverMirror, localApply) = await SyncService.ExecuteWithGlobalSyncOperationLockAsync(
+                async () =>
+                {
+                    var serverMirror = await MirrorRecycleBinMutationToServerAsync("복원", orderedEntries);
+                    var localApply = await ApplyConfirmedServerRestoresLocallyAsync(
+                        serverMirror.SucceededEntries,
+                        serverMirror.RequiresAuthoritativeRefresh,
+                        entry => _local.RestoreRecycleBinEntryAsync(entry.Kind, entry.EntityId, _session),
+                        entry => _local.MarkRecycleBinServerMutationCleanAsync(entry.Kind, entry.EntityId),
+                        () => _sync.TryAuthoritativePullOnlyInsideGlobalOperationAsync(),
+                        ReloadRecycleBinAsync);
+                    return (serverMirror, localApply);
+                }, CancellationToken.None);
             var succeeded = localApply.SucceededCount;
             var failures = localApply.Failures.ToList();
             failures.AddRange(serverMirror.Failures);
@@ -460,8 +467,8 @@ public sealed partial class EnvironmentSettingsViewModel
             {
                 StatusMessage =
                     (localApply.AuthoritativeRefreshSucceeded
-                        ? "복원 충돌 후 서버 최신 상태를 다시 불러왔습니다. "
-                        : $"{localApply.AuthoritativeRefreshFailure ?? "복원 충돌 후 서버 최신 상태를 확인하지 못했습니다."} ") +
+                        ? "복원 처리 후 서버 최신 상태를 다시 불러왔습니다. "
+                        : $"{localApply.AuthoritativeRefreshFailure ?? "복원 처리 후 서버 최신 상태를 확인하지 못했습니다."} ") +
                     mutationStatus;
             }
             else
@@ -526,7 +533,7 @@ public sealed partial class EnvironmentSettingsViewModel
         }
 
         var requiresAuthoritativeRefresh =
-            serverRequiresAuthoritativeRefresh || hasLocalApplyFailure;
+            serverRequiresAuthoritativeRefresh || hasLocalApplyFailure || entries.Count > 0;
         var authoritativeSyncSucceeded = false;
         string? authoritativeRefreshFailure = null;
         if (requiresAuthoritativeRefresh)
@@ -986,7 +993,7 @@ public sealed partial class EnvironmentSettingsViewModel
         }
     }
 
-    private async Task<RecycleBinMirrorResult> MirrorRecycleBinMutationToServerAsync(
+    internal async Task<RecycleBinMirrorResult> MirrorRecycleBinMutationToServerAsync(
         string action,
         IReadOnlyList<RecycleBinEntry> entries)
     {
@@ -1071,11 +1078,26 @@ public sealed partial class EnvironmentSettingsViewModel
         {
             var businessDatabaseName = targetGroup.Key;
             var groupTargets = targetGroup.ToList();
+            var restoreReceipts = new RecycleBinRestoreReceipts();
             foreach (var batch in groupTargets.Chunk(RecycleBinServerMutationBatchSize))
             {
                 var batchTargets = batch.ToDictionary(
                     current => (current.Entry.EntityId, NormalizeServerRecycleBinKind(current.Target.Kind)),
                     current => (current.Entry, current.Target));
+
+                if (string.Equals(action, "복원", StringComparison.Ordinal))
+                {
+                    foreach (var (key, current) in batchTargets.ToList())
+                    {
+                        if (!restoreReceipts.Covers(current.Target))
+                            continue;
+                        mirrorResult.SucceededEntries.Add(current.Entry);
+                        mirrorResult.RequiresAuthoritativeRefresh = true;
+                        batchTargets.Remove(key);
+                    }
+                    if (batchTargets.Count == 0)
+                        continue;
+                }
 
                 try
                 {
@@ -1087,6 +1109,8 @@ public sealed partial class EnvironmentSettingsViewModel
                         : await _api.PurgeRecycleBinAsync(mutationTargets, businessDatabaseName);
 
                     ApplyRecycleBinServerMutationBatchResult(action, batchTargets, result, mirrorResult);
+                    if (string.Equals(action, "복원", StringComparison.Ordinal))
+                        restoreReceipts.Remember(result);
                 }
                 catch (Exception ex)
                 {

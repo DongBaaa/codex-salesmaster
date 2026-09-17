@@ -75,9 +75,11 @@ public sealed class InvoicesController : ControllerBase
             invoices.Select(invoice => invoice.CustomerId),
             cancellationToken);
 
-        return Ok(invoices
+        var response = invoices
             .Select(invoice => ToScopedDto(invoice, readableCustomerIdSet))
-            .ToList());
+            .ToList();
+        await InvoicePaymentReadScope.FilterAsync(response, _dbContext, _officeScopeService, cancellationToken);
+        return Ok(response);
     }
 
     [HttpGet("{id:guid}")]
@@ -93,8 +95,7 @@ public sealed class InvoicesController : ControllerBase
         if (entity is null)
             return NotFound();
 
-        var readableCustomerIdSet = await LoadReadableCustomerIdSetAsync([entity.CustomerId], cancellationToken);
-        return Ok(ToScopedDto(entity, readableCustomerIdSet));
+        return Ok(await ToScopedResponseAsync(entity, cancellationToken));
     }
 
     private async Task<HashSet<Guid>> LoadReadableCustomerIdSetAsync(
@@ -120,6 +121,14 @@ public sealed class InvoicesController : ControllerBase
         var dto = invoice.ToDto();
         if (!readableCustomerIds.Contains(invoice.CustomerId))
             dto.CustomerName = string.Empty;
+        return dto;
+    }
+
+    private async Task<InvoiceDto> ToScopedResponseAsync(Invoice invoice, CancellationToken cancellationToken)
+    {
+        var readableCustomerIds = await LoadReadableCustomerIdSetAsync([invoice.CustomerId], cancellationToken);
+        var dto = ToScopedDto(invoice, readableCustomerIds);
+        await InvoicePaymentReadScope.FilterAsync([dto], _dbContext, _officeScopeService, cancellationToken);
         return dto;
     }
 
@@ -210,7 +219,7 @@ public sealed class InvoicesController : ControllerBase
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _inventoryLedgerService.RebuildAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        return Ok(entity.ToDto());
+        return Ok(await ToScopedResponseAsync(entity, cancellationToken));
     }
 
     [HttpPut("{id:guid}")]
@@ -439,7 +448,7 @@ public sealed class InvoicesController : ControllerBase
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _inventoryLedgerService.RebuildAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        return Ok(entity.ToDto());
+        return Ok(await ToScopedResponseAsync(entity, cancellationToken));
     }
 
     [HttpDelete("{id:guid}")]
@@ -817,10 +826,7 @@ public sealed class InvoicesController : ControllerBase
             });
         }
 
-        var readableCustomerIdSet = await LoadReadableCustomerIdSetAsync(
-            [entity.CustomerId],
-            cancellationToken);
-        return Ok(ToScopedDto(entity, readableCustomerIdSet));
+        return Ok(await ToScopedResponseAsync(entity, cancellationToken));
     }
 
     private async Task RecalculateRentalSettlementsForInvoiceSaveAsync(
@@ -994,12 +1000,13 @@ public sealed class InvoicesController : ControllerBase
             .Select(item => new { item.Id, item.OfficeCode, item.TenantCode, item.TrackingType })
             .ToDictionaryAsync(item => item.Id, cancellationToken);
 
+        var readableItemIds = await _officeScopeService.GetReadableItemIdsAsync(itemIds, cancellationToken);
         foreach (var itemId in itemIds)
         {
             if (!items.TryGetValue(itemId, out var item))
                 return BadRequest($"Referenced invoice line item was not found: {itemId}.");
 
-            if (!_officeScopeService.CanReadOfficeForItems(item.OfficeCode, item.TenantCode))
+            if (!readableItemIds.Contains(itemId))
                 return Forbid();
         }
 
@@ -1044,12 +1051,13 @@ public sealed class InvoicesController : ControllerBase
             .Select(item => new { item.Id, item.OfficeCode, item.TenantCode })
             .ToDictionaryAsync(item => item.Id, cancellationToken);
 
+        var readableItemIds = await _officeScopeService.GetReadableItemIdsAsync(itemIds, cancellationToken);
         foreach (var itemId in itemIds)
         {
             if (!items.TryGetValue(itemId, out var item))
                 return BadRequest($"Referenced invoice line item was not found: {itemId}.");
 
-            if (!_officeScopeService.CanReadOfficeForItems(item.OfficeCode, item.TenantCode))
+            if (!readableItemIds.Contains(itemId))
                 return Forbid();
         }
 

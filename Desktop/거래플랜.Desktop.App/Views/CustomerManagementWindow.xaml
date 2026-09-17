@@ -126,6 +126,10 @@
                 <TextBlock Text="거래처 등록, 수정, 담당지점 변경 즉시저장과 계약서 만료 현황을 관리합니다."
                            Foreground="#9FB3C8"
                            Margin="0,4,0,0"/>
+                <TextBlock Text="{Binding ContractAlertSummary}"
+                           Foreground="#9FB3C8"
+                           TextWrapping="Wrap"
+                           Margin="0,4,0,0"/>
             </StackPanel>
         </Border>
 
@@ -318,19 +322,19 @@
                                         ElementStyle="{StaticResource CustomerGridTextStyle}"/>
                     <DataGridTextColumn Header="계약서"
                                         Binding="{Binding ContractPresenceText, Mode=OneWay}"
-                                        Width="82"
+                                        Width="130"
                                         IsReadOnly="True"
                                         ElementStyle="{StaticResource CustomerGridTextStyle}"/>
                     <DataGridTextColumn Header="계약상태"
                                         Binding="{Binding ContractStatusText, Mode=OneWay}"
-                                        Width="130"
+                                        Width="180"
                                         IsReadOnly="True"
                                         ElementStyle="{StaticResource CustomerGridTextStyle}"/>
                     <DataGridTemplateColumn Header="담당지점" Width="172" CellStyle="{StaticResource CustomerGridComboCellStyle}">
                         <DataGridTemplateColumn.CellTemplate>
                             <DataTemplate>
                                 <ComboBox ItemsSource="{Binding DataContext.OfficeCodes, RelativeSource={RelativeSource AncestorType=DataGrid}}"
-                                          SelectedItem="{Binding ResponsibleOfficeCode, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                          SelectedItem="{Binding ResponsibleOfficeCode, Mode=OneWay}"
                                           SelectionChanged="ResponsibleOfficeComboBox_SelectionChanged"
                                           Height="28"
                                           MinHeight="28"

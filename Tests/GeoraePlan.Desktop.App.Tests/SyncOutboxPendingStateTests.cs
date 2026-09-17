@@ -124,8 +124,10 @@ public sealed partial class SyncOutboxPendingStateTests
         }
     }
 
-    [Fact]
-    public async Task RuntimeScopedSync_SavedPayloadDuringServerNewerConflict_RebasesAndRetriesPayload()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RuntimeScopedSync_ConflictPreservesBaseRevisionAcrossNewScopes(bool saveDuringPush)
     {
         PrepareAppRoot("georaeplan-runtime-saved-conflict-retry");
 
@@ -179,8 +181,8 @@ public sealed partial class SyncOutboxPendingStateTests
                 trackedUnit.Name = newerName;
                 trackedUnit.UpdatedAtUtc = newerUpdatedAtUtc;
                 trackedUnit.IsDirty = true;
-                await uiDb.SaveChangesAsync();
-                Assert.Equal(EntityState.Unchanged, uiDb.Entry(trackedUnit).State);
+                if (saveDuringPush)
+                    await uiDb.SaveChangesAsync();
             }
             finally
             {
@@ -188,6 +190,9 @@ public sealed partial class SyncOutboxPendingStateTests
             }
 
             Assert.False(await firstSync.WaitAsync(TimeSpan.FromSeconds(15)));
+
+            if (!saveDuringPush)
+                await uiDb.SaveChangesAsync();
 
             await using (var afterConflictDb = new LocalDbContext())
             {
@@ -198,30 +203,33 @@ public sealed partial class SyncOutboxPendingStateTests
                 Assert.Equal(newerName, rebased.Name);
                 Assert.Equal(newerUpdatedAtUtc, rebased.UpdatedAtUtc);
                 Assert.True(rebased.IsDirty);
-                Assert.Equal(12, rebased.Revision);
+                Assert.Equal(11, rebased.Revision);
             }
 
             uiDb.ChangeTracker.Clear();
-            Assert.True(
-                await runtimeSync.TrySyncAsync()
-                    .WaitAsync(TimeSpan.FromSeconds(15)));
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                await using var nextScope = provider.CreateAsyncScope();
+                var nextSync = nextScope.ServiceProvider.GetRequiredService<SyncService>();
+                Assert.False(await nextSync.TrySyncAsync().WaitAsync(TimeSpan.FromSeconds(15)));
+            }
 
-            Assert.Equal(2, handler.PushRequests.Count);
-            Assert.Equal(
-                originalName,
-                Assert.Single(handler.PushRequests[0].Units).Name);
-            var retriedUnit = Assert.Single(handler.PushRequests[1].Units);
-            Assert.Equal(newerName, retriedUnit.Name);
-            Assert.Equal(12, retriedUnit.ExpectedRevision);
-
+            Assert.Equal(3, handler.PushRequests.Count);
+            Assert.Equal(originalName, Assert.Single(handler.PushRequests[0].Units).Name);
+            foreach (var retry in handler.PushRequests.Skip(1))
+            {
+                var unit = Assert.Single(retry.Units);
+                Assert.Equal(newerName, unit.Name);
+                Assert.Equal(11, unit.ExpectedRevision);
+            }
             await using var verificationDb = new LocalDbContext();
-            var accepted = await verificationDb.Units
-                .IgnoreQueryFilters()
-                .AsNoTracking()
+            var saved = await verificationDb.Units.IgnoreQueryFilters().AsNoTracking()
                 .SingleAsync(unit => unit.Id == unitId);
-            Assert.Equal(newerName, accepted.Name);
-            Assert.False(accepted.IsDirty);
-            Assert.Equal(13, accepted.Revision);
+            Assert.Equal(newerName, saved.Name);
+            Assert.True(saved.IsDirty);
+            Assert.Equal(11, saved.Revision);
+            Assert.DoesNotContain(await verificationDb.SyncOutboxEntries.AsNoTracking()
+                .ToListAsync(), receipt => receipt.Status == "Acknowledged");
         }
         finally
         {
@@ -293,7 +301,7 @@ public sealed partial class SyncOutboxPendingStateTests
                 .SingleAsync(unit => unit.Id == unitId);
             Assert.Equal(preparedName, resolved.Name);
             Assert.True(resolved.IsDirty);
-            Assert.Equal(12, resolved.Revision);
+            Assert.Equal(11, resolved.Revision);
             Assert.NotEqual("Acknowledged", await verificationDb.SyncOutboxEntries
                 .AsNoTracking().Select(entry => entry.Status).SingleAsync());
         }
@@ -400,9 +408,7 @@ public sealed partial class SyncOutboxPendingStateTests
                 .AsNoTracking().SingleAsync(unit => unit.Id == unitId);
             Assert.Equal("must remain pending", preserved.Name);
             Assert.True(preserved.IsDirty);
-            Assert.Equal(
-                mismatch == "revision-only" ? 12 : 11,
-                preserved.Revision);
+            Assert.Equal(11, preserved.Revision);
             Assert.NotEqual("Acknowledged", await verificationDb.SyncOutboxEntries
                 .AsNoTracking().Select(entry => entry.Status).SingleAsync());
         }
@@ -523,7 +529,7 @@ public sealed partial class SyncOutboxPendingStateTests
                 .AsNoTracking()
                 .SingleAsync(transfer => transfer.Id == transferId);
             Assert.True(preserved.IsDirty);
-            Assert.Equal(42, preserved.Revision);
+            Assert.Equal(41, preserved.Revision);
             Assert.True(preserved.UpdatedAtUtc > updatedAtUtc);
             Assert.Equal(
                 newerRemark,
@@ -636,7 +642,8 @@ public sealed partial class SyncOutboxPendingStateTests
             Assert.True(trackedTransfer.UpdatedAtUtc > updatedAtUtc);
 
             releaseConditionalClean.TrySetResult(true);
-            Assert.True(await firstSync.WaitAsync(TimeSpan.FromSeconds(15)));
+            // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+            Assert.False(await firstSync.WaitAsync(TimeSpan.FromSeconds(15)));
             Assert.Equal([0], affectedRows);
 
             await using (var afterFirstAckDb = new LocalDbContext())
@@ -812,7 +819,8 @@ public sealed partial class SyncOutboxPendingStateTests
             var sync =
                 runtimeScope.ServiceProvider.GetRequiredService<SyncService>();
 
-            Assert.True(
+            // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+            Assert.False(
                 await sync.TrySyncAsync()
                     .WaitAsync(TimeSpan.FromSeconds(15)));
             Assert.Single(handler.PushRequests);
@@ -876,7 +884,7 @@ public sealed partial class SyncOutboxPendingStateTests
                     entry => Assert.NotEqual("Failed", entry.Status));
             }
 
-            Assert.True(
+            Assert.False(
                 await sync.TrySyncAsync()
                     .WaitAsync(TimeSpan.FromSeconds(15)));
             Assert.Equal(2, handler.PushRequests.Count);
@@ -1046,7 +1054,8 @@ public sealed partial class SyncOutboxPendingStateTests
                 var firstSync =
                     firstSyncScope.ServiceProvider
                         .GetRequiredService<SyncService>();
-                Assert.True(
+                // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+                Assert.False(
                     await firstSync.TrySyncAsync()
                         .WaitAsync(TimeSpan.FromSeconds(15)));
             }
@@ -1293,6 +1302,7 @@ public sealed partial class SyncOutboxPendingStateTests
             }
 
             var inventoryStateChangedCount = 0;
+            var committedInventorySnapshots = new List<(bool TransferExists, int StockRows)>();
             await using var observationScope = provider.CreateAsyncScope();
             var observationLocal = observationScope.ServiceProvider
                 .GetRequiredService<LocalStateService>();
@@ -1498,13 +1508,17 @@ public sealed partial class SyncOutboxPendingStateTests
                 return;
             }
 
-            Assert.True(syncSucceeded);
+            // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+            Assert.Equal(scenario != "concurrent-edit", syncSucceeded);
             Assert.Equal(1, handler.PullCount);
             Assert.Contains(
                 "sinceRev=100",
                 handler.LastPullQuery,
                 StringComparison.OrdinalIgnoreCase);
-            Assert.Equal(1, inventoryStateChangedCount);
+            // Push acknowledgement removes the transfer; the subsequent complete
+            // warehouse snapshot removes its retained stock rows in another commit.
+            Assert.Equal(2, inventoryStateChangedCount);
+            Assert.Equal(new[] { (false, 2), (false, 0) }, committedInventorySnapshots);
 
             Assert.False(await verificationDb.InventoryTransfers
                 .IgnoreQueryFilters()
@@ -1615,7 +1629,14 @@ public sealed partial class SyncOutboxPendingStateTests
                     .SingleAsync());
 
             void OnInventoryStateChanged(object? sender, EventArgs args)
-                => inventoryStateChangedCount++;
+            {
+                inventoryStateChangedCount++;
+                using var observedDb = new LocalDbContext();
+                committedInventorySnapshots.Add((
+                    observedDb.InventoryTransfers.IgnoreQueryFilters().AsNoTracking()
+                        .Any(transfer => transfer.Id == transferId),
+                    observedDb.ItemWarehouseStocks.AsNoTracking().Count(stock => stock.ItemId == itemId)));
+            }
         }
         finally
         {
@@ -1765,7 +1786,7 @@ public sealed partial class SyncOutboxPendingStateTests
     }
 
     [Fact]
-    public async Task PushPreparedRequest_DependencyOnlyConflict_RebasesConcurrentUiEditForAcceptedRetry()
+    public async Task PushPreparedRequest_DependencyOnlyConflict_PreservesConcurrentUiEditBaseOnRetry()
     {
         PrepareAppRoot("georaeplan-dependency-only-conflict");
 
@@ -1860,13 +1881,13 @@ public sealed partial class SyncOutboxPendingStateTests
                 .SingleAsync(option => option.Id == optionId);
             Assert.Equal(newerName, rebased.Name);
             Assert.True(rebased.IsDirty);
-            Assert.Equal(8, rebased.Revision);
+            Assert.Equal(7, rebased.Revision);
 
             var retryOption = LocalMappings.ToDto(rebased);
             retryOption.ExpectedRevision = rebased.Revision;
             retryOption.MutationCreatedAtUtc = rebased.UpdatedAtUtc;
-            retryOption.MutationId = $"dependency-retry:{optionId:N}:8";
-            await InvokePushPreparedRequestAsync(
+            retryOption.MutationId = $"dependency-retry:{optionId:N}:7";
+            await Assert.ThrowsAsync<InvalidOperationException>(() => InvokePushPreparedRequestAsync(
                 sync,
                 api,
                 session,
@@ -1876,21 +1897,21 @@ public sealed partial class SyncOutboxPendingStateTests
                     PriceGradeOptions = [retryOption]
                 },
                 "ITWORLD",
-                dependencyOnlyKeys: null);
+                dependencyOnlyKeys: null));
 
             Assert.Equal(2, handler.PushRequests.Count);
             var retriedOption = Assert.Single(
                 handler.PushRequests[1].PriceGradeOptions);
             Assert.Equal(newerName, retriedOption.Name);
-            Assert.Equal(8, retriedOption.ExpectedRevision);
+            Assert.Equal(7, retriedOption.ExpectedRevision);
 
             var accepted = await db.PriceGradeOptions
                 .AsNoTracking()
                 .SingleAsync(option => option.Id == optionId);
             Assert.Equal(newerName, accepted.Name);
-            Assert.False(accepted.IsDirty);
-            Assert.Equal(9, accepted.Revision);
-            Assert.Equal(
+            Assert.True(accepted.IsDirty);
+            Assert.Equal(7, accepted.Revision);
+            Assert.NotEqual(
                 "Acknowledged",
                 await db.SyncOutboxEntries
                     .AsNoTracking()
@@ -2589,7 +2610,8 @@ public sealed partial class SyncOutboxPendingStateTests
                 handler.ReleasePush();
             }
 
-            Assert.True(await syncTask.WaitAsync(TimeSpan.FromSeconds(15)));
+            // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+            Assert.False(await syncTask.WaitAsync(TimeSpan.FromSeconds(15)));
         }
         finally
         {
@@ -5536,9 +5558,10 @@ public sealed partial class SyncOutboxPendingStateTests
                 handler.ReleasePush();
             }
 
-            Assert.True(
+            // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+            Assert.False(
                 await syncTask.WaitAsync(
-                    TimeSpan.FromSeconds(15)));
+                    TimeSpan.FromSeconds(15)), await SyncAttemptCompletionTests.DescribeAsync(sync));
             Assert.Equal(1, handler.PushCount);
             Assert.Equal(1, handler.PullCount);
 
@@ -8767,6 +8790,8 @@ public sealed partial class SyncOutboxPendingStateTests
             var tombstoneInventoryMovementId = Guid.NewGuid();
             var canonicalStockLayerId = Guid.NewGuid();
             var tombstoneStockLayerId = Guid.NewGuid();
+            var draftInvoiceId = Guid.NewGuid();
+            var draftLineIds = new[] { Guid.NewGuid(), Guid.NewGuid() };
             var billingProfileId = Guid.NewGuid();
             var malformedBillingProfileId = Guid.NewGuid();
             var unknownShapeBillingProfileId = Guid.NewGuid();
@@ -8797,6 +8822,24 @@ public sealed partial class SyncOutboxPendingStateTests
             db.Items.AddRange(
                 CreateLocalItem(canonicalItemId),
                 CreateLocalItem(tombstoneItemId));
+            // Real business references survive the pull. The synthetic
+            // derived rows below deliberately have no source invoices.
+            db.Invoices.Add(new LocalInvoice
+            {
+                Id = draftInvoiceId, VersionGroupId = draftInvoiceId, VersionNumber = 1,
+                IsLatestVersion = true, IsConfirmed = false, IsDirty = false,
+                TenantCode = TenantScopeCatalog.UsenetGroup, OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                VoucherType = VoucherType.Sales, InvoiceDate = new DateOnly(2026, 8, 8),
+                CreatedAtUtc = now.AddDays(-1), UpdatedAtUtc = now, Revision = 40,
+                Memo = "preserve draft and its amounts", TotalAmount = 330m,
+                Lines = [
+                    new LocalInvoiceLine { Id = draftLineIds[0], InvoiceId = draftInvoiceId,
+                        ItemId = canonicalItemId, Quantity = 1m, UnitPrice = 100m, LineAmount = 100m },
+                    new LocalInvoiceLine { Id = draftLineIds[1], InvoiceId = draftInvoiceId,
+                        ItemId = tombstoneItemId, Quantity = 2m, UnitPrice = 100m, LineAmount = 200m }
+                ]
+            });
             db.InvoiceLineSerials.AddRange(
                 new LocalInvoiceLineSerial
                 {
@@ -8935,6 +8978,37 @@ public sealed partial class SyncOutboxPendingStateTests
             };
 
             using var sync = CreateSyncService(db, CreateAdminSession());
+            // Verify all alias remaps at the actual pull boundary before the
+            // derived cache rebuild; keep every original reference assertion.
+            var remapBoundaryObserved = false;
+            sync.AfterPulledPurgeRecordsAsyncForTesting = async _ =>
+            {
+                var invoiceLineSerialItemIds = await db.InvoiceLineSerials
+                    .AsNoTracking()
+                    .ToDictionaryAsync(serial => serial.Id, serial => serial.ItemId);
+                Assert.Equal(canonicalItemId, invoiceLineSerialItemIds[canonicalInvoiceLineSerialId]);
+                Assert.Equal(canonicalItemId, invoiceLineSerialItemIds[tombstoneInvoiceLineSerialId]);
+
+                var serialLedgerItemIds = await db.SerialLedgers
+                    .AsNoTracking()
+                    .ToDictionaryAsync(ledger => ledger.Id, ledger => ledger.ItemId);
+                Assert.Equal(canonicalItemId, serialLedgerItemIds[canonicalSerialLedgerId]);
+                Assert.Equal(canonicalItemId, serialLedgerItemIds[tombstoneSerialLedgerId]);
+
+                var inventoryMovementItemIds = await db.InventoryMovements
+                    .AsNoTracking()
+                    .ToDictionaryAsync(movement => movement.Id, movement => movement.ItemId);
+                Assert.Equal(canonicalItemId, inventoryMovementItemIds[canonicalInventoryMovementId]);
+                Assert.Equal(canonicalItemId, inventoryMovementItemIds[tombstoneInventoryMovementId]);
+
+                var stockLayerItemIds = await db.StockLayers
+                    .AsNoTracking()
+                    .ToDictionaryAsync(layer => layer.Id, layer => layer.ItemId);
+                Assert.Equal(canonicalItemId, stockLayerItemIds[canonicalStockLayerId]);
+                Assert.Equal(canonicalItemId, stockLayerItemIds[tombstoneStockLayerId]);
+                remapBoundaryObserved = true;
+            };
+
             await InvokeApplyPullAsync(
                 sync,
                 new SyncPullResponse
@@ -8962,35 +9036,28 @@ public sealed partial class SyncOutboxPendingStateTests
                 });
 
             db.ChangeTracker.Clear();
+            Assert.True(remapBoundaryObserved);
             var pulledItems = await db.Items.IgnoreQueryFilters()
                 .AsNoTracking()
                 .ToDictionaryAsync(item => item.Id);
             Assert.False(pulledItems[canonicalItemId].IsDeleted);
             Assert.True(pulledItems[tombstoneItemId].IsDeleted);
 
-            var invoiceLineSerialItemIds = await db.InvoiceLineSerials
-                .AsNoTracking()
-                .ToDictionaryAsync(serial => serial.Id, serial => serial.ItemId);
-            Assert.Equal(canonicalItemId, invoiceLineSerialItemIds[canonicalInvoiceLineSerialId]);
-            Assert.Equal(canonicalItemId, invoiceLineSerialItemIds[tombstoneInvoiceLineSerialId]);
-
-            var serialLedgerItemIds = await db.SerialLedgers
-                .AsNoTracking()
-                .ToDictionaryAsync(ledger => ledger.Id, ledger => ledger.ItemId);
-            Assert.Equal(canonicalItemId, serialLedgerItemIds[canonicalSerialLedgerId]);
-            Assert.Equal(canonicalItemId, serialLedgerItemIds[tombstoneSerialLedgerId]);
-
-            var inventoryMovementItemIds = await db.InventoryMovements
-                .AsNoTracking()
-                .ToDictionaryAsync(movement => movement.Id, movement => movement.ItemId);
-            Assert.Equal(canonicalItemId, inventoryMovementItemIds[canonicalInventoryMovementId]);
-            Assert.Equal(canonicalItemId, inventoryMovementItemIds[tombstoneInventoryMovementId]);
-
-            var stockLayerItemIds = await db.StockLayers
-                .AsNoTracking()
-                .ToDictionaryAsync(layer => layer.Id, layer => layer.ItemId);
-            Assert.Equal(canonicalItemId, stockLayerItemIds[canonicalStockLayerId]);
-            Assert.Equal(canonicalItemId, stockLayerItemIds[tombstoneStockLayerId]);
+            // Cost refresh rebuilds these caches from confirmed history,
+            // so fabricated rows without source invoices do not persist.
+            Assert.Empty(await db.InvoiceLineSerials.ToListAsync());
+            Assert.Empty(await db.SerialLedgers.ToListAsync());
+            Assert.Empty(await db.InventoryMovements.ToListAsync());
+            Assert.Empty(await db.StockLayers.ToListAsync());
+            var preservedDraft = await db.Invoices.IgnoreQueryFilters().AsNoTracking()
+                .Include(invoice => invoice.Lines).SingleAsync(invoice => invoice.Id == draftInvoiceId);
+            Assert.False(preservedDraft.IsConfirmed);
+            Assert.Equal("preserve draft and its amounts", preservedDraft.Memo);
+            Assert.Equal(330m, preservedDraft.TotalAmount);
+            Assert.Equal(draftLineIds.OrderBy(id => id), preservedDraft.Lines.Select(line => line.Id).OrderBy(id => id));
+            Assert.All(preservedDraft.Lines, line => Assert.Equal(canonicalItemId, line.ItemId));
+            Assert.Equal(100m, preservedDraft.Lines.Single(line => line.Id == draftLineIds[0]).LineAmount);
+            Assert.Equal(200m, preservedDraft.Lines.Single(line => line.Id == draftLineIds[1]).LineAmount);
 
             var billingProfiles = await db.RentalBillingProfiles
                 .IgnoreQueryFilters()
@@ -10990,7 +11057,8 @@ public sealed partial class SyncOutboxPendingStateTests
                 handler.ReleasePush();
             }
 
-            Assert.True(await syncTask.WaitAsync(TimeSpan.FromSeconds(15)));
+            // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+            Assert.False(await syncTask.WaitAsync(TimeSpan.FromSeconds(15)));
 
             db.ChangeTracker.Clear();
             var saved = await db.Units.IgnoreQueryFilters()
@@ -11103,7 +11171,8 @@ public sealed partial class SyncOutboxPendingStateTests
                 handler.ReleasePush();
             }
 
-            Assert.True(await syncTask.WaitAsync(TimeSpan.FromSeconds(15)));
+            // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+            Assert.False(await syncTask.WaitAsync(TimeSpan.FromSeconds(15)));
 
             db.ChangeTracker.Clear();
             var saved = await db.Invoices.IgnoreQueryFilters()
@@ -11194,7 +11263,8 @@ public sealed partial class SyncOutboxPendingStateTests
                 handler.ReleasePush();
             }
 
-            Assert.True(await syncTask.WaitAsync(TimeSpan.FromSeconds(15)));
+            // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+            Assert.False(await syncTask.WaitAsync(TimeSpan.FromSeconds(15)));
 
             Assert.Equal(newerName, tracked.Name);
             Assert.Equal(newerUpdatedAtUtc, tracked.UpdatedAtUtc);
@@ -12164,7 +12234,8 @@ public sealed partial class SyncOutboxPendingStateTests
             await handler.PullReceived.Task.WaitAsync(TimeSpan.FromSeconds(15));
             handler.ReleasePull();
 
-            Assert.True(await syncTask.WaitAsync(TimeSpan.FromSeconds(15)));
+            // The captured owner changed; the discarded response cannot complete the original attempt.
+            Assert.False(await syncTask.WaitAsync(TimeSpan.FromSeconds(15)));
 
             await using var verificationDb = new LocalDbContext();
             Assert.Null(await verificationDb.Units.IgnoreQueryFilters()
@@ -12454,7 +12525,8 @@ public sealed partial class SyncOutboxPendingStateTests
                 await handler.PullReceived.Task.WaitAsync(
                     TimeSpan.FromSeconds(15));
                 handler.ReleasePull();
-                Assert.True(
+                // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+                Assert.False(
                     await syncTask.WaitAsync(
                         TimeSpan.FromSeconds(15)));
             }
@@ -12645,7 +12717,8 @@ public sealed partial class SyncOutboxPendingStateTests
             await handler.PullReceived.Task.WaitAsync(
                 TimeSpan.FromSeconds(15));
             handler.ReleasePull();
-            Assert.True(
+            // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+            Assert.False(
                 await syncTask.WaitAsync(
                     TimeSpan.FromSeconds(15)));
 
@@ -12783,7 +12856,8 @@ public sealed partial class SyncOutboxPendingStateTests
                        session,
                        handler))
             {
-                Assert.True(
+                // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+                Assert.False(
                     await sync.TrySyncAsync()
                         .WaitAsync(TimeSpan.FromSeconds(15)));
             }
@@ -13903,7 +13977,8 @@ public sealed partial class SyncOutboxPendingStateTests
                        session,
                        new EmptyPushThenPullHandler()))
             {
-                Assert.True(
+                // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+                Assert.False(
                     await sync.TrySyncAsync()
                         .WaitAsync(
                             TimeSpan.FromSeconds(15)));
@@ -14051,7 +14126,8 @@ public sealed partial class SyncOutboxPendingStateTests
                        session,
                        new EmptyPushThenPullHandler()))
             {
-                Assert.True(
+                // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+                Assert.False(
                     await sync.TrySyncAsync()
                         .WaitAsync(
                             TimeSpan.FromSeconds(15)));
@@ -14348,7 +14424,8 @@ public sealed partial class SyncOutboxPendingStateTests
                        session,
                        new EmptyPushThenPullHandler()))
             {
-                Assert.True(
+                // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+                Assert.False(
                     await sync.TrySyncAsync()
                         .WaitAsync(
                             TimeSpan.FromSeconds(15)));
@@ -14470,7 +14547,8 @@ public sealed partial class SyncOutboxPendingStateTests
                        session,
                        new EmptyPushThenPullHandler()))
             {
-                Assert.True(
+                // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+                Assert.False(
                     await sync.TrySyncAsync()
                         .WaitAsync(
                             TimeSpan.FromSeconds(15)));
@@ -14984,7 +15062,8 @@ public sealed partial class SyncOutboxPendingStateTests
                 handler.ReleasePush();
             }
 
-            Assert.True(await syncTask.WaitAsync(TimeSpan.FromSeconds(15)));
+            // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+            Assert.False(await syncTask.WaitAsync(TimeSpan.FromSeconds(15)));
 
             db.ChangeTracker.Clear();
             var saved = await db.Invoices.IgnoreQueryFilters()
@@ -15090,7 +15169,8 @@ public sealed partial class SyncOutboxPendingStateTests
                 handler.ReleasePush();
             }
 
-            Assert.True(await syncTask.WaitAsync(TimeSpan.FromSeconds(15)));
+            // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+            Assert.False(await syncTask.WaitAsync(TimeSpan.FromSeconds(15)));
 
             Assert.Equal(assignedInvoiceNumber, tracked.InvoiceNumber);
             Assert.Equal(newerMemo, tracked.Memo);
@@ -15248,7 +15328,8 @@ public sealed partial class SyncOutboxPendingStateTests
                 handler.ReleasePush();
             }
 
-            Assert.True(await syncTask.WaitAsync(TimeSpan.FromSeconds(15)));
+            // The exchange leaves pending changes or unacknowledged work; the existing data-preservation assertions still apply.
+            Assert.False(await syncTask.WaitAsync(TimeSpan.FromSeconds(15)));
 
             Assert.Equal(acceptedRevision, trackedInvoice.Revision);
             Assert.Equal(newerUpdatedAtUtc, trackedInvoice.UpdatedAtUtc);
@@ -15436,8 +15517,16 @@ public sealed partial class SyncOutboxPendingStateTests
         }
     }
 
-    [Fact]
-    public async Task ClearStaleDirtyEntities_TrackedUnsavedEdit_RebasesOnlyRevisionAndRestoresForExplicitSave()
+    [Theory]
+    [InlineData("same", false)]
+    [InlineData("same", true)]
+    [InlineData("payload", false)]
+    [InlineData("payload", true)]
+    [InlineData("updated", false)]
+    [InlineData("updated", true)]
+    [InlineData("deleted", false)]
+    [InlineData("deleted", true)]
+    public async Task ClearStaleDirtyEntities_TrackedUnsavedEdit_RebasesOnlyMatchingServerSnapshot(string difference, bool utcWireTimestamp)
     {
         PrepareAppRoot("georaeplan-stale-dirty-tracked-unsaved-rebase");
 
@@ -15456,6 +15545,7 @@ public sealed partial class SyncOutboxPendingStateTests
             const long serverRevision = 72;
             const string persistedName = "stale 조회 당시 단위";
             const string newerName = "stale 조회 후 미저장 수정 단위";
+            var expectedRevision = difference == "same" ? serverRevision : persistedRevision;
 
             db.Units.Add(new LocalUnit
             {
@@ -15482,22 +15572,22 @@ public sealed partial class SyncOutboxPendingStateTests
             db.ChangeTracker.DetectChanges();
             Assert.Equal(EntityState.Modified, db.Entry(tracked).State);
 
+            // SQLite drops DateTime.Kind; an HTTP pull can return an explicit UTC timestamp.
+            var serverSnapshot = LocalMappings.ToDto(dirtySnapshot);
+            serverSnapshot.Revision = serverRevision;
+            if (utcWireTimestamp)
+                serverSnapshot.UpdatedAtUtc = DateTime.SpecifyKind(serverSnapshot.UpdatedAtUtc, DateTimeKind.Utc);
+            if (difference == "payload")
+                serverSnapshot.Name = "independent peer payload";
+            if (difference == "updated")
+                serverSnapshot.UpdatedAtUtc = persistedUpdatedAtUtc.AddMinutes(1);
+            if (difference == "deleted")
+                serverSnapshot.IsDeleted = true;
             using var sync = CreateSyncService(db, session);
             var changed = await InvokeClearStaleDirtyEntitiesAsync<LocalUnit, UnitDto>(
                 sync,
                 [dirtySnapshot],
-                [
-                    new UnitDto
-                    {
-                        Id = unitId,
-                        Name = persistedName,
-                        IsActive = true,
-                        IsDeleted = false,
-                        CreatedAtUtc = createdAtUtc,
-                        UpdatedAtUtc = persistedUpdatedAtUtc,
-                        Revision = serverRevision
-                    }
-                ]);
+                [serverSnapshot]);
 
             Assert.Equal(0, changed);
 
@@ -15510,7 +15600,7 @@ public sealed partial class SyncOutboxPendingStateTests
                 Assert.Equal(persistedName, persistedBeforeSave.Name);
                 Assert.Equal(persistedUpdatedAtUtc, persistedBeforeSave.UpdatedAtUtc);
                 Assert.True(persistedBeforeSave.IsDirty);
-                Assert.Equal(serverRevision, persistedBeforeSave.Revision);
+                Assert.Equal(expectedRevision, persistedBeforeSave.Revision);
             }
 
             InvokeRestoreTrackedMutationsPreservedDuringSync(sync);
@@ -15518,7 +15608,7 @@ public sealed partial class SyncOutboxPendingStateTests
             Assert.Equal(newerName, tracked.Name);
             Assert.Equal(newerUpdatedAtUtc, tracked.UpdatedAtUtc);
             Assert.True(tracked.IsDirty);
-            Assert.Equal(serverRevision, tracked.Revision);
+            Assert.Equal(expectedRevision, tracked.Revision);
             Assert.Equal(EntityState.Modified, db.Entry(tracked).State);
 
             await db.SaveChangesAsync();
@@ -15530,7 +15620,7 @@ public sealed partial class SyncOutboxPendingStateTests
             Assert.Equal(newerName, saved.Name);
             Assert.Equal(newerUpdatedAtUtc, saved.UpdatedAtUtc);
             Assert.True(saved.IsDirty);
-            Assert.Equal(serverRevision, saved.Revision);
+            Assert.Equal(expectedRevision, saved.Revision);
         }
         finally
         {
@@ -17169,6 +17259,9 @@ public sealed partial class SyncOutboxPendingStateTests
                     await _releaseFirstPush.Task.WaitAsync(
                         TimeSpan.FromSeconds(15),
                         cancellationToken);
+                }
+                if (Assert.Single(pushedRequest!.Units).ExpectedRevision != _serverRevision)
+                {
                     var pushedUnit = Assert.Single(pushedRequest!.Units);
                     var serverJson = _includeFullServerSnapshot
                         ? JsonSerializer.Serialize(new UnitDto
@@ -17288,6 +17381,9 @@ public sealed partial class SyncOutboxPendingStateTests
                 await _releasePush.Task.WaitAsync(
                     TimeSpan.FromSeconds(15),
                     cancellationToken);
+            }
+            if (Assert.Single(pushedRequest!.PriceGradeOptions).ExpectedRevision != _serverRevision)
+            {
                 var pushedOption = Assert.Single(
                     pushedRequest!.PriceGradeOptions);
                 return new HttpResponseMessage(HttpStatusCode.OK)

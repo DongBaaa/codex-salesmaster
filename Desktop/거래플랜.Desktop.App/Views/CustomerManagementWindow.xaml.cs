@@ -65,10 +65,18 @@ public partial class CustomerManagementWindow : Window
 
     private void ResponsibleOfficeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (sender is not ComboBox comboBox || !comboBox.IsLoaded)
+        if (_vm.IsRefreshingRows || sender is not ComboBox comboBox || !comboBox.IsLoaded)
             return;
 
-        if (comboBox.DataContext is not EnvironmentCustomerRow row || !row.IsModified)
+        if (comboBox.DataContext is not EnvironmentCustomerRow row ||
+            comboBox.SelectedItem is not string selectedOfficeCode ||
+            string.IsNullOrWhiteSpace(selectedOfficeCode) ||
+            !comboBox.Items.Contains(selectedOfficeCode) ||
+            string.Equals(row.ResponsibleOfficeCode, selectedOfficeCode, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        row.ResponsibleOfficeCode = selectedOfficeCode;
+        if (!row.IsModified)
             return;
 
         UiTaskHelper.Run(

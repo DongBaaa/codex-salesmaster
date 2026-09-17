@@ -34,6 +34,19 @@ public sealed partial class LocalStateService
             ct);
     }
 
+    public Task<LocalItem> SaveInventoryItemAsync(
+        LocalItem item,
+        SessionState session,
+        string? preferredOfficeCode,
+        IEnumerable<LocalItemPriceGrade>? itemPriceGrades,
+        CancellationToken ct = default)
+    {
+        EnsureCanUpsertItem(item, session, preferredOfficeCode);
+        return UpsertItemWithDeletedRestorePolicyAsync(
+            item, session, preferredOfficeCode, itemPriceGrades,
+            allowDeletedRestore: false, ct, preserveInventoryEditorHiddenFields: true);
+    }
+
     private async Task<LocalItem> RestoreDeletedMissingItemAsync(
         LocalItem item,
         SessionState session,
@@ -56,16 +69,17 @@ public sealed partial class LocalStateService
         string? preferredOfficeCode,
         IEnumerable<LocalItemPriceGrade>? itemPriceGrades,
         bool allowDeletedRestore,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool preserveInventoryEditorHiddenFields = false)
     {
 
         if (_db.Database.CurrentTransaction is not null)
-            return await SaveItemAndPriceGradesAsync(item, session, preferredOfficeCode, itemPriceGrades, allowDeletedRestore, ct);
+            return await SaveItemAndPriceGradesAsync(item, session, preferredOfficeCode, itemPriceGrades, allowDeletedRestore, ct, preserveInventoryEditorHiddenFields);
 
         await using var transaction = await _db.BeginRuntimeMutationTransactionAsync(ct);
         try
         {
-            var saved = await SaveItemAndPriceGradesAsync(item, session, preferredOfficeCode, itemPriceGrades, allowDeletedRestore, ct);
+            var saved = await SaveItemAndPriceGradesAsync(item, session, preferredOfficeCode, itemPriceGrades, allowDeletedRestore, ct, preserveInventoryEditorHiddenFields);
             await transaction.CommitAsync(ct);
             return saved;
         }
@@ -83,7 +97,8 @@ public sealed partial class LocalStateService
         string? preferredOfficeCode,
         IEnumerable<LocalItemPriceGrade>? itemPriceGrades,
         bool allowDeletedRestore,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool preserveInventoryEditorHiddenFields = false)
     {
         var saved = await UpsertItemAsync(
             item,
@@ -91,7 +106,8 @@ public sealed partial class LocalStateService
             synchronizeLinkedRentalAssets: CanEditRentalAssets(session),
             preserveExistingInventoryStock: true,
             allowDeletedRestore,
-            ct);
+            ct,
+            preserveInventoryEditorHiddenFields);
         if (itemPriceGrades is not null)
             await SaveItemPriceGradesForItemAsync(saved.Id, itemPriceGrades, ct);
         return saved;

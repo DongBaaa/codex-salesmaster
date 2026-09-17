@@ -19,6 +19,119 @@ public sealed class PrintDocumentRenderingSmokeTests
 {
     private static readonly Regex StandaloneDotPattern = new(@"(^|\s)\.(\s|$)", RegexOptions.Compiled);
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(22)]
+    [InlineData(23)]
+    public void PurchaseMemo_MultipleLinesFitFinalPageWithoutClipping(int lineCount)
+    {
+        RunOnSta(() =>
+        {
+            var model = CreatePrintModel(VoucherType.Purchase);
+            model.Memo = "배송 전 연락 바랍니다.\n검수 후 처리 바랍니다.\n마지막 확인 문장입니다.";
+            model.Lines = Enumerable.Range(1, lineCount).Select(i => new InvoicePrintLineModel
+            { No=i, ItemName=$"검증 품목 {i}", Quantity=1, UnitPrice=1100, Amount=1100 }).ToList();
+            var document = new WpfInvoicePrintService().BuildFixedDocument(model);
+            var page = document.Pages[^1].Child;
+            page.Measure(new Size(793.7, 1122.5));
+            page.Arrange(new Rect(0, 0, 793.7, 1122.5));
+            page.UpdateLayout();
+            var memo = Assert.Single(EnumerateDependencyObjects(document).OfType<TextBlock>(), b => b.Text == model.Memo);
+            var cell = Assert.IsType<Border>(memo.Parent);
+            Assert.Equal(TextWrapping.Wrap, memo.TextWrapping);
+            var available = cell.ActualHeight - cell.Padding.Top - cell.Padding.Bottom - cell.BorderThickness.Top - cell.BorderThickness.Bottom;
+            Assert.True(available + 1 >= memo.DesiredSize.Height);
+            Assert.True(memo.ActualHeight + 1 >= memo.DesiredSize.Height);
+            var bottom = cell.TransformToAncestor(page).Transform(new Point(0, cell.ActualHeight)).Y;
+            Assert.True(bottom <= page.Height - 20, $"Memo cell leaves the printable page: {bottom}");
+            Assert.Equal(lineCount, model.Lines.Count);
+        });
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void PurchaseMoneyVisibility_CoversLineAmountsAndEverySummaryAmount(bool withPrices)
+    {
+        RunOnSta(() =>
+        {
+            var model = CreatePrintModel(VoucherType.Purchase);
+            model.PrintWithPrice = withPrices;
+            model.SupplyAmount=80000; model.VatAmount=8000; model.TotalAmount=88000;
+            model.PaidAmount=12345; model.BalanceAmount=75655;
+            var before = System.Text.Json.JsonSerializer.Serialize(model);
+            var document = new WpfInvoicePrintService().BuildFixedDocument(model);
+            RenderFixedDocumentFirstPage(document);
+            var text=ReadFixedDocumentText(document);
+            foreach(var amount in new[]{"80,000","8,000","88,000","12,345","75,655"})
+            {
+                if(withPrices) Assert.Contains(amount,text);
+                else Assert.DoesNotContain(amount,text);
+            }
+            Assert.Contains("공급가",text); Assert.Contains("미지급잔액",text);
+            Assert.Equal(before, System.Text.Json.JsonSerializer.Serialize(model));
+        });
+    }
+
+    [Theory]
+    [InlineData(InvoiceVatModes.Included, "부가세포함")]
+    [InlineData(InvoiceVatModes.None, "부가세없음")]
+    [InlineData("VatExempt", "부가세없음")]
+    [InlineData("", "부가세포함")]
+    public void ProcurementVatCaption_MatchesTheStoredAmountMode(string mode, string caption)
+    {
+        RunOnSta(() =>
+        {
+            var model=CreatePrintModel(VoucherType.Procurement); model.VatMode=mode;
+            var before=System.Text.Json.JsonSerializer.Serialize(model);
+            var document=new WpfInvoicePrintService().BuildFixedDocument(model);
+            RenderFixedDocumentFirstPage(document);
+            var text=ReadFixedDocumentText(document);
+            Assert.Contains(caption,text); Assert.DoesNotContain("부가세별도",text);
+            Assert.Equal(before,System.Text.Json.JsonSerializer.Serialize(model));
+        });
+    }
+
+    [Theory]
+    [InlineData("CODEX-AUDIT-20260906-MOBILE")]
+    [InlineData("배송 전 연락 바랍니다.\n수령 후 검수 바랍니다.")]
+    public void SalesMemo_WrappedTextFitsBothPrintedCopies(string memo)
+    {
+        RunOnSta(() =>
+        {
+            var model = CreatePrintModel(VoucherType.Sales);
+            model.Memo = memo;
+            var document = new WpfInvoicePrintService().BuildFixedDocument(model);
+            RenderFixedDocumentFirstPage(document);
+            var blocks = EnumerateDependencyObjects(document).OfType<TextBlock>()
+                .Where(block => block.Text == memo).Distinct().ToArray();
+            Assert.Equal(2, blocks.Length);
+            foreach (var block in blocks)
+            {
+                Assert.Equal(TextWrapping.Wrap, block.TextWrapping);
+                var border = Assert.IsType<Border>(block.Parent);
+                var available = border.ActualHeight - border.Padding.Top - border.Padding.Bottom
+                    - border.BorderThickness.Top - border.BorderThickness.Bottom;
+                Assert.True(available + 1 >= block.DesiredSize.Height,
+                    $"Memo requires {block.DesiredSize.Height}, cell provides {available}.");
+                Assert.True(block.ActualHeight + 1 >= block.DesiredSize.Height);
+            }
+
+            var evidenceDirectory = Environment.GetEnvironmentVariable("GEORAEPLAN_PRINT_EVIDENCE_DIRECTORY");
+            if (!string.IsNullOrWhiteSpace(evidenceDirectory))
+            {
+                System.IO.Directory.CreateDirectory(evidenceDirectory);
+                var bitmap = new RenderTargetBitmap(794, 1123, 96, 96, PixelFormats.Pbgra32);
+                bitmap.Render(document.Pages[0].Child);
+                var encoder = new PngBitmapEncoder();
+                encoder.Frames.Add(BitmapFrame.Create(bitmap));
+                using var stream = System.IO.File.Create(System.IO.Path.Combine(evidenceDirectory,
+                    memo.Contains('\n') ? "print-memo-multiline.png" : "print-memo-audit.png"));
+                encoder.Save(stream);
+            }
+        });
+    }
+
     [Fact]
     public void SalesStatementDocument_RendersExpectedPartiesAmountsAndNoStrayDot()
     {

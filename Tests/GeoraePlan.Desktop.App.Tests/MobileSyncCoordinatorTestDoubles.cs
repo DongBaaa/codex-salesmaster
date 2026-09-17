@@ -153,10 +153,9 @@ public sealed class JsonSyncStateStore : IDisposable
                 stream.Flush(flushToDisk: true);
             }
 
-            if (File.Exists(_statePath))
-                File.Replace(temporaryPath, _statePath, null);
-            else
-                File.Move(temporaryPath, _statePath);
+            // Match JsonSyncStateStore.SaveToJsonFileAsync. ReplaceFile can
+            // intermittently fail before the HTTP behavior under test runs.
+            File.Move(temporaryPath, _statePath, overwrite: true);
         }
         finally
         {

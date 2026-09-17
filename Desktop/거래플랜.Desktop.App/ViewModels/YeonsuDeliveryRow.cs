@@ -14,5 +14,12 @@ public sealed class YeonsuDeliveryRow
     public decimal SalesAmount { get; init; }
     public decimal ProfitAmount { get; init; }
     public decimal FeeAmount { get; init; }
+    public bool IsCostUncertain { get; init; }
+    public string PurchaseAmountDisplay => FormatCostDependentAmount(PurchaseAmount);
+    public string ProfitAmountDisplay => FormatCostDependentAmount(ProfitAmount);
+    public string FeeAmountDisplay => FormatCostDependentAmount(FeeAmount);
     public string Note { get; init; } = string.Empty;
+
+    private string FormatCostDependentAmount(decimal amount)
+        => IsCostUncertain ? $"{amount:N0} (잠정)" : $"{amount:N0}";
 }

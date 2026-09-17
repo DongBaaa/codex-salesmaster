@@ -838,12 +838,87 @@ public sealed class AdministrativeBusinessCacheRevisionTests
         Assert.All(handler.Requests, request => Assert.True(request.RentalAdministrationOnly));
     }
 
+    [Theory]
+    [InlineData(TenantScopeCatalog.ScopeOfficeOnly)]
+    [InlineData(TenantScopeCatalog.ScopeTenantAll)]
+    public async Task AdministrativeBusinessCache_RestrictedAdminPullsOnlyItsAuthenticatedTenant(
+        string scopeType)
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = CreateDbContext(connection);
+        await db.Database.EnsureCreatedAsync();
+        var session = CreateAdminSession(scopeType);
+        var dispatcher = new SyncRequestDispatcher();
+        var local = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
+        await local.SetSettingAsync("Sync.AdminBusinessCacheRevision.ITWORLD", "42");
+        var handler = new AdministrativeCachePullHandler
+        {
+            TenantConfigurationStatus = HttpStatusCode.Forbidden,
+            AdditionalTenantCodes = ["ORG_NEWCO"]
+        };
+        var api = new ErpApiClient(new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") }, session);
+        using var sync = new SyncService(db, local, new RentalStateService(db), api,
+            session, dispatcher, new SyncDiagnosticsService(session));
+
+        Assert.True(await sync.EnsureAdministrativeBusinessCachesAsync());
+
+        Assert.Equal(0, handler.TenantConfigurationRequests);
+        Assert.Single(handler.Requests);
+        Assert.Equal(string.Empty, handler.Requests[0].DatabaseName);
+        Assert.All(handler.Requests, r => Assert.True(r.RentalAdministrationOnly));
+        Assert.Equal("100", await local.GetSettingAsync("Sync.AdminBusinessCacheRevision.USENET"));
+        Assert.Equal("42", await local.GetSettingAsync("Sync.AdminBusinessCacheRevision.ITWORLD"));
+        // No system settings query or cross-tenant cache revision is needed for this scope.
+        Assert.DoesNotContain(handler.Requests, r => r.DatabaseName == "ORG_NEWCO");
+    }
+
+    [Fact]
+    public async Task AdministrativeBusinessCache_ForbiddenPullPreservesCachedRowsAndRevisions()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = CreateDbContext(connection);
+        await db.Database.EnsureCreatedAsync();
+        var session = CreateAdminSession();
+        var dispatcher = new SyncRequestDispatcher();
+        var local = new LocalStateService(db, new OfficeAccessService(), dispatcher, session);
+        await local.SetSettingAsync("Sync.AdminBusinessCacheRevision.USENET", "31");
+        await local.SetSettingAsync("Sync.AdminBusinessCacheRevision.ITWORLD", "42");
+        var item = new LocalItem
+        {
+            Id = Guid.NewGuid(), NameOriginal = "Preserved rental cache",
+            NameMatchKey = "PRESERVEDRENTALCACHE", TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet, CurrentStock = 17m, Revision = 31,
+            IsDirty = false
+        };
+        db.Items.Add(item);
+        await db.SaveChangesAsync();
+        var before = JsonSerializer.Serialize(await db.Items.AsNoTracking().SingleAsync());
+        var handler = new AdministrativeCachePullHandler
+        {
+            TenantConfigurationStatus = HttpStatusCode.Forbidden,
+            PullStatus = HttpStatusCode.Forbidden
+        };
+        var api = new ErpApiClient(new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") }, session);
+        using var sync = new SyncService(db, local, new RentalStateService(db), api,
+            session, dispatcher, new SyncDiagnosticsService(session));
+
+        Assert.False(await sync.EnsureAdministrativeBusinessCachesAsync());
+
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.All(handler.Requests, r => Assert.True(r.RentalAdministrationOnly));
+        Assert.Equal("31", await local.GetSettingAsync("Sync.AdminBusinessCacheRevision.USENET"));
+        Assert.Equal("42", await local.GetSettingAsync("Sync.AdminBusinessCacheRevision.ITWORLD"));
+        Assert.Equal(before, JsonSerializer.Serialize(await db.Items.AsNoTracking().SingleAsync()));
+    }
+
     private static LocalDbContext CreateDbContext(SqliteConnection connection)
         => new(new DbContextOptionsBuilder<LocalDbContext>()
             .UseSqlite(connection)
             .Options);
 
-    private static SessionState CreateAdminSession()
+    private static SessionState CreateAdminSession(string scopeType = TenantScopeCatalog.ScopeAdmin)
     {
         var session = new SessionState();
         session.SetSession(
@@ -854,7 +929,7 @@ public sealed class AdministrativeBusinessCacheRevisionTests
                 Role = DomainConstants.RoleAdmin,
                 TenantCode = TenantScopeCatalog.UsenetGroup,
                 OfficeCode = OfficeCodeCatalog.Usenet,
-                ScopeType = TenantScopeCatalog.ScopeAdmin
+                ScopeType = scopeType
             });
         return session;
     }
@@ -966,6 +1041,9 @@ public sealed class AdministrativeBusinessCacheRevisionTests
 
         public List<PullRequest> Requests { get; } = [];
         public string[] AdditionalTenantCodes { get; init; } = [];
+        public HttpStatusCode TenantConfigurationStatus { get; init; } = HttpStatusCode.OK;
+        public HttpStatusCode PullStatus { get; init; } = HttpStatusCode.OK;
+        public int TenantConfigurationRequests { get; private set; }
 
         public void ClearRequests() => Requests.Clear();
 
@@ -988,7 +1066,12 @@ public sealed class AdministrativeBusinessCacheRevisionTests
             CancellationToken cancellationToken)
         {
             if (IsTenantConfigurationRequest(request))
-                return Task.FromResult(CreateTenantConfigurationResponse(AdditionalTenantCodes));
+            {
+                TenantConfigurationRequests++;
+                return Task.FromResult(TenantConfigurationStatus == HttpStatusCode.OK
+                    ? CreateTenantConfigurationResponse(AdditionalTenantCodes)
+                    : new HttpResponseMessage(TenantConfigurationStatus));
+            }
 
             var databaseName = request.Headers.TryGetValues("X-Tenant-Code", out var values)
                 ? values.Single()
@@ -1000,6 +1083,9 @@ public sealed class AdministrativeBusinessCacheRevisionTests
                 "true",
                 StringComparison.OrdinalIgnoreCase);
             Requests.Add(new PullRequest(databaseName, sinceRevision, rentalAdministrationOnly));
+
+            if (PullStatus != HttpStatusCode.OK)
+                return Task.FromResult(new HttpResponseMessage(PullStatus));
 
             if (_remainingFailures.TryGetValue(databaseName, out var remainingFailures) &&
                 remainingFailures > 0)

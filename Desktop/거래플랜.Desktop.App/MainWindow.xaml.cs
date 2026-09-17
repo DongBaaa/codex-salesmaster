@@ -1474,7 +1474,8 @@ public partial class MainWindow : Window
                 _lastCentralRefreshUtc = DateTime.UtcNow;
                 if (pendingServerRevision.Value > 0)
                 {
-                    var lastSyncRevisionRaw = await _local.GetSettingAsync("LastSyncRevision", ct);
+                    var lastSyncRevisionRaw = await ReadOwnerScopeNavigationStateAsync(
+                        _local, token => _local.GetSettingAsync("LastSyncRevision", token), ct);
                     _ = long.TryParse(lastSyncRevisionRaw, out var lastSyncRevision);
                     _lastPassiveServerRevisionHint = Math.Max(_lastPassiveServerRevisionHint, Math.Max(pendingServerRevision.Value, lastSyncRevision));
                 }
@@ -1916,7 +1917,8 @@ public partial class MainWindow : Window
         if (_sync.HasRecentSuccessfulSync(minInterval))
             return null;
 
-        if (await _local.HasPendingSyncChangesAsync(_session, ct))
+        if (await ReadOwnerScopeNavigationStateAsync(
+                _local, token => _local.HasPendingSyncChangesAsync(_session, token), ct))
         {
             // 실시간 감시가 이미 관측한 revision을 0으로 버리면 후속 처리에서
             // 기준 revision을 갱신하지 못해 같은 변경을 2초마다 다시 감지한다.
@@ -1937,7 +1939,8 @@ public partial class MainWindow : Window
             currentServerRevision = status.CurrentServerRevision;
         }
 
-        var lastSyncRevisionRaw = await _local.GetSettingAsync("LastSyncRevision", ct);
+        var lastSyncRevisionRaw = await ReadOwnerScopeNavigationStateAsync(
+            _local, token => _local.GetSettingAsync("LastSyncRevision", token), ct);
         _ = long.TryParse(lastSyncRevisionRaw, out var lastSyncRevision);
         var baselineRevision = Math.Max(lastSyncRevision, _lastPassiveServerRevisionHint);
         return currentServerRevision.Value > baselineRevision
@@ -2629,7 +2632,10 @@ public partial class MainWindow : Window
     private Task OpenInventoryWindowAsync()
         => OpenInventoryWindowAsync(null, null);
 
-    private async Task OpenInventoryWindowAsync(Guid? targetItemId, Window? ownerOverride)
+    private async Task OpenInventoryWindowAsync(
+        Guid? targetItemId,
+        Window? ownerOverride,
+        Func<Task>? closedAsync = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new InventoryViewModel(_local, _session);
@@ -2638,7 +2644,8 @@ public partial class MainWindow : Window
             win,
             () => targetItemId.HasValue ? vm.LoadAndSelectItemAsync(targetItemId.Value) : vm.LoadAsync(),
             "품목/재고 관리",
-            "품목/재고 데이터를 불러오지 못했습니다.");
+            "품목/재고 데이터를 불러오지 못했습니다.",
+            closedAsync);
     }
 
     private Task OpenPaymentPopupAsync()
@@ -2772,11 +2779,58 @@ public partial class MainWindow : Window
         {
             Owner = ownerOverride ?? this
         };
+        window.ResolutionTargetRequested += (_, args) =>
+        {
+            ForgetWindowBackgroundTask(
+                () => OpenServerIntegrityResolutionTargetAsync(args, window, () =>
+                    diagnosticsViewModel.RecheckServerIntegrityIssueAsync(args.IssueCode)),
+                "INTEGRITY",
+                "서버 무결성 해결 화면 열기",
+                ex => MessageBox.Show(
+                    window,
+                    $"해결할 원본 화면을 열지 못했습니다.{Environment.NewLine}{ex.Message}",
+                    "무결성 문제 해결",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning));
+        };
         ShowModelessWithDeferredLoad(
             window,
             () => diagnosticsViewModel.LoadAsync(),
             "동기화 진단",
             "동기화 진단 데이터를 불러오지 못했습니다.");
+    }
+
+    private async Task OpenServerIntegrityResolutionTargetAsync(
+        ServerIntegrityResolutionRequestedEventArgs args,
+        Window owner,
+        Func<Task> afterClosedAsync)
+    {
+        switch (args.ActionKind)
+        {
+            case DataIntegrityDirectActionKind.OpenRentalBillingProfile:
+                await OpenRentalBillingWindowAsync(args.TargetEntityId, owner, afterClosedAsync);
+                break;
+            case DataIntegrityDirectActionKind.OpenRentalAsset:
+                await OpenRentalAssetWindowAsync(args.TargetEntityId, owner, afterClosedAsync);
+                break;
+            case DataIntegrityDirectActionKind.OpenInventoryItem:
+                await OpenInventoryWindowAsync(args.TargetEntityId, owner, afterClosedAsync);
+                break;
+            case DataIntegrityDirectActionKind.OpenCustomer:
+                await OpenCustomerEditorAsync(args.TargetEntityId, owner, afterClosedAsync);
+                break;
+            case DataIntegrityDirectActionKind.OpenInvoice:
+                await OpenInvoiceWindowAsync(args.TargetEntityId, owner, afterClosedAsync);
+                break;
+            default:
+                MessageBox.Show(
+                    owner,
+                    "이 항목은 상세 행만으로 안전한 수정 화면을 확정할 수 없습니다. 해결 창의 안내에 따라 원본 자료를 확인해 주세요.",
+                    "무결성 문제 해결",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                break;
+        }
     }
 
     private async Task OpenEnvironmentSettingsWindowAsync(EnvironmentSettingsInitialTab initialTab = EnvironmentSettingsInitialTab.General)
@@ -2808,9 +2862,9 @@ public partial class MainWindow : Window
                     return;
 
                 RunUiAsync(
-                    () => _vm.LoadInvoiceListCommand.ExecuteAsync(null),
-                    "환경설정 닫기 후 전표 목록 새로고침",
-                    "환경설정 닫기 후 전표 목록을 다시 불러오는 중 오류가 발생했습니다.");
+                    () => _vm.RefreshCustomersCommand.ExecuteAsync(null),
+                    "환경설정 닫기 후 거래처·전표 목록 새로고침",
+                    "환경설정 닫기 후 거래처·전표 목록을 다시 불러오는 중 오류가 발생했습니다.");
             };
             ShowModelessWithDeferredLoad(
                 win,
@@ -2997,7 +3051,10 @@ public partial class MainWindow : Window
             () => _vm.LoadInvoiceListCommand.ExecuteAsync(null));
     }
 
-    private async Task OpenRentalBillingWindowAsync(Guid? targetProfileId = null, Window? ownerOverride = null)
+    private async Task OpenRentalBillingWindowAsync(
+        Guid? targetProfileId = null,
+        Window? ownerOverride = null,
+        Func<Task>? closedAsync = null)
     {
         await FlushPendingChangesBeforeNavigationAsync("화면 전환");
         var vm = new RentalBillingViewModel(_rental, _local, _session, _api);
@@ -3017,7 +3074,12 @@ public partial class MainWindow : Window
             () => targetProfileId.HasValue ? vm.LoadAndSelectProfileAsync(targetProfileId.Value) : vm.LoadAsync(),
             "렌탈 청구관리",
             "렌탈 청구관리 데이터를 불러오지 못했습니다.",
-            () => _vm.LoadInvoiceListCommand.ExecuteAsync(null));
+            async () =>
+            {
+                await _vm.LoadInvoiceListCommand.ExecuteAsync(null);
+                if (closedAsync is not null)
+                    await closedAsync();
+            });
     }
 
     private async Task OpenRentalAssetWindowAsync(
@@ -3082,7 +3144,10 @@ public partial class MainWindow : Window
         if (!blockUntilServerFlush && _sync.HasActiveOrQueuedSync)
             return;
 
-        var dirtyCount = await _local.CountDirtyAsync(_session);
+        var dirtyCount = await ReadOwnerScopeNavigationStateAsync(
+            _local,
+            ct => _local.CountDirtyAsync(_session, ct),
+            _windowBackgroundWorkCts.Token);
         if (dirtyCount == 0)
             return;
 
@@ -3106,12 +3171,18 @@ public partial class MainWindow : Window
             var flushed = await RunIsolatedSyncAsync(
                 (sync, _) => sync.FlushPendingChangesAsync(cts.Token),
                 cts.Token);
-            var remainingDirtyCount = await _local.CountDirtyAsync(_session);
+            var remainingDirtyCount = await ReadOwnerScopeNavigationStateAsync(
+                _local,
+                ct => _local.CountDirtyAsync(_session, ct),
+                cts.Token);
             if (!flushed || remainingDirtyCount > 0)
             {
-                _vm.SyncStatus = await _local.GetPendingSyncWaitingMessageAsync(
-                                     _session,
-                                     $"{reason} 전 변경사항을 서버에 모두 반영하지 못했습니다.",
+                _vm.SyncStatus = await ReadOwnerScopeNavigationStateAsync(
+                                     _local,
+                                     ct => _local.GetPendingSyncWaitingMessageAsync(
+                                         _session,
+                                         $"{reason} 전 변경사항을 서버에 모두 반영하지 못했습니다.",
+                                         ct),
                                      cts.Token)
                                  ?? $"{reason} 전 서버 반영 대기 데이터 {remainingDirtyCount:N0}건이 남아 있습니다.";
                 AppLogger.Warn("SYNC", $"{reason} flush incomplete: flushed={flushed}, remainingDirty={remainingDirtyCount}");
@@ -3135,6 +3206,24 @@ public partial class MainWindow : Window
         }
     }
 
+    internal static async Task<TResult> ReadOwnerScopeNavigationStateAsync<TResult>(
+        LocalStateService local,
+        Func<CancellationToken, Task<TResult>> read,
+        CancellationToken ct)
+    {
+        // Deactivation and passive-sync checks can run while a child window is
+        // loading on a worker thread. All readers share the UI scope/DbContext.
+        await local.OwnerScopeDataGate.WaitAsync(ct);
+        try
+        {
+            return await read(ct);
+        }
+        finally
+        {
+            local.OwnerScopeDataGate.Release();
+        }
+    }
+
     private async Task<bool> EnsureReadyForDesktopUpdateAsync(string targetVersion)
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
@@ -3149,11 +3238,21 @@ public partial class MainWindow : Window
         }
 
         _vm.SyncStatus = readiness.Message;
-        MessageBox.Show(
-            readiness.Message + Environment.NewLine + Environment.NewLine + "모든 dirty 데이터가 중앙 서버에 반영된 뒤에만 업데이트를 시작할 수 있습니다.",
-            "업데이트 보류",
-            MessageBoxButton.OK,
-            MessageBoxImage.Warning);
+        if (DesktopUpdatePendingChangesPrompt.ConfirmForceInstall(readiness, targetVersion))
+        {
+            _vm.SyncStatus = "미전송 자료를 보존하고 업데이트를 계속합니다.";
+            return true;
+        }
+
+        if (!readiness.CanForceProceed)
+        {
+            MessageBox.Show(
+                readiness.Message,
+                "업데이트를 시작할 수 없음",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+
         return false;
     }
 

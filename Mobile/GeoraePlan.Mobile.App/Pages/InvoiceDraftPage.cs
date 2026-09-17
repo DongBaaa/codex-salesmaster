@@ -84,6 +84,7 @@ public sealed class InvoiceDraftPage : ContentPage
         var customerResultView = new CollectionView
         {
             SelectionMode = SelectionMode.None,
+            ItemsLayout = new LinearItemsLayout(ItemsLayoutOrientation.Vertical) { ItemSpacing = 6 },
             BackgroundColor = Colors.Transparent,
             EmptyView = GeoraePlanTheme.CreateBodyText("검색 결과 없음", true, 12),
             ItemTemplate = new DataTemplate(() =>
@@ -98,6 +99,8 @@ public sealed class InvoiceDraftPage : ContentPage
                 infoLabel.SetBinding(Label.TextProperty, new Binding(path: ".", converter: new CustomerInfoConverter()));
 
                 var selectButton = GeoraePlanTheme.CreateCompactButton("선택", GeoraePlanTheme.Success);
+                selectButton.MinimumHeightRequest = 44;
+                selectButton.VerticalOptions = LayoutOptions.Center;
                 selectButton.Clicked += (sender, _) =>
                     MobileErrorHandler.FireAndForget(
                         async () =>
@@ -107,18 +110,27 @@ public sealed class InvoiceDraftPage : ContentPage
                 },
                         "전표 작성 작업");
 
+                var resultContent = new Grid
+                {
+                    ColumnSpacing = 8,
+                    ColumnDefinitions = { new ColumnDefinition(GridLength.Star), new ColumnDefinition(GridLength.Auto) }
+                };
+                resultContent.Add(new VerticalStackLayout
+                {
+                    Spacing = 4,
+                    VerticalOptions = LayoutOptions.Center,
+                    Children = { nameLabel, infoLabel }
+                });
+                resultContent.Add(selectButton, 1);
+
                 return new Border
                 {
                     BackgroundColor = GeoraePlanTheme.Surface,
                     Stroke = GeoraePlanTheme.Border,
                     StrokeShape = new RoundRectangle { CornerRadius = 10 },
                     Padding = new Thickness(10, 8),
-                    Margin = new Thickness(0, 0, 0, 6),
-                    Content = new VerticalStackLayout
-                    {
-                        Spacing = 4,
-                        Children = { nameLabel, infoLabel, selectButton }
-                    }
+                    MinimumHeightRequest = InvoiceDraftViewModel.CustomerSearchResultRowHeight,
+                    Content = resultContent
                 };
             })
         };

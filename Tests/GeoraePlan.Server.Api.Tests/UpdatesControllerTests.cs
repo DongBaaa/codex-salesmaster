@@ -105,6 +105,74 @@ public sealed class UpdatesControllerTests : IDisposable
         Assert.Equal("2.0.0", payload.Desktop?.Version);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task GetManifestAsync_ReadsUtf8LegacyManifest_WithOptionalDesktop(
+        bool withBom, bool withDesktop)
+    {
+        var manifest = new AppUpdateManifestDto
+        {
+            Channel = "test",
+            Desktop = withDesktop ? new AppUpdatePackageDto
+            {
+                Platform = "desktop", Version = "1.2.3", FileName = "desktop.zip"
+            } : null,
+            Android = new AppUpdatePackageDto
+            {
+                Platform = "android", Version = "0.2.83", FileName = "android.apk"
+            }
+        };
+        var path = Path.Combine(_storageRoot, "manifest", "test.json");
+        await File.WriteAllTextAsync(path,
+            JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+            new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: withBom));
+        var originalBytes = await File.ReadAllBytesAsync(path);
+
+        var response = await CreateController().GetManifestAsync("test");
+
+        var payload = Assert.IsType<AppUpdateManifestDto>(
+            Assert.IsType<OkObjectResult>(response.Result).Value);
+        Assert.Equal(withDesktop, payload.Desktop is not null);
+        Assert.Equal("0.2.83", payload.Android?.Version);
+        Assert.Equal(originalBytes, await File.ReadAllBytesAsync(path));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GetManifestAsync_BomGeneration_RequiresHashOfOriginalBytes(
+        bool hashWithoutBom)
+    {
+        const string generationId = "0123456789abcdef0123456789abcdef";
+        await WritePointerGenerationAsync("test", generationId,
+            new AppUpdateManifestDto { Channel = "test", GenerationId = generationId });
+        var path = Path.Combine(_storageRoot, "manifest", "generations", "test", generationId + ".json");
+        var jsonBytes = await File.ReadAllBytesAsync(path);
+        byte[] originalBytes = [0xEF, 0xBB, 0xBF, .. jsonBytes];
+        await File.WriteAllBytesAsync(path, originalBytes);
+        await WriteManifestPointerAsync("test", generationId,
+            Convert.ToHexString(SHA256.HashData(hashWithoutBom ? jsonBytes : originalBytes)),
+            originalBytes.LongLength);
+
+        var response = await CreateController().GetManifestAsync("test");
+
+        if (hashWithoutBom)
+        {
+            Assert.Equal(StatusCodes.Status503ServiceUnavailable,
+                Assert.IsType<ObjectResult>(response.Result).StatusCode);
+        }
+        else
+        {
+            var payload = Assert.IsType<AppUpdateManifestDto>(
+                Assert.IsType<OkObjectResult>(response.Result).Value);
+            Assert.Equal(generationId, payload.GenerationId);
+        }
+        Assert.Equal(originalBytes, await File.ReadAllBytesAsync(path));
+    }
+
     [Fact]
     public async Task GetManifestAsync_ReturnsPreviousGenerationAfterPointerAwareRollback()
     {

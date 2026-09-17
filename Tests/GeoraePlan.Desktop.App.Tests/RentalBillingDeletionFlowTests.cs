@@ -2460,8 +2460,8 @@ public sealed class RentalBillingDeletionFlowTests
 
             Assert.Equal(PaymentFlowConstants.TransactionKindRentalReceipt, paymentViewModel.SelectedTransactionKind);
             Assert.Equal(invoice.TotalAmount, paymentViewModel.SettlementAmount);
-            Assert.Equal(invoice.TotalAmount, paymentViewModel.BankReceipt);
-            Assert.Equal(invoice.TotalAmount, paymentViewModel.ReceiptTotal);
+            Assert.Equal(0m, paymentViewModel.BankReceipt);
+            Assert.Equal(0m, paymentViewModel.ReceiptTotal);
 
             await paymentViewModel.SaveCommand.ExecuteAsync(null);
 
@@ -2504,11 +2504,97 @@ public sealed class RentalBillingDeletionFlowTests
             Assert.Equal(invoice.TotalAmount, updatedRun.SettledAmount);
             Assert.Equal(PaymentFlowConstants.BillingStatusCompleted, updatedRun.Status);
             Assert.Equal(PaymentFlowConstants.SettlementStatusConfirmed, updatedRun.SettlementStatus);
+
+            var reopened = new PaymentViewModel(local, session);
+            await reopened.LoadAsync();
+            await reopened.ConfigureForRentalBillingAsync(updatedProfile, runId, invoice.TotalAmount, "2026-05");
+            Assert.Equal(0m, reopened.SettlementAmount);
+            Assert.Equal(0m, reopened.ReceiptTotal);
+            await reopened.SaveCommand.ExecuteAsync(null);
+            Assert.Contains("렌탈 수금 금액을 입력하세요.", reopened.StatusMessage);
+            Assert.Single(await db.Transactions.AsNoTracking().Where(x => !x.IsDeleted && x.LinkedRentalBillingRunId == runId).ToListAsync());
         }
         finally
         {
             SqliteConnection.ClearAllPools();
         }
+    }
+
+    [Theory]
+    [InlineData("CMS")]
+    [InlineData("현금")]
+    [InlineData("카드")]
+    public async Task PaymentViewModel_RentalPartialAmountOnly_SavesExactlyRequestedReceipt(string method)
+    {
+        PrepareAppRoot("georaeplan-rental-partial-amount-only");
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+            var profileId = Guid.NewGuid();
+            var assetId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            const string customerName = "Partial receipt regression";
+            db.Customers.Add(CreateCustomer(customerId, customerName));
+            var profile = CreateBillingProfile(profileId, assetId, customerName);
+            profile.CustomerId = customerId;
+            profile.BillingMethod = method;
+            db.RentalBillingProfiles.Add(profile);
+            db.RentalAssets.Add(CreateRentalAsset(assetId, customerName, profileId, "청구대상"));
+            await db.SaveChangesAsync();
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var start = await new RentalStateService(db, local).StartBillingAsync(profileId, new DateOnly(2026, 5, 25), session);
+            Assert.True(start.Success, start.Message);
+            var invoice = await db.Invoices.AsNoTracking().SingleAsync(x => x.Id == start.RelatedEntityId);
+            var runId = Assert.IsType<Guid>(invoice.LinkedRentalBillingRunId);
+            db.ChangeTracker.Clear();
+            profile = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(x => x.Id == profileId);
+            var vm = new PaymentViewModel(local, session);
+            await vm.LoadAsync();
+            await vm.ConfigureForRentalBillingAsync(profile, runId, invoice.TotalAmount, "2026-05");
+            var requested = invoice.TotalAmount * 0.4m;
+            vm.SettlementAmount = requested;
+            await vm.SaveCommand.ExecuteAsync(null);
+            Assert.Contains("수금/지급을 저장했습니다.", vm.StatusMessage);
+            var transaction = await db.Transactions.AsNoTracking().SingleAsync(x => !x.IsDeleted && x.LinkedRentalBillingRunId == runId);
+            Assert.Equal(requested, transaction.ReceiptTotal);
+            Assert.Equal(requested, transaction.SettlementAmount);
+            Assert.Equal(0m, transaction.AdvanceDelta);
+            Assert.Equal(method == "현금" ? requested : 0m, transaction.CashReceipt);
+            Assert.Equal(method == "카드" ? requested : 0m, transaction.CardReceipt);
+            Assert.Equal(method == "CMS" ? requested : 0m, transaction.BankReceipt);
+            var payment = await db.Payments.AsNoTracking().SingleAsync(x => x.Id == transaction.Id);
+            Assert.Equal(requested, payment.Amount);
+            var updated = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(x => x.Id == profileId);
+            var run = DeserializeRuns(updated).Single(x => x.RunId == runId);
+            Assert.Equal(requested, run.SettledAmount);
+            Assert.Equal(invoice.TotalAmount - requested, updated.OutstandingAmount);
+
+            // Explicit split receipt fields continue to drive their total.
+            // A later contradictory top-level edit must not be persisted.
+            await vm.ConfigureForRentalBillingAsync(updated, runId, invoice.TotalAmount, "2026-05");
+            vm.CashReceipt = 10000m;
+            vm.CardReceipt = 20000m;
+            Assert.Equal(30000m, vm.SettlementAmount);
+            vm.SettlementAmount = 5000m;
+            await vm.SaveCommand.ExecuteAsync(null);
+            Assert.Contains("합계가 다릅니다", vm.StatusMessage);
+            Assert.Single(await db.Transactions.AsNoTracking().Where(x => !x.IsDeleted && x.LinkedRentalBillingRunId == runId).ToListAsync());
+            vm.SettlementAmount = 30000m;
+            await vm.SaveCommand.ExecuteAsync(null);
+            Assert.Contains("수금/지급을 저장했습니다.", vm.StatusMessage);
+            var receipts = await db.Transactions.AsNoTracking().Where(x => !x.IsDeleted && x.LinkedRentalBillingRunId == runId).ToListAsync();
+            Assert.Equal(2, receipts.Count);
+            var split = receipts.Single(x => x.Id != transaction.Id);
+            Assert.Equal(10000m, split.CashReceipt);
+            Assert.Equal(20000m, split.CardReceipt);
+            Assert.Equal(0m, split.BankReceipt);
+            Assert.Equal(30000m, split.SettlementAmount);
+            Assert.Equal(requested + 30000m, receipts.Sum(x => x.ReceiptTotal));
+        }
+        finally { SqliteConnection.ClearAllPools(); }
     }
 
     [Fact]

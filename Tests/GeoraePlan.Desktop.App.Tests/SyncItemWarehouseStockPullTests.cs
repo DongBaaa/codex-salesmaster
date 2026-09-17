@@ -359,8 +359,10 @@ public sealed class SyncItemWarehouseStockPullTests
         }
     }
 
-    [Fact]
-    public async Task SyncPullPendingInventoryTransfer_KeepsCanonicalStockUntilLocalMutationRebuildsDerivedProjection()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SyncPullPendingInventoryTransfer_RebuildsCostProjectionAndPreservesCanonicalStock(bool receiptBeforeTransfer)
     {
         PrepareAppRoot("georaeplan-sync-pending-transfer-derived-projection");
 
@@ -437,6 +439,11 @@ public sealed class SyncItemWarehouseStockPullTests
                 }
             });
             Assert.Equal(invoiceId, savedInvoice.Id);
+            // Use explicit historical order instead of the wall clock assigned by SaveInvoice.
+            await db.Invoices.Where(invoice => invoice.Id == invoiceId).ExecuteUpdateAsync(
+                setters => setters.SetProperty(invoice => invoice.LastSavedAtUtc,
+                    now.AddMinutes(receiptBeforeTransfer ? -30 : 30)));
+
             var acknowledgedItem = await db.Items
                 .IgnoreQueryFilters()
                 .SingleAsync(item => item.Id == itemId);
@@ -531,13 +538,27 @@ public sealed class SyncItemWarehouseStockPullTests
                 (await db.Items.IgnoreQueryFilters()
                     .AsNoTracking()
                     .SingleAsync(item => item.Id == itemId)).CurrentStock);
-            Assert.Empty(
+            var pulledMovement = Assert.Single(
                 await db.InventoryMovements
                     .AsNoTracking()
                     .Where(movement => movement.Note.Contains(marker))
                     .ToListAsync());
+            Assert.Equal("TransferOutManual", pulledMovement.MovementType);
+            Assert.Equal(DomainConstants.WarehouseUsenetMain, pulledMovement.WarehouseCode);
+            Assert.Equal(-1m, pulledMovement.QuantityDelta);
+            Assert.Equal(receiptBeforeTransfer, pulledMovement.IsSettledCost);
+            Assert.Equal(receiptBeforeTransfer ? 1000m : 0m, pulledMovement.UnitCost);
+            Assert.Equal(receiptBeforeTransfer ? 1000m : 0m, pulledMovement.Amount);
+            var canonicalStocks = await db.ItemWarehouseStocks.AsNoTracking()
+                .Where(stock => stock.ItemId == itemId).ToListAsync();
+            Assert.Equal(69, Assert.Single(canonicalStocks, stock => stock.WarehouseCode == DomainConstants.WarehouseUsenetMain).Revision);
+            Assert.Equal(70, Assert.Single(canonicalStocks, stock => stock.WarehouseCode == DomainConstants.WarehouseYeonsuMain).Revision);
+            Assert.All(canonicalStocks, stock => Assert.Equal(now, stock.UpdatedAtUtc));
+            var canonicalItem = await db.Items.IgnoreQueryFilters().AsNoTracking().SingleAsync(item => item.Id == itemId);
+            Assert.False(canonicalItem.IsDirty);
+            Assert.Equal(65, canonicalItem.Revision);
             Assert.Equal(
-                5m,
+                receiptBeforeTransfer ? 4m : 5m,
                 await ReadLayerRemainingQuantityAsync(
                     db,
                     itemId,

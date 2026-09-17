@@ -394,7 +394,7 @@
                     <Border DockPanel.Dock="Top" Background="#102039" CornerRadius="6,6,0,0" Padding="10,8">
                         <TextBlock Text="거래처 정보" Foreground="#4FC3F7" FontWeight="Bold"/>
                     </Border>
-                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <ScrollViewer x:Name="CustomerInvoicePreviewScrollViewer" Style="{StaticResource ResponsiveDetailScrollViewerStyle}" VerticalScrollBarVisibility="Auto">
                         <StackPanel Margin="10,8">
                             <TextBlock Text="상호" FontSize="11" Foreground="#9FB3C8"/>
                             <TextBox Text="{Binding PreviewCustomerName, Mode=OneWay}"

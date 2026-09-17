@@ -190,14 +190,17 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         // 시작 정비 단계는 동일한 Settings 행을 반복 확인하므로 한 번만 읽어 추적 캐시에 둔다.
         // 이후 HasSettingValueAsync/UpsertSettingAsync는 Local 컬렉션을 우선 사용한다.
         await db.Settings.IgnoreQueryFilters().LoadAsync();
-        if (!db.CustomerCategories.Any())
+        if (!await db.CustomerCategories.IgnoreQueryFilters().AnyAsync())
         {
             db.CustomerCategories.AddRange(
                 DefaultCustomerCategories.All.Select(definition => new LocalCustomerCategory
                 {
                     Id = definition.Id,
                     Name = definition.Name,
-                    IsSystemDefault = false
+                    // The server seeds these fixed IDs. Local defaults are an
+                    // offline cache, not user edits to upload with revision zero.
+                    IsSystemDefault = true,
+                    IsDirty = false
                 }));
         }
 
@@ -660,13 +663,6 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
     private static async Task NormalizeSelectionOptionSystemDefaultsAsync(LocalDbContext db)
     {
         var now = DateTime.UtcNow;
-
-        var customerCategories = await db.CustomerCategories.IgnoreQueryFilters().Where(current => current.IsSystemDefault).ToListAsync();
-        foreach (var current in customerCategories)
-        {
-            current.IsSystemDefault = false;
-            PreserveDirtyStateForStartupMaintenance(current, now);
-        }
 
         var priceGradeOptions = await db.PriceGradeOptions.IgnoreQueryFilters().Where(current => current.IsSystemDefault).ToListAsync();
         foreach (var current in priceGradeOptions)
@@ -2240,6 +2236,10 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                 continue;
             }
 
+            // Startup defaults must not acknowledge or rewrite an unsent edit.
+            if (current.IsDirty)
+                continue;
+
             var changed = false;
             var canonicalCode = ResolveCanonicalOfficeCode(current.Code, current.Name);
             if (!string.Equals(current.Code, canonicalCode, StringComparison.Ordinal))
@@ -2248,7 +2248,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                 changed = true;
             }
 
-            if (!string.Equals(current.Name, definition.Name, StringComparison.Ordinal))
+            if (string.IsNullOrWhiteSpace(current.Name))
             {
                 current.Name = definition.Name;
                 changed = true;
@@ -2258,24 +2258,6 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             if (current.IsSystemDefault != isSystemDefault)
             {
                 current.IsSystemDefault = isSystemDefault;
-                changed = true;
-            }
-
-            if (!current.IsActive)
-            {
-                current.IsActive = true;
-                changed = true;
-            }
-
-            if (current.IsDeleted)
-            {
-                current.IsDeleted = false;
-                changed = true;
-            }
-
-            if (current.IsDirty)
-            {
-                current.IsDirty = false;
                 changed = true;
             }
 
@@ -2306,6 +2288,11 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             if (matches.Count == 0)
                 continue;
 
+            // A legacy alias can still hold a pending mutation. Defer merging
+            // the whole group until sync has acknowledged every member.
+            if (matches.Any(company => company.IsDirty))
+                continue;
+
             var keeper = matches.FirstOrDefault(company =>
                              string.Equals(company.Code, definition.Code, StringComparison.OrdinalIgnoreCase))
                          ?? matches.First();
@@ -2317,7 +2304,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
                 changed = true;
             }
 
-            if (!string.Equals(keeper.Name, definition.Code, StringComparison.Ordinal))
+            if (string.IsNullOrWhiteSpace(keeper.Name))
             {
                 keeper.Name = definition.Code;
                 changed = true;
@@ -2326,24 +2313,6 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
             if (!keeper.IsSystemDefault)
             {
                 keeper.IsSystemDefault = true;
-                changed = true;
-            }
-
-            if (!keeper.IsActive)
-            {
-                keeper.IsActive = true;
-                changed = true;
-            }
-
-            if (keeper.IsDeleted)
-            {
-                keeper.IsDeleted = false;
-                changed = true;
-            }
-
-            if (keeper.IsDirty)
-            {
-                keeper.IsDirty = false;
                 changed = true;
             }
 
@@ -3139,7 +3108,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         await TryNormalizeDateTimeTextColumnAsync(db, "Invoices", "CreatedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "Invoices", "UpdatedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "Invoices", "LastSavedAtUtc");
-        await TryNormalizeDateTimeTextColumnAsync(db, "Invoices", "PurchaseReceivedAtUtc");
+        await TryNormalizeDateTimeTextColumnAsync(db, "Invoices", "PurchaseReceivedAtUtc", allowNull: true);
         await TryNormalizeDateTimeTextColumnAsync(db, "Payments", "CreatedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "Payments", "UpdatedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "RecentSelections", "LastUsedAtUtc");
@@ -3161,7 +3130,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         await TryNormalizeDateTimeTextColumnAsync(db, "RentalBillingProfiles", "UpdatedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "RentalAssets", "CreatedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "RentalAssets", "UpdatedAtUtc");
-        await TryNormalizeDateTimeTextColumnAsync(db, "RentalAssets", "LastAssignmentClearedAtUtc");
+        await TryNormalizeDateTimeTextColumnAsync(db, "RentalAssets", "LastAssignmentClearedAtUtc", allowNull: true);
         await TryNormalizeDateTimeTextColumnAsync(db, "RentalBillingLogs", "CreatedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "RentalBillingLogs", "UpdatedAtUtc");
         await TryNormalizeDateTimeTextColumnAsync(db, "InventoryTransfers", "CreatedAtUtc");
@@ -3470,7 +3439,7 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         }
     }
 
-    private static async Task TryNormalizeDateTimeTextColumnAsync(LocalDbContext db, string table, string column)
+    private static async Task TryNormalizeDateTimeTextColumnAsync(LocalDbContext db, string table, string column, bool allowNull = false)
     {
         if (!IsSafeSqlIdentifier(table) || !IsSafeSqlIdentifier(column))
         {
@@ -3479,8 +3448,10 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
 
         try
         {
+            // An absent optional business event is not an event at the Unix epoch.
+            var fallbackSql = allowNull ? "NULL" : "'" + FallbackUtcText + "'";
             var sql = "UPDATE \"" + table + "\" " +
-                      "SET \"" + column + "\" = '" + FallbackUtcText + "' " +
+                      "SET \"" + column + "\" = " + fallbackSql + " " +
                       "WHERE \"" + column + "\" IS NULL OR TRIM(\"" + column + "\") = ''";
             await db.Database.ExecuteSqlRawAsync(sql);
         }

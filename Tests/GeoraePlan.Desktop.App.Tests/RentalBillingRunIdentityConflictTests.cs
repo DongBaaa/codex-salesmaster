@@ -15,6 +15,110 @@ public sealed class RentalBillingRunIdentityConflictTests
     private const string MalformedIssueCode = "rental_billing_runs_json_malformed";
 
     [Theory]
+    [InlineData("preview")]
+    [InlineData("persist")]
+    [InlineData("row")]
+    [InlineData("start")]
+    [InlineData("hold")]
+    [InlineData("cancel")]
+    [InlineData("settlement")]
+    [InlineData("complete")]
+    public async Task ProspectiveRunIdCollision_PreservesHistoryAndRejectsNewPeriod(string operation)
+    {
+        PrepareAppRoot($"georaeplan-prospective-collision-{operation}");
+        try
+        {
+            var options = new DbContextOptionsBuilder<LocalDbContext>()
+                .UseSqlite($"Data Source={Path.Combine(Path.GetTempPath(), $"prospective-{Guid.NewGuid():N}.db")};Pooling=False").Options;
+            await using var db = new LocalDbContext(options);
+            await db.Database.EnsureCreatedAsync();
+            var profileId = Guid.NewGuid();
+            var customerId = Guid.NewGuid();
+            var runId = SyncIdentityGenerator.CreateRentalBillingRunId(profileId, "20260701-20261231");
+            var oldRun = new RentalBillingRunModel
+            {
+                RunId = runId, RunKey = "20260101-20260630", PeriodLabel = "2026-01 ~ 2026-06",
+                PeriodStartDate = new DateOnly(2026, 1, 1), PeriodEndDate = new DateOnly(2026, 6, 30),
+                ScheduledDate = new DateOnly(2026, 6, 25), CycleMonths = 6,
+                Status = PaymentFlowConstants.BillingStatusCompleted,
+                BilledAmount = 528000m, SettledAmount = 528000m,
+                SettlementStatus = PaymentFlowConstants.SettlementStatusConfirmed
+            };
+            var profile = CreateProfile(profileId, SerializeRuns(oldRun));
+            profile.CustomerId = customerId;
+            profile.BillingAdvanceMode = "후불";
+            profile.BillingCycleMonths = 6;
+            profile.BillingAnchorMonth = 1;
+            profile.BillingStartDate = new DateOnly(2026, 1, 1);
+            profile.ContractStartDate = profile.BillingStartDate;
+            profile.LastBilledDate = new DateOnly(2026, 6, 25);
+            profile.MonthlyAmount = 88000m;
+            profile.SettledAmount = 528000m;
+            profile.CompletionStatus = PaymentFlowConstants.CompletionDone;
+            var invoice = CreateRentalInvoice(Guid.NewGuid(), customerId, profileId, runId, new DateOnly(2026, 6, 25));
+            db.Customers.Add(CreateCustomer(customerId));
+            db.RentalBillingProfiles.Add(profile);
+            db.Invoices.Add(invoice);
+            await db.SaveChangesAsync();
+            var beforeProfile = JsonSerializer.Serialize(await db.RentalBillingProfiles.AsNoTracking().SingleAsync());
+            var invoiceJsonOptions = new JsonSerializerOptions { ReferenceHandler = System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles };
+            var beforeInvoice = JsonSerializer.Serialize(await db.Invoices.AsNoTrackingWithIdentityResolution().Include(x => x.Lines).SingleAsync(), invoiceJsonOptions);
+            db.ChangeTracker.Clear();
+            var session = CreateAdminSession();
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var service = new RentalStateService(db, local);
+            var date = new DateOnly(2026, 9, 7);
+            if (operation is "preview" or "persist")
+            {
+                var selected = service.GetOrCreateBillingRun(profile, date, operation == "persist");
+                Assert.Null(selected);
+                Assert.Equal(SerializeRuns(oldRun), profile.BillingRunsJson);
+            }
+            else if (operation == "row")
+            {
+                var row = await service.GetBillingRowAsync(profileId, session, date);
+                Assert.NotNull(row);
+                Assert.Null(row.CurrentBillingRunId);
+                Assert.Equal(0m, row.SettledAmount);
+                Assert.Equal(PaymentFlowConstants.CompletionPending, row.CompletionStatus);
+                Assert.Equal("확인 필요", row.DisplayStatus);
+                Assert.True(row.HasDataIssue);
+                Assert.Contains("20260701-20261231", row.DataIssueSummary);
+                Assert.Contains("20260101-20260630", row.DataIssueSummary);
+                Assert.Contains(row.BillingHistoryRows, r => r.SettledAmount == 528000m);
+            }
+            else
+            {
+                var result = operation switch
+                {
+                    "start" => await service.StartBillingAsync(profileId, date, session),
+                    "hold" => await service.HoldBillingAsync(profileId, date, "test", session),
+                    "cancel" => await service.CancelBillingAsync(profileId, date, "test", session),
+                    "settlement" => await service.RegisterBillingSettlementAsync(profileId, date, 528000m, "test", session),
+                    "complete" => await service.MarkBillingCompletedAsync(profileId, date, PaymentFlowConstants.CompletionDone, "test", session),
+                    _ => throw new InvalidOperationException(operation)
+                };
+                Assert.False(result.Success);
+                Assert.True(result.ConcurrencyConflict);
+                Assert.Contains("20260701-20261231", result.Message);
+                Assert.Contains("20260101-20260630", result.Message);
+            }
+            db.ChangeTracker.Clear();
+            Assert.Equal(beforeProfile, JsonSerializer.Serialize(await db.RentalBillingProfiles.AsNoTracking().SingleAsync()));
+            Assert.Equal(beforeInvoice, JsonSerializer.Serialize(await db.Invoices.AsNoTrackingWithIdentityResolution().Include(x => x.Lines).SingleAsync(), invoiceJsonOptions));
+            Assert.Empty(await db.Payments.ToListAsync());
+            Assert.Empty(await db.Transactions.ToListAsync());
+            Assert.Empty(await db.RentalBillingLogs.ToListAsync());
+            Assert.Empty(await db.SyncOutboxEntries.ToListAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Theory]
     [InlineData("start")]
     [InlineData("hold")]
     [InlineData("cancel")]

@@ -256,6 +256,147 @@ public sealed class UpdaterTransactionSafetyTests
     }
 
     [Fact]
+    public void CompletedUpdate_RemovesOldDownloadCachesButProtectsActiveUpdaterDirectories()
+    {
+        var artifactRoot = Path.Combine(
+            NewInstallRoot(),
+            "GeoraePlan-update-artifacts");
+        var oldPreparedOne = Path.Combine(
+            artifactRoot,
+            "prepared-updates",
+            "1.1.708-oldhash");
+        var oldPreparedTwo = Path.Combine(
+            artifactRoot,
+            "prepared-updates",
+            "1.1.709-oldhash");
+        var oldWorkRoot = Path.Combine(
+            artifactRoot,
+            "updates",
+            "old-work");
+        var currentWorkRoot = Path.Combine(
+            artifactRoot,
+            "updates",
+            "current-work");
+        var oldUpdaterRun = Path.Combine(
+            artifactRoot,
+            "updater-run",
+            "old-run");
+        var currentUpdaterRun = Path.Combine(
+            artifactRoot,
+            "updater-run",
+            "current-run");
+        var unrelatedDirectory = Path.Combine(
+            artifactRoot,
+            "user-files");
+
+        try
+        {
+            foreach (var directory in new[]
+                     {
+                         oldPreparedOne,
+                         oldPreparedTwo,
+                         oldWorkRoot,
+                         currentWorkRoot,
+                         oldUpdaterRun,
+                         currentUpdaterRun,
+                         unrelatedDirectory
+                     })
+            {
+                Directory.CreateDirectory(directory);
+                File.WriteAllText(
+                    Path.Combine(directory, "artifact.bin"),
+                    "test");
+            }
+
+            var removedCount = Program.TryCleanupSupersededUpdateArtifacts(
+                artifactRoot,
+                currentWorkRoot,
+                Path.Combine(currentUpdaterRun, "updater.exe"));
+
+            Assert.Equal(4, removedCount);
+            Assert.False(Directory.Exists(oldPreparedOne));
+            Assert.False(Directory.Exists(oldPreparedTwo));
+            Assert.False(Directory.Exists(oldWorkRoot));
+            Assert.False(Directory.Exists(oldUpdaterRun));
+            Assert.True(Directory.Exists(currentWorkRoot));
+            Assert.True(Directory.Exists(currentUpdaterRun));
+            Assert.True(Directory.Exists(unrelatedDirectory));
+        }
+        finally
+        {
+            if (Directory.Exists(artifactRoot))
+                Directory.Delete(artifactRoot, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("root", false)]
+    [InlineData("ancestor", false)]
+    [InlineData("category", false)]
+    [InlineData("candidate", false)]
+    [InlineData("root", true)]
+    [InlineData("ancestor", true)]
+    [InlineData("category", true)]
+    [InlineData("candidate", true)]
+    public void CacheCleanup_DoesNotTraverseDirectoryJunctions(string linkLocation, bool expiredCleanup)
+    {
+        var fixtureRoot = NewInstallRoot();
+        var outside = Path.Combine(fixtureRoot, "outside-artifacts");
+        var artifacts = Path.Combine(fixtureRoot, "artifacts");
+        string junction;
+        string record;
+        switch (linkLocation)
+        {
+            case "root":
+                junction = artifacts;
+                record = Path.Combine(outside, "updates", "record");
+                break;
+            case "ancestor":
+                junction = Path.Combine(fixtureRoot, "linked-parent");
+                artifacts = Path.Combine(junction, "artifacts");
+                record = Path.Combine(outside, "artifacts", "updates", "record");
+                break;
+            case "category":
+                junction = Path.Combine(artifacts, "updates");
+                record = Path.Combine(outside, "record");
+                break;
+            default:
+                junction = Path.Combine(artifacts, "updates", "record");
+                record = outside;
+                break;
+        }
+        Directory.CreateDirectory(record);
+        Directory.CreateDirectory(Path.GetDirectoryName(junction)!);
+        var sentinel = Path.Combine(record, "sentinel.txt");
+        File.WriteAllText(sentinel, "must survive cache cleanup");
+        Directory.SetLastWriteTimeUtc(record, DateTime.UtcNow.AddDays(-10));
+        try
+        {
+            Assert.True(TryCreateDirectoryJunction(junction, outside));
+            if (expiredCleanup)
+            {
+                var cleanup = typeof(Program).GetMethod("TryCleanupChildDirectories",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+                cleanup.Invoke(null, new object[] { Path.Combine(artifacts, "updates") });
+            }
+            else
+            {
+                Assert.Equal(0, Program.TryCleanupSupersededUpdateArtifacts(artifacts));
+            }
+            Assert.True(File.Exists(sentinel), "Cleanup traversed a junction outside its artifact directory.");
+            Assert.Equal("must survive cache cleanup", File.ReadAllText(sentinel));
+            Assert.True(Directory.Exists(junction));
+        }
+        finally
+        {
+            if (Directory.Exists(junction))
+                Directory.Delete(junction, recursive: false);
+            if (Directory.Exists(fixtureRoot))
+                Directory.Delete(fixtureRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ProcessIdentity_AllowsOnlyTheExpectedExecutableAndStartTime()
     {
         using var process = Process.GetCurrentProcess();
@@ -433,6 +574,40 @@ public sealed class UpdaterTransactionSafetyTests
         Assert.False(result.IsUpdateAvailable);
         Assert.Null(result.Package);
         Assert.Contains("오래된 업데이트 매니페스트", result.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("1.1.705", "1.1.705")]
+    [InlineData("1.1.705.0", "1.1.705")]
+    [InlineData("1.1.705", "1.1.705.0")]
+    [InlineData("v1.1.705+desktop", "1.1.705")]
+    public async Task CheckForUpdatesAsync_EquivalentVersionFormsReportCurrentVersion(
+        string currentVersion,
+        string packageVersion)
+    {
+        var package = CreateUpdatePackage(
+            packageVersion,
+            "1.1.704",
+            mandatory: true);
+        var handler = new UpdateManifestHandler(package);
+        var api = new ErpApiClient(
+            new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") },
+            new SessionState());
+        var service = new DesktopAppUpdateService(
+            api,
+            currentVersionProvider: () => currentVersion,
+            startUpdateCoreOverride: null,
+            verifiedHandoffShutdownScheduler: () => { });
+
+        var result = await service.CheckForUpdatesAsync("stable");
+
+        Assert.False(result.HasBlockingPolicyIssue);
+        Assert.False(result.IsBelowMinimumSupportedVersion);
+        Assert.False(result.RequiresImmediateUpdate);
+        Assert.False(result.IsUpdateAvailable);
+        Assert.Null(result.Package);
+        Assert.Contains("배포된 최신 버전입니다", result.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("오래된 업데이트 매니페스트", result.Message, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -2736,6 +2911,11 @@ public sealed class UpdaterTransactionSafetyTests
                 exit /b 0
                 """);
 
+            DesktopInstallerPackageBuilderSafetyTests.AppendFixtureRuntimeMetadata(
+                Path.Combine(sourceFolder, "거래플랜.exe"));
+            DesktopInstallerPackageBuilderSafetyTests.AppendFixtureRuntimeMetadata(
+                Path.Combine(sourceFolder, "Updater", "거래플랜.Updater.exe"));
+
             var buildResult = await RunPowerShellAsync(
                 builderPath,
                 new Dictionary<string, string?>
@@ -4355,9 +4535,10 @@ public sealed class UpdaterTransactionSafetyTests
             versionGate,
             StringComparison.Ordinal);
         var scheduleStagingCleanup = source.IndexOf(
-            "SchedulePostExitCleanup(GetCurrentUpdaterStagingRoot());",
+            "SchedulePostExitCleanup(currentUpdaterStagingRoot);",
             ensureNoPendingBeforeSkip,
             StringComparison.Ordinal);
+        Assert.True(scheduleStagingCleanup > ensureNoPendingBeforeSkip);
         var releaseGate = source.IndexOf(
             "installRootUpdateLock.Dispose();",
             scheduleStagingCleanup,
@@ -4719,6 +4900,116 @@ public sealed class UpdaterTransactionSafetyTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void DesktopUpdateShutdown_ReleasesOnlyTheInstallGateBeforeWindowDrain()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var appSource = File.ReadAllText(Path.Combine(
+            repositoryRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "App.xaml.cs"));
+
+        var shutdownStart = appSource.IndexOf(
+            "private void BeginShutdownForUpdate()",
+            StringComparison.Ordinal);
+        var releaseGate = appSource.IndexOf(
+            "ReleaseInstallRootUpdateGateForUpdateHandoff();",
+            shutdownStart,
+            StringComparison.Ordinal);
+        var queueWindowDrain = appSource.IndexOf(
+            "TryQueueActiveMainWindowShutdown()",
+            shutdownStart,
+            StringComparison.Ordinal);
+        var releaseMethod = appSource.IndexOf(
+            "private void ReleaseInstallRootUpdateGateForUpdateHandoff()",
+            StringComparison.Ordinal);
+        var nextMethod = appSource.IndexOf(
+            "internal static IReadOnlyList<string> GetInstallRecoveryStartupRoots",
+            releaseMethod,
+            StringComparison.Ordinal);
+        var releaseMethodSource = appSource[releaseMethod..nextMethod];
+
+        Assert.True(shutdownStart >= 0);
+        Assert.True(
+            releaseGate > shutdownStart && releaseGate < queueWindowDrain,
+            "The verified updater must receive the install gate before window/background shutdown can drain.");
+        Assert.Contains(
+            "_installRootUpdateGate?.Dispose();",
+            releaseMethodSource,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "_singleInstanceGuard?.Dispose();",
+            releaseMethodSource,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DesktopUpdateReadiness_ReportsPendingAndFailedOutboxCountsSeparately()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var source = File.ReadAllText(Path.Combine(
+            repositoryRoot,
+            "Desktop",
+            "거래플랜.Desktop.App",
+            "Services",
+            "UpdateReadinessService.cs"));
+
+        Assert.Contains(
+            "sync outbox 전송 대기 {outboxSummary.PendingCount:N0}건, 실패 {outboxSummary.FailedCount:N0}건",
+            source,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "(실패 {outboxSummary.FailedCount:N0}건 포함)",
+            source,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DesktopUpdatePendingChanges_CanBePreservedForConfirmedForceInstall()
+    {
+        var readiness = new UpdateReadinessResult(
+            CanProceed: false,
+            InitialDirtyCount: 158,
+            RemainingDirtyCount: 158,
+            InitialPendingOutboxCount: 91,
+            RemainingPendingOutboxCount: 91,
+            RemainingFailedOutboxCount: 3,
+            SyncAttempted: true,
+            Message: "동기화가 끝나지 않았습니다.");
+
+        Assert.True(readiness.HasPendingLocalChanges);
+        Assert.True(readiness.CanForceProceed);
+
+        var message = DesktopUpdatePendingChangesPrompt.BuildForceInstallMessage(
+            readiness,
+            "1.1.709");
+
+        Assert.Contains("이 PC에 그대로 남습니다", message, StringComparison.Ordinal);
+        Assert.Contains("삭제되지 않고", message, StringComparison.Ordinal);
+        Assert.Contains("다른 PC에서 최신 내용이 보이지 않을 수 있습니다", message, StringComparison.Ordinal);
+        Assert.Contains("서버 전송 대기: 91건", message, StringComparison.Ordinal);
+        Assert.Contains("전송 실패: 3건", message, StringComparison.Ordinal);
+        Assert.Contains("PC 버전 1.1.709", message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DesktopUpdatePendingChanges_ForceInstallIsUnavailableBeforeSyncAttempt()
+    {
+        var readiness = new UpdateReadinessResult(
+            CanProceed: false,
+            InitialDirtyCount: 1,
+            RemainingDirtyCount: 1,
+            InitialPendingOutboxCount: 1,
+            RemainingPendingOutboxCount: 1,
+            RemainingFailedOutboxCount: 0,
+            SyncAttempted: false,
+            Message: "로그인 세션을 확인할 수 없습니다.");
+
+        Assert.True(readiness.HasPendingLocalChanges);
+        Assert.False(readiness.CanForceProceed);
+    }
+
     [Theory]
     [InlineData("2.0.0", "1.0.0", "3.0.0")]
     [InlineData("2.0.0", "2.0.0", "2.0.0")]
@@ -4744,6 +5035,22 @@ public sealed class UpdaterTransactionSafetyTests
             "2.0.0",
             "3.0.0",
             "2.5.0",
+            out var failure));
+        Assert.Equal(string.Empty, failure);
+    }
+
+    [Theory]
+    [InlineData("1.1.705", "1.1.706")]
+    [InlineData("1.1.705.0", "1.1.706")]
+    [InlineData("1.1.705", "1.1.706.0")]
+    public void DesktopUpdateVersionPolicy_TreatsMissingRevisionAsZero(
+        string currentVersion,
+        string packageVersion)
+    {
+        Assert.True(DesktopAppUpdateService.IsPackageVersionPolicySatisfied(
+            currentVersion,
+            packageVersion,
+            "1.1.705",
             out var failure));
         Assert.Equal(string.Empty, failure);
     }
@@ -5912,6 +6219,11 @@ public sealed class UpdaterTransactionSafetyTests
             )
             exit /b 0
             """);
+
+        DesktopInstallerPackageBuilderSafetyTests.AppendFixtureRuntimeMetadata(
+            Path.Combine(sourceFolder, appDisplayName + ".exe"));
+        DesktopInstallerPackageBuilderSafetyTests.AppendFixtureRuntimeMetadata(
+            Path.Combine(sourceFolder, "Updater", appDisplayName + ".Updater.exe"));
 
         var builderArguments = new List<string>
         {

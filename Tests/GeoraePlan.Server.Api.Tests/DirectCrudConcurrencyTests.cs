@@ -1210,7 +1210,7 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     }
 
     [Fact]
-    public async Task ItemsController_Delete_RemovesWarehouseStockRows()
+    public async Task ItemsController_Delete_HidesWarehouseStockRowsAndRetainsRestoreBaseline()
     {
         var currentUser = CreateAdminUser();
         await using var dbContext = CreateDbContext(currentUser);
@@ -1246,6 +1246,8 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
             .Select(row => row.IsDeleted)
             .SingleAsync());
         Assert.False(await dbContext.ItemWarehouseStocks.AnyAsync(stock => stock.ItemId == item.Id));
+        Assert.Equal(4m, await dbContext.ItemWarehouseStocks.IgnoreQueryFilters()
+            .Where(stock => stock.ItemId == item.Id).Select(stock => stock.Quantity).SingleAsync());
     }
 
     [Fact]
@@ -7171,6 +7173,59 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
         Assert.Equal("original scope", persisted.Note);
     }
 
+    [Theory]
+    [InlineData(VoucherType.Sales)]
+    [InlineData(VoucherType.Purchase)]
+    public async Task PaymentsController_UploadAttachment_ConcurrentDeleteDoesNotLeaveActiveAttachment(VoucherType voucherType)
+    {
+        var user = CreateAdminUser();
+        await using var seed = CreateDbContext(user);
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(), TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Attachment lifecycle race", NameMatchKey = "ATTACHMENTLIFECYCLERACE", TradeType = "Sales"
+        };
+        var invoice = new Invoice
+        {
+            Id = Guid.NewGuid(), CustomerId = customer.Id, TenantCode = customer.TenantCode,
+            OfficeCode = customer.OfficeCode, ResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+            InvoiceDate = new DateOnly(2026, 9, 7), InvoiceNumber = "ATTACHMENT-RACE", VoucherType = voucherType,
+            TotalAmount = 1000m, SupplyAmount = 909m, VatAmount = 91m
+        };
+        seed.AddRange(customer, invoice);
+        await seed.SaveChangesAsync();
+        var payment = AssertOk<PaymentDto>(await CreatePaymentsController(seed, user).Create(new PaymentDto
+        {
+            Id = Guid.NewGuid(), InvoiceId = invoice.Id, PaymentDate = invoice.InvoiceDate, Amount = 400m,
+            MutationId = Guid.NewGuid().ToString("N"), ExpectedRevision = invoice.Revision
+        }, CancellationToken.None));
+        await using var uploadDb = CreateDbContext(user);
+        await using var deleteDb = CreateDbContext(user);
+        var storage = new GatedPaymentFileStorage();
+        var uploadTask = CreatePaymentsController(uploadDb, user, storage).UploadAttachment(
+            payment.Id, CreateFormFile("race.pdf", "application/pdf", TestPdfBytes("race")),
+            "내역첨부", "race", Guid.NewGuid(), CancellationToken.None);
+        Task<IActionResult>? deleteTask = null;
+        try
+        {
+            await storage.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            deleteTask = CreatePaymentsController(deleteDb, user).Delete(payment.Id, payment.Revision, CancellationToken.None);
+            await Task.WhenAny(deleteTask, Task.Delay(100));
+        }
+        finally
+        {
+            storage.Release.TrySetResult();
+        }
+        AssertOk<PaymentAttachmentDto>(await uploadTask.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.IsType<NoContentResult>(await deleteTask!.WaitAsync(TimeSpan.FromSeconds(10)));
+        await using var verify = CreateDbContext(user);
+        Assert.True((await verify.Payments.IgnoreQueryFilters().SingleAsync(p => p.Id == payment.Id)).IsDeleted);
+        Assert.True((await verify.Transactions.IgnoreQueryFilters().SingleAsync(t => t.Id == payment.Id)).IsDeleted);
+        var attachment = Assert.Single(await verify.PaymentAttachments.IgnoreQueryFilters().Where(a => a.PaymentId == payment.Id).ToListAsync());
+        Assert.True(attachment.IsDeleted);
+    }
+
     [Fact]
     public async Task PaymentsController_UploadAttachment_IsIdempotentForClientAttachmentId()
     {
@@ -8983,6 +9038,21 @@ public sealed class DirectCrudConcurrencyTests : IDisposable
     {
         public Task<string> GenerateAsync(Guid customerId, DateOnly invoiceDate, CancellationToken cancellationToken = default)
             => Task.FromResult($"INV-{invoiceDate:yyyyMMdd}-0001");
+    }
+
+    private sealed class GatedPaymentFileStorage : ICentralFileStorage
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public string RootPath => Path.GetTempPath();
+        public async Task<string> SaveBytesAsync(string category, string tenantKey, Guid fileId, string? fileName, byte[] content, CancellationToken cancellationToken = default)
+        {
+            Started.TrySetResult();
+            await Release.Task.WaitAsync(cancellationToken);
+            return Path.Combine(RootPath, fileId.ToString("N"), fileName ?? "race.pdf");
+        }
+        public byte[] ReadBytes(string? storedPath, byte[]? fallbackContent) => fallbackContent ?? [];
+        public void DeleteIfExists(string? storedPath) { }
     }
 
     private sealed class StubCentralFileStorage : ICentralFileStorage

@@ -17,6 +17,54 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class ReleaseTempPathGuardTests
 {
     [Fact]
+    public async Task NativeInstallerStaging_PreservesExistingBuildAndRejectsLinkedParents()
+    {
+        var source = ReadRepositoryFile("tools", "release", "Build-GeoraePlanDesktopNativeInstallers.ps1");
+        var function = ExtractPowerShellScriptSection(source, "function New-InstallerStagingDirectory", "function Resolve-DotnetCommand");
+        Assert.DoesNotContain("Remove-Item -LiteralPath $stagingRoot", source, StringComparison.Ordinal);
+        var root = Path.Combine(Path.GetTempPath(), "native-stage-guard-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var harness = Path.Combine(root, "verify.ps1");
+        try
+        {
+            await File.WriteAllTextAsync(harness, $$"""
+                $ErrorActionPreference='Stop'
+                {{function}}
+                $root='{{EscapePowerShellSingleQuotedLiteral(root)}}'
+                $existing=Join-Path $root 'previous'
+                [void](New-Item -ItemType Directory -Path $existing)
+                $sentinel=Join-Path $existing 'retained.txt'
+                [IO.File]::WriteAllText($sentinel,'previous build')
+                $rejected=$false
+                try { New-InstallerStagingDirectory -RequestedPath $existing } catch { $rejected=$true }
+                if (-not $rejected -or [IO.File]::ReadAllText($sentinel) -ne 'previous build') { throw 'Existing build was not preserved.' }
+                $rejected=$false
+                try { New-InstallerStagingDirectory -RequestedPath 'relative-stage' } catch { $rejected=$true }
+                if (-not $rejected) { throw 'Relative path was accepted.' }
+                $link=Join-Path $root 'linked-parent'
+                [void](New-Item -ItemType Junction -Path $link -Target $existing)
+                try {
+                    $rejected=$false
+                    try { New-InstallerStagingDirectory -RequestedPath (Join-Path $link 'new-build') } catch { $rejected=$true }
+                    if (-not $rejected -or (Test-Path -LiteralPath (Join-Path $existing 'new-build'))) { throw 'Linked parent was followed.' }
+                } finally { [IO.Directory]::Delete($link) }
+                $newPath=Join-Path $root 'fresh'
+                $created=New-InstallerStagingDirectory -RequestedPath $newPath
+                if ($created -ne $newPath -or -not (Test-Path -LiteralPath $newPath -PathType Container)) { throw 'Fresh staging directory not created.' }
+                if ([IO.File]::ReadAllText($sentinel) -ne 'previous build') { throw 'Previous data changed.' }
+                Write-Output 'native_staging_guard=PASS'
+                """, Encoding.Unicode);
+            var result = await RunPowerShellAsync(harness);
+            Assert.True(result.ExitCode == 0, $"{result.StdOut}{Environment.NewLine}{result.StdErr}");
+            Assert.Contains("native_staging_guard=PASS", result.StdOut, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void DesktopAppPaths_PrefersDDriveTempAndOverridesProcessTempVariables()
     {
         var source = ReadRepositoryFile(
@@ -111,7 +159,7 @@ public sealed class ReleaseTempPathGuardTests
         Assert.DoesNotContain("Move-Item -LiteralPath $tempPath -Destination $TargetPath -Force", source, StringComparison.Ordinal);
         Assert.Contains("function Write-DurableGeoraePlanReleaseJournal", source, StringComparison.Ordinal);
         Assert.Contains("function Copy-GeoraePlanReleaseTransactionFileAtomically", source, StringComparison.Ordinal);
-        Assert.Contains("[int]$KeepDesktopPackageCount = 2", source, StringComparison.Ordinal);
+        Assert.Contains("[int]$KeepDesktopPackageCount = 0", source, StringComparison.Ordinal);
         Assert.Contains("[int]$KeepAndroidPackageCount = 2", source, StringComparison.Ordinal);
         Assert.Contains("$releaseJournalTypeDefinition = @'", source, StringComparison.Ordinal);
         Assert.Contains("if ($PSVersionTable.PSEdition -eq 'Core')", source, StringComparison.Ordinal);
@@ -129,7 +177,8 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("sha256 = $hash.Hash", source, StringComparison.Ordinal);
         Assert.Contains("fileSize = [int64]$fileInfo.Length", source, StringComparison.Ordinal);
 
-        Assert.Contains("$preservedDesktopFiles = Get-ManifestReferencedFileNames -ManifestRoot $manifestRoot -Platform 'desktop'", source, StringComparison.Ordinal);
+        Assert.Contains("function Get-PlatformReferencedFileNames", source, StringComparison.Ordinal);
+        Assert.Contains("$preservedDesktopFiles = Get-PlatformReferencedFileNames -Manifest $manifest -Platform 'desktop'", source, StringComparison.Ordinal);
         Assert.Contains("$preservedAndroidFiles = Get-ManifestReferencedFileNames -ManifestRoot $manifestRoot -Platform 'android'", source, StringComparison.Ordinal);
         Assert.Contains("-PreserveFileNames $preservedDesktopFiles", source, StringComparison.Ordinal);
         Assert.Contains("-PreserveFileNames $preservedAndroidFiles", source, StringComparison.Ordinal);
@@ -139,8 +188,17 @@ public sealed class ReleaseTempPathGuardTests
             "-SourcePath $deliveryManifestTransactionEntry.stagedPath",
             "-SourcePath $mainManifestTransactionEntry.stagedPath",
             "$journal.phase = 'Committed'",
-            "$preservedDesktopFiles = Get-ManifestReferencedFileNames -ManifestRoot $manifestRoot -Platform 'desktop'",
+            "$preservedDesktopFiles = Get-PlatformReferencedFileNames -Manifest $manifest -Platform 'desktop'",
             "$removedDesktopPackages = Remove-OldPackages");
+
+        var nativeInstallerSource = ReadRepositoryFile(
+            "tools",
+            "release",
+            "Build-GeoraePlanDesktopNativeInstallers.ps1");
+        Assert.Contains(
+            "[int]$KeepVersionedInstallerCount = 1",
+            nativeInstallerSource,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -4355,7 +4413,7 @@ public sealed class ReleaseTempPathGuardTests
             "if ([string]::IsNullOrWhiteSpace($ProjectRoot))",
             "$ProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path",
             "$tempInitializer = Join-Path $ProjectRoot 'tools\\common\\Initialize-GeoraePlanTemp.ps1'",
-            "$stagingRoot = Join-Path ([System.IO.Path]::GetPathRoot($ProjectRoot)) 'GeoraePlanInstallerBuild'");
+            "$stagingRoot = New-InstallerStagingDirectory -RequestedPath $StagingRoot");
         AssertInOrder(
             desktopInstallerSource,
             "Environment.GetEnvironmentVariable(TempRootOverrideEnvironmentKey)",
@@ -4608,6 +4666,11 @@ public sealed class ReleaseTempPathGuardTests
             var outputRoot = Path.Combine(testRoot, "output");
             var tempRoot = Path.Combine(testRoot, "temp");
             Directory.CreateDirectory(tempRoot);
+            DesktopInstallerPackageBuilderSafetyTests.AppendFixtureRuntimeMetadata(
+                Path.Combine(sourceFolder, "거래플랜.Desktop.App.exe"));
+            DesktopInstallerPackageBuilderSafetyTests.AppendFixtureRuntimeMetadata(
+                Path.Combine(sourceFolder, "Updater", "거래플랜.Updater.exe"));
+
             var buildResult = await RunPowerShellAsync(
                 scriptPath,
                 ("DOTNET_EXE", fakeDotnetPath),
@@ -4629,7 +4692,7 @@ public sealed class ReleaseTempPathGuardTests
                 "거래플랜-PC-설치패키지");
             var appRoot = Path.Combine(packageRoot, "App");
             Assert.Equal(
-                File.ReadAllBytes(versionedDesktopFixture.Path),
+                File.ReadAllBytes(Path.Combine(sourceFolder, "거래플랜.Desktop.App.exe")),
                 File.ReadAllBytes(
                     Path.Combine(appRoot, "거래플랜.exe")));
             Assert.Equal(
@@ -4791,6 +4854,11 @@ public sealed class ReleaseTempPathGuardTests
                 )
                 exit /b 0
                 """);
+
+            DesktopInstallerPackageBuilderSafetyTests.AppendFixtureRuntimeMetadata(
+                Path.Combine(sourceFolder, "거래플랜.exe"));
+            DesktopInstallerPackageBuilderSafetyTests.AppendFixtureRuntimeMetadata(
+                Path.Combine(sourceFolder, "Updater", "거래플랜.Updater.exe"));
 
             var buildResult = await RunPowerShellAsync(
                 scriptPath,
@@ -4957,6 +5025,11 @@ public sealed class ReleaseTempPathGuardTests
                 exit /b 0
                 """);
 
+            DesktopInstallerPackageBuilderSafetyTests.AppendFixtureRuntimeMetadata(
+                Path.Combine(sourceFolder, "거래플랜.exe"));
+            DesktopInstallerPackageBuilderSafetyTests.AppendFixtureRuntimeMetadata(
+                Path.Combine(sourceFolder, "Updater", "거래플랜.Updater.exe"));
+
             var buildResult = await RunPowerShellAsync(
                 scriptPath,
                 ("-ProjectRoot", testRoot),
@@ -5072,7 +5145,7 @@ public sealed class ReleaseTempPathGuardTests
                 Path.Combine(testRoot, "deploy", "Set-ApiBaseUrl.ps1"),
                 "# test deployment marker");
 
-            var builtDesktopExe = Environment.ProcessPath;
+            var builtDesktopExe = GetVersionedDesktopFixture().Path;
             Assert.True(
                 !string.IsNullOrWhiteSpace(builtDesktopExe) &&
                 File.Exists(builtDesktopExe),
@@ -5124,6 +5197,11 @@ public sealed class ReleaseTempPathGuardTests
                 )
                 exit /b 0
                 """);
+
+            DesktopInstallerPackageBuilderSafetyTests.AppendFixtureRuntimeMetadata(
+                Path.Combine(sourceFolder, "거래플랜.exe"));
+            DesktopInstallerPackageBuilderSafetyTests.AppendFixtureRuntimeMetadata(
+                Path.Combine(sourceFolder, "Updater", "거래플랜.Updater.exe"));
 
             var buildResult = await RunPowerShellAsync(
                 builderPath,
@@ -5296,7 +5374,7 @@ public sealed class ReleaseTempPathGuardTests
                 Path.Combine(testRoot, "deploy", "Set-ApiBaseUrl.ps1"),
                 "# test deployment marker");
 
-            var versionedHost = Environment.ProcessPath;
+            var versionedHost = GetVersionedDesktopFixture().Path;
             Assert.True(
                 !string.IsNullOrWhiteSpace(versionedHost) &&
                 File.Exists(versionedHost));
@@ -5349,6 +5427,11 @@ public sealed class ReleaseTempPathGuardTests
                 )
                 exit /b 0
                 """);
+
+            DesktopInstallerPackageBuilderSafetyTests.AppendFixtureRuntimeMetadata(
+                Path.Combine(sourceFolder, "거래플랜.exe"));
+            DesktopInstallerPackageBuilderSafetyTests.AppendFixtureRuntimeMetadata(
+                Path.Combine(sourceFolder, "Updater", "거래플랜.Updater.exe"));
 
             var buildResult = await RunPowerShellAsync(
                 builderPath,
@@ -5645,6 +5728,11 @@ public sealed class ReleaseTempPathGuardTests
                 """);
 
             var outputRoot = Path.Combine(testRoot, "output");
+            DesktopInstallerPackageBuilderSafetyTests.AppendFixtureRuntimeMetadata(
+                Path.Combine(sourceFolder, appDisplayName + ".exe"));
+            DesktopInstallerPackageBuilderSafetyTests.AppendFixtureRuntimeMetadata(
+                Path.Combine(sourceFolder, "Updater", appDisplayName + ".Updater.exe"));
+
             var buildResult = await RunPowerShellAsync(
                 builderPath,
                 ("-ProjectRoot", testRoot),
@@ -5672,15 +5760,15 @@ public sealed class ReleaseTempPathGuardTests
                 "Updater",
                 appDisplayName + ".Updater.exe")));
             Assert.Equal(
-                "generated uninstaller test updater marker",
-                File.ReadAllText(Path.Combine(
+                File.ReadAllBytes(Path.Combine(updaterDirectory, appDisplayName + ".Updater.exe")),
+                File.ReadAllBytes(Path.Combine(
                     packageRoot,
                     "App",
                     "Updater",
                     "거래플랜.Updater.exe")));
             Assert.Equal(
-                "generated uninstaller test updater marker",
-                File.ReadAllText(Path.Combine(
+                File.ReadAllBytes(Path.Combine(updaterDirectory, appDisplayName + ".Updater.exe")),
+                File.ReadAllBytes(Path.Combine(
                     packageRoot,
                     "App",
                     "Updater",
@@ -5761,11 +5849,14 @@ public sealed class ReleaseTempPathGuardTests
             var generatedInstallScript = File.ReadAllText(Path.Combine(
                 packageRoot,
                 "Install-GeoraePlan.ps1"));
-            const string base64Prefix = "FromBase64String('";
+            // The installer also embeds native helper code as Base64. Select
+            // the assignment that actually writes the uninstaller payload.
+            const string base64Prefix = "$uninstallScriptContent = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('";
             var base64Start = generatedInstallScript.IndexOf(
                 base64Prefix,
                 StringComparison.Ordinal);
             Assert.True(base64Start >= 0);
+            Assert.Equal(base64Start, generatedInstallScript.LastIndexOf(base64Prefix, StringComparison.Ordinal));
             base64Start += base64Prefix.Length;
             var base64End = generatedInstallScript.IndexOf(
                 "')",
@@ -5802,7 +5893,7 @@ public sealed class ReleaseTempPathGuardTests
                 ("-InstallRoot", extendedInstallRoot),
                 ("-NoShortcutCleanup", null));
 
-            Assert.Equal(0, uninstallResult.ExitCode);
+            Assert.True(uninstallResult.ExitCode == 0, uninstallResult.StdOut + uninstallResult.StdErr);
             Assert.False(Directory.Exists(installRoot));
             Assert.Equal("must remain", File.ReadAllText(preservedSentinel));
             Assert.Contains(

@@ -671,6 +671,44 @@ public sealed class RentalBillingSpecificationTests
         var allowed = InvokeValidateTemplateConfiguration(vm);
 
         Assert.True(allowed.IsValid, allowed.Message);
+        Assert.Equal("장비 나중 연결", vm.TemplateItems[0].IncludedAssetSummary);
+        Assert.False(vm.HasBillingAssetCoverageWarning);
+
+        vm.LinkAssetsLater = false;
+        Assert.False(InvokeValidateTemplateConfiguration(vm).IsValid);
+        Assert.Equal("연결 장비 없음", vm.TemplateItems[0].IncludedAssetSummary);
+        Assert.True(vm.HasBillingAssetCoverageWarning);
+        Assert.Equal(100_000m, vm.TemplateItems[0].Amount);
+    }
+
+    [Fact]
+    public void RentalBillingViewModel_LinkLaterTogglePreservesExistingAssetsAndAmounts()
+    {
+        var vm = new RentalBillingViewModel(null!, null!, new SessionState());
+        var assetId = Guid.NewGuid();
+        var item = new RentalBillingTemplateEditorItem
+        {
+            DisplayItemName = "렌탈 임대료",
+            BillingLineMode = "묶음",
+            Quantity = 2m,
+            UnitPrice = 55_000m,
+            Amount = 110_000m,
+            RepresentativeAssetId = assetId
+        };
+        item.IncludedAssetIds.Add(assetId);
+        vm.TemplateItems.Add(item);
+
+        foreach (var later in new[] { true, false })
+        {
+            vm.LinkAssetsLater = later;
+            Assert.Equal(assetId, Assert.Single(item.IncludedAssetIds));
+            Assert.Equal(assetId, item.RepresentativeAssetId);
+            Assert.Equal(2m, item.Quantity);
+            Assert.Equal(55_000m, item.UnitPrice);
+            Assert.Equal(110_000m, item.Amount);
+            Assert.DoesNotContain("나중", item.IncludedAssetSummary);
+            Assert.False(vm.HasBillingAssetCoverageWarning);
+        }
     }
 
     [Fact]

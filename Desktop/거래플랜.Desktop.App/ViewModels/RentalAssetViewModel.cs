@@ -81,6 +81,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     [ObservableProperty] private Guid _editId = Guid.NewGuid();
     [ObservableProperty] private Guid? _editCustomerId;
+    [ObservableProperty] private Guid? _editBillingProfileId;
     [ObservableProperty] private Guid? _editItemId;
     [ObservableProperty] private string _editManagementId = string.Empty;
     [ObservableProperty] private string _editManagementNumber = string.Empty;
@@ -700,9 +701,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 var filter = new RentalAssetFilter
                 {
                     SearchText = SearchText,
-                    ItemCategoryNames = GetSelectedFilterValues(ItemCategoryFilterOptions),
+                    ItemCategoryNames = GetCategoryOrStatusQueryFilterValues(ItemCategoryFilterOptions),
                     OfficeCodes = GetSelectedFilterValues(OfficeFilterOptions),
-                    AssetStatuses = GetSelectedFilterValues(StatusFilterOptions),
+                    AssetStatuses = GetCategoryOrStatusQueryFilterValues(StatusFilterOptions),
                     PinnedAssetId = selectedRowId,
                     MaxResults = resultLimit
                 };
@@ -1142,6 +1143,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     [RelayCommand]
     private async Task OpenReturnReportAsync()
     {
+        var preparedByOwner = PrintDocumentAuthorization.CaptureOwner(_session);
+        if (!CanOpenDocument(preparedByOwner))
+            return;
         if (!TryBuildDocumentAsset(out var asset))
             return;
 
@@ -1158,13 +1162,17 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
         var managementCompanyNames = await BuildManagementCompanyNameLookupAsync();
         var document = _documents.BuildReturnReportDocument(asset, company, inputWindow.ReportFields, managementCompanyNames);
-        OpenPreview(document, $"회수장비내역서_{BuildSafeDocumentSuffix(asset)}");
+        if (!OpenPreview(document, $"회수장비내역서_{BuildSafeDocumentSuffix(asset)}", preparedByOwner))
+            return;
         StatusMessage = "회수장비내역서를 열었습니다.";
     }
 
     [RelayCommand]
     private async Task OpenEquipmentDetailAsync()
     {
+        var preparedByOwner = PrintDocumentAuthorization.CaptureOwner(_session);
+        if (!CanOpenDocument(preparedByOwner))
+            return;
         if (!TryBuildDocumentAsset(out var asset))
             return;
 
@@ -1175,13 +1183,17 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
         var managementCompanyNames = await BuildManagementCompanyNameLookupAsync();
         var document = _documents.BuildEquipmentDetailDocument(relatedAssets, customer, company, managementCompanyNames);
-        OpenPreview(document, $"렌탈장비내역서_{BuildSafeDocumentSuffix(asset)}");
+        if (!OpenPreview(document, $"렌탈장비내역서_{BuildSafeDocumentSuffix(asset)}", preparedByOwner))
+            return;
         StatusMessage = $"렌탈장비내역서({relatedAssets.Count:N0}대)를 열었습니다.";
     }
 
     [RelayCommand]
     private async Task OpenContractWriterAsync()
     {
+        var preparedByOwner = PrintDocumentAuthorization.CaptureOwner(_session);
+        if (!CanOpenDocument(preparedByOwner))
+            return;
         if (!TryBuildDocumentAsset(out var asset))
             return;
 
@@ -1206,13 +1218,17 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         var companyProfiles = await _local.GetCompanyProfilesAsync();
 
         var contractModel = _documents.CreateContractDocumentModel(asset, customer, company, preferredCustomerContractDate);
+        if (!CanOpenDocument(preparedByOwner))
+            return;
         var editorViewModel = new RentalContractEditorViewModel(
             contractModel,
             _documents,
             officeOptions,
             companyProfiles,
             string.IsNullOrWhiteSpace(asset.ResponsibleOfficeCode) ? company.OfficeCode : asset.ResponsibleOfficeCode,
-            CanManageAll);
+            CanManageAll,
+            preparedByOwner,
+            _printService);
         var editorWindow = new RentalContractEditorWindow(editorViewModel)
         {
             Owner = GetActiveWindow()
@@ -1372,6 +1388,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             _editRevision = source.Revision;
             EditId = source.Id;
             EditCustomerId = source.CustomerId;
+            EditBillingProfileId = source.BillingProfileId;
             EditItemId = source.ItemId;
             EditManagementId = source.ManagementId;
             EditManagementNumber = source.ManagementNumber;
@@ -1414,7 +1431,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             EditMeterPolicySourceUpdatedAtUtc = source.MeterPolicySourceUpdatedAtUtc;
             LoadMeterReadings(source.MeterReadingsJson);
             EditAssetStatus = source.AssetStatus;
-            EditBillingEligibilityStatus = string.IsNullOrWhiteSpace(source.BillingEligibilityStatus) ? "미확인" : source.BillingEligibilityStatus;
+            EditBillingEligibilityStatus = string.IsNullOrWhiteSpace(source.BillingEligibilityStatus)
+                ? value.BillingEligibilityStatus
+                : source.BillingEligibilityStatus;
             EditBillingExclusionReason = source.BillingExclusionReason;
             EditNotes = source.Notes;
             EditPurchaseDate = ToDateTime(source.PurchaseDate);
@@ -1784,14 +1803,27 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         return fallbackOfficeCode;
     }
 
-    private void OpenPreview(FixedDocument document, string jobName)
+    private bool CanOpenDocument(Func<bool> preparedByOwner)
     {
+        if (preparedByOwner())
+            return true;
+        StatusMessage = PrintDocumentAuthorization.DeniedMessage;
+        return false;
+    }
+
+    private bool OpenPreview(FixedDocument document, string jobName, Func<bool> preparedByOwner)
+    {
+        if (!CanOpenDocument(preparedByOwner))
+            return false;
+        // Rental documents include unsaved drafts; preserve their shared read policy.
+        PrintDocumentAuthorization.Attach(document, preparedByOwner);
         var previewViewModel = new PrintPreviewViewModel(document, _printService, jobName);
         var previewWindow = new PrintPreviewWindow(previewViewModel)
         {
             Owner = GetActiveWindow()
         };
         WindowShowHelper.ShowModeless(previewWindow);
+        return true;
     }
 
     public async Task<IReadOnlyList<LookupRow>> BuildCustomerLookupRowsAsync()
@@ -2328,6 +2360,17 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+    private static List<string> GetCategoryOrStatusQueryFilterValues(IEnumerable<SelectableFilterOption> options)
+    {
+        var list = options.ToList();
+        // The summary calls both all-selected and cleared selections "전체".
+        // Omit that query constraint so uncategorized or legacy values remain visible.
+        // Office selections keep their existing explicit scope handling.
+        return list.All(option => option.IsSelected)
+            ? []
+            : GetSelectedFilterValues(list);
+    }
+
     private void SetSelectedFilterValues(ObservableCollection<SelectableFilterOption> options, IReadOnlyCollection<string> selectedValues)
     {
         _suppressFilterReload = true;
@@ -2761,6 +2804,12 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 return false;
             }
 
+            if (snapshot.IsNewAsset && !HasMeaningfulDraftContent(snapshot))
+            {
+                StatusMessage = "신규 렌탈 자산 정보를 입력한 뒤 저장하세요.";
+                return false;
+            }
+
             var result = await _rental.SaveAssetAsync(
                 BuildAsset(snapshot),
                 _session,
@@ -3064,6 +3113,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             EditId,
             _editRevision,
             EditCustomerId,
+            EditBillingProfileId,
             EditItemId,
             EditManagementId,
             EditManagementNumber,
@@ -3121,6 +3171,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             _editRevision = snapshot.EditRevision;
             EditId = snapshot.EditId;
             EditCustomerId = snapshot.EditCustomerId;
+            EditBillingProfileId = snapshot.EditBillingProfileId;
             EditItemId = snapshot.EditItemId;
             EditManagementId = snapshot.EditManagementId;
             EditManagementNumber = snapshot.EditManagementNumber;
@@ -3192,6 +3243,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             EditId: Guid.NewGuid(),
             EditRevision: 0,
             EditCustomerId: null,
+            EditBillingProfileId: null,
             EditItemId: null,
             EditManagementId: string.Empty,
             EditManagementNumber: string.Empty,
@@ -3254,6 +3306,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             TenantCode = TenantScopeCatalog.GetTenantCodeForOffice(officeCode),
             OfficeCode = officeCode,
             CustomerId = snapshot.EditCustomerId,
+            BillingProfileId = snapshot.EditBillingProfileId,
             ItemId = snapshot.EditItemId,
             ManagementId = snapshot.EditManagementId,
             ManagementNumber = snapshot.EditManagementNumber,
@@ -3342,6 +3395,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         var builder = new System.Text.StringBuilder();
         builder.Append(snapshot.EditId.ToString("D"))
             .Append('|').Append(snapshot.EditCustomerId?.ToString("D") ?? string.Empty)
+            .Append('|').Append(snapshot.EditBillingProfileId?.ToString("D") ?? string.Empty)
             .Append('|').Append(snapshot.EditItemId?.ToString("D") ?? string.Empty)
             .Append('|').Append(snapshot.EditManagementId ?? string.Empty)
             .Append('|').Append(snapshot.EditManagementNumber ?? string.Empty)
@@ -3432,6 +3486,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         Guid EditId,
         long EditRevision,
         Guid? EditCustomerId,
+        Guid? EditBillingProfileId,
         Guid? EditItemId,
         string EditManagementId,
         string EditManagementNumber,

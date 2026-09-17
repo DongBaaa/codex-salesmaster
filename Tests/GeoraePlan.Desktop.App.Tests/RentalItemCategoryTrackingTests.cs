@@ -9,6 +9,49 @@ namespace GeoraePlan.Desktop.App.Tests;
 
 public sealed class RentalItemCategoryTrackingTests
 {
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    public async Task SaveAsset_UsesActiveCategoryAlongsideMatchingHistory(bool historyDeleted, bool historyFirst)
+    {
+        PrepareAppRoot("georaeplan-rental-category-history");
+        try
+        {
+            await using var connection = new SqliteConnection("Data Source=:memory:");
+            await connection.OpenAsync();
+            await using var db = new LocalDbContext(
+                new DbContextOptionsBuilder<LocalDbContext>().UseSqlite(connection).Options);
+            await db.Database.EnsureCreatedAsync();
+            var history = CreateCategory(isActive: false);
+            history.IsDeleted = historyDeleted;
+            var active = CreateCategory(isActive: true);
+            foreach (var category in historyFirst ? new[] { history, active } : new[] { active, history })
+            {
+                db.ItemCategoryOptions.Add(category);
+                await db.SaveChangesAsync();
+            }
+
+            var result = await new RentalStateService(db).SaveAssetAsync(
+                CreateAsset(active.Name), CreateAdminSession());
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(active.Name, (await db.RentalAssets.AsNoTracking().SingleAsync()).ItemCategoryName);
+            var unchangedHistory = await db.ItemCategoryOptions.IgnoreQueryFilters().AsNoTracking()
+                .SingleAsync(option => option.Id == history.Id);
+            Assert.False(unchangedHistory.IsActive);
+            Assert.Equal(historyDeleted, unchangedHistory.IsDeleted);
+            Assert.False(unchangedHistory.IsDirty);
+            Assert.Equal(2, await db.ItemCategoryOptions.IgnoreQueryFilters().CountAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     [Fact]
     public async Task SaveAsset_UsesPersistedActiveCategoryWhenTrackedCopyIsStaleInactive()
     {

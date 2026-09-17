@@ -5495,16 +5495,18 @@ public static partial class DbInitializer
                 dbContext.CustomerCategories.Add(canonical);
                 categories.Add(canonical);
             }
-            else
+            else if (!canonical.IsDeleted)
             {
                 var canonicalName = string.IsNullOrWhiteSpace(canonical.Name)
                     ? definition.Name
                     : DefaultCustomerCategories.NormalizeName(canonical.Name);
-                TouchCanonicalCategory(canonical, canonicalName, isSystemDefault: true);
+                TouchCanonicalCategory(canonical, canonicalName, canonical.IsSystemDefault);
             }
         }
 
         var groups = categories
+            // Deleted categories are retained history, not startup repair candidates.
+            .Where(category => !category.IsDeleted)
             .Where(category => !string.IsNullOrWhiteSpace(category.Name))
             .GroupBy(category => DefaultCustomerCategories.NormalizeName(category.Name), StringComparer.CurrentCultureIgnoreCase)
             .Where(group => group.Count() > 1)
@@ -5567,7 +5569,6 @@ public static partial class DbInitializer
     {
         category.Name = normalizedName;
         category.IsSystemDefault = category.IsSystemDefault || isSystemDefault;
-        category.IsDeleted = false;
     }
 
     private static Task EnsureCustomerContractStoragePathColumnAsync(

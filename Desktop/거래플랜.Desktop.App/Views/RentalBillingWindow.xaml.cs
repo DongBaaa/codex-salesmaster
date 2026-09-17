@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Windows;
 using System.Linq;
@@ -16,6 +16,7 @@ namespace 거래플랜.Desktop.App.Views;
 
 public partial class RentalBillingWindow : Window
 {
+    private const double BillingDetailMinimumWidth = 540d;
     private readonly EntityEditSessionMonitor? _editSessionMonitor;
     private readonly Func<Guid, Window?, Task>? _openInvoiceWindowAsync;
     private readonly Func<Guid, Window?, Task>? _openRentalAssetWindowAsync;
@@ -38,6 +39,11 @@ public partial class RentalBillingWindow : Window
         InitializeComponent();
         ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(this);
         DataContext = viewModel;
+        viewModel.ConfirmEditorDiscard = message => MessageBox.Show(
+            this, message, "렌탈 청구 편집 취소", MessageBoxButton.YesNo,
+            MessageBoxImage.Question, MessageBoxResult.No) == MessageBoxResult.Yes;
+        viewModel.LegacyDraftRecovery.ConfirmRecoveryAsync = preview => Task.FromResult(
+            DialogWindowCloseHelper.ShowDialog(new RentalLegacyDraftRecoveryWindow(preview) { Owner = this }) == true);
         _openInvoiceWindowAsync = openInvoiceWindowAsync;
         _openRentalAssetWindowAsync = openRentalAssetWindowAsync;
         _refreshAfterBillingChangedAsync = refreshAfterBillingChangedAsync;
@@ -76,6 +82,23 @@ public partial class RentalBillingWindow : Window
             });
     }
 
+    private void BillingRowsDataGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not DataGrid grid || !ReferenceEquals(e.OriginalSource, grid) ||
+            DataContext is not RentalBillingViewModel viewModel)
+            return;
+        if (viewModel.TrySelectEditorRow(grid.SelectedItem as RentalBillingViewRow))
+            return;
+
+        // WPF must finish its selection event before the rejected selection can
+        // be restored. Read the current binding value, never a stale row capture.
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.DataBind, new Action(() =>
+        {
+            if (IsLoaded)
+                grid.GetBindingExpression(DataGrid.SelectedItemProperty)?.UpdateTarget();
+        }));
+    }
+
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
         DialogWindowCloseHelper.Close(this);
@@ -98,8 +121,8 @@ public partial class RentalBillingWindow : Window
             return;
         }
 
-        BillingListColumn.MinWidth = 420;
-        BillingDetailColumn.MinWidth = 620;
+        BillingListColumn.MinWidth = 0;
+        BillingDetailColumn.MinWidth = BillingDetailMinimumWidth;
         BillingListColumn.Width = _billingListColumnWidth;
         BillingWorkspaceSplitterColumn.Width = new GridLength(10);
         BillingWorkspaceGridSplitter.Visibility = Visibility.Visible;

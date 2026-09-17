@@ -15,7 +15,7 @@ public sealed class IntegrityReportViewModel : ObservableObject
     private string _summaryText = "서버 무결성 검사 결과를 불러올 준비가 되었습니다.";
     private string _scopeText = "-";
     private string _generatedText = "-";
-    private string _statusMessage = "새로고침을 눌러 운영 서버 기준 무결성 결과를 확인하세요.";
+    private string _statusMessage = "새로고침을 눌러 현재 서버 기준 무결성 결과를 확인하세요.";
     private string _detailStatusMessage = "항목을 선택하면 상세 근거를 조회합니다.";
     private bool _isBusy;
     private bool _hasReport;
@@ -152,7 +152,7 @@ public sealed class IntegrityReportViewModel : ObservableObject
         var runDeferredRefresh = false;
         try
         {
-            StatusMessage = "운영 서버 무결성 결과를 조회하는 중입니다.";
+            StatusMessage = "현재 서버 무결성 결과를 조회하는 중입니다.";
             var report = await _api.GetIntegrityReportAsync();
             if (!CanCommitAuthorized(operation))
                 return;

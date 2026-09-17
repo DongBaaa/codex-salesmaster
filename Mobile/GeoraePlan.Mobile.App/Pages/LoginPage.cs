@@ -61,7 +61,7 @@ public sealed class LoginPage : ContentPage
         var connectionModeLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: true, fontSize: 12);
         connectionModeLabel.SetBinding(Label.TextProperty, nameof(LoginViewModel.ConnectionModeText));
 
-        var resetConnectionButton = GeoraePlanTheme.CreateButton("운영 서버로 초기화", GeoraePlanTheme.Brown);
+        var resetConnectionButton = GeoraePlanTheme.CreateButton("기본 서버로 초기화", GeoraePlanTheme.Brown);
         resetConnectionButton.SetBinding(Button.CommandProperty, nameof(LoginViewModel.ResetConnectionCommand));
         resetConnectionButton.SetBinding(VisualElement.IsVisibleProperty, nameof(LoginViewModel.HasCustomBaseUrl));
         resetConnectionButton.SetBinding(VisualElement.IsEnabledProperty, nameof(LoginViewModel.HasCustomBaseUrl));
@@ -92,7 +92,7 @@ public sealed class LoginPage : ContentPage
                     },
                     new Label
                     {
-                        Text = "거래플랜 운영 서버에 연결됩니다.",
+                        Text = "설정된 거래플랜 서버에 연결합니다.",
                         TextColor = GeoraePlanTheme.TextSecondary,
                         HorizontalTextAlignment = TextAlignment.Center
                     },

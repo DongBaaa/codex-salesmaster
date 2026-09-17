@@ -124,7 +124,11 @@ internal static class Program
                 EnsureGeneratedInstallRecoveryAbsent(options.InstallRoot);
                 TryLog(
                     $"SKIP requested={NormalizeVersionText(options.Version)} installed={NormalizeVersionText(installedVersion)}");
-                SchedulePostExitCleanup(GetCurrentUpdaterStagingRoot());
+                var currentUpdaterStagingRoot = GetCurrentUpdaterStagingRoot();
+                TryCleanupSupersededUpdateArtifacts(
+                    GetUpdateArtifactRoot(),
+                    currentUpdaterStagingRoot);
+                SchedulePostExitCleanup(currentUpdaterStagingRoot);
                 installWorkerLease.Dispose();
                 installOperationLease.Dispose();
                 installRootUpdateLock.Dispose();
@@ -222,9 +226,14 @@ internal static class Program
                 EnsureGeneratedInstallRecoveryAbsent(options.InstallRoot);
                 TryLog(
                     $"RECOVERED-SKIP requested={NormalizeVersionText(options.Version)} installed={NormalizeVersionText(recoveredInstalledVersion)}");
+                var currentUpdaterStagingRoot = GetCurrentUpdaterStagingRoot();
+                TryCleanupSupersededUpdateArtifacts(
+                    GetUpdateArtifactRoot(),
+                    workRoot,
+                    currentUpdaterStagingRoot);
                 SchedulePostExitCleanup(
                     workRoot,
-                    GetCurrentUpdaterStagingRoot());
+                    currentUpdaterStagingRoot);
                 installWorkerLease.Dispose();
                 installOperationLease.Dispose();
                 installRootUpdateLock.Dispose();
@@ -245,6 +254,11 @@ internal static class Program
             updaterOwnsInstallRootGate: true);
 
         EnsureGeneratedInstallRecoveryAbsent(options.InstallRoot);
+        var completedUpdaterStagingRoot = GetCurrentUpdaterStagingRoot();
+        TryCleanupSupersededUpdateArtifacts(
+            GetUpdateArtifactRoot(),
+            workRoot,
+            completedUpdaterStagingRoot);
         installWorkerLease.Dispose();
         installOperationLease.Dispose();
         installRootUpdateLock.Dispose();
@@ -255,7 +269,7 @@ internal static class Program
             LaunchExistingDesktop(options);
         }
 
-        SchedulePostExitCleanup(workRoot, GetCurrentUpdaterStagingRoot());
+        SchedulePostExitCleanup(workRoot, completedUpdaterStagingRoot);
         TryLog("SUCCESS");
     }
 
@@ -383,7 +397,6 @@ internal static class Program
             "-NoProfile",
             "-NonInteractive",
             "-ExecutionPolicy", "Bypass",
-            requiresElevation ? string.Empty : "-WindowStyle Hidden",
             "-File",
             QuoteArgument(installScriptPath),
             "-InstallRoot",
@@ -405,24 +418,8 @@ internal static class Program
             updaterOwnsInstallRootGate ? gateOwnerStartTimeUtcTicks.ToString() : string.Empty
         }.Where(static part => !string.IsNullOrWhiteSpace(part)));
 
-        var installStartInfo = new ProcessStartInfo
-        {
-            FileName = ResolvePowerShellPath(),
-            Arguments = arguments,
-            WorkingDirectory = extractRoot,
-            UseShellExecute = requiresElevation
-        };
-
-        if (requiresElevation)
-        {
-            installStartInfo.Verb = "runas";
-        }
-        else
-        {
-            installStartInfo.CreateNoWindow = true;
-            installStartInfo.RedirectStandardOutput = true;
-            installStartInfo.RedirectStandardError = true;
-        }
+        var installStartInfo = CreateInstallProcessStartInfo(
+            extractRoot, arguments, requiresElevation);
 
         if (environmentOverrides is not null)
         {
@@ -1784,6 +1781,32 @@ internal static class Program
             .Aggregate(0L, (total, length) => checked(total + length));
     }
 
+    internal static ProcessStartInfo CreateInstallProcessStartInfo(
+        string workingDirectory,
+        string arguments,
+        bool requiresElevation)
+    {
+        // The updater owns progress/error UI. Keep the worker console hidden
+        // even when ShellExecute is needed for the separate UAC prompt.
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = ResolvePowerShellPath(),
+            Arguments = "-WindowStyle Hidden " + arguments,
+            WorkingDirectory = workingDirectory,
+            WindowStyle = ProcessWindowStyle.Hidden,
+            UseShellExecute = requiresElevation
+        };
+        if (requiresElevation)
+            startInfo.Verb = "runas";
+        else
+        {
+            startInfo.CreateNoWindow = true;
+            startInfo.RedirectStandardOutput = true;
+            startInfo.RedirectStandardError = true;
+        }
+        return startInfo;
+    }
+
     internal static bool RequiresElevation(string installRoot)
     {
         var fullPath = InstallRootPathIdentity.Resolve(installRoot);
@@ -2099,7 +2122,7 @@ internal static class Program
 
     private static void TryCleanupChildDirectories(string rootPath)
     {
-        if (!Directory.Exists(rootPath))
+        if (!IsRegularCleanupDirectoryChain(rootPath))
             return;
 
         var cutoffUtc = DateTime.UtcNow - UpdateArtifactRetention;
@@ -2107,6 +2130,8 @@ internal static class Program
         {
             try
             {
+                if (!IsRegularCleanupDirectoryChain(directory))
+                    continue;
                 var lastWriteUtc = Directory.GetLastWriteTimeUtc(directory);
                 if (lastWriteUtc > cutoffUtc)
                     continue;
@@ -2118,6 +2143,125 @@ internal static class Program
                 // 다음 실행에서 다시 정리 시도
             }
         }
+    }
+
+    /// <summary>
+    /// Removes update-only cache directories after a verified installation or
+    /// a verified already-current version decision. Active updater directories
+    /// are explicitly protected and deleted by the post-exit cleanup instead.
+    /// </summary>
+    internal static int TryCleanupSupersededUpdateArtifacts(
+        string artifactRoot,
+        params string?[] protectedDirectoryPaths)
+    {
+        if (string.IsNullOrWhiteSpace(artifactRoot) ||
+            !Directory.Exists(artifactRoot))
+        {
+            return 0;
+        }
+
+        var safeArtifactRoot = Path.GetFullPath(artifactRoot)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (!IsRegularCleanupDirectoryChain(safeArtifactRoot))
+            return 0;
+        var protectedPaths = protectedDirectoryPaths
+            .Where(static path => !string.IsNullOrWhiteSpace(path))
+            .Select(static path => Path.GetFullPath(path!))
+            .ToArray();
+        var removedCount = 0;
+
+        foreach (var categoryName in new[]
+                 {
+                     "prepared-updates",
+                     "updates",
+                     "updater-run"
+                 })
+        {
+            var categoryRoot = Path.GetFullPath(
+                Path.Combine(safeArtifactRoot, categoryName));
+            if (!IsSamePathOrDescendant(categoryRoot, safeArtifactRoot) ||
+                !IsRegularCleanupDirectoryChain(categoryRoot))
+            {
+                continue;
+            }
+
+            string[] categoryDirectories;
+            try
+            {
+                categoryDirectories = Directory.GetDirectories(categoryRoot);
+            }
+            catch (Exception ex)
+            {
+                TryLog(
+                    $"CACHE-CLEANUP deferred={categoryRoot} reason={ex.GetType().Name}:{ex.Message}");
+                continue;
+            }
+
+            foreach (var directory in categoryDirectories)
+            {
+                var candidate = Path.GetFullPath(directory);
+                if (protectedPaths.Any(
+                        protectedPath =>
+                            IsSamePathOrDescendant(protectedPath, candidate)))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    if (!IsSamePathOrDescendant(candidate, categoryRoot) ||
+                        !IsRegularCleanupDirectoryChain(candidate))
+                        continue;
+                    Directory.Delete(candidate, recursive: true);
+                    removedCount++;
+                    TryLog($"CACHE-CLEANUP removed={candidate}");
+                }
+                catch (Exception ex)
+                {
+                    TryLog(
+                        $"CACHE-CLEANUP deferred={candidate} reason={ex.GetType().Name}:{ex.Message}");
+                }
+            }
+        }
+
+        return removedCount;
+    }
+
+    private static bool IsRegularCleanupDirectoryChain(string path)
+    {
+        try
+        {
+            for (var directory = new DirectoryInfo(Path.GetFullPath(path));
+                 directory is not null;
+                 directory = directory.Parent)
+            {
+                var attributes = File.GetAttributes(directory.FullName);
+                if ((attributes & FileAttributes.Directory) == 0 ||
+                    (attributes & FileAttributes.ReparsePoint) != 0)
+                    return false;
+            }
+            return true;
+        }
+        catch
+        {
+            // Optional cache cleanup must fail closed on inaccessible or changed paths.
+            return false;
+        }
+    }
+
+    private static bool IsSamePathOrDescendant(
+        string candidatePath,
+        string rootPath)
+    {
+        var candidate = Path.GetFullPath(candidatePath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var root = Path.GetFullPath(rootPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        return string.Equals(candidate, root, StringComparison.OrdinalIgnoreCase) ||
+               candidate.StartsWith(
+                   root + Path.DirectorySeparatorChar,
+                   StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? GetCurrentUpdaterStagingRoot()

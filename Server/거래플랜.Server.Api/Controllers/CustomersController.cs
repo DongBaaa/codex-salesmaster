@@ -83,6 +83,8 @@ public sealed class CustomersController : ControllerBase
             .Select(invoice => invoice.ToDto())
             .ToListAsync(cancellationToken);
 
+        await InvoicePaymentReadScope.FilterAsync(recentInvoices, _dbContext, _officeScopeService, cancellationToken);
+
         var readableInvoiceIds = _officeScopeService.ApplySyncInvoiceScope(_dbContext.Invoices
             .AsNoTracking()
             .Where(invoice => invoice.CustomerId == id))

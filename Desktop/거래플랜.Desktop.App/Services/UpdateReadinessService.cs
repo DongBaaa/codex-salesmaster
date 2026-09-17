@@ -8,7 +8,16 @@ public sealed record UpdateReadinessResult(
     int RemainingPendingOutboxCount,
     int RemainingFailedOutboxCount,
     bool SyncAttempted,
-    string Message);
+    string Message)
+{
+    public bool HasPendingLocalChanges =>
+        RemainingDirtyCount > 0 ||
+        RemainingPendingOutboxCount > 0 ||
+        RemainingFailedOutboxCount > 0;
+
+    public bool CanForceProceed =>
+        !CanProceed && SyncAttempted && HasPendingLocalChanges;
+}
 
 public static class UpdateReadinessService
 {
@@ -47,7 +56,7 @@ public static class UpdateReadinessService
         var initialDirtyCount = await local.CountDirtyAsync(ct);
         var initialCurrentScopeDirtyCount = await local.CountDirtyAsync(session, ct);
         var initialOutboxSummary = await local.GetSyncOutboxSummaryAsync(ct);
-        if (initialCurrentScopeDirtyCount <= 0 && initialOutboxSummary.PendingCount <= 0)
+        if (initialCurrentScopeDirtyCount <= 0 && initialOutboxSummary.PendingCount <= 0 && initialOutboxSummary.FailedCount <= 0)
         {
             return new UpdateReadinessResult(
                 CanProceed: true,
@@ -69,7 +78,7 @@ public static class UpdateReadinessService
             var remainingAfterCancel = await local.CountDirtyAsync(CancellationToken.None);
             var remainingCurrentScopeAfterCancel = await local.CountDirtyAsync(session, CancellationToken.None);
             var remainingOutboxAfterCancel = await local.GetSyncOutboxSummaryAsync(CancellationToken.None);
-            if (remainingCurrentScopeAfterCancel <= 0 && remainingOutboxAfterCancel.PendingCount <= 0)
+            if (remainingCurrentScopeAfterCancel <= 0 && remainingOutboxAfterCancel.PendingCount <= 0 && remainingOutboxAfterCancel.FailedCount <= 0)
             {
                 return new UpdateReadinessResult(
                     CanProceed: true,
@@ -103,7 +112,7 @@ public static class UpdateReadinessService
             var remainingAfterFailure = await local.CountDirtyAsync(CancellationToken.None);
             var remainingCurrentScopeAfterFailure = await local.CountDirtyAsync(session, CancellationToken.None);
             var remainingOutboxAfterFailure = await local.GetSyncOutboxSummaryAsync(CancellationToken.None);
-            if (remainingCurrentScopeAfterFailure <= 0 && remainingOutboxAfterFailure.PendingCount <= 0)
+            if (remainingCurrentScopeAfterFailure <= 0 && remainingOutboxAfterFailure.PendingCount <= 0 && remainingOutboxAfterFailure.FailedCount <= 0)
             {
                 return new UpdateReadinessResult(
                     CanProceed: true,
@@ -133,7 +142,7 @@ public static class UpdateReadinessService
         var remainingDirtyCount = await local.CountDirtyAsync(ct);
         var remainingCurrentScopeDirtyCount = await local.CountDirtyAsync(session, ct);
         var remainingOutboxSummary = await local.GetSyncOutboxSummaryAsync(ct);
-        if (remainingCurrentScopeDirtyCount <= 0 && remainingOutboxSummary.PendingCount <= 0)
+        if (remainingCurrentScopeDirtyCount <= 0 && remainingOutboxSummary.PendingCount <= 0 && remainingOutboxSummary.FailedCount <= 0)
         {
             return new UpdateReadinessResult(
                 CanProceed: true,
@@ -186,10 +195,10 @@ public static class UpdateReadinessService
                 parts.Add(blockingReason.Message);
         }
 
-        if (outboxSummary.PendingCount > 0)
+        if (outboxSummary.PendingCount > 0 || outboxSummary.FailedCount > 0)
         {
             var outboxText = outboxSummary.FailedCount > 0
-                ? $"sync outbox 대기 {outboxSummary.PendingCount:N0}건(실패 {outboxSummary.FailedCount:N0}건 포함)이 남아 있습니다."
+                ? $"sync outbox 전송 대기 {outboxSummary.PendingCount:N0}건, 실패 {outboxSummary.FailedCount:N0}건이 남아 있습니다."
                 : $"sync outbox 대기 {outboxSummary.PendingCount:N0}건이 남아 있습니다.";
             parts.Add(outboxText);
         }

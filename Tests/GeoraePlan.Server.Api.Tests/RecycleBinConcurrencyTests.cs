@@ -21,6 +21,126 @@ public sealed class RecycleBinConcurrencyTests : IDisposable
         _connection.Open();
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Restore_SelectedCustomerAndItsCascadeContract_CountsBothWithoutStaleRetry(bool contractFirst, bool firstTargetOnly)
+    {
+        var currentUser = CreateAdminUser();
+        await using var dbContext = CreateDbContext(currentUser);
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Batch cascade restore fixture",
+            NameMatchKey = "batch-cascade-restore-fixture",
+            TradeType = CustomerClassificationNormalizer.Sales,
+            IsDeleted = true
+        };
+        var contract = new CustomerContract
+        {
+            Id = Guid.NewGuid(), CustomerId = customer.Id,
+            ContractType = "거래계약서", FileName = "PDF 미등록",
+            Description = "Explicit test draft", IsPrimary = true, IsDeleted = true
+        };
+        dbContext.Customers.Add(customer);
+        dbContext.CustomerContracts.Add(contract);
+        await dbContext.SaveChangesAsync();
+        Assert.Equal(customer.UpdatedAtUtc, contract.UpdatedAtUtc);
+        var customerTarget = new RecycleBinMutationTargetDto
+            { EntityId = customer.Id, Kind = "customer", ExpectedRevision = customer.Revision };
+        var contractTarget = new RecycleBinMutationTargetDto
+            { EntityId = contract.Id, Kind = "contract", ExpectedRevision = contract.Revision };
+        var request = new RecycleBinMutationRequest
+            { Items = contractFirst ? [contractTarget, customerTarget] : [customerTarget, contractTarget] };
+        if (firstTargetOnly)
+            request.Items.RemoveAt(1);
+        var controller = CreateRawController(dbContext, currentUser);
+        var response = await controller.Restore(request, CancellationToken.None);
+        var result = Assert.IsType<RecycleBinMutationResultDto>(Assert.IsType<OkObjectResult>(response.Result).Value);
+        Assert.False((await dbContext.Customers.IgnoreQueryFilters().SingleAsync(x => x.Id == customer.Id)).IsDeleted);
+        Assert.False((await dbContext.CustomerContracts.IgnoreQueryFilters().SingleAsync(x => x.Id == contract.Id)).IsDeleted);
+        Assert.Equal(request.Items.Count, result.SucceededCount);
+        Assert.All(result.Results, item => Assert.True(item.Success, item.Message));
+        Assert.Equal(2, result.CommittedRestores.Count);
+        var customerReceipt = Assert.Single(result.CommittedRestores, x => x.EntityId == customer.Id);
+        var contractReceipt = Assert.Single(result.CommittedRestores, x => x.EntityId == contract.Id);
+        Assert.Equal(customerTarget.ExpectedRevision, customerReceipt.PreviousRevision);
+        Assert.Equal(customer.Revision, customerReceipt.Revision);
+        Assert.Equal(contractTarget.ExpectedRevision, contractReceipt.PreviousRevision);
+        Assert.Equal(contract.Revision, contractReceipt.Revision);
+
+        // A later request with the old revisions must still fail; batch coverage is not a retry bypass.
+        var customerRevision = customer.Revision;
+        var contractRevision = contract.Revision;
+        var retry = await controller.Restore(request, CancellationToken.None);
+        var retried = Assert.IsType<RecycleBinMutationResultDto>(Assert.IsType<OkObjectResult>(retry.Result).Value);
+        Assert.Equal(0, retried.SucceededCount);
+        Assert.Empty(retried.CommittedRestores);
+        Assert.Equal(customerRevision, customer.Revision);
+        Assert.Equal(contractRevision, contract.Revision);
+    }
+
+    [Theory]
+    [InlineData("changed-after-commit")]
+    [InlineData("rolled-back")]
+    [InlineData("stale-revision")]
+    [InlineData("pending-before-operation")]
+    public async Task Restore_BatchReceiptDoesNotAcknowledgeUnprovenState(string mode)
+    {
+        var currentUser = CreateAdminUser();
+        await using var db = CreateDbContext(currentUser);
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(), TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Receipt fixture", NameMatchKey = "receipt-fixture", IsDeleted = true
+        };
+        db.Customers.Add(customer);
+        await db.SaveChangesAsync();
+        var beforeRevision = customer.Revision;
+        var target = new RecycleBinMutationTargetDto
+            { EntityId = customer.Id, Kind = "customer", ExpectedRevision = beforeRevision };
+        var batch = new RecycleBinRestoreBatch(db);
+        if (mode == "pending-before-operation")
+            customer.IsDeleted = false;
+        await batch.ExecuteAsync(target, "customer", async () =>
+        {
+            await using var transaction = await db.Database.BeginTransactionAsync();
+            customer.IsDeleted = false;
+            await db.SaveChangesAsync();
+            if (mode == "rolled-back")
+            {
+                await transaction.RollbackAsync();
+                return (false, "rolled back");
+            }
+            await transaction.CommitAsync();
+            return (true, "committed");
+        }, CancellationToken.None);
+        if (mode == "changed-after-commit")
+            await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE Customers SET Revision=Revision+1, NameOriginal='Other writer' WHERE Id={customer.Id}");
+        if (mode == "stale-revision")
+            target.ExpectedRevision = beforeRevision - 1;
+        var mutationInvoked = false;
+        var result = await batch.ExecuteAsync(target, "customer", () =>
+        {
+            mutationInvoked = true;
+            return Task.FromResult((false, "normal revision validation required"));
+        }, CancellationToken.None);
+        Assert.False(result.Success);
+        Assert.Equal(mode != "changed-after-commit", mutationInvoked);
+        var current = await db.Customers.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == customer.Id);
+        Assert.Equal(mode == "rolled-back", current.IsDeleted);
+        if (mode is "rolled-back" or "pending-before-operation")
+            Assert.Empty(batch.GetCommittedRestores());
+        if (mode == "changed-after-commit")
+            Assert.Equal("Other writer", current.NameOriginal);
+    }
+
     [Fact]
     public async Task Restore_ReturnsFailedItem_WhenExpectedRevisionDoesNotMatch()
     {

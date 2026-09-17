@@ -58,7 +58,7 @@ public sealed class SettingsPage : ContentPage
         var connectionModeLabel = GeoraePlanTheme.CreateBodyText(string.Empty, muted: false);
         connectionModeLabel.SetBinding(Label.TextProperty, nameof(SettingsViewModel.ConnectionModeText));
 
-        var safeResetConnectionButton = GeoraePlanTheme.CreateButton("운영 서버 연결 복구", GeoraePlanTheme.Brown);
+        var safeResetConnectionButton = GeoraePlanTheme.CreateButton("기본 서버 연결 복구", GeoraePlanTheme.Brown);
         safeResetConnectionButton.SetBinding(Button.CommandProperty, nameof(SettingsViewModel.ResetConnectionCommand));
         safeResetConnectionButton.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.HasCustomBaseUrl));
         safeResetConnectionButton.SetBinding(VisualElement.IsEnabledProperty, nameof(SettingsViewModel.HasCustomBaseUrl));
@@ -76,7 +76,7 @@ public sealed class SettingsPage : ContentPage
         baseUrlEntry.SetBinding(VisualElement.IsEnabledProperty, nameof(SettingsViewModel.CanEditConnectionSettings));
 
         var connectionHelpLabel = GeoraePlanTheme.CreateBodyText(
-            "현장 터널/테스트 서버가 필요할 때만 변경하세요. 연결 테스트가 성공해야 저장되며, 접속 오류가 나면 운영 서버로 초기화할 수 있습니다.",
+            "현장 터널/테스트 서버가 필요할 때만 변경하세요. 연결 테스트가 성공해야 저장되며, 접속 오류가 나면 기본 서버로 초기화할 수 있습니다.",
             muted: true,
             fontSize: 12);
         connectionHelpLabel.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.IsConnectionSettingsVisible));
@@ -106,7 +106,7 @@ public sealed class SettingsPage : ContentPage
         testConnectionButton.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.IsConnectionSettingsVisible));
         testConnectionButton.SetBinding(VisualElement.IsEnabledProperty, nameof(SettingsViewModel.CanEditConnectionSettings));
 
-        var resetConnectionButton = GeoraePlanTheme.CreateButton("운영 서버로 초기화", GeoraePlanTheme.Brown);
+        var resetConnectionButton = GeoraePlanTheme.CreateButton("기본 서버로 초기화", GeoraePlanTheme.Brown);
         resetConnectionButton.SetBinding(Button.CommandProperty, nameof(SettingsViewModel.ResetConnectionCommand));
         resetConnectionButton.SetBinding(VisualElement.IsVisibleProperty, nameof(SettingsViewModel.IsConnectionSettingsVisible));
         resetConnectionButton.SetBinding(VisualElement.IsEnabledProperty, nameof(SettingsViewModel.CanEditConnectionSettings));
@@ -121,7 +121,7 @@ public sealed class SettingsPage : ContentPage
                 {
                     GeoraePlanTheme.CreateCard(
                         GeoraePlanTheme.CreateSectionTitle("앱 설정"),
-                        GeoraePlanTheme.CreateBodyText("모바일 앱은 기본적으로 거래플랜 운영 서버에 연결됩니다."),
+                        GeoraePlanTheme.CreateBodyText("현재 연결할 서버 주소를 확인할 수 있습니다."),
                         connectionModeLabel,
                         safeResetConnectionButton,
                         advancedConnectionButton,
@@ -201,7 +201,7 @@ public sealed class SettingsPage : ContentPage
         {
             var confirmed = await DisplayAlert(
                 "고급 연결 설정",
-                "운영 서버 URL을 잘못 변경하면 앱 접속이 중단될 수 있습니다. 관리자 안내를 받은 경우에만 계속하세요.",
+                "서버 URL을 잘못 변경하면 앱 접속이 중단될 수 있습니다. 관리자 안내를 받은 경우에만 계속하세요.",
                 "계속",
                 "취소");
 

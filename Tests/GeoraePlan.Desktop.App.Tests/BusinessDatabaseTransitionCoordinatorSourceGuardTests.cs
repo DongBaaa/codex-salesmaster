@@ -97,6 +97,13 @@ public sealed class BusinessDatabaseTransitionCoordinatorSourceGuardTests
         Assert.Contains("await _passiveSyncTransitionGate.WaitAsync(ct);", passiveBody, StringComparison.Ordinal);
         Assert.Contains("await _vm.ReloadAfterPassiveSyncAsync(ct);", passiveBody, StringComparison.Ordinal);
         Assert.Contains("_passiveSyncTransitionGate.Release();", passiveBody, StringComparison.Ordinal);
+        Assert.Contains("await ReadOwnerScopeNavigationStateAsync(", passiveBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("await _local.GetSettingAsync", passiveBody, StringComparison.Ordinal);
+        var pendingRevisionBody = ExtractMethodBody(mainWindowSource,
+            "private async Task<long?> GetPendingPassiveServerRevisionAsync(");
+        Assert.Contains("token => _local.HasPendingSyncChangesAsync(_session, token)", pendingRevisionBody, StringComparison.Ordinal);
+        Assert.Contains("token => _local.GetSettingAsync(\"LastSyncRevision\", token)", pendingRevisionBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("await _local.", pendingRevisionBody, StringComparison.Ordinal);
 
         var mainViewModelSource = File.ReadAllText(Path.Combine(appRoot, "ViewModels", "MainViewModel.cs"));
         var reloadBody = ExtractMethodBody(

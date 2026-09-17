@@ -347,9 +347,7 @@ public sealed class RentalsPage : ContentPage
             if (value is not RentalBillingProfileDto profile)
                 return string.Empty;
 
-            return string.IsNullOrWhiteSpace(profile.CustomerName)
-                ? Normalize(profile.ProfileKey, "청구프로필")
-                : $"{profile.CustomerName} · {Normalize(profile.ProfileKey, "프로필")}";
+            return Normalize(profile.CustomerName, "거래처 미지정");
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
@@ -377,7 +375,7 @@ public sealed class RentalsPage : ContentPage
             if (value is not RentalBillingProfileDto profile)
                 return string.Empty;
 
-            var billingDay = string.Equals(profile.BillingDayMode, RentalBillingScheduleRules.BillingDayModeEndOfMonth, StringComparison.Ordinal)
+            var billingDay = RentalBillingScheduleRules.IsNoFixedBillingDay(profile.BillingDayMode) ? "지정일 없음" : string.Equals(profile.BillingDayMode, RentalBillingScheduleRules.BillingDayModeEndOfMonth, StringComparison.Ordinal)
                 ? "말일"
                 : $"{profile.BillingDay}일";
             return $"주기 {Math.Max(1, profile.BillingCycleMonths)}개월 / 청구일 {billingDay} / 마지막청구 {FormatDate(profile.LastBilledDate)} / 지점 {ResolveOffice(profile.ResponsibleOfficeCode, profile.OfficeCode)}";
@@ -398,7 +396,8 @@ public sealed class RentalsPage : ContentPage
             if (run is not null)
             {
                 var outstandingAmount = Math.Max(0m, run.BilledAmount - run.SettledAmount);
-                return $"최근 회차 {Normalize(run.PeriodLabel, "기간 미정")} / 예정 {run.ScheduledDate:yyyy-MM-dd} / {Normalize(run.Status, "예정")} / 미수 {outstandingAmount:N0}원";
+                var dateLabel = RentalBillingScheduleRules.IsNoFixedBillingDay(profile.BillingDayMode) ? "청구 기준일" : "예정";
+                return $"최근 회차 {Normalize(run.PeriodLabel, "기간 미정")} / {dateLabel} {run.ScheduledDate:yyyy-MM-dd} / {Normalize(run.Status, "예정")} / 미수 {outstandingAmount:N0}원";
             }
 
             return string.IsNullOrWhiteSpace(profile.Notes)

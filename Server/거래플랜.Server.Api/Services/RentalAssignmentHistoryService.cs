@@ -80,7 +80,11 @@ public sealed class RentalAssignmentHistoryService
                 continue;
             }
 
-            var linkedAtUtc = ResolveAssignmentLinkedAtUtc(asset, now);
+            // Match the desktop transition boundary while preserving the
+            // installation date when seeding the first assignment history.
+            var linkedAtUtc = currentRowsForAsset.Count > 0
+                ? now
+                : ResolveAssignmentLinkedAtUtc(asset, now);
             var deterministicHistoryId = SyncIdentityGenerator.CreateRentalAssetAssignmentHistoryId(
                 asset.Id,
                 linkedAtUtc,

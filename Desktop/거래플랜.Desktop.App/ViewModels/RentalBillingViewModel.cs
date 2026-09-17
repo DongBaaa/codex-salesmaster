@@ -316,6 +316,12 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [ObservableProperty] private int _pastUnresolvedCount;
     [ObservableProperty] private decimal _pastUnresolvedAmount;
     [ObservableProperty] private decimal _totalOutstandingAmount;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(OutstandingAmountSummaryLabel))]
+    [NotifyPropertyChangedFor(nameof(OutstandingAmountSummaryNotice))]
+    private bool _hasCurrentBillingConflict;
+    public string OutstandingAmountSummaryLabel => HasCurrentBillingConflict ? "확인된 미수금" : "총 미수금";
+    public string OutstandingAmountSummaryNotice => HasCurrentBillingConflict ? "기간 확인이 필요한 금액은 제외" : string.Empty;
 
     public ObservableCollection<DisplayOption> OfficeOptions { get; } = new ResettableObservableCollection<DisplayOption>();
     public ObservableCollection<DisplayOption> EditOfficeOptions { get; } = new ResettableObservableCollection<DisplayOption>();
@@ -566,9 +572,11 @@ public sealed partial class RentalBillingViewModel : ObservableObject
 
         BillingAdvanceModeOptions.Add("후불");
         BillingAdvanceModeOptions.Add("선불");
+        BillingAdvanceModeOptions.Add(RentalBillingScheduleRules.BillingAdvanceModeCurrentMonth);
 
         BillingDayModeOptions.Add(RentalBillingScheduleRules.BillingDayModeFixedDay);
         BillingDayModeOptions.Add(RentalBillingScheduleRules.BillingDayModeEndOfMonth);
+        BillingDayModeOptions.Add(RentalBillingScheduleRules.BillingDayModeNoFixedDay);
 
         for (var month = 1; month <= 12; month++)
             BillingAnchorMonthOptions.Add(month);
@@ -747,6 +755,15 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         RefreshBillingAssetCollections();
         UpdateTemplateDerivedValues();
         OnPropertyChanged(nameof(CanEditTemplateLineMode));
+    }
+
+    partial void OnLinkAssetsLaterChanged(bool value)
+    {
+        foreach (var item in TemplateItems)
+            item.IncludedAssetSummary = BuildIncludedAssetSummary(item.IncludedAssetIds);
+
+        BillingAssetCoverageWarning = BuildBillingAssetCoverageWarning(
+            ResolveCurrentProfileLinkedAssetCount(), CountDistinctEditorIncludedAssets(), value);
     }
 
     partial void OnBillingAssetCoverageWarningChanged(string value)
@@ -1327,6 +1344,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 PastUnresolvedCount = summaryRows.Sum(row => row.PastUnresolvedCount);
                 PastUnresolvedAmount = summaryRows.Sum(row => row.PastUnresolvedAmount);
                 TotalOutstandingAmount = summaryRows.Sum(row => row.OutstandingAmount);
+                HasCurrentBillingConflict = summaryRows.Any(row => row.HasCurrentBillingConflict);
                 var unlinkedCount = summaryRows.Sum(row => row.GroupedUnlinkedAssetCount);
                 var unlinkedLimitNotice = BuildUnlinkedAssetLimitNotice(unlinkedCount);
                 var profileLimitNotice = BuildBillingProfileLimitNotice(summaryRows);
@@ -1428,7 +1446,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         NotifySelectionActionState();
         StatusMessage = selectedRowAfterReload is null
             ? "선택한 렌탈 청구 항목이 최신 목록에서 사라져 선택을 해제했습니다. 저장하지 않은 편집 내용은 안전한 임시본으로 보존했으며, 최신 목록에서 대상을 다시 선택해야 작업할 수 있습니다."
-            : "목록은 새로고침했지만 저장하지 않은 렌탈 청구 편집 내용은 보존했습니다. 저장하거나 취소한 뒤 다른 항목을 선택하세요.";
+            : "목록은 새로고침했지만 저장하지 않은 렌탈 청구 편집 내용은 보존했습니다. 저장하거나 '편집 취소'를 확인한 뒤 다른 항목을 선택하세요.";
     }
 
     [RelayCommand(CanExecute = nameof(CanSave))]
@@ -1464,6 +1482,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         LocalMutationResult? result = null;
         var showMissingContractDateWarning = false;
         var saveContextStayedCurrent = false;
+        var persistedEditorSignature = string.Empty;
 
         await _selectionPipelineCoordinator.RunExclusiveAfterCurrentAsync(async pipelineToken =>
         {
@@ -1536,6 +1555,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             BillingTemplateJson = _rental.SerializeBillingTemplateItems(templateModels)
         };
 
+            persistedEditorSignature = BuildCurrentEditorSignature();
             result = await _rental.SaveBillingProfileAsync(
                 entity,
                 _session,
@@ -1560,7 +1580,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         if (!result.Success)
         {
             StatusMessage = result.ConcurrencyConflict
-                ? $"{result.Message} 현재 입력 내용은 유지됩니다. 최신 목록을 확인한 뒤 다시 저장하세요."
+                ? $"{result.Message} 현재 입력을 보존했습니다. 최신값으로 다시 작성하려면 '편집 취소'를 확인한 뒤 목록에서 대상을 다시 선택하세요."
                 : result.Message;
             if (result.ConcurrencyConflict)
             {
@@ -1583,9 +1603,14 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 MessageBoxImage.Warning);
         }
 
-        await ClearAutoSaveDraftAsync();
+        // Acknowledge only the snapshot submitted to storage, not input entered while awaiting it.
+        _selectedRowBaselineSignature = persistedEditorSignature;
+        if (!HasUnsavedEditorChangesAgainstBaseline())
+            await ClearAutoSaveDraftAsync();
         await ReloadAsync();
         SelectRow(result.EntityId);
+        await _selectionPipelineCoordinator.RunExclusiveAfterCurrentAsync(
+            _ => Task.CompletedTask, _lifetimeCts.Token);
         var reloadedRow = SelectedRow;
         if (reloadedRow is not null &&
             !reloadedRow.IsAggregateRow &&
@@ -1599,6 +1624,13 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             _editRevision = 0;
         }
 
+        if (HasUnsavedSelectedRowChanges())
+        {
+            StatusMessage = "렌탈 청구 설정은 저장했습니다. 저장 중 추가로 입력한 내용은 아직 저장되지 않았습니다.";
+            return false;
+        }
+
+        StatusMessage = result.Message;
         return true;
     }
 
@@ -2292,8 +2324,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     [RelayCommand]
     private async Task NewProfile()
     {
-        await ClearAutoSaveDraftAsync(_lifetimeCts.Token);
-        ResetNewProfileEditor();
+        await ResetEditorForNavigationAsync();
     }
 
     private void ResetNewProfileEditor()
@@ -2360,6 +2391,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         OnPropertyChanged(nameof(CanMarkCompletedSelected));
         ExpandSelectedSummaryCommand.NotifyCanExecuteChanged();
         NotifySelectionActionState();
+        LegacyDraftRecovery?.MarkPristineEditor();
     }
 
     [RelayCommand(CanExecute = nameof(CanExpandSelectedSummary))]
@@ -3484,7 +3516,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         EditCompletionStatus = PaymentFlowConstants.NormalizeCompletionStatus(source.CompletionStatus);
         EditEmail = source.Email;
         EditBillingDayMode = RentalBillingScheduleRules.NormalizeBillingDayMode(source.BillingDayMode);
-        EditBillingDay = RentalBillingScheduleRules.NormalizeBillingDay(source.BillingDay);
+        EditBillingDay = RentalBillingScheduleRules.NormalizeBillingDay(source.BillingDay, source.BillingDayMode);
         EditBillingCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(source.BillingCycleMonths);
         EditBillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
             EditBillingCycleMonths,
@@ -4621,6 +4653,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             if (_isDisposed)
                 return false;
 
+            var initialRow = SelectedRow;
+            var initialEditorSignature = BuildCurrentEditorSignature();
+            var canRefreshBaseline = !preserveSelection && initialRow is not null &&
+                string.Equals(_selectedRowBaselineSignature, initialEditorSignature, StringComparison.Ordinal);
             var previousSelections = preserveSelection
                 ? CandidateAssets.Where(asset => asset.IsSelected).Select(asset => asset.AssetId).ToHashSet()
                 : new HashSet<Guid>();
@@ -4672,6 +4708,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 return false;
             }
 
+            var refreshBaseline = canRefreshBaseline && ReferenceEquals(SelectedRow, initialRow) &&
+                string.Equals(BuildCurrentEditorSignature(), initialEditorSignature, StringComparison.Ordinal);
             _includedAssetPool.Clear();
             _includedAssetPool.AddRange(includedAssets
                 .Select(asset =>
@@ -4714,6 +4752,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 preserveSelection,
                 autoIncludeAllCandidates);
             StoreCandidateAssetsLoadCache(completedSignature);
+            if (refreshBaseline)
+                _selectedRowBaselineSignature = BuildCurrentEditorSignature();
             return true;
         }
         finally
@@ -5932,7 +5972,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             item.Quantity = 1m;
             item.UnitPrice = totalMonthlyFee;
         }
-        else if (distinctPositiveFees.Count == 1 && monthlyFees.All(fee => fee <= 0m || fee == distinctPositiveFees[0]))
+        else if (distinctPositiveFees.Count == 1 && monthlyFees.All(fee => fee == distinctPositiveFees[0]))
         {
             item.Quantity = includedAssetIds.Count;
             item.UnitPrice = distinctPositiveFees[0];
@@ -7293,7 +7333,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             ToDateOnly(EditContractDate),
             ToDateOnly(EditLastBilledDate),
             referenceDate);
-        var dueDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
+        var billingPlan = RentalBillingScheduleRules.ResolveApplicableBillingPlan(
             EditBillingDay,
             EditBillingDayMode,
             cycleMonths,
@@ -7310,14 +7350,15 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 ToDateOnly(EditContractStartDate),
                 ToDateOnly(EditContractDate)),
             ResolvePreviewCycleAnchorDate(anchorMonth, referenceDate));
-        var period = RentalBillingScheduleRules.ResolveBillingPeriod(cycleMonths, EditBillingAdvanceMode, dueDate);
-        var dayModeText = string.Equals(EditBillingDayMode, RentalBillingScheduleRules.BillingDayModeEndOfMonth, StringComparison.Ordinal)
+        var dueDate = billingPlan.BillingDate;
+        var period = (StartDate: billingPlan.PeriodStartDate, EndDate: billingPlan.PeriodEndDate);
+        var dayModeText = RentalBillingScheduleRules.IsNoFixedBillingDay(EditBillingDayMode) ? "지정일 없음" : string.Equals(EditBillingDayMode, RentalBillingScheduleRules.BillingDayModeEndOfMonth, StringComparison.Ordinal)
             ? "말일"
             : $"매월 {RentalBillingScheduleRules.NormalizeBillingDay(EditBillingDay)}일";
         var anchorText = cycleMonths == 1
             ? "매월"
             : $"{anchorMonth}월부터 반복";
-        return $"청구 대상 기간: {period.StartDate:yyyy-MM} ~ {period.EndDate:yyyy-MM} / 청구일 규칙: {dayModeText} / 청구기간 시작월: {anchorText} / 예상 결제일: {dueDate:yyyy-MM-dd}";
+        return $"청구 대상 기간: {period.StartDate:yyyy-MM} ~ {period.EndDate:yyyy-MM} / 청구일 규칙: {dayModeText} / 청구기간 시작월: {anchorText} / 예상 결제일: {(dueDate.HasValue ? dueDate.Value.ToString("yyyy-MM-dd") : "지정 없음 (청구 시 작성일 선택)")}";
     }
 
     private IReadOnlyList<DateOnly> BuildPreviewBillingMonths()
@@ -7333,7 +7374,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             ToDateOnly(EditContractDate),
             ToDateOnly(EditLastBilledDate),
             referenceDate);
-        var dueDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
+        var billingPlan = RentalBillingScheduleRules.ResolveApplicableBillingPlan(
             EditBillingDay,
             EditBillingDayMode,
             cycleMonths,
@@ -7350,7 +7391,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 ToDateOnly(EditContractStartDate),
                 ToDateOnly(EditContractDate)),
             ResolvePreviewCycleAnchorDate(anchorMonth, referenceDate));
-        var period = RentalBillingScheduleRules.ResolveBillingPeriod(cycleMonths, EditBillingAdvanceMode, dueDate);
+        var dueDate = billingPlan.BillingDate;
+        var period = (StartDate: billingPlan.PeriodStartDate, EndDate: billingPlan.PeriodEndDate);
         var months = new List<DateOnly>(cycleMonths);
         var cursor = new DateOnly(period.StartDate.Year, period.StartDate.Month, 1);
         var endMonth = new DateOnly(period.EndDate.Year, period.EndDate.Month, 1);
@@ -7362,7 +7404,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         }
 
         if (months.Count == 0)
-            months.Add(new DateOnly(dueDate.Year, dueDate.Month, 1));
+            months.Add(new DateOnly(period.StartDate.Year, period.StartDate.Month, 1));
 
         return months;
     }
@@ -7395,7 +7437,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
             ToDateOnly(EditContractDate),
             ToDateOnly(EditLastBilledDate),
             referenceDate);
-        var dueDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
+        var billingPlan = RentalBillingScheduleRules.ResolveApplicableBillingPlan(
             EditBillingDay,
             EditBillingDayMode,
             cycleMonths,
@@ -7412,9 +7454,10 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                 ToDateOnly(EditContractStartDate),
                 ToDateOnly(EditContractDate)),
             ResolvePreviewCycleAnchorDate(anchorMonth, referenceDate));
+        var dueDate = billingPlan.BillingDate;
         var issueDate = RentalBillingScheduleRules.CalculateDocumentIssueDate(dueDate, EditDocumentIssueMode, EditDocumentLeadDays);
         if (!issueDate.HasValue)
-            return "서류 발송일을 계산할 수 없습니다.";
+            return RentalBillingScheduleRules.IsNoFixedBillingDay(EditBillingDayMode) ? "서류 발송일: 지정 없음" : "서류 발송일을 계산할 수 없습니다.";
 
         var modeText = EditDocumentIssueMode switch
         {
@@ -7427,7 +7470,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
         return $"서류 발송 규칙: {modeText} / 예상 발송일: {issueDate.Value:yyyy-MM-dd}";
     }
 
-    private static DateOnly ResolvePreviewFirstBillingDate(
+    private static DateOnly? ResolvePreviewFirstBillingDate(
         int billingDay,
         string? billingDayMode,
         int anchorMonth,
@@ -7441,6 +7484,8 @@ public sealed partial class RentalBillingViewModel : ObservableObject
                                 ?? billingStartDate
                                 ?? contractStartDate
                                 ?? contractDate;
+        if (RentalBillingScheduleRules.IsNoFixedBillingDay(billingDayMode))
+            return explicitStartDate;
         var startMonth = explicitStartDate.HasValue
             ? new DateOnly(explicitStartDate.Value.Year, explicitStartDate.Value.Month, 1)
             : new DateOnly(referenceDate.Year, Math.Clamp(anchorMonth, 1, 12), 1);
@@ -7601,7 +7646,7 @@ public sealed partial class RentalBillingViewModel : ObservableObject
     }
 
     private static string NormalizeBillingAdvanceModeValue(string? value)
-        => string.Equals((value ?? string.Empty).Trim(), "선불", StringComparison.Ordinal) ? "선불" : "후불";
+        => RentalBillingScheduleRules.NormalizeBillingAdvanceMode(value);
 
     private static string FirstNonEmpty(params string?[] values)
         => values

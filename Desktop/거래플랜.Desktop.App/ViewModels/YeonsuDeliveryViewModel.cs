@@ -75,6 +75,15 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject, IDisposa
     [ObservableProperty] private decimal _summarySalesAmount;
     [ObservableProperty] private decimal _summaryProfitAmount;
     [ObservableProperty] private decimal _summaryFeeAmount;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SummaryPurchaseLabel))]
+    [NotifyPropertyChangedFor(nameof(SummaryProfitLabel))]
+    [NotifyPropertyChangedFor(nameof(SummaryFeeLabel))]
+    private int _uncertainCostRowCount;
+
+    public string SummaryPurchaseLabel => UncertainCostRowCount > 0 ? "매입금액 합계 (잠정)" : "매입금액 합계";
+    public string SummaryProfitLabel => UncertainCostRowCount > 0 ? "수익금액 합계 (잠정)" : "수익금액 합계";
+    public string SummaryFeeLabel => UncertainCostRowCount > 0 ? "수수료 합계 (잠정)" : "수수료 합계";
 
     public YeonsuDeliveryViewModel(LocalStateService local, SessionState session)
     {
@@ -260,6 +269,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject, IDisposa
                         PurchaseAmount = purchaseAmount,
                         SalesAmount = salesAmount,
                         ProfitAmount = profitAmount,
+                        IsCostUncertain = !isPurchaseInvoice && IsSalesCostUncertain(invoice, line, lineAllocations),
                         Note = invoice.Memo?.Trim() ?? string.Empty,
                         LastSavedAtUtc = invoice.LastSavedAtUtc
                     });
@@ -362,6 +372,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject, IDisposa
                 SalesAmount = row.SalesAmount,
                 ProfitAmount = row.ProfitAmount,
                 FeeAmount = CalculateFeeAmount(row),
+                IsCostUncertain = row.IsCostUncertain,
                 Note = row.Note
             });
         }
@@ -371,6 +382,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject, IDisposa
         SummarySalesAmount = Deliveries.Sum(row => row.SalesAmount);
         SummaryProfitAmount = Deliveries.Sum(row => row.ProfitAmount);
         SummaryFeeAmount = Deliveries.Sum(row => row.FeeAmount);
+        UncertainCostRowCount = Deliveries.Count(row => row.IsCostUncertain);
 
         UpdateStatusMessage(rows);
     }
@@ -392,6 +404,8 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject, IDisposa
             ViewTargetPurchase => $"매입 {purchaseCount:N0}건 / 매입금액 합계 {SummaryPurchaseAmount:N0}원",
             _ => $"매출 {salesCount:N0}건 / 매입 {purchaseCount:N0}건 / 수익금액 합계 {SummaryProfitAmount:N0}원 / 수수료 합계 {SummaryFeeAmount:N0}원"
         };
+        if (UncertainCostRowCount > 0)
+            StatusMessage += $" / 원가 미확정 {UncertainCostRowCount:N0}행: 해당 원가·수익·수수료와 합계는 잠정 금액입니다.";
     }
 
     private async Task LoadSavedFeeRateAsync()
@@ -457,6 +471,23 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject, IDisposa
             row.ProfitAmount * (_feeRatePercentValue / 100m),
             0,
             MidpointRounding.AwayFromZero);
+    }
+
+    private static bool IsSalesCostUncertain(
+        LocalInvoice invoice,
+        LocalInvoiceLine line,
+        IReadOnlyCollection<LocalCostAllocation>? allocations)
+    {
+        if (line.Quantity == 0m)
+            return false;
+
+        // A fallback item price is an estimate, even when it happens to be zero.
+        // Invoice-wide Unsettled may belong to another line: inspect this line's coverage.
+        return allocations is null || allocations.Count == 0 ||
+               allocations.Any(allocation => allocation.IsUnsettled || allocation.Quantity <= 0m) ||
+               allocations.Sum(allocation => allocation.Quantity) != Math.Abs(line.Quantity) ||
+               !(string.Equals(invoice.CostStatus, "Settled", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(invoice.CostStatus, "Unsettled", StringComparison.OrdinalIgnoreCase));
     }
 
     private static decimal CalculateSalesCostAmount(
@@ -576,6 +607,7 @@ public sealed partial class YeonsuDeliveryViewModel : ObservableObject, IDisposa
         public decimal PurchaseAmount { get; init; }
         public decimal SalesAmount { get; init; }
         public decimal ProfitAmount { get; init; }
+        public bool IsCostUncertain { get; init; }
         public string Note { get; init; } = string.Empty;
         public DateTime LastSavedAtUtc { get; init; }
     }

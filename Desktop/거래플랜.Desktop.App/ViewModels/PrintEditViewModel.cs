@@ -5,6 +5,7 @@ using System.Windows.Documents;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using 거래플랜.Desktop.App.Infrastructure;
+using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.Printing;
 using 거래플랜.Shared.Contracts;
 
@@ -21,6 +22,18 @@ public sealed partial class PrintEditViewModel : ObservableObject, IDisposable
     private string _snapshotPolicy = InvoicePrintModel.DefaultSnapshotPolicy;
     private string _baselineStateSignature = string.Empty;
     private bool _isInitializing;
+    private readonly FixedDocument _authorizationDocument = new();
+    private readonly IPrintService _printService;
+    private bool _authorizationInvalidated;
+    public bool IsAuthorizationInvalidated => _authorizationInvalidated;
+    public event Action? AuthorizationInvalidated;
+    public Func<int?>? CurrentPageNumberProvider { get; set; }
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(PrintCommand))]
+    [NotifyCanExecuteChangedFor(nameof(SaveCommand))]
+    [NotifyCanExecuteChangedFor(nameof(CloseCommand))]
+    private bool _isPrinting;
 
     public const string PreviewDocumentStatement = "거래명세서";
     public const string PreviewDocumentEstimate = "견적서";
@@ -117,12 +130,17 @@ public sealed partial class PrintEditViewModel : ObservableObject, IDisposable
     public PrintEditViewModel(
         InvoicePrintModel model,
         Func<InvoicePrintModel, Task> saveAction,
-        Func<InvoicePrintModel, string, FixedDocument> previewBuilder)
+        Func<InvoicePrintModel, string, FixedDocument> previewBuilder,
+        Func<bool> canAccess,
+        IPrintService? printService = null)
     {
         ArgumentNullException.ThrowIfNull(model);
         ArgumentNullException.ThrowIfNull(saveAction);
         ArgumentNullException.ThrowIfNull(previewBuilder);
 
+        ArgumentNullException.ThrowIfNull(canAccess);
+        PrintDocumentAuthorization.Attach(_authorizationDocument, canAccess);
+        _printService = printService ?? new WpfInvoicePrintService();
         _saveAction = saveAction;
         _previewBuilder = previewBuilder;
         _invoiceId = model.InvoiceId;
@@ -213,7 +231,10 @@ public sealed partial class PrintEditViewModel : ObservableObject, IDisposable
     {
         try
         {
-            PreviewDocument = _previewBuilder(BuildModel(), NormalizePreviewDocument(SelectedPreviewDocument));
+            if (!ValidateAuthorization()) return;
+            var document = _previewBuilder(BuildModel(), NormalizePreviewDocument(SelectedPreviewDocument));
+            PrintDocumentAuthorization.Attach(document, ValidateAuthorization);
+            PreviewDocument = document;
             if (announceSuccess)
                 StatusMessage = "미리보기를 갱신했습니다.";
         }
@@ -231,9 +252,48 @@ public sealed partial class PrintEditViewModel : ObservableObject, IDisposable
         }
     }
 
-    private bool CanSave() => !IsSaving;
+    public IDisposable MonitorAuthorization()
+        => PrintDocumentAuthorization.Monitor(_authorizationDocument, InvalidateAuthorization);
 
-    private bool CanClose() => !IsSaving;
+    public bool ValidateAuthorization()
+    {
+        if (!_authorizationInvalidated && PrintDocumentAuthorization.Validate(_authorizationDocument, out _))
+            return true;
+        InvalidateAuthorization();
+        return false;
+    }
+
+    private void InvalidateAuthorization()
+    {
+        if (_authorizationInvalidated) return;
+        _authorizationInvalidated = true;
+        PreviewDocument = new FixedDocument();
+        StatusMessage = PrintDocumentAuthorization.DeniedMessage;
+        SaveCommand.NotifyCanExecuteChanged();
+        PrintCommand.NotifyCanExecuteChanged();
+        AuthorizationInvalidated?.Invoke();
+    }
+
+    private bool CanPrint() => !IsSaving && !IsPrinting && !_authorizationInvalidated;
+
+    [RelayCommand(CanExecute = nameof(CanPrint))]
+    private void Print()
+    {
+        if (!CanPrint() || !ValidateAuthorization() || PreviewDocument is null) return;
+        var document = PreviewDocument;
+        IsPrinting = true;
+        try
+        {
+            var printed = _printService.TryPrint(document, "출력물 편집", out var error, CurrentPageNumberProvider?.Invoke());
+            if (!ValidateAuthorization()) return;
+            StatusMessage = printed ? "인쇄를 완료했습니다." : error ?? "인쇄를 취소했습니다.";
+        }
+        finally { IsPrinting = false; }
+    }
+
+    private bool CanSave() => !IsSaving && !IsPrinting && !_authorizationInvalidated;
+
+    private bool CanClose() => !IsSaving && !IsPrinting;
 
     [RelayCommand(CanExecute = nameof(CanSave))]
     private async Task SaveAsync()
@@ -241,6 +301,7 @@ public sealed partial class PrintEditViewModel : ObservableObject, IDisposable
 
     public async Task<bool> TryAutoSaveOnCloseAsync()
     {
+        if (!ValidateAuthorization()) return false;
         if (!HasPendingChanges || !HasMeaningfulDraftContentForClose)
             return true;
 
@@ -249,7 +310,7 @@ public sealed partial class PrintEditViewModel : ObservableObject, IDisposable
 
     private async Task<bool> SaveCoreAsync(bool closeAfterSave, string successMessage, bool showErrorDialog)
     {
-        if (IsSaving)
+        if (!CanSave() || !ValidateAuthorization())
             return false;
 
         try
@@ -267,6 +328,7 @@ public sealed partial class PrintEditViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
+            if (!ValidateAuthorization()) return false;
             StatusMessage = $"저장 실패: {ex.Message}";
             if (showErrorDialog)
             {
@@ -456,7 +518,7 @@ public sealed partial class PrintEditViewModel : ObservableObject, IDisposable
 
     private bool ShouldQueuePreviewRefresh(string? propertyName)
     {
-        if (_isInitializing || IsSaving)
+        if (_isInitializing || IsSaving || IsPrinting || _authorizationInvalidated)
             return false;
 
         return propertyName switch

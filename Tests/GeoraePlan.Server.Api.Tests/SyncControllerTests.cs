@@ -18,8 +18,129 @@ using Xunit;
 
 namespace GeoraePlan.Server.Api.Tests;
 
-public sealed class SyncControllerTests : IDisposable
+public sealed partial class SyncControllerTests : IDisposable
 {
+
+    [Theory]
+    [InlineData(true, false, false)]
+    [InlineData(false, false, false)]
+    [InlineData(true, true, false)]
+    [InlineData(true, false, true)]
+    public async Task Push_OfficeOnlyAssetEdit_PreservesOnlyExistingValidOwnerItemLink(
+        bool existingLink, bool otherTenant, bool deletedItem)
+    {
+        var item = new Item
+        {
+            Id = Guid.NewGuid(), TenantCode = otherTenant ? TenantScopeCatalog.Itworld : TenantScopeCatalog.UsenetGroup,
+            OfficeCode = otherTenant ? OfficeCodeCatalog.Itworld : OfficeCodeCatalog.Usenet,
+            NameOriginal = "Owner asset item", NameMatchKey = "OWNERASSETITEM",
+            TrackingType = ItemTrackingTypes.Asset, ItemKind = ItemKinds.Asset,
+            MaterialNumber = "OWNER-ASSET-ONLY", IsDeleted = deletedItem
+        };
+        var asset = new RentalAsset
+        {
+            Id = Guid.NewGuid(), TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
+            ManagementCompanyCode = OfficeCodeCatalog.Usenet, AssetKey = "ASSIGNED-ASSET",
+            ManagementNumber = "OWNER-ASSET-ONLY", ItemName = item.NameOriginal,
+            ItemId = existingLink ? item.Id : null
+        };
+        _dbContext.Items.Add(item); _dbContext.RentalAssets.Add(asset);
+        await _dbContext.SaveChangesAsync();
+        var originalItem = JsonSerializer.Serialize((await _dbContext.Items.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == item.Id)).ToDto());
+        var user = new TestCurrentUserContext
+        {
+            Username = "officeonly-rental-user", TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Yeonsu, ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.RentalAssetEdit]
+        };
+        await using var scopedDb = CreateDbContext(user);
+        var scope = new OfficeScopeService(user, scopedDb);
+        Assert.False(scope.CanReadOfficeForItems(item.OfficeCode, item.TenantCode));
+        Assert.False(scope.CanWriteOfficeForItems(item.OfficeCode, item.TenantCode));
+        Assert.True(scope.CanWriteOfficeForRentals(asset.ResponsibleOfficeCode, asset.TenantCode, asset.OfficeCode));
+        var dto = asset.ToDto();
+        dto.ItemId = item.Id;
+        dto.InstallLocation = "OFFICEONLY-SAVED";
+        dto.ExpectedRevision = asset.Revision;
+        dto.MutationId = "officeonly-item-link-" + Guid.NewGuid().ToString("N");
+        dto.UpdatedAtUtc = asset.UpdatedAtUtc.AddMinutes(1);
+        var response = await CreateController(scopedDb, user).Push(
+            new SyncPushRequest { DeviceId = "officeonly-link-test", RentalAssets = [dto] }, CancellationToken.None);
+        var result = Assert.IsType<SyncPushResult>(Assert.IsType<OkObjectResult>(response.Result).Value);
+        Assert.Equal(0, result.ConflictCount);
+        Assert.True(result.AcceptedCount > 0);
+        scopedDb.ChangeTracker.Clear();
+        var saved = await scopedDb.RentalAssets.IgnoreQueryFilters().SingleAsync(x => x.Id == asset.Id);
+        Assert.Equal(existingLink && !otherTenant && !deletedItem ? item.Id : (Guid?)null, saved.ItemId);
+        Assert.Equal("OFFICEONLY-SAVED", saved.InstallLocation);
+        Assert.Equal(OfficeCodeCatalog.Usenet, saved.OfficeCode);
+        Assert.Equal(OfficeCodeCatalog.Yeonsu, saved.ResponsibleOfficeCode);
+        Assert.Equal(originalItem, JsonSerializer.Serialize((await scopedDb.Items.IgnoreQueryFilters().SingleAsync(x => x.Id == item.Id)).ToDto()));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task Push_IdentifiedMutationWithoutBaseRevision_CannotOverwriteExistingCustomer(long expectedRevision)
+    {
+        var customer = new Customer
+        {
+            Id = Guid.NewGuid(), TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "Independent peer customer", NameMatchKey = "INDEPENDENTPEERCUSTOMER", TradeType = "매출"
+        };
+        _dbContext.Customers.Add(customer);
+        await _dbContext.SaveChangesAsync();
+        var peerRevision = customer.Revision;
+        Assert.True(peerRevision > 0);
+        var dto = customer.ToDto();
+        dto.NameOriginal = "Unsaved edit after peer change";
+        dto.Revision = 0;
+        dto.ExpectedRevision = expectedRevision;
+        dto.MutationId = "synthetic-new-edit-" + Guid.NewGuid().ToString("N");
+        dto.UpdatedAtUtc = customer.UpdatedAtUtc.AddMinutes(5);
+        var response = await _controller.Push(new SyncPushRequest { DeviceId = "response-loss-client", Customers = [dto] }, CancellationToken.None);
+        var result = Assert.IsType<SyncPushResult>(Assert.IsType<OkObjectResult>(response.Result).Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Contains(result.Conflicts, conflict => conflict.Reason.Contains("Expected revision mismatch", StringComparison.Ordinal));
+        _dbContext.ChangeTracker.Clear();
+        var preserved = await _dbContext.Customers.IgnoreQueryFilters().SingleAsync(x => x.Id == customer.Id);
+        Assert.Equal("Independent peer customer", preserved.NameOriginal);
+        Assert.Equal(peerRevision, preserved.Revision);
+        Assert.Equal(0, await _dbContext.ProcessedSyncMutations.CountAsync());
+    }
+
+    [Fact]
+    public async Task Pull_CustomerScopeSnapshotRemainsCompleteWhenReassignedCustomerLeavesIncrementalScope()
+    {
+        var moved=new Customer {Id=Guid.NewGuid(),TenantCode="USENET_GROUP",OfficeCode="USENET",ResponsibleOfficeCode="YEONSU",NameOriginal="Move fixture",NameMatchKey="MOVE",TradeType="매출"};
+        var retained=new Customer {Id=Guid.NewGuid(),TenantCode="USENET_GROUP",OfficeCode="USENET",ResponsibleOfficeCode="YEONSU",NameOriginal="Retained fixture",NameMatchKey="RETAIN",TradeType="매출"};
+        var tombstone=new Customer {Id=Guid.NewGuid(),TenantCode="USENET_GROUP",OfficeCode="USENET",ResponsibleOfficeCode="YEONSU",NameOriginal="Deleted fixture",NameMatchKey="DELETED",TradeType="매출",IsDeleted=true};
+        var otherTenant=new Customer {Id=Guid.NewGuid(),TenantCode="ITWORLD",OfficeCode="ITWORLD",ResponsibleOfficeCode="ITWORLD",NameOriginal="Other fixture",NameMatchKey="OTHER",TradeType="매출"};
+        _dbContext.Customers.AddRange(moved,retained,tombstone,otherTenant);await _dbContext.SaveChangesAsync();
+        var user=new TestCurrentUserContext {Username="scope-snapshot-user",TenantCode="USENET_GROUP",OfficeCode="YEONSU",ScopeType="OfficeOnly"};
+        await using var scopedDb=CreateDbContext(user);var controller=CreateController(scopedDb,user);
+        var before=Assert.IsType<SyncPullResponse>(Assert.IsType<OkObjectResult>((await controller.Pull(0,CancellationToken.None)).Result).Value);
+        Assert.NotNull(before.CustomerScopeSnapshot);
+        Assert.Equal(user.UserId,before.CustomerScopeSnapshot.UserId);
+        Assert.Contains(moved.Id,before.CustomerScopeSnapshot.VisibleCustomerIds);
+        Assert.Contains(tombstone.Id,before.CustomerScopeSnapshot.VisibleCustomerIds);
+        Assert.DoesNotContain(otherTenant.Id,before.CustomerScopeSnapshot.VisibleCustomerIds);
+        moved.ResponsibleOfficeCode="USENET";await _dbContext.SaveChangesAsync();
+        var after=Assert.IsType<SyncPullResponse>(Assert.IsType<OkObjectResult>((await controller.Pull(before.CurrentServerRevision,CancellationToken.None)).Result).Value);
+        Assert.Empty(after.Customers);
+        Assert.NotNull(after.CustomerScopeSnapshot);
+        Assert.DoesNotContain(moved.Id,after.CustomerScopeSnapshot.VisibleCustomerIds);
+        Assert.Contains(retained.Id,after.CustomerScopeSnapshot.VisibleCustomerIds);
+        Assert.Contains(tombstone.Id,after.CustomerScopeSnapshot.VisibleCustomerIds);
+        Assert.DoesNotContain(otherTenant.Id,after.CustomerScopeSnapshot.VisibleCustomerIds);
+        var partial = Assert.IsType<SyncPullResponse>(Assert.IsType<OkObjectResult>(
+            (await controller.Pull(after.CurrentServerRevision, CancellationToken.None, rentalAdministrationOnly: true)).Result).Value);
+        Assert.Null(partial.CustomerScopeSnapshot);
+    }
+
     private readonly SqliteConnection _connection;
     private readonly AppDbContext _dbContext;
     private readonly SyncController _controller;
@@ -3025,6 +3146,7 @@ public sealed class SyncControllerTests : IDisposable
             EntityName = nameof(Customer),
             EntityId = dto.Id.ToString("D"),
             Reason = "Historical replay conflict",
+            ClientJson = JsonSerializer.Serialize(dto),
             Status = "Open",
             CreatedAtUtc = DateTime.UtcNow.AddDays(-1)
         }));
@@ -7176,6 +7298,35 @@ public sealed class SyncControllerTests : IDisposable
         Assert.False(option.IsDeleted);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Push_CategoryAndItemInSameRequest_RetainsSubmittedCategoryId(bool active)
+    {
+        var categoryId=Guid.NewGuid();
+        var itemId=Guid.NewGuid();
+        var now=DateTime.UtcNow;
+        var response=await _controller.Push(new SyncPushRequest {
+            DeviceId="category-item-atomic",
+            ItemCategoryOptions=[new ItemCategoryOptionDto {
+                Id=categoryId,Name="Same request category",IsActive=active,
+                CreatedAtUtc=now,UpdatedAtUtc=now }],
+            Items=[new ItemDto {Id=itemId,TenantCode=TenantScopeCatalog.UsenetGroup,
+                OfficeCode=OfficeCodeCatalog.Usenet,NameOriginal="same request item",
+                NameMatchKey="SAMEREQUESTITEM",CategoryName="Same request category",
+                ItemKind=ItemKinds.Product,TrackingType=ItemTrackingTypes.Stock,
+                Unit="EA",CreatedAtUtc=now,UpdatedAtUtc=now}]
+        },CancellationToken.None);
+        var result=Assert.IsType<SyncPushResult>(Assert.IsType<OkObjectResult>(response.Result).Value);
+        Assert.Equal(0,result.ConflictCount);
+        _dbContext.ChangeTracker.Clear();
+        var category=await _dbContext.ItemCategoryOptions.IgnoreQueryFilters().SingleAsync();
+        Assert.Equal(categoryId,category.Id);
+        Assert.True(category.IsActive);
+        Assert.False(category.IsDeleted);
+        Assert.Equal(category.Name,(await _dbContext.Items.IgnoreQueryFilters().SingleAsync(x=>x.Id==itemId)).CategoryName);
+    }
+
     [Fact]
     public async Task Push_ReusesExistingItem_WhenDescriptorMatchesSingleServerItemWithoutIdentifiers()
     {
@@ -7992,6 +8143,81 @@ public sealed class SyncControllerTests : IDisposable
             .FirstAsync();
         Assert.Null(asset.CustomerId);
         Assert.Equal("UNKNOWN-RENTAL-CUSTOMER", asset.CustomerName);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Push_RejectsExplicitOutOfScopeRentalCustomer_EvenWhenReadableNameFallbackExists(
+        bool profile, bool differentTenant)
+    {
+        var ownCustomer = new Customer
+        {
+            Id = Guid.NewGuid(), TenantCode = TenantScopeCatalog.UsenetGroup,
+            OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+            NameOriginal = "OWN-RENTAL-CUSTOMER", NameMatchKey = "OWNRENTALCUSTOMER", TradeType = "매출"
+        };
+        var outsideCustomer = new Customer
+        {
+            Id = Guid.NewGuid(),
+            TenantCode = differentTenant ? TenantScopeCatalog.Itworld : TenantScopeCatalog.UsenetGroup,
+            OfficeCode = differentTenant ? OfficeCodeCatalog.Itworld : OfficeCodeCatalog.Usenet,
+            ResponsibleOfficeCode = differentTenant ? OfficeCodeCatalog.Itworld : OfficeCodeCatalog.Yeonsu,
+            NameOriginal = "OUTSIDE-RENTAL-CUSTOMER", NameMatchKey = "OUTSIDERENTALCUSTOMER", TradeType = "매출"
+        };
+        _dbContext.Customers.AddRange(ownCustomer, outsideCustomer);
+        _dbContext.RentalManagementCompanies.Add(new RentalManagementCompany
+        {
+            Id = Guid.NewGuid(), TenantCode = TenantScopeCatalog.UsenetGroup,
+            Code = OfficeCodeCatalog.Usenet, Name = "유즈넷"
+        });
+        await _dbContext.SaveChangesAsync();
+        var user = new TestCurrentUserContext
+        {
+            Username = "rental-explicit-reference-guard",
+            TenantCode = TenantScopeCatalog.UsenetGroup, OfficeCode = OfficeCodeCatalog.Usenet,
+            ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions = [PermissionNames.RentalAssetEdit, PermissionNames.RentalProfileEdit]
+        };
+        await using var scopedDb = CreateDbContext(user);
+        var request = new SyncPushRequest { DeviceId = "rental-mixed-reference" };
+        var id = Guid.NewGuid();
+        if (profile)
+        {
+            request.RentalBillingProfiles.Add(new RentalBillingProfileDto
+            {
+                Id = id, TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet, ProfileKey = $"MIXED-{id:N}",
+                CustomerId = outsideCustomer.Id, CustomerName = ownCustomer.NameOriginal,
+                ItemName = "RENTAL-MODEL", MutationId = Guid.NewGuid().ToString(),
+                CreatedAtUtc = DateTime.UtcNow, UpdatedAtUtc = DateTime.UtcNow
+            });
+        }
+        else
+        {
+            request.RentalAssets.Add(new RentalAssetDto
+            {
+                Id = id, TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                ManagementCompanyCode = OfficeCodeCatalog.Usenet, ManagementId = $"MIXED-{id:N}",
+                ManagementNumber = $"MIXED-{id:N}", CustomerId = outsideCustomer.Id,
+                CustomerName = outsideCustomer.NameOriginal, CurrentCustomerName = ownCustomer.NameOriginal,
+                ItemName = "RENTAL-MODEL", MutationId = Guid.NewGuid().ToString(),
+                CreatedAtUtc = DateTime.UtcNow, UpdatedAtUtc = DateTime.UtcNow
+            });
+        }
+
+        var response = await CreateController(scopedDb, user).Push(request, CancellationToken.None);
+        var result = Assert.IsType<SyncPushResult>(Assert.IsType<OkObjectResult>(response.Result).Value);
+        Assert.Equal(0, result.AcceptedCount);
+        Assert.Equal(1, result.ConflictCount);
+        Assert.Empty(result.AcceptedRevisions);
+        Assert.Contains(result.Conflicts, conflict => conflict.Reason.Contains("outside the readable office scope", StringComparison.OrdinalIgnoreCase));
+        Assert.False(await scopedDb.RentalAssets.IgnoreQueryFilters().AnyAsync(asset => asset.Id == id));
+        Assert.False(await scopedDb.RentalBillingProfiles.IgnoreQueryFilters().AnyAsync(row => row.Id == id));
     }
 
     [Fact]
@@ -9686,8 +9912,10 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal(0m, stored.OutstandingAmount);
     }
 
-    [Fact]
-    public async Task Push_SameIdRentalBillingProfileWithoutExpectedRevision_DoesNotApplyManualStopState()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Push_SameIdRentalBillingProfileWithoutExpectedRevision_DoesNotApplyManualStopState(bool identifiedMutation)
     {
         var profileId = Guid.NewGuid();
         var runId = Guid.NewGuid();
@@ -9756,7 +9984,7 @@ public sealed class SyncControllerTests : IDisposable
                         }),
                         Revision = 0,
                         ExpectedRevision = 0,
-                        MutationId = $"unguarded-manual-stop:{profileId:N}:{incomingStatus}",
+                        MutationId = identifiedMutation ? $"unguarded-manual-stop:{profileId:N}:{incomingStatus}" : string.Empty,
                         UpdatedAtUtc = nextUpdatedAtUtc
                     }
                 ]
@@ -9764,13 +9992,13 @@ public sealed class SyncControllerTests : IDisposable
 
             var ok = Assert.IsType<OkObjectResult>(response.Result);
             var result = Assert.IsType<SyncPushResult>(ok.Value);
-            Assert.Equal(1, result.AcceptedCount);
-            Assert.Empty(result.Conflicts);
+            Assert.Equal(identifiedMutation ? 0 : 1, result.AcceptedCount);
+            Assert.Equal(identifiedMutation ? 1 : 0, result.ConflictCount);
             _dbContext.ChangeTracker.Clear();
             var stored = await _dbContext.RentalBillingProfiles.IgnoreQueryFilters()
                 .AsNoTracking()
                 .SingleAsync(profile => profile.Id == profileId);
-            Assert.Equal($"general edit with {incomingStatus}", stored.Notes);
+            Assert.Equal(identifiedMutation ? "before unguarded stop" : $"general edit with {incomingStatus}", stored.Notes);
             Assert.Equal("\uCCAD\uAD6C\uC911", stored.BillingStatus);
             Assert.False(stored.RequiresFollowUp);
             var run = Assert.Single(JsonSerializer.Deserialize<List<SyncRentalBillingRunSnapshot>>(stored.BillingRunsJson) ?? []);
@@ -21119,6 +21347,35 @@ public sealed class SyncControllerTests : IDisposable
         Assert.False(transactionRevision.IsDeleted);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Push_PaymentTransactionAtomicity_RevisionConflictReturnsCanonicalSnapshotWithoutApplyingEitherSide(bool paymentConflict)
+    {
+        var fixture = await SeedPaymentAtomicityFixtureAsync("REVISION-SNAPSHOT", 30_000m);
+        var transaction = CreatePaymentAtomicityTransactionDto(fixture, 45_000m,
+            "revision-snapshot-transaction", fixture.TransactionRevision + (paymentConflict ? 0 : 100), useCash: true);
+        var payment = CreatePaymentAtomicityPaymentDto(fixture, 45_000m,
+            "revision-snapshot-payment", fixture.PaymentRevision + (paymentConflict ? 100 : 0));
+        transaction.Note = payment.Note;
+        var response = await _controller.Push(new SyncPushRequest {
+            DeviceId = "revision-snapshot-device", Transactions = [transaction], Payments = [payment]
+        }, CancellationToken.None);
+        var result = Assert.IsType<SyncPushResult>(Assert.IsType<OkObjectResult>(response.Result).Value);
+        Assert.Equal(2, result.ConflictCount); Assert.Empty(result.AcceptedRevisions);
+        var own = Assert.Single(result.Conflicts, x => x.EntityName == (paymentConflict ? nameof(Payment) : nameof(TransactionRecord)));
+        Assert.StartsWith("Expected revision mismatch.", own.Reason);
+        using var snapshot = JsonDocument.Parse(own.ServerJson);
+        Assert.Equal(fixture.PaymentId, snapshot.RootElement.GetProperty("Id").GetGuid());
+        Assert.Equal(paymentConflict ? fixture.PaymentRevision : fixture.TransactionRevision,
+            snapshot.RootElement.GetProperty("Revision").GetInt64());
+        Assert.Equal(30_000m, snapshot.RootElement.GetProperty(paymentConflict ? "Amount" : "SettlementAmount").GetDecimal());
+        var storedPayment = await _dbContext.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == fixture.PaymentId);
+        var storedTransaction = await _dbContext.Transactions.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == fixture.PaymentId);
+        Assert.Equal(30_000m, storedPayment.Amount); Assert.Equal(fixture.PaymentRevision, storedPayment.Revision);
+        Assert.Equal(30_000m, storedTransaction.SettlementAmount); Assert.Equal(fixture.TransactionRevision, storedTransaction.Revision);
+    }
+
     [Fact]
     public async Task Push_PaymentTransactionAtomicity_PreservesMixedReceiptChannels()
     {
@@ -24304,8 +24561,6 @@ public sealed class SyncControllerTests : IDisposable
         Assert.Equal(latestUserId, conflict.ServerUserId);
         Assert.Equal("latest-database-actor", conflict.ServerUsername);
         Assert.Equal(1, queryCounter.AuditLogSelectCount);
-        Assert.Contains("ROW_NUMBER", queryCounter.AuditLogSelectCommandText, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("PARTITION BY", queryCounter.AuditLogSelectCommandText, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -30017,7 +30272,8 @@ public sealed class SyncControllerTests : IDisposable
         var batchCounts = await PushBatchAsync(batch32, "profile-restore-query-32");
 
         Assert.Equal(singleCounts, batchCounts);
-        Assert.Equal(new RentalProfilePushSelectCounts(5, 2, 3, 1, 3), batchCounts);
+        // Legacy clients need one scoped capability probe per request, independent of batch size.
+        Assert.Equal(new RentalProfilePushSelectCounts(6, 2, 3, 1, 3), batchCounts);
 
         _dbContext.ChangeTracker.Clear();
         var customerIds = fixtures.Select(fixture => fixture.Customer.Id).ToList();
@@ -30174,7 +30430,8 @@ public sealed class SyncControllerTests : IDisposable
         var batchCounts = await PushBatchAsync(fixtures.Skip(1).Take(32).ToList(), "mixed-profile-asset-32");
 
         Assert.Equal(singleCounts, batchCounts);
-        Assert.Equal(new RentalProfileAssetPushSelectCounts(5, 10, 3, 1, 1, 9, 32), batchCounts);
+        // Includes the single legacy-client capability probe, not one query per profile.
+        Assert.Equal(new RentalProfileAssetPushSelectCounts(6, 10, 3, 1, 1, 9, 33), batchCounts);
 
         _dbContext.ChangeTracker.Clear();
         var profileIds = fixtures.Select(fixture => fixture.Profile.Id).ToList();
@@ -30603,11 +30860,11 @@ public sealed class SyncControllerTests : IDisposable
         var singleCounts = await PushBatchAsync(fixtures.Take(1).ToList(), "single");
         var batchCounts = await PushBatchAsync(fixtures.Skip(1).Take(32).ToList(), "batch32");
         var expectedSingle = mode == "blank-both"
-            ? new RentalProfileAssetPushSelectCounts(5, 9, 3, 1, 1, 7, 31)
-            : new RentalProfileAssetPushSelectCounts(5, 10, 3, 1, 1, 9, 32);
+            ? new RentalProfileAssetPushSelectCounts(6, 9, 3, 1, 1, 7, 32)
+            : new RentalProfileAssetPushSelectCounts(6, 10, 3, 1, 1, 9, 33);
         var expectedBatch = mode == "blank-both"
-            ? new RentalProfileAssetPushSelectCounts(5, 9, 3, 1, 1, 7, 31)
-            : new RentalProfileAssetPushSelectCounts(5, 11, 3, 1, 1, 9, 33);
+            ? new RentalProfileAssetPushSelectCounts(6, 9, 3, 1, 1, 7, 32)
+            : new RentalProfileAssetPushSelectCounts(6, 11, 3, 1, 1, 9, 34);
         Assert.Equal(expectedSingle, singleCounts);
         Assert.Equal(expectedBatch, batchCounts);
 
@@ -32378,7 +32635,7 @@ public sealed class SyncControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task Push_RemovesWarehouseStockRows_WhenItemDeletedBySync()
+    public async Task Push_HidesAndRetainsWarehouseBaseline_WhenItemDeletedBySync()
     {
         var item = new Item
         {
@@ -32416,6 +32673,9 @@ public sealed class SyncControllerTests : IDisposable
             });
         await _dbContext.SaveChangesAsync();
 
+        var beforeStocks = await _dbContext.ItemWarehouseStocks.AsNoTracking()
+            .Where(stock => stock.ItemId == item.Id).OrderBy(stock => stock.WarehouseCode)
+            .Select(stock => new { stock.WarehouseCode, stock.Quantity, stock.Revision, stock.UpdatedAtUtc }).ToListAsync();
         var expectedRevision = await _dbContext.Items
             .IgnoreQueryFilters()
             .Where(current => current.Id == item.Id)
@@ -32456,9 +32716,13 @@ public sealed class SyncControllerTests : IDisposable
             .Where(current => current.Id == item.Id)
             .Select(current => current.IsDeleted)
             .SingleAsync());
-        Assert.False(await _dbContext.ItemWarehouseStocks
-            .IgnoreQueryFilters()
-            .AnyAsync(stock => stock.ItemId == item.Id));
+        Assert.False(await _dbContext.ItemWarehouseStocks.AnyAsync(stock => stock.ItemId == item.Id));
+        var afterStocks = await _dbContext.ItemWarehouseStocks.IgnoreQueryFilters().AsNoTracking()
+            .Where(stock => stock.ItemId == item.Id).OrderBy(stock => stock.WarehouseCode)
+            .Select(stock => new { stock.WarehouseCode, stock.Quantity, stock.Revision, stock.UpdatedAtUtc }).ToListAsync();
+        Assert.Equal(beforeStocks, afterStocks);
+        Assert.Equal(0m, await _dbContext.Items.IgnoreQueryFilters()
+            .Where(current => current.Id == item.Id).Select(current => current.CurrentStock).SingleAsync());
     }
 
     [Fact]

@@ -109,7 +109,7 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("safeResetConnectionButton", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("고급 연결 설정", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("연결 테스트", settingsPageSource, StringComparison.Ordinal);
-        Assert.Contains("운영 서버로 초기화", settingsPageSource, StringComparison.Ordinal);
+        Assert.Contains("기본 서버로 초기화", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("OpenAdvancedConnectionSettingsAsync", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("DisplayAlert(", settingsPageSource, StringComparison.Ordinal);
         Assert.Contains("ToggleConnectionSettingsCommand = new AsyncCommand(ToggleConnectionSettingsAsync, () => CanEditConnectionSettings);", settingsViewModelSource, StringComparison.Ordinal);
@@ -4203,7 +4203,7 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("PC 운영점검", integrityViewModelSource, StringComparison.Ordinal);
         Assert.Contains("CreateIssueList()", integrityPageSource, StringComparison.Ordinal);
         Assert.Contains("CreateDetailList()", integrityPageSource, StringComparison.Ordinal);
-        Assert.Contains("운영 서버의 전표·수금/지급·렌탈·첨부·품목/거래처 참조 무결성", integrityPageSource, StringComparison.Ordinal);
+        Assert.Contains("현재 서버의 전표·수금/지급·렌탈·첨부·품목/거래처 참조 무결성 결과를 읽기 전용으로 확인합니다.", integrityPageSource, StringComparison.Ordinal);
         Assert.Contains("AddSingleton<IntegrityReportViewModel>()", mauiSource, StringComparison.Ordinal);
         Assert.Contains("AddTransient<IntegrityReportPage>()", mauiSource, StringComparison.Ordinal);
     }

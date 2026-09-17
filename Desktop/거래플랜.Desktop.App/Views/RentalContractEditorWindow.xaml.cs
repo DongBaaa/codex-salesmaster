@@ -1,5 +1,6 @@
 using System.Windows;
 using 거래플랜.Desktop.App.Infrastructure;
+using 거래플랜.Desktop.App.Services;
 using 거래플랜.Desktop.App.ViewModels;
 
 namespace 거래플랜.Desktop.App.Views;
@@ -9,6 +10,8 @@ public partial class RentalContractEditorWindow : Window
     private const double CompactWorkspaceWidthThreshold = 1000d;
 
     private readonly RentalContractEditorViewModel _viewModel;
+    private IDisposable? _authorizationMonitor;
+    private bool _closeRequested;
     private bool? _isCompactWorkspaceLayout;
     private bool _showCompactEditorPane = true;
     private GridLength _normalEditorColumnWidth = new(42d, GridUnitType.Star);
@@ -21,6 +24,8 @@ public partial class RentalContractEditorWindow : Window
         ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(this);
         _viewModel = viewModel;
         DataContext = viewModel;
+        PreviewPrintCommandRouting.Bind(this, ContractDocumentViewer, _viewModel.PrintCommand);
+        _viewModel.CurrentPageNumberProvider = () => ContractDocumentViewer.MasterPageNumber;
         _viewModel.RequestClose += OnRequestClose;
         Loaded += OnLoaded;
         SizeChanged += OnSizeChanged;
@@ -29,6 +34,7 @@ public partial class RentalContractEditorWindow : Window
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        _authorizationMonitor ??= _viewModel.MonitorAuthorization();
         ApplyResponsiveWorkspaceLayout();
     }
 
@@ -115,13 +121,32 @@ public partial class RentalContractEditorWindow : Window
         ApplyCompactPaneVisibility();
     }
 
-    private void OnRequestClose()
+    private async void OnRequestClose()
     {
-        DialogWindowCloseHelper.Close(this, true);
+        if (_closeRequested)
+            return;
+        _closeRequested = true;
+
+        // Hide contract details immediately, including while a native save dialog is open.
+        Content = null;
+        await DialogWindowCloseHelper.WaitForNoActiveNativeDialogsAsync();
+        if (!IsLoaded)
+            return;
+
+        foreach (Window child in OwnedWindows.Cast<Window>().ToArray())
+            DialogWindowCloseHelper.Close(child, false);
+
+        // Let an owned ShowDialog unwind before destroying its modeless owner.
+        await Dispatcher.InvokeAsync(static () => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        if (IsLoaded)
+            DialogWindowCloseHelper.Close(this, true);
     }
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        _authorizationMonitor?.Dispose();
+        _authorizationMonitor = null;
+        _viewModel.CurrentPageNumberProvider = null;
         _viewModel.RequestClose -= OnRequestClose;
         Loaded -= OnLoaded;
         SizeChanged -= OnSizeChanged;

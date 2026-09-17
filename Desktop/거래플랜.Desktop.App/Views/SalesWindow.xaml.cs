@@ -28,6 +28,7 @@ public partial class SalesWindow : Window
         DataContext = vm;
         Title = vm.WindowTitleText;
         _vm.ConfirmRentalLinkedInvoiceEdit = ConfirmRentalLinkedInvoiceEdit;
+        _vm.PropertyChanged += SalesViewModel_PropertyChanged;
         Loaded += (_, _) =>
         {
             ApplyResponsiveWorkspaceLayout();
@@ -36,6 +37,7 @@ public partial class SalesWindow : Window
         SizeChanged += (_, _) => ApplyResponsiveWorkspaceLayout();
         Closed += (_, _) =>
         {
+            _vm.PropertyChanged -= SalesViewModel_PropertyChanged;
             _editSessionMonitor?.Dispose();
             _vm.ConfirmRentalLinkedInvoiceEdit = null;
             _vm.Dispose();
@@ -44,14 +46,20 @@ public partial class SalesWindow : Window
         _editSessionMonitor = EntityEditSessionMonitor.TryCreate(
             this,
             "판매/구매 전표",
-            () => vm.InvoiceId == Guid.Empty
+            () => vm.EditSessionInvoiceId == Guid.Empty
                 ? null
                 : new EditSessionSubject(
                     "Invoice",
-                    vm.InvoiceId.ToString("D"),
+                    vm.EditSessionInvoiceId.ToString("D"),
                     string.IsNullOrWhiteSpace(vm.CustomerName)
                         ? "전표 편집"
                         : $"{vm.CustomerName} 전표"));
+    }
+
+    private void SalesViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(SalesViewModel.EditSessionInvoiceId))
+            _editSessionMonitor?.RequestSubjectRefresh();
     }
 
     private void ApplyResponsiveWorkspaceLayout()

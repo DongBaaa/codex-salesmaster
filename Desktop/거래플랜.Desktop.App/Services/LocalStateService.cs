@@ -456,7 +456,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		if (CanViewAllTenantOperationalCustomers(session))
 		{
 			string tenantCode = ResolveCurrentTenantCode(session);
-			return (from customer in _db.Customers.AsNoTracking()
+			return (from customer in ApplyServerCustomerExclusions(_db.Customers.AsNoTracking(), session)
 				where customer.TenantCode == tenantCode
 				orderby customer.NameOriginal
 				select customer).ToListAsync(ct);
@@ -466,6 +466,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<LocalCustomer?> GetCustomerForOperationalSelectionAsync(Guid customerId, SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		if (IsServerCustomerExcluded(customerId, session))
+			return null;
 		var customer = await GetCustomerAsync(customerId, ct);
 		if (customer == null)
 		{
@@ -583,6 +585,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Denied("현재 계정은 거래처를 저장할 권한이 없습니다.");
 		}
+		if (IsServerCustomerExcluded(customer.Id, session))
+		{
+			return OfficeMutationResult.Denied("담당 지점 또는 권한이 변경되어 이 거래처를 저장할 수 없습니다. 입력한 내용은 현재 창에 유지됩니다.");
+		}
 		NormalizeCustomerClassification(customer);
 		string normalizedOwnerFallback = NormalizeOfficeScope(customer.OfficeCode, NormalizeOfficeScope(session.OfficeCode, DomainConstants.OfficeUsenet));
 		string normalizedOfficeCode = NormalizeOfficeScope(customer.ResponsibleOfficeCode, normalizedOwnerFallback);
@@ -649,6 +655,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		if (!CanManageCustomerContracts(session))
 		{
 			return OfficeMutationResult.Denied("현재 계정은 거래처를 삭제할 권한이 없습니다.");
+		}
+		if (IsServerCustomerExcluded(id, session))
+		{
+			return OfficeMutationResult.Denied("담당 지점 또는 권한이 변경되어 이 거래처를 삭제할 수 없습니다.");
 		}
 		var customer = await _db.Customers.IgnoreQueryFilters().FirstOrDefaultAsync((LocalCustomer current) => current.Id == id, ct);
 		customer = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, customer, ct);
@@ -753,7 +763,14 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		List<Guid> customerIds = customerRows.Select(row => row.Id).ToList();
 		List<LocalCustomerContract> contracts = await (from contract in _db.CustomerContracts.AsNoTracking()
 			where customerIds.Contains(contract.CustomerId)
-			select contract).ToListAsync(ct);
+			select new LocalCustomerContract
+			{
+				CustomerId = contract.CustomerId,
+				FileName = contract.FileName,
+				FileSize = contract.FileSize,
+				ExpireDate = contract.ExpireDate,
+				IsDeleted = contract.IsDeleted
+			}).ToListAsync(ct);
 		DateOnly today = DateOnly.FromDateTime(DateTime.Today);
 		DateOnly alertLimit = today.AddDays(Math.Max(alertWindowDays, 0));
 		Dictionary<Guid, List<LocalCustomerContract>> contractLookup = (from contract in contracts
@@ -776,6 +793,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			{
 				CustomerId = customerRow.Id,
 				ContractCount = items.Count,
+				RegisteredFileCount = items.Count(CustomerContractContentService.HasRegisteredFile),
+				MissingExpireDateCount = items.Count(contract => !contract.ExpireDate.HasValue),
 				NearestExpireDate = ((nearestExpireDate == default(DateOnly)) ? ((DateOnly?)null) : new DateOnly?(nearestExpireDate)),
 				ExpiringSoonCount = expiringSoonCount,
 				HasExpiredContract = items.Any((LocalCustomerContract contract) => contract.ExpireDate.HasValue && contract.ExpireDate.Value < today)
@@ -1948,7 +1967,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return await UpsertItemAsync(item, preferredOfficeCode, synchronizeLinkedRentalAssets: true, preserveExistingInventoryStock: false, allowDeletedRestore: false, ct);
 	}
 
-	private async Task<LocalItem> UpsertItemAsync(LocalItem item, string? preferredOfficeCode, bool synchronizeLinkedRentalAssets, bool preserveExistingInventoryStock, bool allowDeletedRestore, CancellationToken ct = default(CancellationToken))
+	private async Task<LocalItem> UpsertItemAsync(LocalItem item, string? preferredOfficeCode, bool synchronizeLinkedRentalAssets, bool preserveExistingInventoryStock, bool allowDeletedRestore, CancellationToken ct = default(CancellationToken), bool preserveInventoryEditorHiddenFields = false)
 	{
 		item.NameOriginal = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(item.NameOriginal);
 		item.NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(item.NameOriginal);
@@ -1988,6 +2007,17 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				ItemOperationalPolicy.SupportsInventory(item.TrackingType)
 					? existing.CurrentStock
 					: (decimal?)null;
+			if (preserveInventoryEditorHiddenFields)
+			{
+				// The inventory editor cannot edit these fields. Preserve the reloaded row
+				// inside the save transaction, rather than a stale editor snapshot.
+				item.SerialNumber = existing.SerialNumber;
+				item.MaterialNumber = existing.MaterialNumber;
+				item.InstallLocation = existing.InstallLocation;
+				item.RentalStartDate = existing.RentalStartDate;
+				item.RentalEndDate = existing.RentalEndDate;
+				item.Notes = existing.Notes;
+			}
 			_db.Entry(existing).CurrentValues.SetValues(item);
 			if (preservedCurrentStock.HasValue)
 			{
@@ -2128,16 +2158,17 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return item;
 	}
 
-	public async Task DeleteItemAsync(Guid id, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
+	private async Task DeleteItemCoreAsync(Guid id, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		var item = await _db.Items.FindAsync(new object[1] { id }, ct);
 		item = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, item, ct);
-		if (item != null)
+		if (item != null && !item.IsDeleted)
 		{
 			if (!LocalEntityConcurrencyGuard.TryEnsureDeleteAllowed(item, expectedRevision, "품목", out string conflictMessage))
 			{
 				throw new InvalidOperationException(conflictMessage);
 			}
+			await PreserveDeletedItemInventoryAsync(item, ct);
 			var now = DateTime.UtcNow;
 			item.IsDeleted = true;
 			item.IsDirty = true;
@@ -2150,7 +2181,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 	}
 
-	public async Task<OfficeMutationResult> DeleteItemAsync(Guid id, SessionState session, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
+	private async Task<OfficeMutationResult> DeleteItemCoreAsync(Guid id, SessionState session, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
 	{
 		if (!CanEditItems(session))
 		{
@@ -2170,6 +2201,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Conflict(conflictMessage);
 		}
+		await PreserveDeletedItemInventoryAsync(item, ct);
 		var now = DateTime.UtcNow;
 		item.IsDeleted = true;
 		item.IsDirty = true;
@@ -3196,7 +3228,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		CancellationToken ct = default(CancellationToken))
 		=> SaveInvoiceAsync(invoice, saveContext, session, ct, skipRentalSettlementRecalculation: false);
 
-	internal async Task<InvoiceSaveResult> SaveInvoiceAsync(
+	private async Task<InvoiceSaveResult> SaveInvoiceCoreAsync(
 		LocalInvoice invoice,
 		InvoiceSaveContext saveContext,
 		SessionState? session,
@@ -3366,6 +3398,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return InvoiceSaveResult.Denied(
 				"기존 전표 버전 묶음의 거래처 또는 회사/담당지점 범위는 변경할 수 없습니다.");
 		}
+		var previousInventoryEffects = await GetInvoiceInventoryEffectsAsync(newInvoice, ct);
 		if (latest != null && latest.VersionGroupId == Guid.Empty)
 		{
 			latest.VersionGroupId = versionGroupId;
@@ -3404,7 +3437,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			await RelinkInvoiceSettlementRecordsToNewVersionAsync(latest.Id, newInvoice.Id, newInvoice.InvoiceNumber, now, ct);
 		}
 		await _db.SaveChangesAsync(ct);
-		await RebuildInventorySnapshotsAsync(context, ct);
+		await RebuildInventoryAfterInvoiceMutationAsync(newInvoice, previousInventoryEffects, session, context, ct);
 		if (!skipRentalSettlementRecalculation)
 		{
 			await RecalculateRentalSettlementsAsync(rentalSettlementTargets, ct, markDirty: true);
@@ -3481,13 +3514,14 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			StringComparison.OrdinalIgnoreCase);
 	}
 
-	public async Task DeleteInvoiceAsync(Guid id, CancellationToken ct = default(CancellationToken))
+	private async Task DeleteInvoiceCoreAsync(Guid id, CancellationToken ct)
 	{
 		var target = await _db.Invoices.FirstOrDefaultAsync((LocalInvoice localInvoice) => localInvoice.Id == id, ct);
 		if (target == null)
 		{
 			return;
 		}
+		var previousInventoryEffects = await GetInvoiceInventoryEffectsAsync(target, ct);
 		DateTime now = DateTime.UtcNow;
 		List<LocalInvoice> invoicesToDelete = await LoadExactInvoiceVersionChainAsync(
 			target,
@@ -3519,7 +3553,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		});
 		await _db.SaveChangesAsync(ct);
 		await RecalculateRentalSettlementsAsync(rentalSettlementTargets, ct);
-		await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
+		await RebuildInventoryAfterInvoiceMutationAsync(target, previousInventoryEffects, null, new InvoiceSaveContext
 		{
 			Username = "system",
 			Role = "admin",
@@ -3535,7 +3569,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		CancellationToken ct = default(CancellationToken))
 		=> DeleteInvoiceAsync(id, session, expectedRevision, ct, skipRentalSettlementRecalculation: false);
 
-	internal async Task<OfficeMutationResult> DeleteInvoiceAsync(
+	private async Task<OfficeMutationResult> DeleteInvoiceCoreAsync(
 		Guid id,
 		SessionState session,
 		long? expectedRevision,
@@ -3562,6 +3596,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Conflict(conflictMessage);
 		}
+		var previousInventoryEffects = await GetInvoiceInventoryEffectsAsync(target, ct);
 		DateTime now = DateTime.UtcNow;
 		List<LocalInvoice> invoicesToDelete = await LoadExactInvoiceVersionChainAsync(
 			target,
@@ -3600,7 +3635,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			await RecalculateRentalSettlementsAsync(rentalSettlementTargets, ct);
 		}
-		await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
+		await RebuildInventoryAfterInvoiceMutationAsync(target, previousInventoryEffects, session, new InvoiceSaveContext
 		{
 			Username = (session.User?.Username ?? "local-user"),
 			Role = (session.User?.Role ?? "user"),
@@ -3900,10 +3935,9 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 		var invoiceIds = deleteRecords.Select(record => record.InvoiceId).ToList();
 		var updatedAtUtc = deleteRecords.Max(record => record.UpdatedAtUtc);
-		var revision = deleteRecords.Max(record => record.Revision);
 		var rentalSettlementTargets = await LoadRentalSettlementTargetsForInvoiceDeleteAsync(invoiceIds, ct);
-		await DetachTransactionsFromInvoicesAsync(invoiceIds, updatedAtUtc, ct, markDirty: false, revision: revision);
-		await MarkPaymentsDeletedForInvoicesAsync(invoiceIds, updatedAtUtc, ct, markDirty: false, revision: revision);
+		await DetachTransactionsFromInvoicesAsync(invoiceIds, updatedAtUtc, ct, markDirty: false);
+		await MarkPaymentsDeletedForInvoicesAsync(invoiceIds, updatedAtUtc, ct, markDirty: false);
 		await _db.SaveChangesAsync(ct);
 		await RecalculateRentalSettlementsAsync(
 			rentalSettlementTargets,
@@ -3935,8 +3969,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 					transaction.Id,
 					ct,
 					markDirty: false,
-					updatedAtUtc: transaction.UpdatedAtUtc,
-					revision: transaction.Revision);
+					updatedAtUtc: transaction.UpdatedAtUtc);
 			}
 			else
 			{
@@ -3962,8 +3995,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 						transaction.Id,
 						ct,
 						markDirty: false,
-						updatedAtUtc: transaction.UpdatedAtUtc,
-						revision: transaction.Revision);
+						updatedAtUtc: transaction.UpdatedAtUtc);
 				}
 				else
 				{
@@ -4489,7 +4521,6 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<List<LocalCustomerCategory>> GetCategoriesAsync(CancellationToken ct = default(CancellationToken))
 	{
-		await EnsureCustomerCategoryIntegrityAsync(ct);
 		return await (from c in _db.CustomerCategories.AsNoTracking()
 			orderby c.Name, c.CreatedAtUtc
 			select c).ToListAsync(ct);
@@ -5055,6 +5086,16 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<string?> GetSettingAsync(string key, CancellationToken ct = default(CancellationToken))
 	{
+		// Sync completion can be committed by another scope while this context keeps
+		// an older tracked setting. Read persisted progress without changing pending edits.
+		if (key is "LastSyncRevision" or "Sync.LastSuccessAt" or PendingMirrorRefreshSettingKey)
+		{
+			return await _db.Settings.AsNoTracking()
+				.Where(setting => setting.Key == key)
+				.Select(setting => setting.Value)
+				.FirstOrDefaultAsync(ct);
+		}
+
 		return (await _db.Settings.FindAsync(new object[1] { key }, ct))?.Value;
 	}
 
@@ -5076,7 +5117,9 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				}
 				else
 				{
-					if (string.Equals(setting.Value, value, StringComparison.Ordinal))
+					// A failed save leaves the desired value tracked but not persisted.
+					if (string.Equals(setting.Value, value, StringComparison.Ordinal) &&
+						_db.Entry(setting).State == EntityState.Unchanged)
 					{
 						break;
 					}
@@ -5088,6 +5131,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			catch (DbUpdateConcurrencyException) when (attempt < maximumAttempts - 1)
 			{
 				_db.ChangeTracker.Clear();
+			}
+			catch (SqliteException ex) when (
+				attempt < maximumAttempts - 1 && ex.SqliteErrorCode is 5 or 6)
+			{
+				await Task.Delay(TimeSpan.FromMilliseconds(50 * (attempt + 1)), ct);
 			}
 			catch (DbUpdateException ex) when (
 				attempt < maximumAttempts - 1 &&
@@ -5105,10 +5153,14 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return (await _db.Settings.FindAsync(new object[1] { key }, ct))?.Value;
 	}
 
-	public async Task SaveInvoicePrintPayloadAsync(Guid invoiceId, string payloadJson, CancellationToken ct = default(CancellationToken))
+	public async Task SaveInvoicePrintPayloadAsync(Guid invoiceId, string payloadJson, CancellationToken ct = default(CancellationToken), Func<bool>? canWrite = null)
 	{
+		if (canWrite is not null && !canWrite())
+			throw new UnauthorizedAccessException(PrintDocumentAuthorization.DeniedMessage);
 		string key = BuildInvoicePrintSettingKey(invoiceId);
 		var setting = await _db.Settings.FindAsync(new object[1] { key }, ct);
+		if (canWrite is not null && !canWrite())
+			throw new UnauthorizedAccessException(PrintDocumentAuthorization.DeniedMessage);
 		if (setting == null)
 		{
 			_db.Settings.Add(new LocalSetting
@@ -6481,6 +6533,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	private async Task SyncInvoicePaymentFromTransactionAsync(LocalTransaction transaction, LocalInvoice invoice, CancellationToken ct, bool markDirty = true)
 	{
+		// Linked entities have independent server revisions. Project business state,
+		// but only a Payment DTO or acknowledgement may set Payment.Revision.
 		decimal amount = Math.Max(0m, transaction.SettlementAmount);
 		var payment = await _db.Payments.IgnoreQueryFilters().FirstOrDefaultAsync((LocalPayment current) => current.Id == transaction.Id, ct);
 		if (!markDirty && payment?.IsDirty == true)
@@ -6494,10 +6548,6 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				payment.IsDeleted = true;
 				payment.IsDirty = markDirty;
 				payment.UpdatedAtUtc = markDirty ? DateTime.UtcNow : transaction.UpdatedAtUtc;
-				if (!markDirty)
-				{
-					payment.Revision = Math.Max(payment.Revision, transaction.Revision);
-				}
 				await _db.SaveChangesAsync(ct);
 			}
 			return;
@@ -6514,7 +6564,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				Note = note,
 				CreatedAtUtc = markDirty ? DateTime.UtcNow : transaction.CreatedAtUtc,
 				UpdatedAtUtc = markDirty ? DateTime.UtcNow : transaction.UpdatedAtUtc,
-				Revision = markDirty ? 0 : transaction.Revision,
+				Revision = 0,
 				IsDirty = markDirty
 			});
 		}
@@ -6527,15 +6577,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			payment.IsDeleted = false;
 			payment.IsDirty = markDirty;
 			payment.UpdatedAtUtc = markDirty ? DateTime.UtcNow : transaction.UpdatedAtUtc;
-			if (!markDirty)
-			{
-				payment.Revision = Math.Max(payment.Revision, transaction.Revision);
-			}
 		}
 		await _db.SaveChangesAsync(ct);
 	}
 
-	private async Task RemoveLinkedInvoicePaymentAsync(Guid transactionId, CancellationToken ct, bool markDirty = true, DateTime? updatedAtUtc = null, long? revision = null)
+	private async Task RemoveLinkedInvoicePaymentAsync(Guid transactionId, CancellationToken ct, bool markDirty = true, DateTime? updatedAtUtc = null)
 	{
 		var payment = await _db.Payments.IgnoreQueryFilters().FirstOrDefaultAsync((LocalPayment current) => current.Id == transactionId, ct);
 		if (payment != null)
@@ -6548,15 +6594,11 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			payment.IsDeleted = true;
 			payment.IsDirty = markDirty;
 			payment.UpdatedAtUtc = markDirty ? DateTime.UtcNow : (updatedAtUtc ?? payment.UpdatedAtUtc);
-			if (!markDirty && revision.HasValue)
-			{
-				payment.Revision = Math.Max(payment.Revision, revision.Value);
-			}
 			await _db.SaveChangesAsync(ct);
 		}
 	}
 
-	private async Task DetachTransactionsFromInvoicesAsync(IReadOnlyCollection<Guid> invoiceIds, DateTime updatedAtUtc, CancellationToken ct, bool markDirty = true, long? revision = null)
+	private async Task DetachTransactionsFromInvoicesAsync(IReadOnlyCollection<Guid> invoiceIds, DateTime updatedAtUtc, CancellationToken ct, bool markDirty = true)
 	{
 		if (invoiceIds == null || invoiceIds.Count == 0)
 		{
@@ -6594,10 +6636,6 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				}
 				transaction.IsDirty = markDirty;
 				transaction.UpdatedAtUtc = updatedAtUtc;
-				if (!markDirty && revision.HasValue)
-				{
-					transaction.Revision = Math.Max(transaction.Revision, revision.Value);
-				}
 			}
 		}
 	}
@@ -6645,7 +6683,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			.ToList();
 	}
 
-	private async Task MarkPaymentsDeletedForInvoicesAsync(IReadOnlyCollection<Guid> invoiceIds, DateTime updatedAtUtc, CancellationToken ct, bool markDirty = true, long? revision = null)
+	private async Task MarkPaymentsDeletedForInvoicesAsync(IReadOnlyCollection<Guid> invoiceIds, DateTime updatedAtUtc, CancellationToken ct, bool markDirty = true)
 	{
 		if (invoiceIds == null || invoiceIds.Count == 0)
 		{
@@ -6667,10 +6705,6 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				payment.IsDeleted = true;
 				payment.IsDirty = markDirty;
 				payment.UpdatedAtUtc = updatedAtUtc;
-				if (!markDirty && revision.HasValue)
-				{
-					payment.Revision = Math.Max(payment.Revision, revision.Value);
-				}
 			}
 		}
 	}
@@ -7292,7 +7326,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			profile.ContractDate,
 			profile.LastBilledDate,
 			referenceDate);
-		var scheduledDate = RentalBillingScheduleRules.ResolveConfiguredBillingDate(
+		var billingPlan = RentalBillingScheduleRules.ResolveConfiguredBillingPlan(
 			profile.BillingDay,
 			profile.BillingDayMode,
 			cycleMonths,
@@ -7306,7 +7340,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				profile.BillingStartDate,
 				profile.ContractStartDate,
 				profile.ContractDate));
-		var period = RentalBillingScheduleRules.ResolveBillingPeriod(cycleMonths, profile.BillingAdvanceMode, scheduledDate);
+		var scheduledDate = billingPlan.BillingDate ?? referenceDate;
+		var period = (StartDate: billingPlan.PeriodStartDate, EndDate: billingPlan.PeriodEndDate);
 		var periodLabel = period.StartDate.Year == period.EndDate.Year && period.StartDate.Month == period.EndDate.Month
 			? $"{period.StartDate:yyyy-MM}"
 			: $"{period.StartDate:yyyy-MM} ~ {period.EndDate:yyyy-MM}";
@@ -7807,8 +7842,9 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return source.FirstOrDefaultAsync(ct);
 	}
 
-	public async Task<OfficeMutationResult> SaveInventoryTransferAsync(LocalInventoryTransfer transfer, SessionState session, CancellationToken ct = default(CancellationToken))
+	private async Task<OfficeMutationResult> SaveInventoryTransferCoreAsync(LocalInventoryTransfer transfer, SessionState session, CancellationToken ct)
 	{
+		var previousInventoryEffects = await GetTransferInventoryEffectsAsync(transfer?.Id ?? Guid.Empty, ct);
 		if (transfer == null)
 		{
 			throw new ArgumentNullException("transfer");
@@ -8011,7 +8047,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			CreatedAtUtc = now
 		});
 		await _db.SaveChangesAsync(ct);
-		await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
+		await RebuildInventoryAfterTransferMutationAsync(transferId, previousInventoryEffects, session, new InvoiceSaveContext
 		{
 			Username = (session.User?.Username ?? "local-user"),
 			Role = (session.User?.Role ?? "user"),
@@ -8021,8 +8057,9 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return OfficeMutationResult.Ok(transferId, (existing == null) ? "재고이동을 저장했습니다." : "재고이동을 수정했습니다.");
 	}
 
-	public async Task<OfficeMutationResult> ConfirmInventoryTransferReceiptAsync(Guid transferId, IEnumerable<LocalInventoryTransferLine> receivedLines, string? receiveMemo, SessionState session, CancellationToken ct = default(CancellationToken), long? expectedRevision = null)
+	private async Task<OfficeMutationResult> ConfirmInventoryTransferReceiptCoreAsync(Guid transferId, IEnumerable<LocalInventoryTransferLine> receivedLines, string? receiveMemo, SessionState session, CancellationToken ct, long? expectedRevision)
 	{
+		var previousInventoryEffects = await GetTransferInventoryEffectsAsync(transferId, ct);
 		var transfer = await _db.InventoryTransfers.IgnoreQueryFilters().Include((LocalInventoryTransfer current) => current.Lines).FirstOrDefaultAsync((LocalInventoryTransfer current) => current.Id == transferId, ct);
 		transfer = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, transfer, ct);
 		if (transfer == null)
@@ -8155,7 +8192,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			CreatedAtUtc = now
 		});
 		await _db.SaveChangesAsync(ct);
-		await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
+		await RebuildInventoryAfterTransferMutationAsync(transferId, previousInventoryEffects, session, new InvoiceSaveContext
 		{
 			Username = (session.User?.Username ?? "local-user"),
 			Role = (session.User?.Role ?? "user"),
@@ -8165,8 +8202,9 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return OfficeMutationResult.Ok(transferId, "재고이동 수령을 확정했습니다.");
 	}
 
-	public async Task<OfficeMutationResult> DeleteInventoryTransferAsync(Guid transferId, SessionState session, long? expectedRevision = null, CancellationToken ct = default(CancellationToken))
+	private async Task<OfficeMutationResult> DeleteInventoryTransferCoreAsync(Guid transferId, SessionState session, long? expectedRevision, CancellationToken ct)
 	{
+		var previousInventoryEffects = await GetTransferInventoryEffectsAsync(transferId, ct);
 		if (!CanEditDeliveries(session))
 		{
 			return OfficeMutationResult.Denied("납품/재고이동 편집 권한이 필요합니다.");
@@ -8210,7 +8248,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			CreatedAtUtc = DateTime.UtcNow
 		});
 		await _db.SaveChangesAsync(ct);
-		await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
+		await RebuildInventoryAfterTransferMutationAsync(transferId, previousInventoryEffects, session, new InvoiceSaveContext
 		{
 			Username = (session.User?.Username ?? "local-user"),
 			Role = (session.User?.Role ?? "user"),
@@ -8220,8 +8258,9 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return OfficeMutationResult.Ok(transferId, "재고이동을 삭제했습니다.");
 	}
 
-	public async Task<OfficeMutationResult> RejectInventoryTransferAsync(Guid transferId, string rejectReason, SessionState session, CancellationToken ct = default(CancellationToken), long? expectedRevision = null)
+	private async Task<OfficeMutationResult> RejectInventoryTransferCoreAsync(Guid transferId, string rejectReason, SessionState session, CancellationToken ct, long? expectedRevision)
 	{
+		var previousInventoryEffects = await GetTransferInventoryEffectsAsync(transferId, ct);
 		var transfer = await _db.InventoryTransfers.IgnoreQueryFilters().FirstOrDefaultAsync((LocalInventoryTransfer current) => current.Id == transferId, ct);
 		transfer = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, transfer, ct);
 		if (transfer == null)
@@ -8278,7 +8317,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			CreatedAtUtc = now
 		});
 		await _db.SaveChangesAsync(ct);
-		await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
+		await RebuildInventoryAfterTransferMutationAsync(transferId, previousInventoryEffects, session, new InvoiceSaveContext
 		{
 			Username = (session.User?.Username ?? "local-user"),
 			Role = (session.User?.Role ?? "user"),
@@ -8519,6 +8558,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	private IQueryable<LocalCustomer> ApplyCustomerScope(IQueryable<LocalCustomer> query, SessionState session)
 	{
+		query = ApplyServerCustomerExclusions(query, session);
 		if (HasFullAccess(session))
 		{
 			return query;
@@ -8618,7 +8658,29 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 		HashSet<string> readableOfficeCodes = GetReadableOfficeCodes(session);
 		string tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(session.TenantCode, session.OfficeCode);
-		return query.Where((LocalItem item) => item.TenantCode == tenantCode && (item.OfficeCode == "ALL" || readableOfficeCodes.Contains(item.OfficeCode)));
+		var receivedItemIds = ReceivedInventoryItemIds(session);
+		return query.Where((LocalItem item) => item.TenantCode == tenantCode && (item.OfficeCode == "ALL" || readableOfficeCodes.Contains(item.OfficeCode) || receivedItemIds.Contains(item.Id)));
+	}
+
+	private IQueryable<Guid> ReceivedInventoryItemIds(SessionState session)
+	{
+		var tenant = ResolveCurrentTenantCode(session);
+		var office = NormalizeOfficeScope(session.OfficeCode, DomainConstants.OfficeUsenet);
+		var tenantOffices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenant);
+		// Local transfers retain canonical warehouse routes; item ownership stays with the sender.
+		return (from transfer in _db.InventoryTransfers.IgnoreQueryFilters()
+				join line in _db.InventoryTransferLines.IgnoreQueryFilters() on transfer.Id equals line.TransferId
+				join item in _db.Items.IgnoreQueryFilters() on line.ItemId equals (Guid?)item.Id
+				where !transfer.IsDeleted && !line.IsDeleted && !item.IsDeleted &&
+					item.TenantCode == tenant && item.OfficeCode != office && tenantOffices.Contains(item.OfficeCode) &&
+					transfer.FromWarehouseCode == item.OfficeCode + "_MAIN" && transfer.ToWarehouseCode == office + "_MAIN" &&
+					(transfer.TransferStatus == InventoryTransferStatusNormalizer.Received ||
+					 (transfer.TransferStatus != InventoryTransferStatusNormalizer.Pending &&
+					  transfer.TransferStatus != InventoryTransferStatusNormalizer.Rejected &&
+					  transfer.RejectedAtUtc == null && transfer.RejectedByUsername == "" &&
+					  (transfer.ReceivedAtUtc != null || transfer.ReceivedByUsername != ""))) &&
+					(line.ReceivedQuantity ?? line.Quantity) > 0m && (line.ReceivedQuantity ?? line.Quantity) <= line.Quantity
+				select item.Id).Distinct();
 	}
 
 	private async Task<InvoiceSaveResult?> ValidateInvoiceLineItemScopeAsync(
@@ -8641,6 +8703,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			.AsNoTracking()
 			.Where(item => itemIds.Contains(item.Id) && !item.IsDeleted)
 			.ToDictionaryAsync(item => item.Id, ct);
+		var receivedItemIds = session is null ? new HashSet<Guid>() :
+			(await ReceivedInventoryItemIds(session).Where(id => itemIds.Contains(id)).ToListAsync(ct)).ToHashSet();
 
 		foreach (var itemId in itemIds)
 		{
@@ -8649,7 +8713,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				return InvoiceSaveResult.Missing($"전표 품목 정보를 찾을 수 없습니다: {itemId:D}");
 			}
 
-			if (!CanReadItemScope(item, session))
+			if (!CanReadItemScope(item, session) && !receivedItemIds.Contains(item.Id))
 			{
 				return InvoiceSaveResult.Denied("권한이 없어 현재 담당지점/회사 범위 밖의 품목을 전표에 저장할 수 없습니다.");
 			}
@@ -9205,6 +9269,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	private bool CanAccessCustomer(Guid customerId, string? customerOfficeCode, string? customerTenantCode, SessionState? session, string? role, string? fallbackOfficeCode = null)
 	{
+		if (IsServerCustomerExcluded(customerId, session))
+			return false;
 		if (HasFullAccess(session))
 		{
 			return true;
@@ -9603,6 +9669,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		if (invoice.Id != Guid.Empty)
 		{
 			existingById = await _db.Invoices.Include((LocalInvoice i) => i.Lines).Include((LocalInvoice i) => i.Payments).FirstOrDefaultAsync((LocalInvoice i) => i.Id == invoice.Id, ct);
+			existingById = await RefreshUnchangedInvoiceVersionAsync(existingById, ct);
 		}
 		var anchor = existingById ?? invoice;
 		var versionGroupId = ResolveInvoiceVersionGroupId(anchor);
@@ -9619,6 +9686,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				i.Id == versionGroupId ||
 				i.VersionGroupId == versionGroupId)
 			.ToListAsync(ct);
+		foreach (var candidate in candidates)
+		{
+			if (!ReferenceEquals(candidate, existingById))
+				await RefreshUnchangedInvoiceVersionAsync(candidate, ct);
+		}
+		candidates.RemoveAll(candidate => _db.Entry(candidate).State == EntityState.Detached);
 		var exactChain = await FilterExactInvoiceVersionChainAsync(
 			anchor,
 			candidates,
@@ -9629,6 +9702,20 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			.OrderByDescending(current => Math.Max(1, current.VersionNumber))
 			.ThenByDescending(current => current.Id)
 			.FirstOrDefault() ?? existingById;
+	}
+
+	private async Task<LocalInvoice?> RefreshUnchangedInvoiceVersionAsync(LocalInvoice? invoice, CancellationToken ct)
+	{
+		if (invoice is null)
+			return null;
+
+		// Sync acknowledges saves through a separate context. A tracking query can
+		// otherwise reuse the editor's pre-acknowledgement revision and stamp.
+		// Reload only unchanged entries so an in-progress local edit is preserved.
+		if (_db.Entry(invoice).State == EntityState.Unchanged)
+			return await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, invoice, ct);
+
+		return invoice;
 	}
 
 	public async Task<int> NormalizeLatestInvoiceVersionGroupsAsync(
@@ -10159,19 +10246,20 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			ct);
 	}
 
-	private async Task RebuildInventorySnapshotsCoreAsync(InvoiceSaveContext context, CancellationToken ct)
+	private async Task RebuildInventorySnapshotsCoreAsync(InvoiceSaveContext context, CancellationToken ct, bool preserveAuthoritativeStock = false)
 	{
 		List<LocalInventoryMovement> manualStockAdjustments = await _db.InventoryMovements.AsNoTracking()
 			.Where((LocalInventoryMovement movement) => movement.IsActive && movement.ItemId.HasValue && (movement.MovementType == ManualStockAdjustmentMovementType || movement.MovementType == InventoryResetToZeroMovementType))
 			.OrderBy((LocalInventoryMovement movement) => movement.OccurredDate)
 			.ThenBy((LocalInventoryMovement movement) => movement.CreatedAtUtc)
 			.ToListAsync(ct);
-		await _db.InventoryMovements.ExecuteDeleteAsync(ct);
-		await _db.StockLayers.ExecuteDeleteAsync(ct);
-		await _db.CostAllocations.ExecuteDeleteAsync(ct);
-		await _db.ItemWarehouseStocks.ExecuteDeleteAsync(ct);
-		await _db.SerialLedgers.ExecuteDeleteAsync(ct);
-		await _db.InvoiceLineSerials.ExecuteDeleteAsync(ct);
+		var removedDerivedRows = await _db.InventoryMovements.ExecuteDeleteAsync(ct);
+		removedDerivedRows += await _db.StockLayers.ExecuteDeleteAsync(ct);
+		removedDerivedRows += await _db.CostAllocations.ExecuteDeleteAsync(ct);
+		if (!preserveAuthoritativeStock)
+			await _db.ItemWarehouseStocks.ExecuteDeleteAsync(ct);
+		removedDerivedRows += await _db.SerialLedgers.ExecuteDeleteAsync(ct);
+		removedDerivedRows += await _db.InvoiceLineSerials.ExecuteDeleteAsync(ct);
 		_db.ChangeTracker.Clear();
 		List<LocalInvoice> invoices = await (from invoice in _db.Invoices.Include((LocalInvoice invoice) => invoice.Lines.Where((LocalInvoiceLine line) => !line.IsDeleted))
 			where !invoice.IsDeleted && invoice.IsLatestVersion && invoice.IsConfirmed
@@ -10195,7 +10283,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			if (entry.Invoice != null)
 			{
-				ApplyInvoiceInventoryEntry(entry.Invoice, context, stockMap, layerMap, serialMap, itemTrackingMap);
+				ApplyInvoiceInventoryEntry(entry.Invoice, context, stockMap, layerMap, serialMap, itemTrackingMap, normalizeLineTracking: !preserveAuthoritativeStock);
 			}
 			else if (entry.Transfer != null)
 			{
@@ -10230,10 +10318,23 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			_db.SerialLedgers.Add(ledger);
 		}
+		if (preserveAuthoritativeStock)
+		{
+			// A permission-filtered local history must never replace server stock
+			// quantities/revisions or manufacture a new dirty item mutation.
+			var changedCostStatuses = await PersistDerivedInvoiceCostStatusAsync(ct);
+			var savedDerivedRows = await _db.SaveChangesAsync(ct);
+			if (removedDerivedRows > 0 || changedCostStatuses > 0 || savedDerivedRows > 0)
+				RaiseInventoryStateChanged();
+			return;
+		}
 		Dictionary<Guid, decimal> itemStockTotals = (from anon in normalizedStocks
 			group anon by anon.ItemId).ToDictionary(group => group.Key, group => group.Sum(anon => anon.Quantity));
 		foreach (LocalItem item in await _db.Items.ToListAsync(ct))
 		{
+			// Selling received stock changes the destination warehouse, not the sender's item master.
+			if (!CanWriteItemScope(item, _session))
+				continue;
 			decimal totalStock;
 			decimal recalculatedStock = (itemStockTotals.TryGetValue(item.Id, out totalStock) ? totalStock : 0m);
 			if (!(item.CurrentStock == recalculatedStock))
@@ -10335,7 +10436,10 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		List<LocalItemCategoryOption> options = (from option in local.Concat(await _db.ItemCategoryOptions.IgnoreQueryFilters().ToListAsync(ct))
 			group option by option.Id into @group
 			select @group.First()).ToList();
-		var existing = options.FirstOrDefault((LocalItemCategoryOption option) => string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(option.Name), normalizedKey, StringComparison.OrdinalIgnoreCase));
+		var existing = options
+			.Where(option => string.Equals(RentalCatalogValueNormalizer.NormalizeLooseKey(option.Name), normalizedKey, StringComparison.OrdinalIgnoreCase))
+			.OrderByDescending(option => option.IsActive && !option.IsDeleted)
+			.FirstOrDefault();
 		if (existing != null)
 		{
 			normalizedName = (string.IsNullOrWhiteSpace(existing.Name) ? normalizedName : existing.Name);
@@ -10780,7 +10884,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		_db.InventoryMovements.Add(adjustment);
 	}
 
-	private void ApplyInvoiceInventoryEntry(LocalInvoice invoice, InvoiceSaveContext context, IDictionary<(Guid ItemId, string WarehouseCode), decimal> stockMap, IDictionary<(Guid ItemId, string WarehouseCode), List<LocalStockLayer>> layerMap, IDictionary<string, LocalSerialLedger> serialMap, IReadOnlyDictionary<Guid, string> itemTrackingMap)
+	private void ApplyInvoiceInventoryEntry(LocalInvoice invoice, InvoiceSaveContext context, IDictionary<(Guid ItemId, string WarehouseCode), decimal> stockMap, IDictionary<(Guid ItemId, string WarehouseCode), List<LocalStockLayer>> layerMap, IDictionary<string, LocalSerialLedger> serialMap, IReadOnlyDictionary<Guid, string> itemTrackingMap, bool normalizeLineTracking = true)
 	{
 		string text = NormalizeWarehouseCode(invoice.SourceWarehouseCode, invoice.ResponsibleOfficeCode, context.OfficeCode);
 		bool flag = false;
@@ -10792,7 +10896,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				continue;
 			}
 			string text2 = ResolveInvoiceLineTrackingType(line, itemTrackingMap);
-			if (!string.Equals(line.ItemTrackingType, text2, StringComparison.Ordinal))
+			if (normalizeLineTracking && !string.Equals(line.ItemTrackingType, text2, StringComparison.Ordinal))
 			{
 				line.ItemTrackingType = text2;
 			}

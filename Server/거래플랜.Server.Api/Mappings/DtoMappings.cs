@@ -358,7 +358,7 @@ public static class DtoMappings
             ExpireDate = entity.ExpireDate,
             IsPrimary = entity.IsPrimary,
             UploadedByUsername = entity.UploadedByUsername,
-            UploadedAtUtc = entity.UploadedAtUtc,
+            UploadedAtUtc = NormalizeUtcForResponse(entity.UploadedAtUtc),
             FileContent = includeContent ? ReadStoredContent(entity.StoragePath, entity.FileContent, entity.FileSize, entity.FileHash) : []
         };
 
@@ -574,7 +574,7 @@ public static class DtoMappings
             FileHash = entity.FileHash,
             Description = entity.Description,
             UploadedByUsername = entity.UploadedByUsername,
-            UploadedAtUtc = entity.UploadedAtUtc,
+            UploadedAtUtc = NormalizeUtcForResponse(entity.UploadedAtUtc),
             VerificationStatus = entity.VerificationStatus,
             VerifiedByUsername = entity.VerifiedByUsername,
             VerifiedAtUtc = entity.VerifiedAtUtc,
@@ -797,7 +797,7 @@ public static class DtoMappings
         entity.BillingMethod = dto.BillingMethod?.Trim() ?? string.Empty;
         entity.BillingStatus = dto.BillingStatus?.Trim() ?? string.Empty;
         entity.Email = dto.Email?.Trim() ?? string.Empty;
-        entity.BillingDay = RentalBillingScheduleRules.NormalizeBillingDay(dto.BillingDay);
+        entity.BillingDay = RentalBillingScheduleRules.NormalizeBillingDay(dto.BillingDay, dto.BillingDayMode);
         entity.BillingDayMode = RentalBillingScheduleRules.NormalizeBillingDayMode(dto.BillingDayMode);
         entity.BillingCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(dto.BillingCycleMonths);
         entity.BillingAnchorMonth = dto.BillingAnchorMonth;
@@ -1278,7 +1278,7 @@ public static class DtoMappings
             FileSize = entity.FileSize,
             FileHash = entity.FileHash,
             Description = entity.Description,
-            UploadedAtUtc = entity.UploadedAtUtc,
+            UploadedAtUtc = NormalizeUtcForResponse(entity.UploadedAtUtc),
             FileContent = includeContent ? ReadStoredContent(entity.StoragePath, entity.FileContent, entity.FileSize, entity.FileHash) : []
         };
 
@@ -1295,6 +1295,12 @@ public static class DtoMappings
         entity.FileContent = dto.FileContent ?? [];
         entity.IsDeleted = dto.IsDeleted;
     }
+
+    // SQLite materializes stored UTC timestamps with Unspecified kind. Preserve the stored
+    // instant (including default) rather than turning an unchanged value into a sync conflict.
+    private static DateTime NormalizeUtcForResponse(DateTime value) => value.Kind == DateTimeKind.Local
+        ? value.ToUniversalTime()
+        : DateTime.SpecifyKind(value, DateTimeKind.Utc);
 
     private static DateTime NormalizeUtc(DateTime value)
     {

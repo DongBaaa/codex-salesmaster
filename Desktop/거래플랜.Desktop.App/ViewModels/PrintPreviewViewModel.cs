@@ -9,6 +9,8 @@ public sealed partial class PrintPreviewViewModel : ObservableObject
 {
     private readonly IPrintService _printService;
     private readonly string _jobName;
+    private readonly IDocumentPaginatorSource _sourceDocument;
+    private bool _authorizationInvalidated;
 
     public event Action? RequestClose;
     public Func<int?>? CurrentPageNumberProvider { get; set; }
@@ -25,6 +27,7 @@ public sealed partial class PrintPreviewViewModel : ObservableObject
     public PrintPreviewViewModel(IDocumentPaginatorSource document, IPrintService printService, string jobName)
     {
         Document = document ?? throw new ArgumentNullException(nameof(document));
+        _sourceDocument = document;
         _printService = printService ?? throw new ArgumentNullException(nameof(printService));
         _jobName = string.IsNullOrWhiteSpace(jobName) ? "거래명세서" : jobName;
     }
@@ -41,7 +44,18 @@ public sealed partial class PrintPreviewViewModel : ObservableObject
         Zoom = Math.Max(20d, Zoom - 10d);
     }
 
-    private bool CanPrint() => !IsPrinting;
+    private bool CanPrint() => !IsPrinting && !_authorizationInvalidated;
+
+    public IDisposable MonitorAuthorization()
+        => PrintDocumentAuthorization.Monitor(_sourceDocument, InvalidateAuthorization);
+
+    private void InvalidateAuthorization()
+    {
+        _authorizationInvalidated = true;
+        Document = new FixedDocument();
+        StatusMessage = PrintDocumentAuthorization.DeniedMessage;
+        PrintCommand.NotifyCanExecuteChanged();
+    }
 
     private bool CanClose() => !IsPrinting;
 
@@ -50,6 +64,11 @@ public sealed partial class PrintPreviewViewModel : ObservableObject
     {
         if (IsPrinting)
             return;
+        if (!PrintDocumentAuthorization.Validate(_sourceDocument, out _))
+        {
+            InvalidateAuthorization();
+            return;
+        }
 
         IsPrinting = true;
         StatusMessage = "거래플랜 인쇄창을 여는 중...";
@@ -57,7 +76,7 @@ public sealed partial class PrintPreviewViewModel : ObservableObject
         try
         {
             var currentPageNumber = CurrentPageNumberProvider?.Invoke();
-            if (_printService.TryPrint(Document, _jobName, out var errorMessage, currentPageNumber))
+            if (_printService.TryPrint(_sourceDocument, _jobName, out var errorMessage, currentPageNumber))
             {
                 WasPrinted = true;
                 StatusMessage = "인쇄를 완료했습니다.";

@@ -193,6 +193,57 @@ public sealed class DataIntegrityIssueServicePerformanceTests
         }
     }
 
+    [Theory]
+    [InlineData("USENET", "ITWORLD", false)]
+    [InlineData("ITWORLD", "USENET", false)]
+    [InlineData("USENET", "ITWORLD", true)]
+    [InlineData("ITWORLD", "USENET", true)]
+    public async Task ScanAsync_GlobalAdminMixedCache_UsesItemTenantForWarehouseReferences(
+        string sessionOffice, string itemOffice, bool legacyBlankReference)
+    {
+        PrepareAppRoot("georaeplan-integrity-global-mixed-warehouse");
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+            var item = CreateInventoryItem(9991, itemOffice);
+            var ownWarehouse = OfficeCodeCatalog.GetMainWarehouseCode(itemOffice);
+            var foreignWarehouse = OfficeCodeCatalog.GetMainWarehouseCode(sessionOffice);
+            db.Items.Add(item);
+            db.Warehouses.AddRange(
+                CreateDuplicateWarehouse(9991, itemOffice, ownWarehouse, "Own warehouse"),
+                CreateDuplicateWarehouse(9992, sessionOffice, foreignWarehouse, "Foreign warehouse"));
+            foreach (var code in new[] { legacyBlankReference ? "" : ownWarehouse, foreignWarehouse })
+            {
+                db.ItemWarehouseStocks.Add(new LocalItemWarehouseStock
+                {
+                    ItemId = item.Id, WarehouseCode = code,
+                    Quantity = 1m, UpdatedAtUtc = DateTime.UtcNow
+                });
+                db.InventoryMovements.Add(CreateMovement(item.Id, code));
+            }
+            await db.SaveChangesAsync();
+            var session = new SessionState();
+            session.SetOfflineSession(new UserSessionDto
+            {
+                Username = "mixed-cache-admin", Role = DomainConstants.RoleAdmin,
+                TenantCode = TenantScopeCatalog.GetTenantCodeForOffice(sessionOffice),
+                OfficeCode = sessionOffice, ScopeType = TenantScopeCatalog.ScopeAdmin
+            });
+            var result = await new DataIntegrityIssueService(db).ScanAsync(session);
+            var issues = result.Issues.Where(issue =>
+                issue.Code == DataIntegrityIssueCodes.InventoryWarehouseReferenceMissing).ToList();
+            Assert.DoesNotContain(issues, issue => issue.CurrentValue == ownWarehouse);
+            Assert.Equal(2, issues.Count(issue => issue.CurrentValue == foreignWarehouse));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     [Fact]
     public async Task ScanAsync_ValidatesWarehouseReferencesAgainstActiveWarehousesInSessionTenant()
     {
@@ -2719,6 +2770,28 @@ public sealed class DataIntegrityIssueServicePerformanceTests
                 Assert.Equal(DataIntegrityDirectActionKind.OpenSyncDiagnostics, issue.DirectActionKind);
                 Assert.Contains("거래일", issue.ReviewInfo, StringComparison.Ordinal);
             });
+
+            // Exercise a real file move and restore, keeping attachment metadata unchanged.
+            var attachmentSession = CreateUsenetOfficeAdminSession();
+            var relocatedFilePath = Path.Combine(appRoot, "relocated-transaction-attachment.pdf");
+            File.Move(existingFilePath, relocatedFilePath);
+            var afterMove = await new DataIntegrityIssueService(db).ScanAsync(attachmentSession);
+            Assert.Contains(afterMove.Issues, issue =>
+                issue.Code == DataIntegrityIssueCodes.MissingAttachmentFiles &&
+                issue.EntityId == existingAttachmentId);
+            Assert.DoesNotContain(afterMove.Issues, issue =>
+                issue.Code == DataIntegrityIssueCodes.MissingAttachmentFiles &&
+                issue.EntityId == yeonsuAttachmentId);
+            File.Move(relocatedFilePath, existingFilePath);
+            var afterRestore = await new DataIntegrityIssueService(db).ScanAsync(attachmentSession);
+            Assert.DoesNotContain(afterRestore.Issues, issue =>
+                issue.Code == DataIntegrityIssueCodes.MissingAttachmentFiles &&
+                issue.EntityId == existingAttachmentId);
+            var preservedAttachment = await db.TransactionAttachments.AsNoTracking()
+                .SingleAsync(row => row.Id == existingAttachmentId);
+            Assert.Equal(existingFilePath, preservedAttachment.StoredPath);
+            Assert.False(preservedAttachment.IsDirty);
+            Assert.Equal(new byte[] { 1, 2, 3, 4 }, await File.ReadAllBytesAsync(existingFilePath));
         }
         finally
         {

@@ -32,6 +32,7 @@
             <Setter Property="Background" Value="#24364F"/>
             <Setter Property="BorderBrush" Value="#324A69"/>
             <Setter Property="Foreground" Value="#EAF2FF"/>
+            <Setter Property="MinWidth" Value="0"/>
         </Style>
         <Style TargetType="ComboBox">
             <Setter Property="Background" Value="#D9E6F5"/>
@@ -140,9 +141,9 @@
 
         <Grid Grid.Row="2" Margin="0,10,0,0">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="2.3*"/>
+                <ColumnDefinition Width="2.3*" MinWidth="0"/>
                 <ColumnDefinition Width="10"/>
-                <ColumnDefinition Width="1.2*"/>
+                <ColumnDefinition Width="1.2*" MinWidth="380"/>
             </Grid.ColumnDefinitions>
 
             <Border Grid.Column="0" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
@@ -185,15 +186,27 @@
                 </DataGrid>
             </Border>
 
-            <Border Grid.Column="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel>
+            <Border Grid.Column="2" MinWidth="0" ClipToBounds="True" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1" Padding="12">
+                <ScrollViewer x:Name="RentalAssetLinkDetailScrollViewer"
+                              Style="{StaticResource ResponsiveDetailScrollViewerStyle}"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled"
+                              HorizontalContentAlignment="Stretch"
+                              PanningMode="VerticalOnly">
+                    <StackPanel x:Name="RentalAssetLinkDetailContent"
+                                MinWidth="0"
+                                HorizontalAlignment="Left">
+                        <StackPanel.Resources>
+                            <Style TargetType="TextBox" BasedOn="{StaticResource ResponsiveDetailTextBoxStyle}"/>
+                            <Style TargetType="ComboBox" BasedOn="{StaticResource ResponsiveDetailComboBoxStyle}"/>
+                            <Style TargetType="DatePicker" BasedOn="{StaticResource ResponsiveDetailDatePickerStyle}"/>
+                        </StackPanel.Resources>
                         <TextBlock Text="선택 자산 상세정보" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,0,10"/>
 
                         <Grid IsEnabled="{Binding SelectedAsset.CanEditInLinkDialog}">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="120"/>
-                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*" MinWidth="0"/>
                             </Grid.ColumnDefinitions>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>

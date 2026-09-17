@@ -644,7 +644,7 @@
 
                     <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
                         <Border Background="#1E3A5F" CornerRadius="12" Padding="10,4" Margin="0,0,8,0">
-                            <TextBlock Text="{Binding DashboardCustomersWithContractsCount, StringFormat=계약서 {0:N0}곳}"
+                            <TextBlock Text="{Binding DashboardCustomersWithContractsCount, StringFormat=PDF 등록 {0:N0}곳}"
                                        Foreground="#B3E5FC"
                                        FontSize="11"
                                        FontWeight="Bold"/>

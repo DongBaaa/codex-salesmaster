@@ -100,7 +100,7 @@ public static class ProcurementDocumentBuilder
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(FooterHeight) });
 
         AddToGrid(root, BuildHeader(title, model, frameWidth), 0);
-        AddToGrid(root, BuildTotalSummary(totalAmount, model.PrintWithPrice), 1);
+        AddToGrid(root, BuildTotalSummary(totalAmount, model.PrintWithPrice, model.VatMode), 1);
         AddToGrid(root, BuildItemsTable(lines, model, isFinalPage), 2);
         AddToGrid(root, BuildPageFooter(model, pageNumber, totalPages), 3);
 
@@ -293,7 +293,7 @@ public static class ProcurementDocumentBuilder
         return overlay;
     }
 
-    private static UIElement BuildTotalSummary(decimal totalAmount, bool printWithPrice)
+    private static UIElement BuildTotalSummary(decimal totalAmount, bool printWithPrice, string? vatMode)
     {
         var grid = new Grid { Height = SummaryRowHeight };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(116) });
@@ -306,7 +306,7 @@ public static class ProcurementDocumentBuilder
         AddThinBorderedText(grid, 0, "합계금액 :", HeaderFill, FontWeights.Bold, TextAlignment.Center);
         AddThinBorderedText(grid, 1, printWithPrice ? $"금 {totalText} 원정" : "금            원정", Brushes.White, FontWeights.Normal, TextAlignment.Left);
         AddThinBorderedText(grid, 2, printWithPrice ? $"( {totalText} )" : "(     )", Brushes.White, FontWeights.Normal, TextAlignment.Center);
-        AddThinBorderedText(grid, 3, "부가세별도", HeaderFill, FontWeights.Bold, TextAlignment.Center);
+        AddThinBorderedText(grid, 3, InvoiceVatModes.IsNone(vatMode) ? "부가세없음" : "부가세포함", HeaderFill, FontWeights.Bold, TextAlignment.Center);
 
         return grid;
     }

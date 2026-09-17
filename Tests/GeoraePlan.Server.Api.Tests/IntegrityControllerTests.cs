@@ -4436,8 +4436,12 @@ public sealed class IntegrityControllerTests : IDisposable
         Assert.Contains("창고행 1", row.DetailText, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task GetReport_FiltersDeletedItemStockResidueByReadableWarehouseScope()
+    [Theory]
+    [InlineData(ItemTrackingTypes.Stock, OfficeCodeCatalog.UsenetMainWarehouse, false)]
+    [InlineData(ItemTrackingTypes.Stock, OfficeCodeCatalog.YeonsuMainWarehouse, false)]
+    [InlineData(ItemTrackingTypes.Asset, OfficeCodeCatalog.UsenetMainWarehouse, true)]
+    [InlineData(ItemTrackingTypes.Asset, OfficeCodeCatalog.YeonsuMainWarehouse, false)]
+    public async Task GetReport_ExcludesRetainedDeletedItemWarehouseBaselines(string trackingType, string warehouseCode, bool expectedIssue)
     {
         var currentUser = CreateOfficeScopedUser();
         await using var dbContext = CreateDbContext(currentUser);
@@ -4450,14 +4454,14 @@ public sealed class IntegrityControllerTests : IDisposable
             OfficeCode = OfficeCodeCatalog.Usenet,
             NameOriginal = "Scoped Deleted Residue Item",
             NameMatchKey = "SCOPEDDELETEDRESIDUEITEM",
-            TrackingType = ItemTrackingTypes.Stock,
+            TrackingType = trackingType,
             CurrentStock = 0m,
             IsDeleted = true
         });
         dbContext.ItemWarehouseStocks.Add(new ItemWarehouseStock
         {
             ItemId = deletedItemId,
-            WarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse,
+            WarehouseCode = warehouseCode,
             Quantity = 4m
         });
         await dbContext.SaveChangesAsync();
@@ -4468,13 +4472,13 @@ public sealed class IntegrityControllerTests : IDisposable
         var reportOk = Assert.IsType<OkObjectResult>(reportResponse.Result);
         var report = Assert.IsType<IntegrityReportDto>(reportOk.Value);
 
-        Assert.DoesNotContain(report.Issues, issue => issue.Code == "deleted_item_stock_residue");
+        Assert.Equal(expectedIssue, report.Issues.Any(issue => issue.Code == "deleted_item_stock_residue"));
 
         var detailsResponse = await controller.GetReportDetails("deleted_item_stock_residue", CancellationToken.None);
         var detailsOk = Assert.IsType<OkObjectResult>(detailsResponse.Result);
         var details = Assert.IsType<IntegrityIssueDetailResultDto>(detailsOk.Value);
 
-        Assert.Empty(details.Rows);
+        Assert.Equal(expectedIssue ? 1 : 0, details.Rows.Count);
     }
 
     [Fact]

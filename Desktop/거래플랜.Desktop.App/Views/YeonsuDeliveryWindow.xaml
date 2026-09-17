@@ -189,7 +189,7 @@
                     </Border>
                     <Border Style="{StaticResource SummaryCardStyle}">
                         <StackPanel>
-                            <TextBlock Text="매입금액 합계" Style="{StaticResource SummaryLabelStyle}"/>
+                            <TextBlock Text="{Binding SummaryPurchaseLabel}" Style="{StaticResource SummaryLabelStyle}"/>
                             <TextBlock Text="{Binding SummaryPurchaseAmount, StringFormat={}{0:N0}원}" Style="{StaticResource SummaryValueStyle}"/>
                         </StackPanel>
                     </Border>
@@ -201,13 +201,13 @@
                     </Border>
                     <Border Style="{StaticResource SummaryCardStyle}">
                         <StackPanel>
-                            <TextBlock Text="수익금액 합계" Style="{StaticResource SummaryLabelStyle}"/>
+                            <TextBlock Text="{Binding SummaryProfitLabel}" Style="{StaticResource SummaryLabelStyle}"/>
                             <TextBlock Text="{Binding SummaryProfitAmount, StringFormat={}{0:N0}원}" Style="{StaticResource SummaryValueStyle}"/>
                         </StackPanel>
                     </Border>
                     <Border Style="{StaticResource SummaryCardStyle}" Margin="0">
                         <StackPanel>
-                            <TextBlock Text="수수료 합계" Style="{StaticResource SummaryLabelStyle}"/>
+                            <TextBlock Text="{Binding SummaryFeeLabel}" Style="{StaticResource SummaryLabelStyle}"/>
                             <TextBlock Text="{Binding SummaryFeeAmount, StringFormat={}{0:N0}원}" Style="{StaticResource SummaryValueStyle}"/>
                         </StackPanel>
                     </Border>
@@ -280,10 +280,10 @@
                     <DataGridTextColumn Header="거래처명" Binding="{Binding CustomerName}" Width="190"/>
                     <DataGridTextColumn Header="사용모델" Binding="{Binding ModelName}" Width="190"/>
                     <DataGridTextColumn Header="거래내용" Binding="{Binding TradeDescription}" Width="280"/>
-                    <DataGridTextColumn Header="매입금액" Binding="{Binding PurchaseAmount, StringFormat=N0}" Width="120" ElementStyle="{StaticResource RightAlignedCellTextStyle}"/>
+                    <DataGridTextColumn Header="매입금액" Binding="{Binding PurchaseAmountDisplay}" SortMemberPath="PurchaseAmount" Width="150" ElementStyle="{StaticResource RightAlignedCellTextStyle}"/>
                     <DataGridTextColumn Header="매출금액" Binding="{Binding SalesAmount, StringFormat=N0}" Width="120" ElementStyle="{StaticResource RightAlignedCellTextStyle}"/>
-                    <DataGridTextColumn Header="수익금액" Binding="{Binding ProfitAmount, StringFormat=N0}" Width="120" ElementStyle="{StaticResource RightAlignedCellTextStyle}"/>
-                    <DataGridTextColumn Header="수수료" Binding="{Binding FeeAmount, StringFormat=N0}" Width="120" ElementStyle="{StaticResource RightAlignedCellTextStyle}"/>
+                    <DataGridTextColumn Header="수익금액" Binding="{Binding ProfitAmountDisplay}" SortMemberPath="ProfitAmount" Width="150" ElementStyle="{StaticResource RightAlignedCellTextStyle}"/>
+                    <DataGridTextColumn Header="수수료" Binding="{Binding FeeAmountDisplay}" SortMemberPath="FeeAmount" Width="150" ElementStyle="{StaticResource RightAlignedCellTextStyle}"/>
                     <DataGridTextColumn Header="비고" Binding="{Binding Note}" Width="*"/>
                 </DataGrid.Columns>
             </DataGrid>

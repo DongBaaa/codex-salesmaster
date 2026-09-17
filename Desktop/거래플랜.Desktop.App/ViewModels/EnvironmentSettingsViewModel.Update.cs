@@ -89,7 +89,7 @@ public sealed partial class EnvironmentSettingsViewModel
 
         var confirm = MessageBox.Show(
             $"새 PC 버전 {_pendingDesktopUpdate.Version}을 설치하시겠습니까?{Environment.NewLine}{Environment.NewLine}" +
-            "현재 앱은 dirty 데이터를 모두 동기화한 뒤 자동으로 종료되고, 업데이트가 끝나면 다시 실행됩니다.",
+            "먼저 미전송 자료를 서버로 보내려고 시도합니다. 전송을 마치지 못하면 자료를 이 PC에 보존한 채 설치할지 다시 확인합니다.",
             "업데이트 시작",
             MessageBoxButton.OKCancel,
             MessageBoxImage.Information);
@@ -109,15 +109,27 @@ public sealed partial class EnvironmentSettingsViewModel
             {
                 UpdateStatusText = readiness.Message;
                 StatusMessage = readiness.Message;
-                MessageBox.Show(
-                    readiness.Message + Environment.NewLine + Environment.NewLine + "모든 dirty 데이터가 중앙 서버에 반영된 뒤에만 업데이트를 시작할 수 있습니다.",
-                    "업데이트 보류",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-                return;
+                if (!거래플랜.Desktop.App.Services.DesktopUpdatePendingChangesPrompt.ConfirmForceInstall(
+                        readiness,
+                        _pendingDesktopUpdate.Version))
+                {
+                    if (!readiness.CanForceProceed)
+                    {
+                        MessageBox.Show(
+                            readiness.Message,
+                            "업데이트를 시작할 수 없음",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
+                    }
+
+                    return;
+                }
+
+                UpdateStatusText = $"미전송 자료를 보존하고 업데이트 {_pendingDesktopUpdate.Version}을(를) 시작합니다.";
+                StatusMessage = UpdateStatusText;
             }
 
-            if (readiness.SyncAttempted)
+            if (readiness.CanProceed && readiness.SyncAttempted)
             {
                 UpdateStatusText = readiness.Message;
                 StatusMessage = readiness.Message;

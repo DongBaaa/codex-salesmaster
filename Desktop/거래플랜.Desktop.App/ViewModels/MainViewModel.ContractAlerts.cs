@@ -27,7 +27,7 @@ public sealed partial class MainViewModel
         var summaryMap = await _local.GetCustomerContractSummaryMapAsync(_session, DashboardContractAlertWindowDays, ct);
         var alerts = await _local.GetCustomerContractAlertsAsync(_session, DashboardContractAlertWindowDays, ct);
 
-        DashboardCustomersWithContractsCount = summaryMap.Values.Count(summary => summary.ContractCount > 0);
+        DashboardCustomersWithContractsCount = summaryMap.Values.Count(summary => summary.RegisteredFileCount > 0);
         DashboardContractExpiredCount = alerts.Count(alert => alert.DaysRemaining < 0);
         DashboardContractExpiringSoonCount = alerts.Count(alert => alert.DaysRemaining >= 0);
         DashboardContractAlertCount = alerts.Count;
@@ -36,11 +36,8 @@ public sealed partial class MainViewModel
         foreach (var alert in alerts.Take(4))
             DashboardContractAlerts.Add(alert);
 
-        DashboardContractAlertSummary = alerts.Count == 0
-            ? DashboardCustomersWithContractsCount == 0
-                ? "등록된 계약서가 없습니다."
-                : $"계약서 보유 거래처 {DashboardCustomersWithContractsCount:N0}곳 · 임박 알림 없음"
-            : $"계약서 보유 {DashboardCustomersWithContractsCount:N0}곳 · 만료 {DashboardContractExpiredCount:N0}건 · {DashboardContractAlertWindowDays:N0}일 내 {DashboardContractExpiringSoonCount:N0}건";
+        DashboardContractAlertSummary = CustomerContractSummaryFormatter.Format(
+            summaryMap.Values, alerts, DashboardContractAlertWindowDays);
         ContractAlertPopupMessage = BuildContractAlertPopupMessage(alerts);
     }
 

@@ -21,7 +21,7 @@ public sealed class EditSessionMonitorRegressionTests
             "Views",
             "CustomerEditWindow.xaml.cs"));
 
-        Assert.Contains("vm.InvoiceId == Guid.Empty", salesWindowSource, StringComparison.Ordinal);
+        Assert.Contains("vm.EditSessionInvoiceId == Guid.Empty", salesWindowSource, StringComparison.Ordinal);
         Assert.Contains("? null", salesWindowSource, StringComparison.Ordinal);
         Assert.Contains("vm.CustomerId == Guid.Empty", customerEditWindowSource, StringComparison.Ordinal);
         Assert.Contains("? null", customerEditWindowSource, StringComparison.Ordinal);

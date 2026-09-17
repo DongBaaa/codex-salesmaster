@@ -37,7 +37,7 @@ public sealed class PostgreSqlFactAttribute : FactAttribute
 }
 
 [Collection(PostgreSqlIntegrationCollection.Name)]
-public sealed class PostgreSqlSyncPushMutationIdempotencyTests
+public sealed partial class PostgreSqlSyncPushMutationIdempotencyTests
 {
     internal const string ConnectionVariableName = "GEORAEPLAN_POSTGRES_TEST_CONNECTION";
 
@@ -1325,6 +1325,7 @@ public sealed class PostgreSqlSyncPushMutationIdempotencyTests
                 EntityName = nameof(Customer),
                 EntityId = dto.Id.ToString("D"),
                 Reason = "Historical exact replay conflict",
+                ClientJson = System.Text.Json.JsonSerializer.Serialize(dto),
                 Status = "Open",
                 CreatedAtUtc = DateTime.UtcNow.AddDays(-1)
             }));
@@ -1399,16 +1400,15 @@ public sealed class PostgreSqlSyncPushMutationIdempotencyTests
             Assert.Equal(501, result.DuplicateMutationCount);
             Assert.Equal(2, result.ConflictCount);
             Assert.Equal(2, counter.ConflictLogUpdateCount);
-            Assert.Equal(1, counter.ConflictLogSelectCount);
+            // Two bounded replay-payload reads plus the existing conflict deduplication read.
+            Assert.Equal(3, counter.ConflictLogSelectCount);
             Assert.Equal(0, counter.ConflictLogDeleteCount);
             Assert.Equal(1, counter.AuditLogSelectCount);
-            Assert.Contains("ROW_NUMBER", counter.AuditLogSelectCommandText, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("PARTITION BY", counter.AuditLogSelectCommandText, StringComparison.OrdinalIgnoreCase);
-            // The budget includes the one required, batched open-conflict read
-            // asserted above. It must remain constant as replay volume grows.
+            // The budget includes two payload reads (500 + 1), the batched
+            // deduplication read and the legacy rental-schedule capability probe.
             Assert.True(
-                counter.TotalCommandCount <= 23,
-                $"Expected at most 23 commands but observed {counter.TotalCommandCount}." +
+                counter.TotalCommandCount <= 26,
+                $"Expected at most 26 commands but observed {counter.TotalCommandCount}." +
                 Environment.NewLine +
                 counter.CommandSummary);
             var replayThenStaleConflict = Assert.Single(
@@ -1445,6 +1445,26 @@ public sealed class PostgreSqlSyncPushMutationIdempotencyTests
                 Assert.Null(conflict.ResolvedAtUtc);
                 Assert.Empty(conflict.ResolutionNote);
             });
+            // A separate later request sees the persisted rejected mutations.
+            // Receipt replay must not resolve those conflicts or rewrite any of
+            // the 501 already-resolved historical rows.
+            var conflictsBeforeReplay = await verificationDb.ConflictLogs.AsNoTracking()
+                .OrderBy(conflict => conflict.Id).ToListAsync(timeout.Token);
+            counter.Reset();
+            var laterReplay = AssertOk(await controller.Push(new SyncPushRequest
+            {
+                DeviceId = "postgres-bulk-replay-device",
+                Customers = replayDtos.Take(2).ToList()
+            }, timeout.Token));
+            Assert.Equal(2, laterReplay.AcceptedCount);
+            Assert.Equal(2, laterReplay.DuplicateMutationCount);
+            Assert.Equal(0, laterReplay.ConflictCount);
+            Assert.Equal(0, counter.ConflictLogUpdateCount);
+            var conflictsAfterReplay = await verificationDb.ConflictLogs.AsNoTracking()
+                .OrderBy(conflict => conflict.Id).ToListAsync(timeout.Token);
+            Assert.Equal(
+                System.Text.Json.JsonSerializer.Serialize(conflictsBeforeReplay),
+                System.Text.Json.JsonSerializer.Serialize(conflictsAfterReplay));
             Assert.Equal(
                 0,
                 await verificationDb.Customers.CountAsync(

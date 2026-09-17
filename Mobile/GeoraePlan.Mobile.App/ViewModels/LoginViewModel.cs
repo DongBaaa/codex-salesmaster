@@ -108,7 +108,7 @@ public sealed class LoginViewModel : ObservableObject
         RememberPassword = _settings.GetRememberPassword();
         Username = RememberUsername ? _settings.GetLastUsername() : string.Empty;
         Password = RememberPassword ? await _settings.GetSavedPasswordAsync() : string.Empty;
-        StatusMessage = "거래플랜 운영 서버에 연결해 로그인합니다.";
+        StatusMessage = "표시된 서버 주소를 확인한 뒤 로그인하세요.";
     }
 
     public async Task LoginAsync()
@@ -164,7 +164,7 @@ public sealed class LoginViewModel : ObservableObject
 
         await _settings.ResetBaseUrlAsync();
         RefreshConnectionMode();
-        StatusMessage = "운영 서버 기본 연결로 초기화했습니다. 다시 로그인하세요.";
+        StatusMessage = "기본 서버 연결로 초기화했습니다. 다시 로그인하세요.";
     }
 
     private void RefreshConnectionMode()
@@ -173,6 +173,6 @@ public sealed class LoginViewModel : ObservableObject
         HasCustomBaseUrl = _settings.HasCustomBaseUrl();
         ConnectionModeText = HasCustomBaseUrl
             ? $"고급 연결 URL 사용 중: {BaseUrl}"
-            : $"운영 서버 기본 연결: {BaseUrl}";
+            : $"기본 서버 연결: {BaseUrl}";
     }
 }

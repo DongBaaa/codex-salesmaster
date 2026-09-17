@@ -70,7 +70,7 @@
             <DockPanel>
                 <StackPanel DockPanel.Dock="Left">
                     <TextBlock Text="렌탈 대시보드" FontSize="22" FontWeight="Bold" Foreground="#4FC3F7"/>
-                    <TextBlock Text="계정별 렌탈 청구 알림과 만료 예정 자산을 확인합니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
+                    <TextBlock Text="계정별 렌탈 청구 알림과 만료 경과·예정 자산을 확인합니다." Foreground="#9FB3C8" Margin="0,4,0,0"/>
                 </StackPanel>
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
                     <Button Content="새로고침" Margin="0,0,6,0" Command="{Binding ReloadCommand}"/>
@@ -106,7 +106,7 @@
             </Border>
             <Border Background="#1A2B4A" Margin="0,0,8,0" CornerRadius="6" Padding="10">
                 <StackPanel>
-                    <TextBlock Text="30일 내 만료" Foreground="#9FB3C8" FontSize="11"/>
+                    <TextBlock Text="만료 경과·30일 내 예정" Foreground="#9FB3C8" FontSize="11"/>
                     <TextBlock Text="{Binding ExpiringContractCount, StringFormat={}{0:N0}건}" Foreground="#FFCC80" FontWeight="Bold" FontSize="18"/>
                 </StackPanel>
             </Border>
@@ -149,7 +149,7 @@
             <Border Grid.Row="2" Background="#1A2B4A" CornerRadius="6" BorderBrush="#2E4060" BorderThickness="1">
                 <DockPanel>
                     <Border DockPanel.Dock="Top" Background="#102039" CornerRadius="6,6,0,0" Padding="10,8">
-                        <TextBlock Text="만료 예정 자산" Foreground="#4FC3F7" FontWeight="Bold"/>
+                        <TextBlock Text="만료 경과·30일 내 예정 자산" Foreground="#4FC3F7" FontWeight="Bold"/>
                     </Border>
                     <DataGrid ItemsSource="{Binding ExpiringAssets}" BorderThickness="0" IsReadOnly="True">
                         <DataGrid.Columns>

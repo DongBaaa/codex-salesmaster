@@ -75,7 +75,9 @@ public sealed partial class RentalDashboardViewModel : ObservableObject
 
             StatusMessage = summary.AlertItems.Count == 0 && summary.ExpiringAssets.Count == 0 && summary.UnresolvedLinkItems.Count == 0
                 ? "알림 대상이 없습니다."
-                : $"청구 알림 {summary.AlertItems.Count:N0}건, 만료 예정 {summary.ExpiringAssets.Count:N0}건, 연계 검토 {summary.UnresolvedLinkItems.Count:N0}건";
+                : $"청구 {summary.DueTodayCount + summary.UpcomingCount + summary.OverdueCount:N0}건 중 {summary.AlertItems.Count:N0}건 표시 / " +
+                  $"만료 경과·예정 {summary.ExpiringContractCount:N0}건 중 {summary.ExpiringAssets.Count:N0}건 표시 / " +
+                  $"연계 검토 {summary.UnassignedCount:N0}건 중 {summary.UnresolvedLinkItems.Count:N0}건 표시";
         }
         finally
         {

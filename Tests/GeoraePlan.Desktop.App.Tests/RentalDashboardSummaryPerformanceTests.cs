@@ -10,14 +10,97 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class RentalDashboardSummaryPerformanceTests
 {
     [Fact]
+    public async Task DashboardBillingTotals_AreNotLimitedByThirtyDisplayedAlerts()
+    {
+        PrepareAppRoot("georaeplan-dashboard-alert-totals");
+        try
+        {
+            await using var connection = new SqliteConnection("Data Source=:memory:");
+            await connection.OpenAsync();
+            await using var db = new LocalDbContext(new DbContextOptionsBuilder<LocalDbContext>().UseSqlite(connection).Options);
+            await db.Database.EnsureCreatedAsync();
+            var referenceDate = new DateOnly(2026, 9, 15);
+            foreach (var (day, count) in new[] { (10, 35), (15, 5), (20, 4), (30, 2) })
+                for (var i = 0; i < count; i++)
+                    db.RentalBillingProfiles.Add(new LocalRentalBillingProfile
+                    {
+                        Id = Guid.NewGuid(), TenantCode = TenantScopeCatalog.UsenetGroup,
+                        OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                        ManagementCompanyCode = OfficeCodeCatalog.Usenet, ProfileKey = $"totals-{day}-{i}",
+                        CustomerName = $"청구 집계 {day}-{i}", ItemName = "시험 품목", BillingType = "묶음",
+                        BillingDay = day, BillingCycleMonths = 1, BillingAnchorMonth = 9,
+                        MonthlyAmount = 1000m, BillingTemplateJson = "[]", IsActive = true
+                    });
+            await db.SaveChangesAsync();
+
+            var summary = await new RentalStateService(db).GetDashboardSummaryAsync(CreateAdminSession(), referenceDate);
+
+            Assert.Equal(35, summary.OverdueCount);
+            Assert.Equal(5, summary.DueTodayCount);
+            Assert.Equal(4, summary.UpcomingCount);
+            Assert.Equal(30, summary.AlertItems.Count);
+            Assert.All(summary.AlertItems, item => Assert.True(item.DaysRemaining < 0));
+            Assert.Contains("지연 청구 35건", summary.AlertPopupMessage);
+            Assert.Contains("오늘 청구 5건", summary.AlertPopupMessage);
+            Assert.Contains("예정 청구 4건", summary.AlertPopupMessage);
+            Assert.All(db.ChangeTracker.Entries(), entry => Assert.Equal(EntityState.Unchanged, entry.State));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task DashboardExpiryTotals_IncludeAllEligibleAssetsBeforeTwentyRowLimit()
+    {
+        PrepareAppRoot("georaeplan-dashboard-expiry-totals");
+        try
+        {
+            await using var connection = new SqliteConnection("Data Source=:memory:");
+            await connection.OpenAsync();
+            await using var db = new LocalDbContext(new DbContextOptionsBuilder<LocalDbContext>().UseSqlite(connection).Options);
+            await db.Database.EnsureCreatedAsync();
+            var referenceDate = new DateOnly(2026, 9, 15);
+            for (var i = 0; i < 29; i++)
+                db.RentalAssets.Add(new LocalRentalAsset
+                {
+                    Id = Guid.NewGuid(), TenantCode = TenantScopeCatalog.UsenetGroup,
+                    OfficeCode = OfficeCodeCatalog.Usenet, ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                    ManagementCompanyCode = OfficeCodeCatalog.Usenet, AssetKey = $"expiry-{i}",
+                    ManagementNumber = $"EXP-{i:D2}", CustomerName = "만료 집계", ItemName = "시험 품목",
+                    AssetStatus = i == 28 ? "폐기" : "렌탈중",
+                    RentalEndDate = referenceDate.AddDays(i < 25 ? -1 : i == 25 ? 0 : i == 26 ? 30 : 31)
+                });
+            await db.SaveChangesAsync();
+
+            var summary = await new RentalStateService(db).GetDashboardSummaryAsync(CreateAdminSession(), referenceDate);
+
+            Assert.Equal(27, summary.ExpiringContractCount);
+            Assert.Equal(28, summary.ActiveAssetCount);
+            Assert.Equal(20, summary.ExpiringAssets.Count);
+            Assert.All(summary.ExpiringAssets, item => Assert.Equal(-1, item.DaysRemaining));
+            Assert.Contains("만료 경과·30일 내 예정 27건", summary.AlertPopupMessage);
+            Assert.All(db.ChangeTracker.Entries(), entry => Assert.Equal(EntityState.Unchanged, entry.State));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
     public async Task GetDashboardSummaryAsync_KeepsCountsWithProjectedRentalRows()
     {
         PrepareAppRoot("georaeplan-rental-dashboard-summary");
 
         try
         {
-            await using var db = new LocalDbContext();
-            await db.Database.EnsureDeletedAsync();
+            await using var connection = new SqliteConnection("Data Source=:memory:");
+            await connection.OpenAsync();
+            await using var db = new LocalDbContext(new DbContextOptionsBuilder<LocalDbContext>().UseSqlite(connection).Options);
             await db.Database.EnsureCreatedAsync();
 
             var referenceDate = new DateOnly(2026, 6, 11);

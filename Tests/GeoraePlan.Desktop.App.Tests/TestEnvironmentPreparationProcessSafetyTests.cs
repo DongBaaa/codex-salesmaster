@@ -9,6 +9,146 @@ namespace GeoraePlan.Desktop.App.Tests;
 
 public sealed class TestEnvironmentPreparationProcessSafetyTests
 {
+    [Theory]
+    [InlineData("neutral")]
+    [InlineData("Desktop-parent")]
+    [InlineData("SyncDiag-parent")]
+    public async Task RepeatableFixture_PublishRoutingIgnoresAncestorNames(string ancestor)
+    {
+        var testRoot = Path.Combine(TestProcessIsolation.TempRoot,
+            $"publish-routing-{Guid.NewGuid():N}", ancestor);
+        try
+        {
+            var fixture = CreateRepeatablePreparationFixture(ResolvePreparationScript(), testRoot);
+            var harnessPath = Path.Combine(testRoot, "route-publish.ps1");
+            File.WriteAllText(harnessPath,
+                """
+                param([string]$FakeDotnet, [string]$InvocationLog,
+                    [string]$Project, [string]$OutputRoot)
+                $ErrorActionPreference = 'Stop'
+                $env:FAKE_DOTNET_LOG = $InvocationLog
+                & $FakeDotnet publish $Project -o $OutputRoot
+                exit $LASTEXITCODE
+                """, new UTF8Encoding(true));
+            var cases = new[]
+            {
+                (Project: Path.Combine("Server", "Fixture.Server.Api", "Fixture.Server.Api.csproj"),
+                    Files: new[] { "거래플랜.Server.Api.dll" }),
+                (Project: Path.Combine("Desktop", "Fixture.Desktop.App", "Fixture.Desktop.App.csproj"),
+                    Files: new[] { "Fixture.Desktop.App.exe", "appsettings.json" }),
+                (Project: Path.Combine("tools", "SyncDiag", "SyncDiag.csproj"),
+                    Files: new[] { "SyncDiag.dll" })
+            };
+            for (var index = 0; index < cases.Length; index++)
+            {
+                var outputRoot = Path.Combine(testRoot, $"published-{index}");
+                var result = await RunPowerShellAsync(ResolveWindowsPowerShellPath(), harnessPath,
+                    TimeSpan.FromSeconds(30), "-FakeDotnet", fixture.FakeDotnet,
+                    "-InvocationLog", fixture.DotnetInvocationLog,
+                    "-Project", Path.Combine(fixture.ProjectRoot, cases[index].Project),
+                    "-OutputRoot", outputRoot);
+                Assert.True(result.ExitCode == 0, result.Stdout + Environment.NewLine + result.Stderr);
+                Assert.Equal(cases[index].Files.OrderBy(x => x, StringComparer.Ordinal),
+                    Directory.GetFiles(outputRoot).Select(Path.GetFileName)
+                        .OrderBy(x => x, StringComparer.Ordinal));
+            }
+        }
+        finally
+        {
+            await DeleteDirectoryWithRetriesAsync(Path.GetDirectoryName(testRoot)!);
+        }
+    }
+
+    [Fact]
+    public async Task RuntimePromotionCleanup_RetiresLargePackagesWithoutRelaxingCredentialTreeLimit()
+    {
+        var testRoot = Path.Combine(TestProcessIsolation.TempRoot,
+            $"runtime-promotion-large-payload-{Guid.NewGuid():N}");
+        var harnessPath = Path.Combine(testRoot, "large-payload.ps1");
+        Directory.CreateDirectory(testRoot);
+        try
+        {
+            File.WriteAllText(harnessPath,
+                """
+                param([string]$SourceScript, [string]$TestRoot)
+                $ErrorActionPreference = 'Stop'
+                $tokens = $null
+                $errors = $null
+                $ast = [Management.Automation.Language.Parser]::ParseFile(
+                    $SourceScript, [ref]$tokens, [ref]$errors)
+                if ($errors.Count -gt 0) { throw $errors[0] }
+                foreach ($name in @(
+                    'Initialize-TestEnvironmentFinalPathNativeMethods',
+                    'ConvertTo-NormalizedFullPath', 'Get-FinalExistingPath',
+                    'Resolve-PhysicalPathIdentity', 'New-Utf8NoBomEncoding',
+                    'Write-Utf8File', 'Invoke-TestEnvironmentPreparationFaultPoint',
+                    'New-IsolatedRuntimePromotionWorkspace',
+                    'Assert-IsolatedRuntimePromotionWorkspace',
+                    'Complete-IsolatedRuntimePromotionTransaction'
+                )) {
+                    $node = $ast.FindAll({ param($x)
+                        $x -is [Management.Automation.Language.FunctionDefinitionAst]
+                    }, $true) | Where-Object Name -CEQ $name | Select-Object -First 1
+                    if ($null -eq $node) { throw "Missing function: $name" }
+                    Invoke-Expression $node.Extent.Text
+                }
+                $output = Join-Path $TestRoot 'runtime'
+                New-Item -ItemType Directory -Path $output | Out-Null
+                $protectedFile = Join-Path $output 'preserve.bin'
+                [IO.File]::WriteAllBytes($protectedFile, [byte[]](17, 23, 41))
+                $workspace = New-IsolatedRuntimePromotionWorkspace -OutputRoot $output
+                $native = [GeoraePlan.TestEnvironment.FinalPathNativeMethods]
+                $nested = Join-Path $workspace.BackupRoot 'ServerData'
+                New-Item -ItemType Directory -Path $nested | Out-Null
+                $payloads = @(
+                    (Join-Path $nested 'desktop-package.zip'),
+                    (Join-Path $workspace.BackupRoot 'database-copy.bin')
+                )
+                foreach ($path in $payloads) {
+                    $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew)
+                    try { $stream.SetLength(512MB) } finally { $stream.Dispose() }
+                }
+                $rejected = $false
+                try {
+                    $native::DeletePrivateTreeAndRoot(
+                        $workspace.BackupIdentity.RootHandle,
+                        [string]$workspace.BackupRoot)
+                }
+                catch {
+                    if ($_.Exception.ToString() -notmatch 'private tree byte limit') { throw }
+                    $rejected = $true
+                }
+                if (-not $rejected) { throw 'Credential tree byte limit was relaxed.' }
+                foreach ($path in $payloads) {
+                    if ((Get-Item -LiteralPath $path).Length -ne 512MB) {
+                        throw 'Rejected cleanup modified a payload.'
+                    }
+                }
+                Assert-IsolatedRuntimePromotionWorkspace -Workspace $workspace
+                $transaction = [pscustomobject]@{ Workspace=$workspace; Committed=$false }
+                Complete-IsolatedRuntimePromotionTransaction -Transaction $transaction
+                foreach ($root in @($workspace.StageRoot,$workspace.BackupRoot,$workspace.QuarantineRoot)) {
+                    if (Test-Path -LiteralPath $root) { throw "Private root remains: $root" }
+                }
+                if (-not $transaction.Committed -or
+                    [Convert]::ToBase64String([IO.File]::ReadAllBytes($protectedFile)) -cne 'ERcp') {
+                    throw 'Promotion cleanup changed the retained runtime.'
+                }
+                Write-Output 'large_promotion_cleanup_and_credential_limit_verified'
+                """, new UTF8Encoding(true));
+            var result = await RunPowerShellAsync(
+                ResolveWindowsPowerShellPath(), harnessPath, TimeSpan.FromSeconds(60),
+                "-SourceScript", ResolvePreparationScript(), "-TestRoot", testRoot);
+            Assert.True(result.ExitCode == 0, result.Stdout + Environment.NewLine + result.Stderr);
+            Assert.Contains("large_promotion_cleanup_and_credential_limit_verified",
+                result.Stdout, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await DeleteDirectoryWithRetriesAsync(testRoot);
+        }
+    }
+
     [Fact]
     public void PreparationScript_BuildsAndStagesPublishBeforeFinalRuntimeMutation()
     {
@@ -6417,6 +6557,8 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
                 "$appProcess.WaitForExit(250)",
                 runAllSource,
                 StringComparison.Ordinal);
+            Assert.Contains("$childProcessJob.FindReplacementProcess(", runAllSource, StringComparison.Ordinal);
+            Assert.Contains("$appProcess = $replacementApp", runAllSource, StringComparison.Ordinal);
             Assert.Contains(
                 "$serverProcess.HasExited",
                 runAllSource,
@@ -6433,6 +6575,58 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
                 "Wait-Process -Id $appProcess.Id",
                 runAllSource,
                 StringComparison.Ordinal);
+
+            // Execute the generated monitoring loop with an app that has already
+            // exited at the loop boundary. Two successive replacements must both
+            // be adopted before ordinary shutdown, regardless of exit timing.
+            var repeatedHandoffScript = Path.Combine(outputRoot, "repeated-handoff.ps1");
+            File.WriteAllText(repeatedHandoffScript,
+                """
+                param([string]$Launcher)
+                $ErrorActionPreference = 'Stop'
+                $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+                    $Launcher, [ref]$null, [ref]$null)
+                $loop = $ast.Find({ param($n)
+                    $n -is [System.Management.Automation.Language.WhileStatementAst] -and
+                    $n.Extent.Text.Contains('$appProcess.WaitForExit(250)')
+                }, $true)
+                if ($null -eq $loop) { throw 'App monitoring loop missing.' }
+                function New-ExitedApp([int]$id) {
+                    $p = [pscustomobject]@{ Id=$id; HasExited=$true; ExitCode=0; Disposed=$false }
+                    $p | Add-Member ScriptMethod WaitForExit {
+                        param($milliseconds)
+                        if ($null -ne $milliseconds) { return $true }
+                    }
+                    $p | Add-Member ScriptMethod Dispose { $this.Disposed=$true }
+                    return $p
+                }
+                $first = New-ExitedApp 1
+                $second = New-ExitedApp 2
+                $third = New-ExitedApp 3
+                $appProcess = $first
+                $childProcessJob = [pscustomobject]@{ Replacements=@($second,$third); Next=0 }
+                $childProcessJob | Add-Member ScriptMethod FindReplacementProcess {
+                    param($path,$oldId)
+                    if ($this.Next -lt $this.Replacements.Count) {
+                        $result=$this.Replacements[$this.Next]; $this.Next++; return $result
+                    }
+                    return $null
+                }
+                $serverProcess = [pscustomobject]@{ HasExited=$false }
+                $nextHealthProbeUtc = [DateTime]::MaxValue
+                $appExe = 'owned-test-app.exe'
+                function Assert-RuntimeServerLogsWithinLimit { param($LogRoot,$Paths) }
+                function Write-Log { param($Message) }
+                & ([scriptblock]::Create($loop.Extent.Text))
+                if ($childProcessJob.Next -ne 2 -or -not $first.Disposed -or
+                    -not $second.Disposed -or $third.Disposed) {
+                    throw 'Already-exited app skipped replacement adoption or cleanup ownership.'
+                }
+                """, utf8NoBom);
+            var repeatedHandoff = await RunPowerShellAsync(powerShellPath,
+                repeatedHandoffScript, TimeSpan.FromSeconds(20), "-Launcher", runAllPath);
+            Assert.True(repeatedHandoff.ExitCode == 0,
+                repeatedHandoff.Stdout + Environment.NewLine + repeatedHandoff.Stderr);
 
             File.WriteAllText(
                 childScript,
@@ -6499,6 +6693,11 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
                     [Text.UTF8Encoding]::new($false))
 
                 $job = [GeoraePlan.Runtime.ChildProcessJob]::new()
+                # The probe and other PowerShell instances share this executable
+                # name, but none belongs to the new runtime job.
+                if ($null -ne $job.FindReplacementProcess($PowerShellPath, $PID)) {
+                    throw 'An unrelated process was accepted as a replacement.'
+                }
                 $child = Start-Process `
                     -FilePath $PowerShellPath `
                     -ArgumentList @(
@@ -6513,6 +6712,19 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
                     -PassThru
                 try {
                     $job.AssignProcess($child)
+                    $replacement = $job.FindReplacementProcess($PowerShellPath, $PID)
+                    if ($null -eq $replacement -or $replacement.Id -ne $child.Id) {
+                        throw 'The owned replacement process was not found.'
+                    }
+                    $replacement.Dispose()
+                    if ($null -ne $job.FindReplacementProcess($PowerShellPath, $child.Id)) {
+                        throw 'The exited process identity was accepted as a replacement.'
+                    }
+                    $wrongPath = Join-Path (Split-Path -Parent $SourceScript) `
+                        ([IO.Path]::GetFileName($PowerShellPath))
+                    if ($null -ne $job.FindReplacementProcess($wrongPath, $PID)) {
+                        throw 'A different executable path was accepted as a replacement.'
+                    }
                 }
                 catch {
                     if (-not $child.HasExited) {
@@ -11382,12 +11594,13 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
             $outputRoot = $allArguments[$outputIndex + 1]
             New-Item -ItemType Directory -Force -Path $outputRoot |
                 Out-Null
-            if ($allArguments[1] -like '*SyncDiag*') {
+            $projectFileName = Split-Path -Leaf $allArguments[1]
+            if ($projectFileName -eq 'SyncDiag.csproj') {
                 [IO.File]::WriteAllText(
                     (Join-Path $outputRoot 'SyncDiag.dll'),
                     'fixture syncdiag assembly')
             }
-            elseif ($allArguments[1] -like '*Desktop*') {
+            elseif ($projectFileName -eq 'Fixture.Desktop.App.csproj') {
                 [IO.File]::WriteAllText(
                     (Join-Path $outputRoot 'Fixture.Desktop.App.exe'),
                     'fixture desktop executable')

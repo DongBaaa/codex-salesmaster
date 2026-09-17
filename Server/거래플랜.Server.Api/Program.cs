@@ -358,11 +358,6 @@ if (securityOptions.AddSecurityHeaders)
 
 app.UseRouting();
 
-if (securityOptions.EnableRateLimiting)
-{
-    app.UseRateLimiter();
-}
-
 app.UseCors("DesktopClient");
 app.UseMiddleware<DatabaseInitializationGateMiddleware>();
 
@@ -373,6 +368,13 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseAuthentication();
+
+// Resolve API limits from the validated identity; unauthenticated and login requests retain IP limits.
+if (securityOptions.EnableRateLimiting)
+{
+    app.UseRateLimiter();
+}
+
 app.UseAuthorization();
 app.UseMiddleware<ClientCompatibilityGateMiddleware>();
 app.MapControllers();

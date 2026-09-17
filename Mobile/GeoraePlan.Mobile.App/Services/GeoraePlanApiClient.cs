@@ -386,29 +386,41 @@ public sealed class GeoraePlanApiClient
            new List<RecycleBinEntryDto>();
 
     public Task<SyncPullResponse?> PullAsync(long sinceRevision, CancellationToken ct = default)
-        => GetAsync<SyncPullResponse>($"sync/pull?sinceRev={sinceRevision}", ct);
+        => GetAsync<SyncPullResponse>($"sync/pull?sinceRev={sinceRevision}&rentalBillingScheduleVersion={RentalBillingScheduleRules.ScheduleCapabilityVersion}", ct);
 
     public Task<SyncPullResponse?> PullAsync(
         long sinceRevision,
         MobileSessionOwner owner,
         CancellationToken ct = default)
         => GetAsync<SyncPullResponse>(
-            $"sync/pull?sinceRev={sinceRevision}",
+            $"sync/pull?sinceRev={sinceRevision}&rentalBillingScheduleVersion={RentalBillingScheduleRules.ScheduleCapabilityVersion}",
             ct,
             expectedOwner: owner);
 
     public Task<SyncPushResult?> PushAsync(SyncPushRequest request, CancellationToken ct = default)
-        => PostAsync<SyncPushRequest, SyncPushResult>("sync/push", request, ct);
+        => PushAsync(request, _sessionStore.CaptureOwner(), ct);
 
-    public Task<SyncPushResult?> PushAsync(
+    public async Task<SyncPushResult?> PushAsync(
         SyncPushRequest request,
         MobileSessionOwner owner,
         CancellationToken ct = default)
-        => PostAsync<SyncPushRequest, SyncPushResult>(
+    {
+        request.RentalBillingScheduleVersion = RentalBillingScheduleRules.ScheduleCapabilityVersion;
+        var requiredScheduleVersion = (request.RentalBillingProfiles ?? [])
+            .Select(profile => RentalBillingScheduleRules.RequiredScheduleCapabilityVersion(profile.BillingDayMode, profile.BillingAdvanceMode))
+            .DefaultIfEmpty(0).Max();
+        if (requiredScheduleVersion > 0)
+        {
+            var status = await GetSyncStatusAsync(owner, ct);
+            if (status is null || status.RentalBillingScheduleVersion < requiredScheduleVersion)
+                throw new InvalidOperationException(RentalBillingScheduleRules.ScheduleUpgradeRequiredMessage);
+        }
+        return await PostAsync<SyncPushRequest, SyncPushResult>(
             "sync/push",
             request,
             ct,
             expectedOwner: owner);
+    }
 
     public Task<SyncStatusDto?> GetSyncStatusAsync(CancellationToken ct = default)
         => GetAsync<SyncStatusDto>("sync/status", ct);

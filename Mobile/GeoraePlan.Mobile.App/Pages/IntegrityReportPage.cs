@@ -74,7 +74,7 @@ public sealed class IntegrityReportPage : ContentPage
                 {
                     GeoraePlanTheme.CreateCompactCard(
                         GeoraePlanTheme.CreateSectionTitle("운영점검 / 무결성", 16),
-                        GeoraePlanTheme.CreateBodyText("운영 서버의 전표·수금/지급·렌탈·첨부·품목/거래처 참조 무결성 결과를 읽기 전용으로 확인합니다.", true, 12),
+                        GeoraePlanTheme.CreateBodyText("현재 서버의 전표·수금/지급·렌탈·첨부·품목/거래처 참조 무결성 결과를 읽기 전용으로 확인합니다.", true, 12),
                         GeoraePlanTheme.CreateBodyText("오류나 경고가 있으면 모바일에서 임의 수정하지 말고 PC 운영점검의 상세 조치 화면에서 처리하세요.", true, 12),
                         refreshButton,
                         summaryLabel,

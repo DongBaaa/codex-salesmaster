@@ -13,6 +13,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'DesktopRuntimePolicy.ps1')
 
 $powerShellUtilityModulePath = Join-Path `
     $PSHOME `
@@ -2177,7 +2178,7 @@ function Publish-DesktopApplication {
     Remove-Item -LiteralPath $PublishRoot -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $PublishRoot | Out-Null
 
-    & $DotnetExe publish $desktopProject -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $PublishRoot | Out-Null
+    & $DotnetExe publish $desktopProject -c Release -r win-x64 --self-contained true "-p:RuntimeFrameworkVersion=$(Get-DesktopRuntimeFrameworkVersion)" -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $PublishRoot | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw 'Failed to publish desktop application for packaging.'
     }
@@ -3178,7 +3179,7 @@ if (Test-Path -LiteralPath $updaterProject) {
     $updaterPublishRoot =
         Join-Path $env:TEMP $updaterPublishName
     try {
-        & $dotnetExe publish $updaterProject -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $updaterPublishRoot | Out-Null
+        & $dotnetExe publish $updaterProject -c Release -r win-x64 --self-contained true "-p:RuntimeFrameworkVersion=$(Get-DesktopRuntimeFrameworkVersion)" -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $updaterPublishRoot | Out-Null
         if ($LASTEXITCODE -ne 0) {
             throw 'Failed to publish updater for desktop package.'
         }
@@ -3205,7 +3206,26 @@ if (Test-Path -LiteralPath $updaterProject) {
 
 Ensure-DesktopPackageUpdaterFile -AppRoot $appRoot -AppDisplayName $AppDisplayName
 Assert-DesktopPackageRequiredFiles -AppRoot $appRoot -AppDisplayName $AppDisplayName
+
+foreach ($runtimeExe in (@('거래플랜.Desktop.App.exe', "$AppDisplayName.exe", 'Updater\거래플랜.Updater.exe', "Updater\$AppDisplayName.Updater.exe") | Select-Object -Unique)) {
+    Assert-DesktopBundledRuntime -Path (Join-Path $appRoot $runtimeExe) | Out-Null
+}
+
+$preparedPayloadManifestPath = ''
+if (-not $SkipNativeInstallers) {
+    $payloadIconPath = Join-Path $ProjectRoot 'AppIcons\tradeplan-windows.ico'
+    if (-not (Test-Path -LiteralPath $payloadIconPath -PathType Leaf)) {
+        throw "Desktop payload icon not found: $payloadIconPath"
+    }
+    Copy-Item -LiteralPath $payloadIconPath -Destination (Join-Path $appRoot 'tradeplan-windows.ico') -Force
+}
 Invoke-WindowsArtifactSigning -ProjectRoot $ProjectRoot -WindowsSigningConfigPath $WindowsSigningConfigPath -PackageRoot $packageRoot -RequireSigning:$RequireWindowsAuthenticode
+if (-not $SkipNativeInstallers) {
+    . (Join-Path $scriptRoot 'DesktopPayloadManifest.ps1')
+    $preparedPayloadManifest = Get-DesktopPayloadManifest -SourceRoot $appRoot -Version $desktopVersion -IconFileName 'tradeplan-windows.ico'
+    $preparedPayloadManifestPath = Join-Path $packageRoot 'desktop-payload.json'
+    $preparedPayloadManifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $preparedPayloadManifestPath -Encoding UTF8
+}
 
 $serverUrl = ''
 $appSettingsPath = Join-Path $appRoot 'appsettings.json'
@@ -5190,7 +5210,8 @@ function Exit-InstallRootGates {
 }
 
 function Ensure-ElevatedIfNeeded {
-    if (-not (Test-ProtectedInstallRoot -Path `$script:ActiveSupervisorInstallRoot)) {
+    if (-not (Test-ProtectedInstallRoot -Path `$script:ActiveSupervisorInstallRoot) -and
+        `$null -eq (Get-NativeInstalledProduct -Root `$script:ActiveSupervisorInstallRoot)) {
         return [pscustomobject]@{
             Relaunched = `$false
             ExitCode = 0
@@ -6297,7 +6318,7 @@ function Assert-SupervisorJournalBinding {
     `$expectedInstallRoot =
         Get-NormalizedSupervisorPath -Path `$ExpectedInstallRoot
     `$expectedState = Get-NormalizedSupervisorPath -Path `$ExpectedStateRoot
-    if (@(1, 2) -notcontains [int]`$Journal.FormatVersion -or
+    if (@(1, 2, 3) -notcontains [int]`$Journal.FormatVersion -or
         -not (Test-SameSupervisorPath -Left `$Journal.InstallRoot -Right `$expectedInstallRoot) -or
         -not (Test-SameSupervisorPath -Left `$Journal.StateRoot -Right `$expectedState)) {
         throw "supervisor journal 기본 path binding 검증에 실패했습니다."
@@ -6341,6 +6362,7 @@ function Assert-SupervisorJournalBinding {
     }
     Assert-WorkerJobJournalBinding -Journal `$Journal
     Assert-ShortcutRepairJournalBinding -Journal `$Journal
+    Assert-NativeJournalBinding -Journal `$Journal
 
     `$snapshotRoot = Join-Path `$expectedState 'snapshots'
     foreach (`$snapshot in @(`$Journal.Snapshots)) {
@@ -6487,6 +6509,10 @@ function Invoke-PendingSupervisorRecoveryForRoot {
     Assert-ProtectedSupervisorStateAcl -StateRoot `$stateRoot
     `$journal = Read-SupervisorJournal -JournalPath `$journalPath -ExpectedStateRoot `$stateRoot -ExpectedInstallRoot `$RecoveryInstallRoot
     Complete-WorkerJobBarrierForJournal -Journal `$journal
+    if ([int]`$journal.FormatVersion -eq 3 -and `$journal.Phase -ne 'Preparing') {
+        Invoke-NativeJournalRecovery -Journal `$journal -JournalPath `$journalPath
+        return `$true
+    }
     switch ([string]`$journal.Phase) {
         'Preparing' {
             Write-InstallLog '미완성 snapshot 준비 state를 정리합니다. worker는 시작되지 않았습니다.'
@@ -6600,6 +6626,7 @@ function Invoke-PendingSupervisorRecovery {
 }
 
 function New-SupervisorJournal {
+    param(`$NativeInstall = `$null)
     `$installRootFullPath = Get-NormalizedSupervisorPath -Path `$InstallRoot
     `$installParent = Split-Path -Parent `$installRootFullPath
     `$stateRoot = Get-SupervisorStateRoot -InstallPath `$installRootFullPath
@@ -6634,7 +6661,8 @@ function New-SupervisorJournal {
 
     `$journalPath = Join-Path `$stateRoot 'journal.json'
     `$journal = [pscustomobject]@{
-        FormatVersion = 2
+        FormatVersion = `$(if (`$null -ne `$NativeInstall) { 3 } else { 2 })
+        NativeInstall = `$NativeInstall
         Phase = 'Preparing'
         InstallRoot = `$installRootFullPath
         StateRoot = `$stateRoot
@@ -6727,7 +6755,8 @@ function Get-ShortcutRepairContract {
 
     `$protectedShortcutScope =
         `$forceProtectedTestScope -or
-        (Test-ProtectedInstallRoot -Path `$InstallRoot)
+        (Test-ProtectedInstallRoot -Path `$InstallRoot) -or
+        (`$null -ne (Get-NativeInstalledProduct -Root `$InstallRoot))
     if (`$useIsolatedTestRoots) {
         `$testShortcutRoot = Join-Path (
             Split-Path -Parent `$InstallerScriptPath
@@ -7081,7 +7110,10 @@ function Remove-EmptyLegacyShortcutDirectory {
 }
 
 function Invoke-PendingShortcutRepair {
-    param([Parameter(Mandatory = `$true)]`$Repair)
+    param(
+        [Parameter(Mandatory = `$true)]`$Repair,
+        [string]`$NativeProductCode = ''
+    )
 
     if (`$NoShortcuts) {
         throw 'shortcut repair pending state는 -NoShortcuts로 해제할 수 없습니다.'
@@ -7097,9 +7129,14 @@ function Invoke-PendingShortcutRepair {
         Join-Path `$Repair.InstallRoot '__APP_DISPLAY_NAME__.exe'
     `$uninstallScript =
         Join-Path `$Repair.InstallRoot '__UNINSTALL_PS1_NAME__'
+    `$nativeRemoval = -not [string]::IsNullOrWhiteSpace(`$NativeProductCode)
+    `$removalExecutable = if (`$nativeRemoval) {
+        [void][guid]::Parse(`$NativeProductCode)
+        Join-Path ([Environment]::GetFolderPath('System')) 'msiexec.exe'
+    } else { `$uninstallScript }
     foreach (`$requiredShortcutTarget in @(
         `$installedExecutable,
-        `$uninstallScript
+        `$removalExecutable
     )) {
         `$targetAttributes =
             [System.IO.File]::GetAttributes(`$requiredShortcutTarget)
@@ -7115,7 +7152,13 @@ function Invoke-PendingShortcutRepair {
     Set-AtomicShellShortcut -Shell `$shell -ShortcutPath `$Repair.PrimaryApplicationShortcutPath -TargetPath `$installedExecutable -WorkingDirectory `$Repair.InstallRoot
     `$removeArguments =
         "-ExecutionPolicy Bypass -File ``"`$uninstallScript``" -InstallRoot ``"`$(`$Repair.InstallRoot)``""
-    Set-AtomicShellShortcut -Shell `$shell -ShortcutPath `$Repair.PrimaryRemoveShortcutPath -TargetPath 'powershell.exe' -WorkingDirectory `$Repair.InstallRoot -Arguments `$removeArguments
+    if (`$nativeRemoval) {
+        `$removeArguments = '/x ' + ([guid]`$NativeProductCode).ToString('B')
+        Set-AtomicShellShortcut -Shell `$shell -ShortcutPath `$Repair.PrimaryRemoveShortcutPath -TargetPath `$removalExecutable -WorkingDirectory `$Repair.InstallRoot -Arguments `$removeArguments
+    }
+    else {
+        Set-AtomicShellShortcut -Shell `$shell -ShortcutPath `$Repair.PrimaryRemoveShortcutPath -TargetPath 'powershell.exe' -WorkingDirectory `$Repair.InstallRoot -Arguments `$removeArguments
+    }
 
     if (`$env:GEORAEPLAN_INSTALLER_TEST_FAIL_SHORTCUTS_AFTER_COMMON -eq
         '1') {
@@ -7226,7 +7269,9 @@ function Invoke-WorkerUnderRollbackSupervisor {
     `$workerStartPipe = `$null
     `$workerStarted = `$false
     try {
-        `$journal = New-SupervisorJournal
+        `$script:NativeRecoveryCommitted = `$false
+        `$nativePlan = Get-NativeInstallPlan -PackageRoot `$packageRoot -Root `$InstallRoot
+        `$journal = New-SupervisorJournal -NativeInstall `$nativePlan
         `$journalPath = Join-Path `$journal.StateRoot 'journal.json'
         `$workerJob =
             [GeoraePlanInstaller.WorkerJob]::new(
@@ -7384,6 +7429,12 @@ function Invoke-WorkerUnderRollbackSupervisor {
             throw ("worker 설치가 실패했습니다. ExitCode={0}" -f `$worker.ExitCode)
         }
 
+        if ([int]`$journal.FormatVersion -eq 3) {
+            Complete-WorkerJobBarrierForJournal -Journal `$journal
+            Invoke-NativeJournalRecovery -Journal `$journal -JournalPath `$journalPath
+            if (-not `$script:NativeRecoveryCommitted) { throw 'Native worker returned without a committed installation.' }
+            return 0
+        }
         if ([bool]`$journal.ShortcutRepair.Enabled) {
             `$journal.Phase = 'ShortcutRepairPending'
             Assert-ShortcutRepairJournalBinding -Journal `$journal
@@ -7425,6 +7476,7 @@ function Invoke-WorkerUnderRollbackSupervisor {
     }
     catch {
         `$supervisorFailure = `$_.Exception
+        Write-InstallLog ("supervisor failure location: {0}" -f `$_.ScriptStackTrace)
         Write-InstallLog ("supervisor가 독립 rollback을 시작합니다. Error={0}" -f `$supervisorFailure)
 
         `$workerBarrierComplete = `$false
@@ -7458,11 +7510,20 @@ function Invoke-WorkerUnderRollbackSupervisor {
                 `$rollbackComplete = `$true
             }
             catch {
+                if (Test-ShortcutRepairPendingException -Exception `$_.Exception) {
+                    Write-InstallLog 'Committed installation retained; shortcut recovery remains pending.'
+                    Show-InstallError '설치 파일은 반영되었지만 바로가기 복구가 완료되지 않았습니다. 동일한 검증된 설치 패키지를 다시 실행해 주세요.'
+                    return 2
+                }
                 Write-InstallLog ("rollback/cleanup-pending; supervisor와 설치 gate를 유지하고 재시도합니다. Error={0}" -f `$_.Exception)
                 Start-Sleep -Seconds 5
             }
         }
 
+        if (`$script:NativeRecoveryCommitted) {
+            Write-InstallLog 'MSI committed before the worker stopped; verified the new payload and completed recovery.'
+            return 0
+        }
         if (`$workerStarted) {
             Write-InstallLog 'supervisor가 기존 설치본의 검증된 rollback과 durable state 정리를 완료했습니다.'
         }
@@ -7488,7 +7549,10 @@ function Invoke-WorkerUnderRollbackSupervisor {
     return 0
 }
 
+__NATIVE_INSTALL_HELPERS__
+
 `$ErrorActionPreference = 'Stop'
+`$script:NativeRecoveryCommitted = `$false
 `$heldInstallOperationLeases = @()
 `$heldInstallWorkerLeases = @()
 `$script:SupervisorRelaunchedByChild = `$false
@@ -7694,6 +7758,16 @@ try {
         }
     }
 
+    `$workerStateRoot = Get-SupervisorStateRoot -InstallPath `$InstallRoot
+    `$workerJournal = Read-SupervisorJournal -JournalPath (Join-Path `$workerStateRoot 'journal.json') -ExpectedStateRoot `$workerStateRoot -ExpectedInstallRoot `$InstallRoot
+    if ([int]`$workerJournal.FormatVersion -eq 3) {
+        Invoke-NativeInstallWorker -Journal `$workerJournal -PackageRoot `$packageRoot
+        Write-InstallLog 'Native MSI transaction completed; supervisor will verify registration and payload.'
+        exit 0
+    }
+    if (`$null -ne (Get-NativeInstalledProduct -Root `$InstallRoot)) {
+        throw 'MSI registration appeared after preparation; refusing file-only installation.'
+    }
     Write-InstallLog '파일 복사를 시작합니다.'
     Invoke-RobocopyMirror -Source `$sourceRoot -Destination `$InstallRoot
     if (`$useLegacyBridgeCopy) {
@@ -7796,7 +7870,19 @@ catch {
 }
 "@
 
-$installScript = $installScriptTemplate
+$nativeRuntimeSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'NativeMsiRuntime.cs') -Raw -Encoding UTF8
+$nativeRuntimeBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($nativeRuntimeSource))
+$nativeHelperSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'NativeInstallRuntime.ps1') -Raw -Encoding UTF8
+$nativeIdentityAst = [Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $PSScriptRoot 'DesktopNativePackage.ps1'), [ref]$null, [ref]$null)
+$nativeIdentityFunction = @($nativeIdentityAst.FindAll({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-DesktopMsiIdentity'
+}, $true))
+if ($nativeIdentityFunction.Count -ne 1) { throw 'Native MSI identity helper missing or ambiguous.' }
+$installScript = $installScriptTemplate.Replace('__NATIVE_INSTALL_HELPERS__',
+    ($nativeIdentityFunction[0].Extent.Text + [Environment]::NewLine + $nativeHelperSource))
+$installScript = $installScript.Replace('__NATIVE_MSI_RUNTIME_B64__', $nativeRuntimeBase64)
 $installScript = $installScript.Replace('__EXPECTED_VERSION__', $desktopVersion)
 $installScript = $installScript.Replace(
     '__INSTALLER_TEST_HOOKS_ENABLED__',
@@ -7831,7 +7917,12 @@ $readme = @(
     $(if ([string]::IsNullOrWhiteSpace($serverUrl)) { 'Check appsettings.json' } else { $serverUrl })
 ) -join [Environment]::NewLine
 
-$installScript | Set-Content -LiteralPath (Join-Path $packageRoot $installPs1Name) -Encoding UTF8
+# The launcher uses Windows PowerShell 5.1, which needs a BOM to recognize
+# UTF-8 Korean paths even when this builder runs under PowerShell 7.
+[System.IO.File]::WriteAllText(
+    (Join-Path $packageRoot $installPs1Name),
+    $installScript,
+    [System.Text.UTF8Encoding]::new($true))
 $cmdScript | Set-Content -LiteralPath (Join-Path $packageRoot $installCmdName) -Encoding ASCII
 $readme | Set-Content -LiteralPath (Join-Path $packageRoot 'README.txt') -Encoding UTF8
 if ($EnableTestHooks) {
@@ -7839,6 +7930,34 @@ if ($EnableTestHooks) {
         (Join-Path $packageRoot $testHookCapabilityMarkerName),
         $testHookCapability,
         [System.Text.UTF8Encoding]::new($false))
+}
+
+$nativePreparedRoot = ''
+$nativePackageManifest = $null
+if (-not $SkipNativeInstallers) {
+    . (Join-Path $scriptRoot 'DesktopNativePackage.ps1')
+    $nativeInstallerScript = Join-Path $scriptRoot 'Build-GeoraePlanDesktopNativeInstallers.ps1'
+    if (-not (Test-Path -LiteralPath $nativeInstallerScript -PathType Leaf)) { throw 'Native installer generator is missing.' }
+    $nativePreparedName = '.' + $PackageName + '.' + [guid]::NewGuid().ToString('N') + '.native-build'
+    $nativePreparedRoot = Get-ContainedDirectChildPath -ParentPath $adminOutputRoot -ChildName $nativePreparedName -Description 'isolated native build'
+    if (Test-Path -LiteralPath $nativePreparedRoot) { throw 'Native build output already exists.' }
+    [void](New-Item -ItemType Directory -Path $nativePreparedRoot)
+    Write-Host "native_prepared_root=$nativePreparedRoot"
+    $nativeInstallerArguments = @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $nativeInstallerScript,
+        '-ProjectRoot', $ProjectRoot, '-SourceFolder', $appRoot,
+        '-PreparedPayloadManifestPath', $preparedPayloadManifestPath,
+        '-Version', $desktopVersion, '-LaunchExeName', ($AppDisplayName + '.exe'),
+        '-OutputRoot', $nativePreparedRoot, '-PackageName', $PackageName, '-AppDisplayName', $AppDisplayName
+    )
+    if (-not [string]::IsNullOrWhiteSpace($WindowsSigningConfigPath)) {
+        $nativeInstallerArguments += @('-WindowsSigningConfigPath', $WindowsSigningConfigPath)
+    }
+    if ($RequireWindowsAuthenticode) { $nativeInstallerArguments += '-RequireWindowsAuthenticode' }
+    & powershell @nativeInstallerArguments
+    if ($LASTEXITCODE -ne 0) { throw 'Native installer generation failed before ZIP publication.' }
+    $nativeMsiPath = Join-Path (Join-Path $nativePreparedRoot '관리자용') ($PackageName + '.msi')
+    $nativePackageManifest = Add-DesktopNativePackage -MsiPath $nativeMsiPath -PackageRoot $packageRoot -Version $desktopVersion -PayloadManifestPath $preparedPayloadManifestPath
 }
 
 $transactionId = [System.Guid]::NewGuid().ToString('N')
@@ -7893,6 +8012,9 @@ $validatedStagedZipOwner = $null
 $stagedZipOwnerMarkerLease = $null
 $stagedZipOwnerMarkerHash = ''
 try {
+    if (-not $SkipNativeInstallers) {
+        Assert-DesktopPayloadManifest -SourceRoot $appRoot -Manifest $preparedPayloadManifest -Version $desktopVersion
+    }
     $stagedZipOwner = [PSCustomObject]@{
         SchemaVersion = 1
         TransactionId = $transactionId
@@ -7942,6 +8064,10 @@ try {
         -AppDisplayName $AppDisplayName `
         -InstallCmdName $installCmdName `
         -ExpectedVersion $desktopVersion
+    if (-not $SkipNativeInstallers) {
+        Assert-DesktopPayloadArchive -ArchivePath $stagedZipPath -Manifest $preparedPayloadManifest
+        Assert-DesktopNativePackageArchive -ArchivePath $stagedZipPath -Manifest $nativePackageManifest
+    }
     $stagedZipHash = (
         Get-FileHash `
             -LiteralPath $stagedZipPath `
@@ -8152,29 +8278,8 @@ Write-Host "package_zip=$zipPath"
 Write-Host "package_zip_sha256=$zipHashSidecarPath"
 
 if (-not $SkipNativeInstallers) {
-    $nativeInstallerScript = Join-Path $scriptRoot 'Build-GeoraePlanDesktopNativeInstallers.ps1'
-    if (Test-Path -LiteralPath $nativeInstallerScript) {
-        $nativeInstallerArguments = @(
-            '-ExecutionPolicy', 'Bypass',
-            '-File', $nativeInstallerScript,
-            '-ProjectRoot', $ProjectRoot,
-            '-SourceFolder', $appRoot,
-            '-OutputRoot', $OutputRoot,
-            '-PackageName', $PackageName,
-            '-AppDisplayName', $AppDisplayName
-        )
-        if (-not [string]::IsNullOrWhiteSpace($WindowsSigningConfigPath)) {
-            $nativeInstallerArguments += @('-WindowsSigningConfigPath', $WindowsSigningConfigPath)
-        }
-        if ($RequireWindowsAuthenticode) {
-            $nativeInstallerArguments += '-RequireWindowsAuthenticode'
-        }
-
-        & powershell @nativeInstallerArguments
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Native installer generation failed.'
-        }
-    }
+    Publish-DesktopNativeFiles -PreparedRoot $nativePreparedRoot -OutputRoot $OutputRoot -PackageName $PackageName -Version $desktopVersion -NativeManifest $nativePackageManifest
+    $null = Remove-ContainedOutputItem -ParentPath $adminOutputRoot -ChildName $nativePreparedName -Description 'completed isolated native build' -Recurse
 }
 }
 finally {

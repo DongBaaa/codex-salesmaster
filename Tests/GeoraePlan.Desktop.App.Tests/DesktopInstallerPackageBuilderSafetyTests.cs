@@ -2687,6 +2687,8 @@ public sealed class DesktopInstallerPackageBuilderSafetyTests
         File.WriteAllText(
             Path.Combine(updaterRoot, "거래플랜.Updater.exe"),
             "updater executable");
+        AppendFixtureRuntimeMetadata(Path.Combine(sourceFolder, "거래플랜.Desktop.App.exe"));
+        AppendFixtureRuntimeMetadata(Path.Combine(updaterRoot, "거래플랜.Updater.exe"));
 
         string fakeDotnetPath;
         if (includeUpdaterProject)
@@ -2727,8 +2729,12 @@ public sealed class DesktopInstallerPackageBuilderSafetyTests
                 $updaterName = [Text.Encoding]::UTF8.GetString(
                     [Convert]::FromBase64String(
                         '6rGw656Y7ZSM656cLlVwZGF0ZXIuZXhl'))
-                [IO.File]::WriteAllText(
-                    (Join-Path $outputRoot $updaterName),
+                $publishedUpdater = Join-Path $outputRoot $updaterName
+                [IO.File]::Copy(
+                    (Join-Path $PSScriptRoot "source\Updater\$updaterName"),
+                    $publishedUpdater)
+                [IO.File]::AppendAllText(
+                    $publishedUpdater,
                     "updater publish root=$outputRoot",
                     [Text.UTF8Encoding]::new($false))
                 $global:LASTEXITCODE = 0
@@ -2761,6 +2767,67 @@ public sealed class DesktopInstallerPackageBuilderSafetyTests
             Path.Combine(testRoot, "output"),
             fakeDotnetPath,
             tempRoot);
+    }
+
+    // Packaging safety fixtures are never executed. Keep their PE version/resource
+    // bytes and add bundle metadata so the runtime gate runs without a bypass.
+    // This is not evidence that these fixtures contain a runnable .NET runtime.
+    internal static void AppendFixtureRuntimeMetadata(string path)
+    {
+        const string version = "8.0.31";
+        var config = Encoding.UTF8.GetBytes(System.Text.Json.JsonSerializer.Serialize(new
+        {
+            runtimeOptions = new
+            {
+                includedFrameworks = new[]
+                {
+                    new { name = "Microsoft.NETCore.App", version },
+                    new { name = "Microsoft.WindowsDesktop.App", version }
+                }
+            }
+        }));
+        var deps = Encoding.UTF8.GetBytes(System.Text.Json.JsonSerializer.Serialize(new
+        {
+            libraries = new Dictionary<string, object>
+            {
+                [$"runtimepack.Microsoft.NETCore.App.Runtime.win-x64/{version}"] = new { },
+                [$"runtimepack.Microsoft.WindowsDesktop.App.Runtime.win-x64/{version}"] = new { }
+            }
+        }));
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite);
+        stream.Position = stream.Length;
+        using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
+        var pointer = stream.Position;
+        writer.Write(0L);
+        writer.Write(Convert.FromHexString(
+            "8b1202b96a612038727b930214d7a03213f5b9e6efae3318ee3b2dce24b36aae"));
+        var depsOffset = stream.Position;
+        writer.Write(deps);
+        var configOffset = stream.Position;
+        writer.Write(config);
+        var manifestOffset = stream.Position;
+        writer.Write(6U);
+        writer.Write(0U);
+        writer.Write(2);
+        writer.Write("isolated-packaging-metadata-fixture");
+        writer.Write(depsOffset);
+        writer.Write((long)deps.Length);
+        writer.Write(configOffset);
+        writer.Write((long)config.Length);
+        writer.Write(0UL);
+        WriteEntry(depsOffset, deps.Length, 3, "fixture.deps.json");
+        WriteEntry(configOffset, config.Length, 4, "fixture.runtimeconfig.json");
+        stream.Position = pointer;
+        writer.Write(manifestOffset);
+
+        void WriteEntry(long offset, int size, byte kind, string name)
+        {
+            writer.Write(offset);
+            writer.Write((long)size);
+            writer.Write(0L);
+            writer.Write(kind);
+            writer.Write(name);
+        }
     }
 
     private static Task<ProcessResult> RunBuilderAsync(
@@ -2801,8 +2868,15 @@ public sealed class DesktopInstallerPackageBuilderSafetyTests
         string generatedInstallScript)
     {
         const string base64Prefix = "FromBase64String('";
+        // The installer also embeds native runtime code. Decode the actual
+        // uninstaller assignment rather than the first base64 payload.
+        var assignmentStart = generatedInstallScript.IndexOf(
+            "$uninstallScriptContent =",
+            StringComparison.Ordinal);
+        Assert.True(assignmentStart >= 0);
         var base64Start = generatedInstallScript.IndexOf(
             base64Prefix,
+            assignmentStart,
             StringComparison.Ordinal);
         Assert.True(base64Start >= 0);
         base64Start += base64Prefix.Length;

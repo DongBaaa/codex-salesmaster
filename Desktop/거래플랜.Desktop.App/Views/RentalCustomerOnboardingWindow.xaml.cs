@@ -22,6 +22,8 @@ public partial class RentalCustomerOnboardingWindow : Window
         InitializeComponent();
         ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(this);
         DataContext = viewModel;
+        viewModel.LegacyDraftRecovery.ConfirmRecoveryAsync = preview => Task.FromResult(
+            DialogWindowCloseHelper.ShowDialog(new RentalLegacyDraftRecoveryWindow(preview) { Owner = this }) == true);
         viewModel.Completed += HandleCompleted;
         Closing += HandleClosing;
         Closed += (_, _) => viewModel.Completed -= HandleCompleted;

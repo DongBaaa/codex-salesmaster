@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.IO;
 using System.Net.Http;
 using System.Windows;
@@ -43,12 +43,21 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     [ObservableProperty] private string _statusMessage = "환경설정을 불러왔습니다.";
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanInteract))]
+    [NotifyPropertyChangedFor(nameof(CanNavigateTabs))]
     [NotifyPropertyChangedFor(nameof(IsCloseBlocked))]
+    [NotifyPropertyChangedFor(nameof(CanUseBackupActions))]
+    [NotifyPropertyChangedFor(nameof(CanReloadBackupList))]
+    [NotifyCanExecuteChangedFor(nameof(CreateBackupSnapshotCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ScheduleSelectedBackupRestoreCommand))]
+    [NotifyCanExecuteChangedFor(nameof(RunBackupCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ReloadBackupSnapshotsCommand))]
     private bool _isBusy;
     public bool CanInteract => !IsBusy;
+    public bool CanNavigateTabs => !IsBusy || IsInitialLoadInProgress;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsCloseBlocked))]
+    [NotifyPropertyChangedFor(nameof(CanNavigateTabs))]
     private bool _isInitialLoadInProgress;
     public bool IsCloseBlocked => IsBusy && !IsInitialLoadInProgress;
 
@@ -132,6 +141,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         _api = api;
         _sync = sync;
         _backup = backup;
+        BackupSnapshotReader = () => _backup.GetBackupSnapshotsAsync();
         _diagnostics = diagnostics;
         _dataIntegrity = dataIntegrity;
         _rental = rental;
@@ -153,10 +163,8 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
 
     public async Task InitializeAsync()
     {
-        IsInitialLoadInProgress = true;
-        IsBusy = true;
         var hadInitializationWarning = false;
-        try
+        await InitializeCoreThenBackupListAsync(async () =>
         {
             await RunInitializationStepAsync(ReloadCompanyProfilesAsync, "회사 설정", () => hadInitializationWarning = true);
             await RunInitializationStepAsync(LoadLegacyMigrationSettingsAsync, "레거시 마이그레이션 설정", () => hadInitializationWarning = true);
@@ -166,16 +174,39 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             await RunInitializationStepAsync(ReloadUsersAsync, "사용자", () => hadInitializationWarning = true);
             await RunInitializationStepAsync(LoadCurrentUserCompanyProfileAsync, "현재 사용자 회사설정", () => hadInitializationWarning = true);
             await RunInitializationStepAsync(RefreshSyncStateAsync, "동기화", () => hadInitializationWarning = true);
-            await RunInitializationStepAsync(ReloadBackupSnapshotsAsync, "백업 목록", () => hadInitializationWarning = true);
             await RunInitializationStepAsync(ReloadRecycleBinAsync, "휴지통", () => hadInitializationWarning = true);
             NewUser();
             if (!hadInitializationWarning)
                 StatusMessage = "환경설정을 불러왔습니다.";
+        });
+    }
+
+    internal async Task InitializeCoreThenBackupListAsync(Func<Task> initializeCore)
+    {
+        IsInitialLoadInProgress = true;
+        IsBusy = true;
+        StatusMessage = "환경설정을 불러오는 중입니다. 탭 이동과 닫기는 가능하며 편집은 조회 완료 후 사용할 수 있습니다.";
+        var coreTimer = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            await initializeCore();
         }
         finally
         {
             IsBusy = false;
             IsInitialLoadInProgress = false;
+        }
+
+        AppLogger.Info("SETTINGS", $"기본 설정 준비 완료 {coreTimer.ElapsedMilliseconds:N0}ms. 백업 목록은 별도로 검증합니다.");
+        try
+        {
+            // Backup validation owns only its list state. It must not clear a later
+            // save's IsBusy flag or replace its StatusMessage when it finishes.
+            await ReloadBackupSnapshotsAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("SETTINGS", "백업 목록을 불러오지 못했습니다.", ex);
         }
     }
 

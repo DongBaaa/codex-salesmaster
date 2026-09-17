@@ -22,6 +22,7 @@ public sealed partial class SyncDiagnosticsViewModel
 
     [ObservableProperty] private SyncOutboxListItem? _selectedOutboxEntry;
     [ObservableProperty] private IntegrityIssueDto? _selectedServerIntegrityIssue;
+    [ObservableProperty] private IntegrityIssueDetailRowDto? _selectedServerIntegrityDetailRow;
     [ObservableProperty] private string _serverIntegritySummaryText = "서버 무결성 리포트를 아직 불러오지 않았습니다.";
     [ObservableProperty] private string _serverIntegrityStatusText = "미조회";
     [ObservableProperty] private string _serverIntegrityGeneratedAtText = "미조회";
@@ -29,7 +30,7 @@ public sealed partial class SyncDiagnosticsViewModel
     [ObservableProperty] private string _serverIntegrityDetailSummaryText = "선택한 서버 무결성 이슈 없음";
     [ObservableProperty] private string _serverIntegrityDetailStatusText = "상세 목록을 보려면 서버 무결성 이슈를 선택하세요.";
     [ObservableProperty] private int _serverIntegrityDetailCount;
-    [ObservableProperty] private string _outboxSummaryText = "sync outbox를 아직 불러오지 않았습니다.";
+    [ObservableProperty] private string _outboxSummaryText = "서버 전송 대기 목록을 아직 불러오지 않았습니다.";
     [ObservableProperty] private string _outboxStatusText = "미조회";
     [ObservableProperty] private int _pendingOutboxCount;
     [ObservableProperty] private int _failedOutboxCount;
@@ -61,7 +62,7 @@ public sealed partial class SyncDiagnosticsViewModel
         catch (Exception ex)
         {
             OutboxStatusText = $"조회 실패: {GetCompactExceptionMessage(ex)}";
-            OutboxSummaryText = "sync outbox를 불러오지 못했습니다. 다시 시도하세요.";
+            OutboxSummaryText = "서버 전송 대기 목록을 불러오지 못했습니다. 잠시 후 새로고침하세요.";
         }
     }
 
@@ -80,9 +81,9 @@ public sealed partial class SyncDiagnosticsViewModel
         FailedOutboxCount = summary.FailedCount;
         AcknowledgedOutboxCount = summary.AcknowledgedCount;
         OutboxStatusText = $"최근 새로고침 {DateTime.Now:yyyy-MM-dd HH:mm:ss}";
-        OutboxSummaryText = summary.PendingCount == 0
-            ? "재시도 대기 중인 sync outbox 항목이 없습니다."
-            : $"대기 {summary.PendingCount:N0}건 / 실패 {summary.FailedCount:N0}건 / 완료 {summary.AcknowledgedCount:N0}건";
+        OutboxSummaryText = summary.PendingCount == 0 && summary.FailedCount == 0
+            ? "서버 전송 대기·실패 항목이 없습니다."
+            : $"서버 전송 대기 {summary.PendingCount:N0}건 / 실패 {summary.FailedCount:N0}건 / 전송 완료 {summary.AcknowledgedCount:N0}건";
     }
 
     private async Task LoadServerIntegrityAsync(bool updateSummaryStatus, CancellationToken ct = default)
@@ -221,10 +222,17 @@ public sealed partial class SyncDiagnosticsViewModel
 
     private void ApplyServerIntegrityDetailReport(IntegrityIssueDto issue, IntegrityIssueDetailResultDto? detail)
     {
+        var selectedEntityType = SelectedServerIntegrityDetailRow?.EntityType;
+        var selectedEntityId = SelectedServerIntegrityDetailRow?.EntityIdText;
         _loadedServerIntegrityDetailResult = detail;
         ServerIntegrityDetailRows.Clear();
         foreach (var row in detail?.Rows ?? new List<IntegrityIssueDetailRowDto>())
             ServerIntegrityDetailRows.Add(row);
+
+        SelectedServerIntegrityDetailRow = ServerIntegrityDetailRows.FirstOrDefault(row =>
+                                               string.Equals(row.EntityType, selectedEntityType, StringComparison.OrdinalIgnoreCase) &&
+                                               string.Equals(row.EntityIdText, selectedEntityId, StringComparison.OrdinalIgnoreCase))
+                                           ?? ServerIntegrityDetailRows.FirstOrDefault();
 
         ServerIntegrityDetailCount = detail?.DetailCount ?? 0;
         ServerIntegrityDetailSummaryText = BuildServerIntegrityDetailSummary(issue);
@@ -250,6 +258,7 @@ public sealed partial class SyncDiagnosticsViewModel
     {
         _loadedServerIntegrityDetailResult = null;
         ServerIntegrityDetailRows.Clear();
+        SelectedServerIntegrityDetailRow = null;
         ServerIntegrityDetailCount = 0;
         ServerIntegrityDetailSummaryText = issue is null
             ? "선택한 서버 무결성 이슈 없음"
@@ -258,7 +267,41 @@ public sealed partial class SyncDiagnosticsViewModel
     }
 
     private static string BuildServerIntegrityDetailSummary(IntegrityIssueDto issue)
-        => $"[{issue.Severity}] {issue.Message} ({issue.Count:N0}건)";
+        => $"[{DataIntegritySeverityFormatter.ToDisplayText(issue.Severity)}] " +
+           $"{DiagnosticUserMessageFormatter.DescribeServerIntegrityIssue(issue.Code, issue.Message)} ({issue.Count:N0}건)";
+
+    public async Task RecheckServerIntegrityIssueAsync(string issueCode, CancellationToken ct = default)
+    {
+        if (IsBusy || string.IsNullOrWhiteSpace(issueCode))
+            return;
+
+        IsBusy = true;
+        try
+        {
+            await LoadServerIntegrityAsync(updateSummaryStatus: false, ct);
+            var refreshedIssue = ServerIntegrityIssues.FirstOrDefault(issue =>
+                string.Equals(issue.Code, issueCode, StringComparison.OrdinalIgnoreCase));
+            if (refreshedIssue is null)
+            {
+                SelectedServerIntegrityIssue = null;
+                ResetServerIntegrityDetailState(null, "해결 완료: 해당 문제가 서버 점검 결과에서 더 이상 확인되지 않습니다.");
+                SummaryStatusText = ServerIntegrityDetailStatusText;
+                return;
+            }
+
+            SelectedServerIntegrityIssue = refreshedIssue;
+            var detail = await LoadSelectedServerIntegrityDetailsCoreAsync(updateSummaryStatus: false, ct);
+            SummaryStatusText = detail is null
+                ? ServerIntegrityDetailStatusText
+                : detail.DetailCount == 0
+                    ? "해결 완료: 해당 문제의 상세 항목이 더 이상 확인되지 않습니다."
+                    : $"재점검 결과, 해당 문제 {detail.DetailCount:N0}건이 아직 남아 있습니다. 수정 내용을 다시 확인해 주세요.";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
 
     [RelayCommand]
     private async Task RefreshServerIntegrityAsync()
@@ -465,7 +508,9 @@ public sealed partial class SyncDiagnosticsViewModel
         builder.AppendLine($"- 서버 리포트 상태: {serverStateMessage}");
         builder.AppendLine();
 
-        builder.AppendLine("## 로컬 무결성 리포트");
+        builder.AppendLine("운영 점검 알림의 청구·자산·품목 경고는 환경설정 > 동기화 > 운영점검 알림창에서 확인하세요. 아래 로컬 동기화·캐시 검사 및 서버 검사는 해당 운영 경고와 검사 범위가 다릅니다.");
+        builder.AppendLine();
+        builder.AppendLine("## 로컬 동기화·캐시 무결성 리포트");
         builder.AppendLine();
         builder.AppendLine(localReport.ToMarkdown().Trim());
         builder.AppendLine();

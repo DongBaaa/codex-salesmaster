@@ -101,7 +101,6 @@ public sealed partial class CustomerEditViewModel : ObservableObject
 
     public async Task LoadAsync(LocalCustomer? customer = null)
     {
-        await _local.EnsureCustomerCategoryIntegrityAsync();
         var categories = await _local.GetCategoriesAsync();
         Categories.Clear();
         foreach (var category in categories)
@@ -556,6 +555,11 @@ public sealed partial class CustomerEditViewModel : ObservableObject
         SelectedContract = selectContractId.HasValue
             ? Contracts.FirstOrDefault(current => current.Id == selectContractId.Value)
             : Contracts.FirstOrDefault();
+
+        // A null-to-null selection does not trigger the generated change callback.
+        // Initialize the empty editor so ordinary customer edits do not become drafts.
+        if (SelectedContract is null)
+            OnSelectedContractChanged(null);
     }
 
     private async Task<bool> PersistPendingContractDraftAsync(string draftSuccessMessage, string updateSuccessMessage)

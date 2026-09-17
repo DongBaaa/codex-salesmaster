@@ -24,8 +24,10 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     private readonly VoucherType _newInvoiceVoucherType;
     private readonly UiDebouncer _itemSearchDebouncer = new();
     private List<LocalItem> _allItems = new();
+    private List<LocalItemWarehouseStock> _itemWarehouseStocks = new();
     private List<LocalCustomer> _allCustomers = new();
     private readonly List<LocalWarehouse> _allWritableWarehouses = new();
+    private bool _refreshingWarehouseOptions;
     private readonly Dictionary<Guid, string> _categoryNameMap = new();
     private readonly Dictionary<string, string> _priceGradeSourceMap = new(StringComparer.CurrentCultureIgnoreCase);
     private readonly Dictionary<Guid, Dictionary<string, decimal>> _itemPriceGradeByItemId = new();
@@ -92,6 +94,12 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _selectedWarehouseCode = DomainConstants.WarehouseUsenetMain;
     // 전표 헤더
     [ObservableProperty] private Guid _invoiceId = Guid.NewGuid();
+    private Guid _editSessionInvoiceId;
+    public Guid EditSessionInvoiceId
+    {
+        get => _editSessionInvoiceId;
+        private set => SetProperty(ref _editSessionInvoiceId, value);
+    }
     [ObservableProperty] private DateOnly _workDate = DateOnly.FromDateTime(DateTime.Today);
     [ObservableProperty] private string _invoiceMemo = string.Empty;
     [ObservableProperty]
@@ -352,23 +360,25 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     {
         var refreshedItems = await _local.GetItemsAsync(_session);
         var refreshedPriceGrades = await _local.GetItemPriceGradesAsync(_session);
+        var refreshedStocks = await _local.GetItemWarehouseStocksAsync();
         var dispatcher = System.Windows.Application.Current?.Dispatcher;
         if (dispatcher is null || dispatcher.CheckAccess())
         {
-            ApplyRefreshedItems(refreshedItems, refreshedPriceGrades, version);
+            ApplyRefreshedItems(refreshedItems, refreshedPriceGrades, refreshedStocks, version);
             return;
         }
 
-        await dispatcher.InvokeAsync(() => ApplyRefreshedItems(refreshedItems, refreshedPriceGrades, version));
+        await dispatcher.InvokeAsync(() => ApplyRefreshedItems(refreshedItems, refreshedPriceGrades, refreshedStocks, version));
     }
 
-    private void ApplyRefreshedItems(List<LocalItem> refreshedItems, List<LocalItemPriceGrade> refreshedPriceGrades, int version)
+    private void ApplyRefreshedItems(List<LocalItem> refreshedItems, List<LocalItemPriceGrade> refreshedPriceGrades, List<LocalItemWarehouseStock> refreshedStocks, int version)
     {
         if (_disposed || version != _inventoryReloadVersion)
             return;
 
         var selectedItemId = SelectedInputItem?.Id;
         _allItems = refreshedItems;
+        _itemWarehouseStocks = refreshedStocks;
         ApplyItemPriceGradeCache(refreshedPriceGrades);
         if (selectedItemId.HasValue)
         {
@@ -409,6 +419,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     {
         _allCustomers = await _local.GetCustomersForOperationalSelectionAsync(_session);
         _allItems = await _local.GetItemsAsync(_session);
+        _itemWarehouseStocks = await _local.GetItemWarehouseStocksAsync();
         await RefreshItemPriceGradeCacheAsync();
         await LoadMasterOptionsAsync();
         await LoadOfficeWarehouseAsync();
@@ -514,6 +525,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
     public void NewInvoice()
     {
+        EditSessionInvoiceId = Guid.Empty;
         InvoiceId = Guid.NewGuid();
         SelectedCustomer = null;
         CustomerName = string.Empty;
@@ -731,6 +743,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     public async Task ReloadItemsAsync()
     {
         _allItems = await _local.GetItemsAsync(_session);
+        _itemWarehouseStocks = await _local.GetItemWarehouseStocksAsync();
         await RefreshItemPriceGradeCacheAsync();
         RefreshItemSearch();
     }
@@ -1068,6 +1081,11 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
     partial void OnSelectedWarehouseCodeChanged(string value)
     {
+        // 목록 갱신 중 ComboBox가 전달한 임시 null은 목록을 채운 뒤 복원한다.
+        // 여기서 즉시 기본값으로 보정하면 WPF의 SelectedItem만 비어 남을 수 있다.
+        if (_refreshingWarehouseOptions)
+            return;
+
         var warehouseCode = InvoiceOfficeWarehouseSelectionPolicy.ResolveWarehouseCode(
             value,
             SelectedResponsibleOfficeCode,
@@ -1084,6 +1102,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             return;
         }
 
+        RefreshItemSearch();
         OnPropertyChanged(nameof(PurchaseReceivingMetaDisplay));
     }
 
@@ -1094,9 +1113,17 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             _allWritableWarehouses,
             officeCode);
 
-        Warehouses.Clear();
-        foreach (var warehouse in options)
-            Warehouses.Add(warehouse);
+        _refreshingWarehouseOptions = true;
+        try
+        {
+            Warehouses.Clear();
+            foreach (var warehouse in options)
+                Warehouses.Add(warehouse);
+        }
+        finally
+        {
+            _refreshingWarehouseOptions = false;
+        }
 
         var resolvedWarehouseCode = InvoiceOfficeWarehouseSelectionPolicy.ResolveWarehouseCode(
             requestedWarehouseCode,
@@ -1342,6 +1369,14 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
     private void RefreshItemSearch()
     {
+        // GetItemsAsync returns detached lookup copies. Project only their displayed
+        // stock; the persisted item aggregate and dirty state must remain untouched.
+        var stockByItem = _itemWarehouseStocks
+            .Where(stock => string.Equals(stock.WarehouseCode, SelectedWarehouseCode, StringComparison.OrdinalIgnoreCase))
+            .ToDictionary(stock => stock.ItemId, stock => stock.Quantity);
+        foreach (var item in _allItems)
+            item.CurrentStock = stockByItem.GetValueOrDefault(item.Id);
+
         var text = ItemSearchText.Trim();
         ItemSearchResults.Clear();
         var lookupItems = GetInvoiceLookupItems();
@@ -1771,6 +1806,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         if (savedInvoice is not null)
         {
             InvoiceId = savedInvoice.Id;
+            EditSessionInvoiceId = savedInvoice.Id;
             CurrentConcurrencyStamp = savedInvoice.ConcurrencyStamp;
             SetRentalBillingLinks(savedInvoice.LinkedRentalBillingProfileId, savedInvoice.LinkedRentalBillingRunId);
             TaxInvoiceNumber = savedInvoice.TaxInvoiceNumber;
@@ -1813,6 +1849,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     // 기존 전표 불러오기 (수정용)
     public async Task LoadInvoiceAsync(LocalInvoice inv)
     {
+        EditSessionInvoiceId = Guid.Empty;
         InvoiceId = inv.Id;
         WorkDate = inv.InvoiceDate;
         VoucherType = inv.VoucherType;
@@ -1885,6 +1922,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         };
         CaptureBaselineState();
         await RefreshPaymentSummaryAsync();
+        EditSessionInvoiceId = inv.Id;
     }
 
     // 신규 전표
@@ -1894,6 +1932,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task EditPrintOutputAsync()
     {
+        var preparedByOwner = PrintDocumentAuthorization.CaptureOwner(_session);
         try
         {
             if (IsPurchaseLikeDocument)
@@ -1924,11 +1963,16 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            var model = await LoadOrCreateInvoicePrintModelAsync(invoice, customer, company);
+            var canAccess = _local.CreateInvoicePrintAuthorization(invoice.Id, customer.Id, _session, preparedByOwner);
+            if (!canAccess())
+                throw new UnauthorizedAccessException(PrintDocumentAuthorization.DeniedMessage);
+            var model = await LoadOrCreateInvoicePrintModelAsync(invoice, customer, company, canAccess);
             var editorViewModel = new PrintEditViewModel(
                 model,
-                editedModel => SaveInvoicePrintModelForInvoiceAsync(editedModel, invoice.Id),
-                (editedModel, selectedDocument) => BuildPrintEditPreviewDocument(invoice, customer, company, editedModel, selectedDocument));
+                editedModel => SaveInvoicePrintModelForInvoiceAsync(editedModel, invoice.Id, canAccess),
+                (editedModel, selectedDocument) => BuildPrintEditPreviewDocument(invoice, customer, company, editedModel, selectedDocument),
+                canAccess,
+                _invoicePrintService);
             var editorWindow = new PrintEditWindow(editorViewModel)
             {
                 Owner = GetActiveWindow()
@@ -1956,6 +2000,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task PrintAsync()
     {
+        var preparedByOwner = PrintDocumentAuthorization.CaptureOwner(_session);
         try
         {
             if (IsProcurementDocument)
@@ -2043,6 +2088,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             var outputJobName = BuildPrintOutputJobName(
                 customer,
                 selectedCodes.Select(AttachmentDocumentCatalog.GetDisplayName));
+            PrintDocumentAuthorization.Attach(previewDocument, _local.CreateInvoicePrintAuthorization(invoice.Id, customer.Id, _session, preparedByOwner));
             var previewViewModel = new PrintPreviewViewModel(
                 previewDocument,
                 _invoicePrintService,
@@ -2077,6 +2123,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
     private async Task PrintPurchaseAsync()
     {
+        var preparedByOwner = PrintDocumentAuthorization.CaptureOwner(_session);
         var invoice = await EnsureInvoiceReadyForOutputAsync("인쇄");
         if (invoice is null)
             return;
@@ -2102,6 +2149,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         printModel.PrintWithPrice = true;
 
         var previewDocument = _invoicePrintService.BuildFixedDocument(printModel);
+        PrintDocumentAuthorization.Attach(previewDocument, _local.CreateInvoicePrintAuthorization(invoice.Id, customer.Id, _session, preparedByOwner));
         var previewViewModel = new PrintPreviewViewModel(
             previewDocument,
             _invoicePrintService,
@@ -2121,6 +2169,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
     private async Task PrintProcurementAsync()
     {
+        var preparedByOwner = PrintDocumentAuthorization.CaptureOwner(_session);
         var invoice = await EnsureInvoiceReadyForOutputAsync("인쇄");
         if (invoice is null)
             return;
@@ -2149,6 +2198,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
         var previewDocument = _invoicePrintService.BuildFixedDocument(printModel);
         var jobTitle = NormalizeProcurementDocumentTitle(printModel.DocumentTitle);
+        PrintDocumentAuthorization.Attach(previewDocument, _local.CreateInvoicePrintAuthorization(invoice.Id, customer.Id, _session, preparedByOwner));
         var previewViewModel = new PrintPreviewViewModel(
             previewDocument,
             _invoicePrintService,
@@ -2169,6 +2219,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task PrintTaxInvoiceAsync()
     {
+        var preparedByOwner = PrintDocumentAuthorization.CaptureOwner(_session);
         try
         {
             if (!IsSalesDocument)
@@ -2206,6 +2257,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             }
 
             var document = BuildTaxInvoicePrintDocument(inv, customer, company);
+            PrintDocumentAuthorization.Attach(document, _local.CreateInvoicePrintAuthorization(inv.Id, customer.Id, _session, preparedByOwner));
             var printed = PrintPreviewHelper.ShowPreviewAndPrint(
                 document,
                 "세금계산서 미리보기",
@@ -2255,7 +2307,8 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     private async Task<InvoicePrintModel> LoadOrCreateInvoicePrintModelAsync(
         LocalInvoice invoice,
         LocalCustomer customer,
-        LocalCompanyProfile company)
+        LocalCompanyProfile company,
+        Func<bool>? canAccess = null)
     {
         var defaultModel = _invoicePrintService.CreateDefaultModel(invoice, customer, company, PrintWithDate, PrintWithPrice);
         var payload = await _local.GetInvoicePrintPayloadAsync(invoice.Id);
@@ -2297,20 +2350,20 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         var model = defaultModel;
         if (invoice.VoucherType == VoucherType.Procurement)
             model.DocumentTitle = NormalizeProcurementDocumentTitle(SelectedProcurementDocumentTitle);
-        await SaveInvoicePrintModelAsync(model);
+        await SaveInvoicePrintModelAsync(model, canAccess);
         return model;
     }
 
-    private async Task SaveInvoicePrintModelForInvoiceAsync(InvoicePrintModel model, Guid invoiceId)
+    private async Task SaveInvoicePrintModelForInvoiceAsync(InvoicePrintModel model, Guid invoiceId, Func<bool> canAccess)
     {
         if (invoiceId == Guid.Empty)
             throw new InvalidOperationException("출력물 편집 내용을 저장할 전표를 확인할 수 없습니다.");
 
         model.InvoiceId = invoiceId;
-        await SaveInvoicePrintModelAsync(model);
+        await SaveInvoicePrintModelAsync(model, canAccess);
     }
 
-    private async Task SaveInvoicePrintModelAsync(InvoicePrintModel model)
+    private async Task SaveInvoicePrintModelAsync(InvoicePrintModel model, Func<bool>? canAccess = null)
     {
         if (model.InvoiceId == Guid.Empty)
             throw new InvalidOperationException("출력물 편집 내용을 저장할 전표를 확인할 수 없습니다.");
@@ -2318,7 +2371,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         NormalizeInvoicePrintSnapshotMetadata(model, null);
         model.SnapshotLastSavedAtUtc = DateTime.UtcNow;
         var payload = JsonSerializer.Serialize(model, PrintModelJsonOptions);
-        await _local.SaveInvoicePrintPayloadAsync(model.InvoiceId, payload);
+        await _local.SaveInvoicePrintPayloadAsync(model.InvoiceId, payload, canWrite: canAccess);
     }
 
     private static void NormalizeInvoicePrintSnapshotMetadata(InvoicePrintModel model, InvoicePrintModel? fallback)

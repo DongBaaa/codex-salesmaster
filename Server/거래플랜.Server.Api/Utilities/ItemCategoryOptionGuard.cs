@@ -28,6 +28,12 @@ public static class ItemCategoryOptionGuard
         var options = await dbContext.ItemCategoryOptions
             .IgnoreQueryFilters()
             .ToListAsync(cancellationToken);
+        // A sync request can add a category and its first item before the
+        // transaction is saved. Reuse that tracked category instead of adding
+        // another row with the same unique name and a different ID.
+        options.AddRange(dbContext.ItemCategoryOptions.Local
+            .Where(option => dbContext.Entry(option).State == EntityState.Added &&
+                options.All(existing => existing.Id != option.Id)));
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var normalizedName in categoryNames

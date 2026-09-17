@@ -164,10 +164,15 @@ public sealed class SyncPushCoverageTests
             upsertSource,
             StringComparison.Ordinal);
         Assert.Equal(
-            2,
+            1,
             CountOccurrences(
                 upsertSource,
                 "await ResolveHistoricalConflictsAsync("));
+        Assert.Equal(
+            1,
+            CountOccurrences(
+                upsertSource,
+                "await ResolveExactReplayConflictsAsync("));
         Assert.Contains(
             "entityIdTexts.Chunk(500)",
             batchedResolutionSource,

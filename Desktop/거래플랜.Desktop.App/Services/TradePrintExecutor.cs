@@ -70,6 +70,8 @@ public static class TradePrintExecutor
     {
         ArgumentNullException.ThrowIfNull(document);
         errorMessage = null;
+        if (!PrintDocumentAuthorization.Validate(document, out errorMessage))
+            return false;
 
         PrinterCatalogSnapshot LoadPrinterSnapshotSafely()
         {
@@ -105,10 +107,16 @@ public static class TradePrintExecutor
             if (DialogWindowCloseHelper.ShowDialog(dialog) != true || dialog.PrintOptions is null)
                 return false;
 
+            // A nested print/file dialog may stay open while a scope snapshot or session changes.
+            if (!PrintDocumentAuthorization.Validate(document, out errorMessage))
+                return false;
+
             paginator.PageSize = pageSize;
             var targetPaginator = BuildTargetPaginator(paginator, dialog.PrintOptions.PageNumbers, dialog.PrintOptions.ReversePageOrder, pageCount);
             if (dialog.PrintOptions.SaveToFile)
             {
+                if (!PrintDocumentAuthorization.Validate(document, out errorMessage))
+                    return false;
                 if (dialog.PrintOptions.FileFormat == TradePrintFileFormat.Pdf)
                     SaveDocumentAsPdf(targetPaginator, dialog.PrintOptions.OutputFilePath);
                 else
@@ -130,6 +138,8 @@ public static class TradePrintExecutor
             using var printQueue = printServer.GetPrintQueue(dialog.PrintOptions.PrintQueueName);
             var printTicket = BuildPrintTicket(printQueue, driverCopyCount, dialog.PrintOptions.Collate);
             var writer = PrintQueue.CreateXpsDocumentWriter(printQueue);
+            if (!PrintDocumentAuthorization.Validate(document, out errorMessage))
+                return false;
             writer.Write(copyExpandedPaginator, printTicket);
             return true;
         }

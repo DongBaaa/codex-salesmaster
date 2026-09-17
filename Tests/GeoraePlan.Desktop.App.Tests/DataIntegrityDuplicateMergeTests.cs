@@ -2309,7 +2309,9 @@ public sealed class DataIntegrityDuplicateMergeTests
 
         Assert.Contains("ScrollViewer.HorizontalScrollBarVisibility=\"Auto\"", xaml, StringComparison.Ordinal);
         Assert.Contains("판단/참조", xaml, StringComparison.Ordinal);
-        Assert.Contains("삭제/병합 판단 정보", xaml, StringComparison.Ordinal);
+        Assert.Contains("수정 전에 확인할 정보", xaml, StringComparison.Ordinal);
+        Assert.Contains("{Binding ReviewInfoPlainText}", xaml, StringComparison.Ordinal);
+        Assert.Contains("{Binding ActionSteps}", xaml, StringComparison.Ordinal);
         Assert.Contains("MergeSelectedButton_Click", xaml, StringComparison.Ordinal);
     }
 
@@ -2343,7 +2345,8 @@ public sealed class DataIntegrityDuplicateMergeTests
         Assert.Contains("\"참고\"", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("issue.Severity, \"Info\"", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("확인 항목", alertXaml, StringComparison.Ordinal);
-        Assert.Contains("확인 항목과 참고 정보", detailXaml, StringComparison.Ordinal);
+        Assert.Contains("{Binding SeverityDisplay}", detailXaml, StringComparison.Ordinal);
+        Assert.Contains("{Binding SeverityOptions}", detailXaml, StringComparison.Ordinal);
     }
 
     [Fact]

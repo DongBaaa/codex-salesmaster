@@ -76,12 +76,16 @@
              Link="SyncDiag\IsolatedSeedRetryOutboxReconciler.cs" />
     <Compile Include="..\..\tools\SyncDiag\IsolatedSeedRetryInvoiceVersionMetadataReconciler.cs"
              Link="SyncDiag\IsolatedSeedRetryInvoiceVersionMetadataReconciler.cs" />
+    <Compile Include="..\..\tools\SyncDiag\IsolatedSeedRetryRentalCompanyReconciler.cs"
+             Link="SyncDiag\IsolatedSeedRetryRentalCompanyReconciler.cs" />
     <Compile Include="..\..\tools\SyncDiag\IsolatedSeedRetryRentalAssetReconciler.cs"
              Link="SyncDiag\IsolatedSeedRetryRentalAssetReconciler.cs" />
     <Compile Include="..\..\tools\SyncDiag\IsolatedSeedRentalAssetBillingStatusNormalizer.cs"
              Link="SyncDiag\IsolatedSeedRentalAssetBillingStatusNormalizer.cs" />
     <Compile Include="..\..\tools\SyncDiag\IsolatedSeedSyncFailureDiagnostics.cs"
              Link="SyncDiag\IsolatedSeedSyncFailureDiagnostics.cs" />
+    <Compile Include="..\..\tools\SyncDiag\IsolatedSeedWarehouseSnapshot.cs"
+             Link="SyncDiag\IsolatedSeedWarehouseSnapshot.cs" />
     <Compile Include="..\..\tools\SyncDiag\IsolatedStoredCredentialReader.cs"
              Link="SyncDiag\IsolatedStoredCredentialReader.cs" />
     <Compile Include="..\..\tools\SyncDiag\RtRentalDeltaApplier.cs"

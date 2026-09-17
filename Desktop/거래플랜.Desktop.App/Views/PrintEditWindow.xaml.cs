@@ -13,15 +13,40 @@ public partial class PrintEditWindow : Window
     private readonly PrintEditViewModel _viewModel;
     private bool _allowCloseWithoutSave;
     private bool _closeInProgress;
+    private IDisposable? _authorizationMonitor;
 
     public PrintEditWindow(PrintEditViewModel viewModel)
     {
         InitializeComponent();
         _viewModel = viewModel;
         DataContext = viewModel;
+        PreviewPrintCommandRouting.Bind(this, PreviewDocumentViewer, viewModel.PrintCommand);
+        viewModel.CurrentPageNumberProvider = () => PreviewDocumentViewer.MasterPageNumber;
+        viewModel.AuthorizationInvalidated += OnAuthorizationInvalidated;
+        Loaded += OnLoaded;
         _viewModel.RequestClose += OnRequestClose;
         Closing += Window_Closing;
         Closed += OnClosed;
+    }
+
+    private void OnLoaded(object sender, RoutedEventArgs args)
+    {
+        if (!_viewModel.ValidateAuthorization())
+            OnAuthorizationInvalidated();
+        _authorizationMonitor ??= _viewModel.MonitorAuthorization();
+    }
+
+    private void OnAuthorizationInvalidated()
+    {
+        _allowCloseWithoutSave = true;
+        Title = "출력물 편집 - 권한 변경";
+        // Keep the owner alive while a native print dialog unwinds its modal frame.
+        Content = new System.Windows.Controls.TextBlock
+        {
+            Text = PrintDocumentAuthorization.DeniedMessage,
+            Margin = new Thickness(24),
+            TextWrapping = TextWrapping.Wrap
+        };
     }
 
     private void OnRequestClose()
@@ -31,6 +56,11 @@ public partial class PrintEditWindow : Window
 
     private void OnClosed(object? sender, EventArgs e)
     {
+        _authorizationMonitor?.Dispose();
+        _authorizationMonitor = null;
+        Loaded -= OnLoaded;
+        _viewModel.AuthorizationInvalidated -= OnAuthorizationInvalidated;
+        _viewModel.CurrentPageNumberProvider = null;
         _viewModel.RequestClose -= OnRequestClose;
         Closing -= Window_Closing;
         Closed -= OnClosed;
@@ -41,6 +71,13 @@ public partial class PrintEditWindow : Window
     {
         try
         {
+            if (_viewModel.IsPrinting)
+            {
+                e.Cancel = true;
+                return;
+            }
+            if (!_viewModel.ValidateAuthorization())
+                return;
             if (_allowCloseWithoutSave)
                 return;
 
@@ -63,7 +100,7 @@ public partial class PrintEditWindow : Window
                 Mouse.OverrideCursor = Cursors.Wait;
 
                 var saved = await _viewModel.TryAutoSaveOnCloseAsync();
-                if (saved)
+                if (saved || _viewModel.IsAuthorizationInvalidated)
                 {
                     _allowCloseWithoutSave = true;
                     requestDeferredClose = true;

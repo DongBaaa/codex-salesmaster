@@ -581,7 +581,7 @@ public sealed class ErpApiClient
                 var rentalAdministrationQuery = rentalAdministrationOnly
                     ? "&rentalAdministrationOnly=true"
                     : string.Empty;
-                return await _http.GetAsync($"sync/pull?sinceRev={sinceRevision}{rentalAdministrationQuery}", token);
+                return await _http.GetAsync($"sync/pull?sinceRev={sinceRevision}{rentalAdministrationQuery}&rentalBillingScheduleVersion={RentalBillingScheduleRules.ScheduleCapabilityVersion}", token);
             },
             readAsync: static (resp, token) => ReadRequiredJsonAsync<SyncPullResponse>(
                 resp,
@@ -598,10 +598,26 @@ public sealed class ErpApiClient
         string? businessDatabaseNameOverride,
         CancellationToken ct = default)
     {
+        request.RentalBillingScheduleVersion = RentalBillingScheduleRules.ScheduleCapabilityVersion;
+        long? schedulePreflightScopeEpoch = null;
+        var requiredScheduleVersion = (request.RentalBillingProfiles ?? [])
+            .Select(profile => RentalBillingScheduleRules.RequiredScheduleCapabilityVersion(profile.BillingDayMode, profile.BillingAdvanceMode))
+            .DefaultIfEmpty(0).Max();
+        if (requiredScheduleVersion > 0)
+        {
+            schedulePreflightScopeEpoch = _session.SyncScopeEpoch;
+            var status = await GetSyncStatusAsync(businessDatabaseNameOverride, ct);
+            if (schedulePreflightScopeEpoch.Value != _session.SyncScopeEpoch)
+                throw new InvalidOperationException("청구 일정 지원 확인 중 로그인 또는 업체 범위가 변경되어 전송을 중단했습니다.");
+            if (status is null || status.RentalBillingScheduleVersion < requiredScheduleVersion)
+                throw new InvalidOperationException(RentalBillingScheduleRules.ScheduleUpgradeRequiredMessage);
+        }
         return await ExecuteWithRetryAsync(
             operationName: "동기화 업로드(sync/push)",
             sendAsync: async token =>
             {
+                if (schedulePreflightScopeEpoch.HasValue && schedulePreflightScopeEpoch.Value != _session.SyncScopeEpoch)
+                    throw new InvalidOperationException("청구 일정 지원 확인 중 로그인 또는 업체 범위가 변경되어 전송을 중단했습니다.");
                 SetAuthHeader(includeBusinessDatabaseHeader: true, businessDatabaseNameOverride);
                 return await _http.PostAsJsonAsync("sync/push", request, token);
             },

@@ -66,6 +66,7 @@ public sealed class SyncController : ControllerBase
     };
     private readonly Dictionary<string, string> _incomingMutationPayloadHashes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ProcessedSyncMutation> _processedMutationsById = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Type> _verifiedReplayDtoTypes = new(StringComparer.Ordinal);
 
     private readonly AppDbContext _dbContext;
     private readonly ICurrentUserContext _currentUserContext;
@@ -138,6 +139,7 @@ public sealed class SyncController : ControllerBase
         cancellationToken.ThrowIfCancellationRequested();
         return Ok(new SyncStatusDto
         {
+            RentalBillingScheduleVersion = RentalBillingScheduleRules.ScheduleCapabilityVersion,
             CurrentServerRevision = _dbContext.GetCommittedRevision(),
             ServerUtc = DateTime.UtcNow
         });
@@ -160,6 +162,7 @@ public sealed class SyncController : ControllerBase
             {
                 return Ok(new SyncStatusDto
                 {
+                    RentalBillingScheduleVersion = RentalBillingScheduleRules.ScheduleCapabilityVersion,
                     CurrentServerRevision = currentRevision,
                     ServerUtc = DateTime.UtcNow
                 });
@@ -180,10 +183,14 @@ public sealed class SyncController : ControllerBase
     public async Task<ActionResult<SyncPullResponse>> Pull(
         [FromQuery] long sinceRev,
         CancellationToken cancellationToken,
-        [FromQuery] bool rentalAdministrationOnly = false)
+        [FromQuery] bool rentalAdministrationOnly = false,
+        [FromQuery] int rentalBillingScheduleVersion = 0)
     {
         await using var readSnapshot =
             await _dbContext.BeginConsistentReadSnapshotAsync(cancellationToken);
+        if (rentalBillingScheduleVersion < RentalBillingScheduleRules.ScheduleCapabilityVersion &&
+            await HasUnsupportedReadableBillingProfileAsync(rentalBillingScheduleVersion, cancellationToken))
+            return Conflict(RentalBillingScheduleRules.ScheduleUpgradeRequiredMessage);
         var upperRevision = await GetCurrentRevisionAsync(cancellationToken);
         var readableRentalAssets = _officeScopeService
             .ApplyRentalAssetScope(_dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking());
@@ -320,6 +327,20 @@ public sealed class SyncController : ControllerBase
         await RemoveUnreadableRentalSettlementLinksFromPullResponseAsync(response, cancellationToken);
 
         response.CurrentServerRevision = upperRevision;
+        if (!rentalAdministrationOnly && _currentUserContext.UserId is { } scopeUserId && scopeUserId != Guid.Empty)
+        {
+            response.CustomerScopeSnapshot = new CustomerScopeSnapshotDto
+            {
+                UserId = scopeUserId,
+                TenantCode = _currentUserContext.TenantCode,
+                OfficeCode = _currentUserContext.OfficeCode,
+                ScopeType = _currentUserContext.ScopeType,
+                VisibleCustomerIds = await _officeScopeService.ApplySyncCustomerScope(
+                        _dbContext.Customers.IgnoreQueryFilters().AsNoTracking())
+                    .Where(customer => customer.Revision <= upperRevision)
+                    .Select(customer => customer.Id).ToListAsync(cancellationToken)
+            };
+        }
         await readSnapshot.CommitAsync(cancellationToken);
         return Ok(response);
     }
@@ -373,16 +394,17 @@ public sealed class SyncController : ControllerBase
             .Where(item => referencedItemIds.Contains(item.Id) && !item.IsDeleted)
             .Select(item => new { item.Id, item.OfficeCode, item.TenantCode })
             .ToListAsync(cancellationToken);
-        var readableItemIds = referencedItems
-            .Where(item => _officeScopeService.CanReadOfficeForItems(item.OfficeCode, item.TenantCode))
-            .Select(item => item.Id)
-            .ToHashSet();
+        var readableItemIds = await _officeScopeService.GetReadableItemIdsAsync(referencedItemIds, cancellationToken);
 
         foreach (var invoice in response.Invoices)
             invoice.Lines = FilterReadableInvoiceLines(invoice.Lines, readableItemIds);
 
+        var referencedItemScopes = referencedItems.ToDictionary(item => item.Id);
         foreach (var transfer in response.InventoryTransfers)
-            transfer.Lines = FilterReadableInventoryTransferLines(transfer.Lines, readableItemIds);
+            transfer.Lines = FilterReadableInventoryTransferLines(transfer.Lines, readableItemIds,
+                itemId => referencedItemScopes.TryGetValue(itemId, out var item) &&
+                    CanReadTransferSourceItemSnapshot(item.OfficeCode, item.TenantCode,
+                        transfer.SourceOfficeCode, transfer.TargetOfficeCode, transfer.TenantCode));
     }
 
     private static List<InvoiceLineDto> FilterReadableInvoiceLines(
@@ -401,7 +423,8 @@ public sealed class SyncController : ControllerBase
 
     private static List<InventoryTransferLineDto> FilterReadableInventoryTransferLines(
         List<InventoryTransferLineDto>? lines,
-        IReadOnlySet<Guid> readableItemIds)
+        IReadOnlySet<Guid> readableItemIds,
+        Func<Guid, bool> canReadSourceSnapshot)
     {
         if (lines is null || lines.Count == 0)
             return [];
@@ -409,8 +432,30 @@ public sealed class SyncController : ControllerBase
         return lines
             .Where(line => !line.ItemId.HasValue ||
                            line.ItemId.Value == Guid.Empty ||
-                           readableItemIds.Contains(line.ItemId.Value))
+                           readableItemIds.Contains(line.ItemId.Value) ||
+                           canReadSourceSnapshot(line.ItemId.Value))
             .ToList();
+    }
+
+    private bool CanReadTransferSourceItemSnapshot(
+        string? itemOffice, string? itemTenant,
+        string? sourceOffice, string? targetOffice, string? transferTenant)
+    {
+        // The destination needs the stored request line to receive goods. This
+        // document-only grant must not expand item-master or invoice access.
+        if (!OfficeCodeCatalog.TryNormalizeOfficeCode(sourceOffice, out var source) ||
+            !OfficeCodeCatalog.TryNormalizeOfficeCode(targetOffice, out var target) ||
+            !TenantScopeCatalog.TryNormalizeTenantCode(transferTenant, out var tenant) ||
+            !TenantScopeCatalog.TryNormalizeTenantCode(itemTenant, out var storedItemTenant))
+            return false;
+
+        var tenantOffices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenant);
+        return source != target &&
+               target == _officeScopeService.CurrentOfficeCode &&
+               tenant == _officeScopeService.CurrentTenantCode &&
+               tenantOffices.Contains(source) && tenantOffices.Contains(target) &&
+               string.Equals(itemOffice, source, StringComparison.OrdinalIgnoreCase) &&
+               storedItemTenant == tenant;
     }
 
     private async Task RemoveUnreadableInvoicePaymentLinksFromPullResponseAsync(
@@ -738,6 +783,7 @@ public sealed class SyncController : ControllerBase
     {
         _incomingMutationPayloadHashes.Clear();
         _processedMutationsById.Clear();
+        _verifiedReplayDtoTypes.Clear();
 
         var incomingMutationDtos = EnumeratePushMutationDtos(request).ToList();
         foreach (var dto in incomingMutationDtos)
@@ -1022,6 +1068,7 @@ public sealed class SyncController : ControllerBase
         var replacedStoragePaths = new List<string>();
         ExceptionDispatchInfo? pushFailure = null;
         var inventoryTransferStockAtomicityRollback = false;
+        var invoiceStockAtomicityRollback = false;
         var rentalProfileAssetAtomicityRollback = false;
         var rentalProfileAssetAtomicityProfileIds = new List<Guid>();
         await using (var transaction = await InventoryMutationTransactionScope.BeginAsync(
@@ -1032,6 +1079,11 @@ public sealed class SyncController : ControllerBase
             var pushStartedAtUtc = DateTime.UtcNow;
             try
             {
+            if (request.RentalBillingScheduleVersion < RentalBillingScheduleRules.ScheduleCapabilityVersion &&
+                ((request.RentalBillingProfiles ?? []).Any(profile =>
+                    RentalBillingScheduleRules.RequiredScheduleCapabilityVersion(profile.BillingDayMode, profile.BillingAdvanceMode) > request.RentalBillingScheduleVersion) ||
+                 await HasUnsupportedReadableBillingProfileAsync(request.RentalBillingScheduleVersion, cancellationToken)))
+                return Conflict(RentalBillingScheduleRules.ScheduleUpgradeRequiredMessage);
             await InitializeProcessedMutationCacheAsync(request, cancellationToken);
             var ambiguousIncomingMutationIds =
                 FindAmbiguousIncomingMutationIds(request);
@@ -1343,6 +1395,25 @@ public sealed class SyncController : ControllerBase
                 itemWarehouseStockResult.AppliedStockKeys,
                 cancellationToken);
             var invoiceRentalSettlementTargets = invoiceUpsertResult.RentalSettlementTargets;
+            var rejectedInvoiceIds = result.Conflicts
+                .Where(conflict => string.Equals(conflict.EntityName, nameof(Invoice), StringComparison.OrdinalIgnoreCase))
+                .Select(conflict => conflict.EntityId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var rejectedInvoices = (request.Invoices ?? [])
+                .Where(invoice => rejectedInvoiceIds.Contains(invoice.Id.ToString("D")))
+                .ToList();
+            if (rejectedInvoices.Count > 0)
+            {
+                var (rejectedStockKeys, _) = await BuildAmbiguousInvoiceStockScopeAsync(
+                    rejectedInvoices, resolvedIncomingItemIds, cancellationToken);
+                if (rejectedStockKeys.Overlaps(itemWarehouseStockResult.AppliedStockKeys))
+                {
+                    // A client snapshot may already include the rejected invoice's
+                    // quantity. Its contribution cannot be separated safely here.
+                    invoiceStockAtomicityRollback = true;
+                    throw new InvoiceStockAtomicityRollbackException();
+                }
+            }
             if (validInvoices.Count > 0)
             {
                 await _dbContext.SaveChangesAsync(cancellationToken);
@@ -1464,7 +1535,8 @@ public sealed class SyncController : ControllerBase
                     cancellationToken,
                     rentalProfilePushSnapshot);
                 var acceptedRentalAssets = await UpsertEntitiesAsync(validRentalAssets, _dbContext.RentalAssets,
-                    (e, d) => e.Apply(d), d => new RentalAsset { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+                    (e, d) => e.Apply(d), d => new RentalAsset { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken,
+                    preserveOriginalIncomingPayloadHashForReceipt: true);
                 await RestoreLinkedDeletedCustomerContractsForRentalAssetsAsync(acceptedRentalAssets, rentalAssetRestoreCustomerIds, cancellationToken);
                 if (validRentalAssets.Count > 0)
                     await _dbContext.SaveChangesAsync(cancellationToken);
@@ -1478,7 +1550,8 @@ public sealed class SyncController : ControllerBase
                 }
                 var scopedRentalAssignmentHistories = await PrepareScopedRentalAssetAssignmentHistoriesAsync(request.RentalAssetAssignmentHistories ?? [], result, cancellationToken);
                 await UpsertEntitiesAsync(scopedRentalAssignmentHistories, _dbContext.RentalAssetAssignmentHistories,
-                    (e, d) => e.Apply(d), d => new RentalAssetAssignmentHistory { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+                    (e, d) => e.Apply(d), d => new RentalAssetAssignmentHistory { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken,
+                    preserveOriginalIncomingPayloadHashForReceipt: true);
                 var scopedRentalBillingLogs = await PrepareScopedRentalBillingLogsAsync(request.RentalBillingLogs ?? [], result, cancellationToken);
                 var validRentalBillingLogs = await FilterValidRentalBillingLogsAsync(scopedRentalBillingLogs, result, cancellationToken);
                 await UpsertEntitiesAsync(validRentalBillingLogs, _dbContext.RentalBillingLogs,
@@ -1605,6 +1678,22 @@ public sealed class SyncController : ControllerBase
                 resolvedItemWarehouseStockResponseAliases);
                 await transaction.CommitAsync(cancellationToken);
             }
+            catch (InvoiceStockAtomicityRollbackException exception)
+            {
+                try
+                {
+                    await transaction.RollbackAsync(CancellationToken.None);
+                }
+                catch (Exception rollbackException)
+                {
+                    pushFailure = ExceptionDispatchInfo.Capture(
+                        new AggregateException("Invoice stock atomicity rollback failed.", exception, rollbackException));
+                }
+                finally
+                {
+                    _dbContext.ChangeTracker.Clear();
+                }
+            }
             catch (InventoryTransferStockAtomicityRollbackException exception)
             {
                 try
@@ -1664,6 +1753,17 @@ public sealed class SyncController : ControllerBase
                 savedStoragePaths.Concat(replacedStoragePaths),
                 CancellationToken.None);
             pushFailure.Throw();
+        }
+
+        if (invoiceStockAtomicityRollback)
+        {
+            await _storedFileReferenceReconciler.DeleteUnreferencedAsync(
+                savedStoragePaths.Concat(replacedStoragePaths), CancellationToken.None);
+            ResetRolledBackSyncPushResult(result);
+            AddNotice(result, nameof(Invoice), Guid.Empty, "invoice-stock-atomicity-rollback",
+                "The entire Push was rolled back because a rejected invoice shared an applied client stock snapshot. No mutation or stock acknowledgement was committed.");
+            result.CurrentServerRevision = await GetCurrentRevisionAsync(cancellationToken);
+            return Ok(result);
         }
 
         if (inventoryTransferStockAtomicityRollback)
@@ -2470,7 +2570,7 @@ public sealed class SyncController : ControllerBase
             result.AcceptedCount++;
         }
 
-        await ResolveHistoricalConflictsAsync(
+        await ResolveExactReplayConflictsAsync(
             entityName,
             exactReplayEntityIdsForHistoricalConflictResolution,
             "이미 처리된 동일 mutation 이 확인되어 기존 충돌을 자동 해결했습니다.",
@@ -2636,7 +2736,7 @@ public sealed class SyncController : ControllerBase
             result.AcceptedCount++;
         }
 
-        await ResolveHistoricalConflictsAsync(
+        await ResolveExactReplayConflictsAsync(
             nameof(CustomerCategory),
             exactReplayEntityIdsForHistoricalConflictResolution,
             "이미 처리된 동일 mutation 이 확인되어 기존 충돌을 자동 해결했습니다.",
@@ -2811,7 +2911,7 @@ public sealed class SyncController : ControllerBase
             result.AcceptedCount++;
         }
 
-        await ResolveHistoricalConflictsAsync(
+        await ResolveExactReplayConflictsAsync(
             nameof(Unit),
             exactReplayEntityIdsForHistoricalConflictResolution,
             "이미 처리된 동일 mutation 이 확인되어 기존 충돌을 자동 해결했습니다.",
@@ -2946,7 +3046,7 @@ public sealed class SyncController : ControllerBase
             result.AcceptedCount++;
         }
 
-        await ResolveHistoricalConflictsAsync(
+        await ResolveExactReplayConflictsAsync(
             entityName,
             exactReplayEntityIdsForHistoricalConflictResolution,
             "이미 처리된 동일 mutation 이 확인되어 기존 충돌을 자동 해결했습니다.",
@@ -3244,7 +3344,7 @@ public sealed class SyncController : ControllerBase
             result.AcceptedCount++;
         }
 
-        await ResolveHistoricalConflictsAsync(
+        await ResolveExactReplayConflictsAsync(
             nameof(Invoice),
             exactReplayEntityIdsForHistoricalConflictResolution,
             "이미 처리된 동일 mutation 이 확인되어 기존 충돌을 자동 해결했습니다.",
@@ -3886,12 +3986,10 @@ public sealed class SyncController : ControllerBase
                 .ToDictionaryAsync(
                     item => item.Id,
                     cancellationToken);
+            var readableItemIds = await _officeScopeService.GetReadableItemIdsAsync(itemIds, cancellationToken);
             foreach (var itemId in itemIds)
             {
-                if (!items.TryGetValue(itemId, out var item) ||
-                    !_officeScopeService.CanReadOfficeForItems(
-                        item.OfficeCode,
-                        item.TenantCode))
+                if (!items.ContainsKey(itemId) || !readableItemIds.Contains(itemId))
                 {
                     return false;
                 }
@@ -5353,9 +5451,18 @@ public sealed class SyncController : ControllerBase
         if (disabledItemIds.Count == 0)
             return;
 
+        foreach (var item in acceptedEntities.Where(item => item.IsDeleted))
+            item.CurrentStock = 0m;
+
+        // Keep soft-deleted inventory rows as the recycle-bin restore baseline.
+        // Normal warehouse queries hide them through the item's query filter.
+        var nonInventoryItemIds = acceptedEntities
+            .Where(item => !ItemOperationalPolicy.SupportsInventory(item.TrackingType))
+            .Select(item => item.Id)
+            .ToList();
         var staleRows = await _dbContext.ItemWarehouseStocks
             .IgnoreQueryFilters()
-            .Where(stock => disabledItemIds.Contains(stock.ItemId))
+            .Where(stock => nonInventoryItemIds.Contains(stock.ItemId))
             .ToListAsync(cancellationToken);
         if (staleRows.Count > 0)
             _dbContext.ItemWarehouseStocks.RemoveRange(staleRows);
@@ -6571,7 +6678,14 @@ public sealed class SyncController : ControllerBase
                     break;
                 }
 
-                if (!_officeScopeService.CanReadOfficeForItems(item.OfficeCode, item.TenantCode))
+                var canReceiveStoredSourceItem = existing is not null &&
+                    IsFinalInventoryTransferStatus(normalizedStatus) &&
+                    existing.Lines.Any(storedLine => !storedLine.IsDeleted &&
+                        storedLine.Id == line.Id && storedLine.ItemId == line.ItemId) &&
+                    CanReadTransferSourceItemSnapshot(item.OfficeCode, item.TenantCode,
+                        existing.SourceOfficeCode, existing.TargetOfficeCode, existing.TenantCode);
+                if (!_officeScopeService.CanReadOfficeForItems(item.OfficeCode, item.TenantCode) &&
+                    !canReceiveStoredSourceItem)
                 {
                     AddClientConflict(dto, nameof(InventoryTransfer),
                         $"Referenced item is outside the readable office scope: {line.ItemId}.", result);
@@ -6950,6 +7064,8 @@ public sealed class SyncController : ControllerBase
 
         var existingInvoiceIds = ambiguousInvoices
             .Select(invoice => invoice.Id)
+            .Concat(ambiguousInvoices.Where(invoice => invoice.PreviousVersionId.HasValue)
+                .Select(invoice => invoice.PreviousVersionId!.Value))
             .Where(id => id != Guid.Empty)
             .Distinct()
             .ToList();
@@ -7606,7 +7722,7 @@ public sealed class SyncController : ControllerBase
         => (value ?? string.Empty).Trim();
 
     private static DateTime? NormalizeInventoryTransferGuardUtc(DateTime? value)
-        => value.HasValue ? DateTime.SpecifyKind(value.Value, DateTimeKind.Utc) : null;
+        => value.HasValue ? NormalizeConflictUtc(value.Value) : null;
 
     private async Task<int> UpsertInventoryTransfersAsync(
         IEnumerable<InventoryTransferDto> payload,
@@ -7821,7 +7937,7 @@ public sealed class SyncController : ControllerBase
             result.AcceptedCount++;
         }
 
-        await ResolveHistoricalConflictsAsync(
+        await ResolveExactReplayConflictsAsync(
             nameof(InventoryTransfer),
             exactReplayEntityIdsForHistoricalConflictResolution,
             "이미 처리된 동일 mutation 이 확인되어 기존 충돌을 자동 해결했습니다.",
@@ -9859,7 +9975,7 @@ public sealed class SyncController : ControllerBase
             result.AcceptedCount++;
         }
 
-        await ResolveHistoricalConflictsAsync(
+        await ResolveExactReplayConflictsAsync(
             nameof(RentalBillingProfile),
             exactReplayEntityIdsForHistoricalConflictResolution,
             "이미 처리된 동일 mutation 이 확인되어 기존 충돌을 자동 해결했습니다.",
@@ -11775,7 +11891,6 @@ public sealed class SyncController : ControllerBase
                     dto,
                     nameof(RentalBillingProfile),
                     requestedCustomerId,
-                    dto.CustomerId,
                     result,
                     cancellationToken,
                     pushSnapshot))
@@ -11849,7 +11964,11 @@ public sealed class SyncController : ControllerBase
     }
 
     private static bool HasExpectedRevisionConflict(TrackedEntity entity, SyncEntityDto dto)
-        => dto.ExpectedRevision > 0 && entity.Revision != dto.ExpectedRevision;
+        // An identified mutation without a known base is a create, not an
+        // unconditional update. Older clients may supply the base in Revision.
+        // Exact receipt replays are handled before this gate.
+        => (dto.ExpectedRevision > 0 || !string.IsNullOrWhiteSpace(dto.MutationId)) &&
+           entity.Revision != (dto.ExpectedRevision > 0 ? dto.ExpectedRevision : dto.Revision);
 
     private static string BuildExpectedRevisionConflictReason(long expectedRevision, long currentRevision)
         => $"Expected revision mismatch. client={expectedRevision}, server={currentRevision}";
@@ -11946,6 +12065,8 @@ public sealed class SyncController : ControllerBase
                  processedMutation.PayloadHash)))
         {
             exactReplayEntityIdsForHistoricalConflictResolution.Add(dto.Id);
+            if (!string.IsNullOrWhiteSpace(processedMutation.PayloadHash))
+                _verifiedReplayDtoTypes[mutationId] = dto.GetType();
         }
 
         result.AcceptedCount++;
@@ -12087,6 +12208,67 @@ public sealed class SyncController : ControllerBase
         };
         _dbContext.ProcessedSyncMutations.Add(processedMutation);
         _processedMutationsById.Add(mutationId, processedMutation);
+    }
+
+    private async Task ResolveExactReplayConflictsAsync(
+        string entityName,
+        IReadOnlyCollection<Guid> entityIds,
+        string resolutionNote,
+        CancellationToken cancellationToken)
+    {
+        if (_verifiedReplayDtoTypes.Count == 0 || entityIds.Count == 0)
+            return;
+
+        var now = DateTime.UtcNow;
+        foreach (var batch in entityIds.Where(id => id != Guid.Empty)
+                     .Select(id => id.ToString()).Distinct().Chunk(500))
+        {
+            var matchedIds = new List<Guid>();
+            // Stream payloads rather than materializing the historical JSON for
+            // every conflict. Only proven matching row ids enter the update.
+            var candidates = _dbContext.ConflictLogs.AsNoTracking()
+                .Where(conflict => conflict.EntityName == entityName &&
+                    batch.Contains(conflict.EntityId) && conflict.Status != "Resolved")
+                .Select(conflict => new { conflict.Id, conflict.EntityId, conflict.ClientJson });
+            await foreach (var candidate in candidates.AsAsyncEnumerable().WithCancellation(cancellationToken))
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(candidate.ClientJson);
+                    if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                        !document.RootElement.TryGetProperty(nameof(SyncEntityDto.MutationId), out var mutation) ||
+                        mutation.ValueKind != JsonValueKind.String)
+                        continue;
+
+                    var mutationId = NormalizeMutationId(mutation.GetString());
+                    if (!_verifiedReplayDtoTypes.TryGetValue(mutationId, out var dtoType) ||
+                        !_processedMutationsById.TryGetValue(mutationId, out var receipt) ||
+                        JsonSerializer.Deserialize(candidate.ClientJson, dtoType, ConflictJsonOptions) is not SyncEntityDto client ||
+                        !string.Equals(client.Id.ToString(), candidate.EntityId, StringComparison.OrdinalIgnoreCase) ||
+                        !ProcessedMutationMetadataMatches(client, entityName, receipt) ||
+                        !SyncMutationPayloadHasher.Matches(client, receipt.PayloadHash, receipt.MutationId))
+                        continue;
+
+                    matchedIds.Add(candidate.Id);
+                }
+                catch (JsonException)
+                {
+                    // Legacy or damaged payloads do not prove that a conflict
+                    // belongs to the accepted command; keep them unresolved.
+                }
+            }
+
+            foreach (var ids in matchedIds.Chunk(500))
+            {
+                await _dbContext.ConflictLogs
+                    .Where(conflict => ids.Contains(conflict.Id) && conflict.Status != "Resolved")
+                    .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(conflict => conflict.Status, "Resolved")
+                            .SetProperty(conflict => conflict.ResolvedAtUtc, now)
+                            .SetProperty(conflict => conflict.ResolutionNote, resolutionNote),
+                        cancellationToken);
+            }
+        }
     }
 
     private Task ResolveHistoricalConflictsAsync(
@@ -13256,6 +13438,16 @@ public sealed class SyncController : ControllerBase
         }
     }
 
+    private Task<bool> HasUnsupportedReadableBillingProfileAsync(int supportedVersion, CancellationToken cancellationToken)
+        => _officeScopeService.ApplyRentalBillingProfileScope(
+                _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking())
+            .AnyAsync(profile =>
+                (supportedVersion < RentalBillingScheduleRules.NoFixedDayCapabilityVersion &&
+                 profile.BillingDayMode.Trim() == RentalBillingScheduleRules.BillingDayModeNoFixedDay) ||
+                (supportedVersion < RentalBillingScheduleRules.CurrentMonthCapabilityVersion &&
+                 profile.BillingAdvanceMode.Trim() == RentalBillingScheduleRules.BillingAdvanceModeCurrentMonth),
+                cancellationToken);
+
     private async Task RejectBlockedPriorGenerationRentalDependentsAsync(
         SyncPushRequest request,
         IReadOnlySet<RentalProfileTenantIdentity> blockedProfileIdentities,
@@ -13422,7 +13614,22 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            AddClientConflict(dto, nameof(Invoice), conflictReason, result);
+            if (existing is not null &&
+                TryAcknowledgeBlockedFinancialDependentReplay(
+                    dto, existing, nameof(Invoice), request.DeviceId,
+                    _officeScopeService.CanWriteOfficeForInvoices(
+                        effectiveInvoiceScopes[dto].ResponsibleOfficeCode,
+                        effectiveTenantCode, effectiveInvoiceScopes[dto].OfficeCode) &&
+                    _officeScopeService.CanWriteOfficeForInvoices(
+                        existing.ResponsibleOfficeCode, existing.TenantCode, existing.OfficeCode),
+                    result))
+            {
+                await PopulateExactReplayAssignedInvoiceNumbersAsync(dto, result, cancellationToken);
+            }
+            else
+            {
+                AddClientConflict(dto, nameof(Invoice), conflictReason, result);
+            }
             rejectedInvoices.Add(dto);
         }
 
@@ -13525,7 +13732,18 @@ public sealed class SyncController : ControllerBase
             if (!referencesBlockedProfile)
                 continue;
 
-            AddClientConflict(dto, nameof(TransactionRecord), conflictReason, result);
+            if (existing is null ||
+                !TryAcknowledgeBlockedFinancialDependentReplay(
+                    dto, existing, nameof(TransactionRecord), request.DeviceId,
+                    _officeScopeService.CanWriteOfficeForPayments(
+                        effectiveTransactionScopes[dto].ResponsibleOfficeCode,
+                        effectiveTenantCode, effectiveTransactionScopes[dto].OfficeCode) &&
+                    _officeScopeService.CanWriteOfficeForPayments(
+                        existing.ResponsibleOfficeCode, existing.TenantCode, existing.OfficeCode),
+                    result))
+            {
+                AddClientConflict(dto, nameof(TransactionRecord), conflictReason, result);
+            }
             rejectedTransactions.Add(dto);
         }
 
@@ -13608,7 +13826,15 @@ public sealed class SyncController : ControllerBase
             if (!referencesBlockedProfile)
                 continue;
 
-            AddClientConflict(dto, nameof(RentalAsset), conflictReason, result);
+            if (existing is null ||
+                !TryAcknowledgeBlockedRentalDependentReplay(
+                    dto, existing, nameof(RentalAsset),
+                    new RentalDependentOperationalScope(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode),
+                    new RentalDependentOperationalScope(existing.TenantCode, existing.OfficeCode, existing.ResponsibleOfficeCode),
+                    result))
+            {
+                AddClientConflict(dto, nameof(RentalAsset), conflictReason, result);
+            }
             rejectedAssets.Add(dto);
         }
 
@@ -13661,7 +13887,17 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
-            AddClientConflict(dto, nameof(RentalAssetAssignmentHistory), conflictReason, result);
+            if (existing is null ||
+                (existingAsset is not null && !_officeScopeService.CanWriteOfficeForRentals(
+                    existingAsset.ResponsibleOfficeCode, existingAsset.TenantCode, existingAsset.OfficeCode)) ||
+                !TryAcknowledgeBlockedRentalDependentReplay(
+                    dto, existing, nameof(RentalAssetAssignmentHistory),
+                    new RentalDependentOperationalScope(dto.TenantCode, dto.OfficeCode, dto.ResponsibleOfficeCode),
+                    new RentalDependentOperationalScope(existing.TenantCode, existing.OfficeCode, existing.ResponsibleOfficeCode),
+                    result))
+            {
+                AddClientConflict(dto, nameof(RentalAssetAssignmentHistory), conflictReason, result);
+            }
             rejectedHistories.Add(dto);
         }
 
@@ -13738,11 +13974,91 @@ public sealed class SyncController : ControllerBase
             if (!referencesBlockedProfile)
                 continue;
 
-            AddClientConflict(dto, nameof(Payment), conflictReason, result);
+            existingInvoices.TryGetValue(dto.InvoiceId, out var requestedInvoice);
+            Invoice? storedInvoice = null;
+            if (existingPayment is not null)
+                existingInvoices.TryGetValue(existingPayment.InvoiceId, out storedInvoice);
+            if (existingPayment is null || requestedInvoice is null || storedInvoice is null ||
+                !TryAcknowledgeBlockedFinancialDependentReplay(
+                    dto, existingPayment, nameof(Payment), request.DeviceId,
+                    _officeScopeService.CanWriteOfficeForPayments(
+                        requestedInvoice.ResponsibleOfficeCode, requestedInvoice.TenantCode, requestedInvoice.OfficeCode) &&
+                    _officeScopeService.CanWriteOfficeForPayments(
+                        storedInvoice.ResponsibleOfficeCode, storedInvoice.TenantCode, storedInvoice.OfficeCode),
+                    result))
+            {
+                AddClientConflict(dto, nameof(Payment), conflictReason, result);
+            }
             rejectedPayments.Add(dto);
         }
 
         payments.RemoveAll(dto => rejectedPayments.Contains(dto));
+    }
+
+    private bool TryAcknowledgeBlockedFinancialDependentReplay(
+        SyncEntityDto dto,
+        TrackedEntity existing,
+        string entityName,
+        string? deviceId,
+        bool canWriteBothScopes,
+        SyncPushResult result)
+    {
+        if (!canWriteBothScopes ||
+            !_processedMutationsById.TryGetValue(NormalizeMutationId(dto.MutationId), out var receipt) ||
+            !string.Equals(NormalizeDeviceId(receipt.DeviceId), NormalizeDeviceId(deviceId), StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return TryAcknowledgeBlockedDependentReceipt(dto, existing, entityName, result);
+    }
+
+    private bool TryAcknowledgeBlockedRentalDependentReplay(
+        SyncEntityDto dto,
+        TrackedEntity existing,
+        string entityName,
+        RentalDependentOperationalScope requestedScope,
+        RentalDependentOperationalScope existingScope,
+        SyncPushResult result)
+    {
+        if (dto.Id == Guid.Empty || dto.Id != existing.Id ||
+            !_officeScopeService.CanWriteOfficeForRentals(
+                requestedScope.ResponsibleOfficeCode, requestedScope.TenantCode, requestedScope.OfficeCode) ||
+            !_officeScopeService.CanWriteOfficeForRentals(
+                existingScope.ResponsibleOfficeCode, existingScope.TenantCode, existingScope.OfficeCode))
+        {
+            return false;
+        }
+
+        return TryAcknowledgeBlockedDependentReceipt(dto, existing, entityName, result);
+    }
+
+    private bool TryAcknowledgeBlockedDependentReceipt(
+        SyncEntityDto dto,
+        TrackedEntity existing,
+        string entityName,
+        SyncPushResult result)
+    {
+        if (dto.Id == Guid.Empty || dto.Id != existing.Id ||
+            !HasStrictProcessedMutationReplay(dto, entityName))
+        {
+            return false;
+        }
+
+        // The parent snapshot cannot authorize a new write, but this exact
+        // dependent command already committed. Acknowledge only its receipt
+        // and remove it from the request before any upsert or restore path.
+        result.AcceptedCount++;
+        result.DuplicateMutationCount++;
+        result.AcceptedRevisions.Add(new SyncAcceptedRevisionDto
+        {
+            EntityName = entityName,
+            EntityId = existing.Id,
+            Revision = existing.Revision,
+            UpdatedAtUtc = existing.UpdatedAtUtc,
+            IsDeleted = existing.IsDeleted
+        });
+        return true;
     }
 
     private async Task<HashSet<Guid>> FindRentalAssetDeleteIdsReferencedByActiveProfilesAsync(
@@ -13939,7 +14255,6 @@ public sealed class SyncController : ControllerBase
                     dto,
                     nameof(RentalAsset),
                     requestedCustomerId,
-                    dto.CustomerId,
                     result,
                     cancellationToken,
                     pushSnapshot))
@@ -14267,7 +14582,8 @@ public sealed class SyncController : ControllerBase
             if (directItem is not null &&
                 !directItem.IsDeleted &&
                 ItemOperationalPolicy.IsAsset(directItem.TrackingType) &&
-                CanReadItemForRentalReference(directItem))
+                (CanReadItemForRentalReference(directItem) ||
+                 await CanPreserveExistingRentalItemReferenceAsync(dto, directItem, cancellationToken, pushSnapshot)))
             {
                 return directItem.Id;
             }
@@ -14347,6 +14663,28 @@ public sealed class SyncController : ControllerBase
             .Where(item => ItemOperationalPolicy.IsAsset(item.TrackingType))
             .ToList();
         return ResolveReadableItemReference(nameKeyMatches, preferredOfficeCode, preferredTenantCode);
+    }
+
+    private async Task<bool> CanPreserveExistingRentalItemReferenceAsync(
+        RentalAssetDto dto,
+        Item item,
+        CancellationToken cancellationToken,
+        RentalBillingProfilePushSnapshot? pushSnapshot)
+    {
+        if (dto.Id == Guid.Empty)
+            return false;
+
+        var existing = pushSnapshot is null
+            ? await _dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking()
+                .FirstOrDefaultAsync(asset => asset.Id == dto.Id, cancellationToken)
+            : pushSnapshot.FindAsset(dto.Id);
+        // An office may edit its assigned asset without receiving the owner's
+        // item catalog. Preserve only that server-established, same-tenant link.
+        return existing is not null && !existing.IsDeleted && existing.ItemId == item.Id &&
+               string.Equals(existing.TenantCode, item.TenantCode, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(existing.TenantCode, dto.TenantCode, StringComparison.OrdinalIgnoreCase) &&
+               _officeScopeService.CanWriteOfficeForRentals(
+                   existing.ResponsibleOfficeCode, existing.TenantCode, existing.OfficeCode);
     }
 
     private async Task<Guid?> ResolveRentalAssetCustomerReferenceAsync(
@@ -14445,18 +14783,17 @@ public sealed class SyncController : ControllerBase
         SyncEntityDto dto,
         string entityName,
         Guid? requestedCustomerId,
-        Guid? resolvedCustomerId,
         SyncPushResult result,
         CancellationToken cancellationToken,
         RentalBillingProfilePushSnapshot? pushSnapshot = null)
     {
-        if (!requestedCustomerId.HasValue ||
-            requestedCustomerId.Value == Guid.Empty ||
-            resolvedCustomerId.HasValue)
+        if (!requestedCustomerId.HasValue || requestedCustomerId.Value == Guid.Empty)
         {
             return true;
         }
 
+        // A readable name fallback may repair a stale ID, but must not bypass
+        // authorization for an explicitly referenced, existing customer.
         var requestedCustomer = pushSnapshot is null
             ? await _dbContext.Customers
                 .IgnoreQueryFilters()
@@ -15357,6 +15694,7 @@ public sealed class SyncController : ControllerBase
             .Select(item => new { item.Id, item.OfficeCode, item.TenantCode, item.TrackingType })
             .ToDictionaryAsync(item => item.Id, cancellationToken);
 
+        var readableItemIds = await _officeScopeService.GetReadableItemIdsAsync(itemIds, cancellationToken);
         foreach (var itemId in itemIds)
         {
             if (!items.TryGetValue(itemId, out var item))
@@ -15369,7 +15707,7 @@ public sealed class SyncController : ControllerBase
                 return false;
             }
 
-            if (_officeScopeService.CanReadOfficeForItems(item.OfficeCode, item.TenantCode))
+            if (readableItemIds.Contains(itemId))
                 continue;
 
             AddClientConflict(
@@ -15843,8 +16181,25 @@ public sealed class SyncController : ControllerBase
                         : !paymentCanCommit
                             ? $"The paired Payment cannot be committed atomically: {paymentPreflightReason}"
                             : "The paired Payment and Transaction disagree on invoice, date, deletion state, or amount.";
-            AddAtomicPairConflictIfMissing(transaction, nameof(TransactionRecord), sharedReason, result);
-            AddAtomicPairConflictIfMissing(payment, nameof(Payment), sharedReason, result);
+            // Keep the pair rejected, but expose the failing entity's canonical
+            // snapshot so clients can safely rebase an equivalent payload.
+            if (transactionPassedStructuralValidation && existingTransaction is not null &&
+                transactionPreflightReason.StartsWith("Expected revision mismatch.", StringComparison.Ordinal))
+            {
+                await AddServerConflictAsync(transaction, existingTransaction, nameof(TransactionRecord),
+                    transactionPreflightReason, result, cancellationToken);
+            }
+            else
+                AddAtomicPairConflictIfMissing(transaction, nameof(TransactionRecord), sharedReason, result);
+
+            if (paymentPassedStructuralValidation && existingPayment is not null &&
+                paymentPreflightReason.StartsWith("Expected revision mismatch.", StringComparison.Ordinal))
+            {
+                await AddServerConflictAsync(payment, existingPayment, nameof(Payment),
+                    paymentPreflightReason, result, cancellationToken);
+            }
+            else
+                AddAtomicPairConflictIfMissing(payment, nameof(Payment), sharedReason, result);
         }
 
         return new PaymentTransactionAtomicityFilterResult(
@@ -16998,6 +17353,10 @@ public sealed class SyncController : ControllerBase
             InvoiceStockSnapshotService.InvoiceStockKey,
             decimal> OriginalQuantitiesByAppliedKey);
 
+    private sealed class InvoiceStockAtomicityRollbackException : Exception
+    {
+    }
+
     private sealed class InventoryTransferStockAtomicityRollbackException
         : Exception
     {
@@ -17327,36 +17686,34 @@ public sealed class SyncController : ControllerBase
         {
             var batch = fingerprintBatch.ToArray();
             var batchFingerprints = batch.ToHashSet();
-            var entityNames = batch
-                .Select(fingerprint => fingerprint.EntityName)
-                .Distinct(StringComparer.Ordinal)
-                .ToArray();
-            var entityIds = batch
-                .Select(fingerprint => fingerprint.EntityId)
-                .Distinct(StringComparer.Ordinal)
-                .ToArray();
-            var auditCandidates = await _dbContext.AuditLogs
-                .AsNoTracking()
-                .Where(audit =>
-                    audit.CreatedAtUtc < pushStartedAtUtc &&
-                    entityNames.Contains(audit.EntityName) &&
-                    entityIds.Contains(audit.EntityId))
-                .GroupBy(audit => new
-                {
-                    audit.EntityName,
-                    audit.EntityId
-                })
-                .Select(group => group
+            IQueryable<AuditLog>? boundedCandidates = null;
+            foreach (var fingerprint in batch)
+            {
+                // Read at most one row per exact key through the existing
+                // (EntityName, EntityId, CreatedAtUtc) index. Ranking every
+                // historical row can time out and abort the whole push.
+                var latestForKey = _dbContext.AuditLogs
+                    .AsNoTracking()
+                    .Where(audit =>
+                        audit.EntityName == fingerprint.EntityName &&
+                        audit.EntityId == fingerprint.EntityId &&
+                        audit.CreatedAtUtc < pushStartedAtUtc)
                     .OrderByDescending(audit => audit.CreatedAtUtc)
                     .ThenByDescending(audit => audit.Id)
-                    .Select(audit => new AuditActorCandidate(
-                        audit.Id,
-                        audit.EntityName,
-                        audit.EntityId,
-                        audit.UserId,
-                        audit.Username,
-                        audit.CreatedAtUtc))
-                    .First())
+                    .Take(1);
+                boundedCandidates = boundedCandidates is null
+                    ? latestForKey
+                    : boundedCandidates.Concat(latestForKey);
+            }
+
+            var auditCandidates = await boundedCandidates!
+                .Select(audit => new AuditActorCandidate(
+                    audit.Id,
+                    audit.EntityName,
+                    audit.EntityId,
+                    audit.UserId,
+                    audit.Username,
+                    audit.CreatedAtUtc))
                 .ToListAsync(cancellationToken);
 
             foreach (var latestAudit in auditCandidates

@@ -403,6 +403,17 @@ public sealed class TradePrintDialogSourceGuardTests
     }
 
     [Fact]
+    public void TradePrintWindow_RemainsUsableAfterIsolatedPathGuard()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        TradePrintWindow_TwentyPrinterSnapshotKeepsDropdownHeightBounded();
+        new ProcessSafetyGuardTests().AppPaths_FailClosedWhenATestProcessHasNoIsolatedRoot();
+        TradePrintWindow_TwentyPrinterSnapshotKeepsDropdownHeightBounded();
+    }
+
+    [Fact]
     public void TradePrintWindow_TwentyPrinterSnapshotKeepsDropdownHeightBounded()
     {
         if (!OperatingSystem.IsWindows())

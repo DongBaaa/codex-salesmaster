@@ -123,9 +123,7 @@ public sealed class UpdatesController : ControllerBase
         AppUpdateManifestDto? manifest;
         try
         {
-            manifest = JsonSerializer.Deserialize<AppUpdateManifestDto>(
-                manifestBytes,
-                ManifestJsonOptions);
+            manifest = DeserializeManifest(manifestBytes);
         }
         catch (JsonException)
         {
@@ -436,9 +434,7 @@ public sealed class UpdatesController : ControllerBase
             throw new InvalidDataException("Manifest generation evidence is invalid.");
         }
 
-        var selectedManifest = JsonSerializer.Deserialize<AppUpdateManifestDto>(
-            manifestBytes,
-            ManifestJsonOptions);
+        var selectedManifest = DeserializeManifest(manifestBytes);
         if (selectedManifest is null ||
             !string.Equals(
                 selectedManifest.GenerationId,
@@ -453,6 +449,17 @@ public sealed class UpdatesController : ControllerBase
         }
 
         return manifestBytes;
+    }
+
+    private static AppUpdateManifestDto? DeserializeManifest(byte[] originalBytes)
+    {
+        // Windows PowerShell UTF-8 output may include a BOM. Skip it only for
+        // JSON parsing; generation length/hash checks must use the original bytes.
+        var offset = originalBytes.AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF })
+            ? 3
+            : 0;
+        return JsonSerializer.Deserialize<AppUpdateManifestDto>(
+            originalBytes.AsSpan(offset), ManifestJsonOptions);
     }
 
     private static Dictionary<string, string> ParseManifestPointer(

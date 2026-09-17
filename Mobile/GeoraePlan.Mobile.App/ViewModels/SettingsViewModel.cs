@@ -13,8 +13,8 @@ public sealed class SettingsViewModel : ObservableObject
     private AppUpdatePackageDto? _pendingAndroidUpdate;
 
     private string _baseUrl = string.Empty;
-    private string _statusMessage = "모바일 앱은 거래플랜 운영 서버에 고정 연결됩니다.";
-    private string _connectionModeText = "운영 서버 기본 연결";
+    private string _statusMessage = "모바일 앱은 설정된 거래플랜 서버에 연결됩니다.";
+    private string _connectionModeText = "기본 서버 연결";
     private string _currentVersion = string.Empty;
     private string _latestVersion = "-";
     private string _updateNotes = "새 버전 확인 대기";
@@ -171,8 +171,8 @@ public sealed class SettingsViewModel : ObservableObject
         BaseUrl = _settings.GetBaseUrl();
         RefreshConnectionModeText();
         StatusMessage = _settings.HasCustomBaseUrl()
-            ? "고급 연결 URL을 사용 중입니다. 접속 오류가 있으면 운영 서버로 초기화하세요."
-            : "기본 운영 서버로 연결 중입니다.";
+            ? "고급 연결 URL을 사용 중입니다. 접속 오류가 있으면 기본 서버로 초기화하세요."
+            : "기본 서버 주소를 사용 중입니다.";
         CurrentVersion = _updateService.GetCurrentVersion();
         LatestVersion = CurrentVersion;
         UpdateNotes = "새 버전 확인을 눌러 최신 APK를 조회할 수 있습니다.";
@@ -183,7 +183,7 @@ public sealed class SettingsViewModel : ObservableObject
         if (!CanEditConnectionSettings)
             IsConnectionSettingsVisible = false;
         IntegrityAccessText = CanViewIntegrityReport
-            ? "운영 서버 무결성 결과를 읽기 전용으로 확인할 수 있습니다."
+            ? "현재 서버 무결성 결과를 읽기 전용으로 확인할 수 있습니다."
             : "운영점검은 관리자 또는 Settings.Edit 권한 계정만 사용할 수 있습니다.";
         await LoadUpdateInfoAsync(userInitiated: false);
     }
@@ -228,7 +228,7 @@ public sealed class SettingsViewModel : ObservableObject
             RefreshConnectionModeText();
             StatusMessage = _settings.HasCustomBaseUrl()
                 ? "연결 테스트 성공 후 고급 연결 URL을 저장했습니다. 다음 요청부터 해당 서버로 연결합니다."
-                : "연결 테스트 성공 후 운영 서버 기본 연결로 저장했습니다.";
+                : "연결 테스트 성공 후 기본 서버 연결로 저장했습니다.";
         }
         catch (StaleMobileSessionOwnerException)
         {
@@ -275,7 +275,7 @@ public sealed class SettingsViewModel : ObservableObject
             return;
         BaseUrl = _settings.GetDefaultBaseUrl();
         RefreshConnectionModeText();
-        StatusMessage = "운영 서버 기본 연결로 초기화했습니다.";
+        StatusMessage = "기본 서버 연결로 초기화했습니다.";
     }
 
     public async Task TestConnectionAsync()
@@ -487,6 +487,6 @@ public sealed class SettingsViewModel : ObservableObject
         HasCustomBaseUrl = _settings.HasCustomBaseUrl();
         ConnectionModeText = _settings.HasCustomBaseUrl()
             ? $"고급 연결 사용 중: {_settings.GetBaseUrl()}"
-            : $"운영 서버 기본 연결: {_settings.GetDefaultBaseUrl()}";
+            : $"기본 서버 연결: {_settings.GetDefaultBaseUrl()}";
     }
 }

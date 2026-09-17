@@ -131,12 +131,14 @@ public sealed class TenantSettingsControllerTests : IDisposable
             policy.TargetOfficeCode == OfficeCodeCatalog.Yeonsu));
     }
 
-    [Fact]
-    public async Task TenantSettingsController_ForTenantAdmin_ReturnsForbid()
+    [Theory]
+    [InlineData(TenantScopeCatalog.ScopeTenantAll)]
+    [InlineData(TenantScopeCatalog.ScopeOfficeOnly)]
+    public async Task TenantSettingsController_ForTenantAdmin_ReturnsForbid(string scopeType)
     {
         var currentUser = new TestCurrentUserContext
         {
-            ScopeType = TenantScopeCatalog.ScopeTenantAll,
+            ScopeType = scopeType,
             IsAdmin = true
         };
         await using var dbContext = CreateDbContext(currentUser);

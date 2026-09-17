@@ -18,6 +18,133 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class RecycleBinScopeAndSyncTests
 {
     [Theory]
+    [InlineData(false, false, true)]
+    [InlineData(false, true, true)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, true)]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, false)]
+    public async Task ConfirmedRestore_TrackedDeleteAcknowledgedByAnotherContext_RefreshesWithoutRepush(
+        bool staleTrackedDelete, bool contractFirst, bool deletionAcknowledged)
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"georaeplan-restore-tracked-delete-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", tempRoot);
+        try
+        {
+            var session = CreateOnlineAdminSession();
+            var response = new SyncPullResponse { CurrentServerRevision = 10 };
+            var handler = new PullOnlyRecoveryHandler(response);
+            var services = new ServiceCollection();
+            services.AddDbContext<LocalDbContext>();
+            services.AddSingleton(session);
+            services.AddSingleton(new OfficeAccessService());
+            services.AddSingleton(new SyncRequestDispatcher());
+            services.AddScoped<SyncDiagnosticsService>();
+            services.AddScoped<LocalStateService>();
+            services.AddScoped<RentalStateService>();
+            services.AddScoped(_ => new HttpClient(handler, disposeHandler: false) { BaseAddress = new Uri("http://localhost/") });
+            services.AddScoped<ErpApiClient>();
+            services.AddScoped<SyncService>();
+            await using var provider = services.BuildServiceProvider();
+            await using var scope = provider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<LocalDbContext>();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+            var customer = CreateDeletedScopedCustomer(Guid.NewGuid(), DateTime.UtcNow.AddMinutes(-2));
+            customer.Revision = 6;
+            customer.IsDirty = staleTrackedDelete;
+            var contract = new LocalCustomerContract
+            {
+                Id = Guid.NewGuid(), CustomerId = customer.Id, ContractType = "RestoreTest",
+                FileName = "PDF 미등록", Description = "restore regression",
+                IsDeleted = true, IsDirty = staleTrackedDelete, Revision = 7,
+                CreatedAtUtc = customer.CreatedAtUtc, UpdatedAtUtc = customer.UpdatedAtUtc
+            };
+            db.AddRange(customer, contract);
+            await db.SaveChangesAsync();
+            // Normal synchronization uses another context; the UI still tracks its saved deletion.
+            await using (var acknowledgement = new LocalDbContext())
+            {
+                if (deletionAcknowledged)
+                {
+                    await acknowledgement.Customers.IgnoreQueryFilters().ExecuteUpdateAsync(s => s.SetProperty(x => x.IsDirty, false));
+                    await acknowledgement.CustomerContracts.IgnoreQueryFilters().ExecuteUpdateAsync(s => s.SetProperty(x => x.IsDirty, false));
+                }
+                Assert.Equal(!deletionAcknowledged, await acknowledgement.Customers.IgnoreQueryFilters().Select(x => x.IsDirty).SingleAsync());
+                Assert.Equal(!deletionAcknowledged, await acknowledgement.CustomerContracts.IgnoreQueryFilters().Select(x => x.IsDirty).SingleAsync());
+                Assert.Equal(staleTrackedDelete, customer.IsDirty);
+                Assert.Equal(staleTrackedDelete, contract.IsDirty);
+            }
+            var serverCustomer = LocalMappings.ToDto(customer);
+            serverCustomer.IsDeleted = false;
+            serverCustomer.Revision = 9;
+            serverCustomer.UpdatedAtUtc = DateTime.UtcNow;
+            var serverContract = LocalMappings.ToDto(contract);
+            serverContract.IsDeleted = false;
+            serverContract.Revision = 10;
+            serverContract.UpdatedAtUtc = serverCustomer.UpdatedAtUtc;
+            response.Customers.Add(serverCustomer);
+            response.CustomerContracts.Add(serverContract);
+            var local = scope.ServiceProvider.GetRequiredService<LocalStateService>();
+            await local.SetSettingAsync("LastSyncRevision", "7");
+            var sync = scope.ServiceProvider.GetRequiredService<SyncService>();
+            var statuses = new List<string>();
+            sync.SyncStatusChanged += statuses.Add;
+            var entries = new List<RecycleBinEntry>
+            {
+                new() { Kind = RecycleBinEntityKind.Customer, EntityId = customer.Id },
+                new() { Kind = RecycleBinEntityKind.CustomerContract, EntityId = contract.Id }
+            };
+            if (contractFirst) entries.Reverse();
+            var restoreObservations = new List<string>();
+            var result = await SyncService.ExecuteWithGlobalSyncOperationLockAsync(
+                () => EnvironmentSettingsViewModel.ApplyConfirmedServerRestoresLocallyAsync(
+                    entries, true,
+                    entry => local.RestoreRecycleBinEntryAsync(entry.Kind, entry.EntityId, session),
+                    async entry =>
+                    {
+                        await local.MarkRecycleBinServerMutationCleanAsync(entry.Kind, entry.EntityId);
+                        await using var observe = new LocalDbContext();
+                        var c = await observe.Customers.IgnoreQueryFilters().SingleAsync(x => x.Id == customer.Id);
+                        var f = await observe.CustomerContracts.IgnoreQueryFilters().SingleAsync(x => x.Id == contract.Id);
+                        restoreObservations.Add($"After {entry.Kind}: customer dirty={c.IsDirty} deleted={c.IsDeleted}; contract dirty={f.IsDirty} deleted={f.IsDeleted}; tracker={string.Join(",", db.ChangeTracker.Entries<LocalSyncEntity>().Select(x => $"{x.Entity.GetType().Name}:{x.State}:{x.Entity.IsDirty}"))}");
+                    },
+                    () => sync.TryAuthoritativePullOnlyInsideGlobalOperationAsync(),
+                    () => Task.CompletedTask), CancellationToken.None);
+            Assert.False(result.HasLocalApplyFailure, string.Join("; ", result.Failures));
+            if (!deletionAcknowledged)
+            {
+                Assert.False(result.AuthoritativeRefreshSucceeded);
+                Assert.DoesNotContain(statuses, status => status.Contains("범위가 변경"));
+                await using var pending = new LocalDbContext();
+                Assert.True(await pending.Customers.IgnoreQueryFilters().Select(x => x.IsDirty).SingleAsync());
+                Assert.True(await pending.CustomerContracts.IgnoreQueryFilters().Select(x => x.IsDirty).SingleAsync());
+                Assert.Equal(0, handler.PushCount);
+                return;
+            }
+            Assert.True(result.AuthoritativeRefreshSucceeded, result.AuthoritativeRefreshFailure + " " + string.Join("; ", restoreObservations));
+            Assert.Equal(0, handler.PushCount);
+            Assert.Equal(1, handler.PullCount);
+            await using var verify = new LocalDbContext();
+            var restoredCustomer = await verify.Customers.IgnoreQueryFilters().SingleAsync();
+            var restoredContract = await verify.CustomerContracts.IgnoreQueryFilters().SingleAsync();
+            Assert.False(restoredCustomer.IsDeleted);
+            Assert.False(restoredCustomer.IsDirty);
+            Assert.Equal(9, restoredCustomer.Revision);
+            Assert.False(restoredContract.IsDeleted);
+            Assert.False(restoredContract.IsDirty);
+            Assert.Equal(10, restoredContract.Revision);
+            Assert.Empty(await verify.SyncOutboxEntries.ToListAsync());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Theory]
     [InlineData("bad-gateway")]
     [InlineData("http-exception")]
     [InlineData("timeout")]
@@ -230,7 +357,7 @@ public sealed class RecycleBinScopeAndSyncTests
     }
 
     [Fact]
-    public async Task ConfirmedServerRestore_LocalApplySuccess_CleansBeforeCountingAndDoesNotRefresh()
+    public async Task ConfirmedServerRestore_LocalApplySuccess_CleansBeforeAuthoritativeRefresh()
     {
         var entry = new RecycleBinEntry
         {
@@ -253,6 +380,7 @@ public sealed class RecycleBinScopeAndSyncTests
             },
             authoritativeRefreshAsync: () =>
             {
+                Assert.True(marked);
                 refreshCount++;
                 return Task.FromResult(true);
             },
@@ -265,8 +393,9 @@ public sealed class RecycleBinScopeAndSyncTests
         Assert.True(marked);
         Assert.Equal(1, result.SucceededCount);
         Assert.False(result.HasLocalApplyFailure);
-        Assert.False(result.RequiresAuthoritativeRefresh);
-        Assert.Equal(0, refreshCount);
+        Assert.True(result.RequiresAuthoritativeRefresh);
+        Assert.True(result.AuthoritativeRefreshSucceeded);
+        Assert.Equal(1, refreshCount);
         Assert.Equal(1, reloadCount);
     }
 
@@ -354,7 +483,9 @@ public sealed class RecycleBinScopeAndSyncTests
         Assert.True(restoreWorkflowStart >= 0 && restoreWorkflowEnd > restoreWorkflowStart);
         var restoreWorkflow = viewModelSource[restoreWorkflowStart..restoreWorkflowEnd];
         Assert.Contains("serverMirror.SucceededEntries", restoreWorkflow, StringComparison.Ordinal);
-        Assert.Contains("() => _sync.TryAuthoritativePullOnlyAsync()", restoreWorkflow, StringComparison.Ordinal);
+        Assert.Contains("() => _sync.TryAuthoritativePullOnlyInsideGlobalOperationAsync()", restoreWorkflow, StringComparison.Ordinal);
+        Assert.True(restoreWorkflow.IndexOf("ExecuteWithGlobalSyncOperationLockAsync", StringComparison.Ordinal) <
+            restoreWorkflow.IndexOf("MirrorRecycleBinMutationToServerAsync", StringComparison.Ordinal));
         Assert.DoesNotContain("() => _sync.TrySyncAsync()", restoreWorkflow, StringComparison.Ordinal);
         Assert.Contains("같은 복원을 반복하지 마세요", restoreWorkflow, StringComparison.Ordinal);
         Assert.Contains("AmbiguousMutationOutcomeException", viewModelSource, StringComparison.Ordinal);

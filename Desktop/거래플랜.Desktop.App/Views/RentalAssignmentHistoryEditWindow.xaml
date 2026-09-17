@@ -1,6 +1,9 @@
 <Window x:Class="거래플랜.Desktop.App.Views.RentalAssignmentHistoryEditWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:infra="clr-namespace:거래플랜.Desktop.App.Infrastructure"
+        infra:ResponsiveWindowBehavior.IsGlobalLayoutExcluded="True"
+        infra:ResponsiveWindowBehavior.IsEnabled="False"
         Title="임대이력 편집"
         Width="640"
         Height="560"
@@ -72,10 +75,11 @@
 
         <Border Grid.Row="1" Background="#1C2B43" BorderBrush="#33517C" BorderThickness="1" CornerRadius="8" Padding="16">
             <ScrollViewer x:Name="RentalAssignmentHistoryBodyScrollViewer"
+                              Style="{StaticResource ResponsiveDetailScrollViewerStyle}"
                           HorizontalScrollBarVisibility="Auto"
                           VerticalScrollBarVisibility="Auto">
             <Grid x:Name="RentalAssignmentHistoryBodyContent"
-                  MinWidth="520"
+                  MinWidth="0"
                   Width="{Binding ViewportWidth, ElementName=RentalAssignmentHistoryBodyScrollViewer}">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="120"/>

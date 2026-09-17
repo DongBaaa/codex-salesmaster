@@ -14,13 +14,8 @@ public static class VersionChangeMaintenanceService
 {
     private const string LastProcessedVersionSettingKey = "System.LastPostUpdateMaintenanceVersion";
     private const string LastCacheMirrorRepairEpochSettingKey = "System.LastCacheMirrorRepairEpoch";
-    private const string CurrentCacheMirrorRepairEpoch = "2026-05-27-lightweight-full-sync-mirror";
+    private const string CurrentCacheMirrorRepairEpoch = "2026-09-15-received-item-access";
     private static readonly Version FullMirrorRefreshBaselineVersion = new(1, 1, 172);
-    private static readonly string[] TransientSettingPrefixes =
-    [
-        "Rental.BillingEditorDraft",
-        "Rental.OnboardingDraft"
-    ];
 
     public static async Task<VersionChangeMaintenanceResult> RunAsync(
         LocalStateService local,
@@ -47,9 +42,7 @@ public static class VersionChangeMaintenanceService
         }
 
         var backupCreated = await backup.BackupNowAsync(ct);
-        var clearedSettingCount = 0;
-        foreach (var prefix in TransientSettingPrefixes)
-            clearedSettingCount += await local.DeleteSettingsByPrefixAsync(prefix, ct);
+        // Unsent editor drafts and legacy recovery markers must survive version maintenance.
 
         await local.ClearInvalidOfficeSyncCredentialsAsync();
         var normalizedSharedOptionIdCount = await local.NormalizeSharedOptionIdCasingAsync(ct);
@@ -70,7 +63,6 @@ public static class VersionChangeMaintenanceService
 
         var message = $"버전 {normalizedVersion} 기준 1회 정비를 완료했습니다."
             + (backupCreated ? " 시작 전 DB 백업도 생성했습니다." : " 시작 전 DB 백업은 생성하지 못했습니다.")
-            + (clearedSettingCount > 0 ? $" 임시 draft 설정 {clearedSettingCount:N0}건을 정리했습니다." : string.Empty)
             + (normalizedSharedOptionIdCount > 0 ? $" 공유 선택옵션 ID 표기 {normalizedSharedOptionIdCount:N0}건을 정리했습니다." : string.Empty)
             + (requiresCacheMirrorRepair ? " 렌탈 자산/전표/거래처 로컬 캐시 불일치 방지를 위해 중앙 서버 기준 전체 캐시 재구성을 예약했습니다." : string.Empty)
             + (requiresFullMirrorRefresh
@@ -81,7 +73,7 @@ public static class VersionChangeMaintenanceService
         return new VersionChangeMaintenanceResult(
             Ran: true,
             BackupCreated: backupCreated,
-            ClearedSettingCount: clearedSettingCount,
+            ClearedSettingCount: 0,
             DeletedTempFileCount: deletedTempFileCount,
             Message: message);
     }

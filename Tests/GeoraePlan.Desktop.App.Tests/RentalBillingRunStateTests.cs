@@ -9,7 +9,7 @@ using Xunit;
 
 namespace GeoraePlan.Desktop.App.Tests;
 
-public sealed class RentalBillingRunStateTests
+public sealed partial class RentalBillingRunStateTests
 {
     [Fact]
     public async Task SaveBillingProfile_PreservesExistingOperationalStateWhileUpdatingSettings()
@@ -1015,6 +1015,10 @@ public sealed class RentalBillingRunStateTests
             viewModel.EditNotes = "청구서 만들기 직전 저장할 메모";
 
             await viewModel.StartBillingCommand.ExecuteAsync(null);
+
+            // 화면의 후속 조회와 시험의 직접 DbContext 조회를 경합시키지 않는다.
+            // 실제 창 종료와 같은 경로로 백그라운드 작업을 비운 후 영속 상태를 검증한다.
+            await viewModel.CancelAndDrainPendingBackgroundWorkAsync();
 
             var invoice = await db.Invoices
                 .Include(current => current.Lines)

@@ -166,7 +166,7 @@ public sealed class DocumentationCurrencyTests
         }
 
         Assert.Contains(
-            "현재 소스 `1.1.703`의 정식 패키지 생성과 Linux PC live 반영을 완료했습니다.",
+            "과거 소스 `1.1.703`의 정식 패키지 생성과 Linux PC live 반영을 완료했습니다.",
             readme,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -174,7 +174,7 @@ public sealed class DocumentationCurrencyTests
             readme,
             StringComparison.Ordinal);
         Assert.Contains(
-            "[공개]` 현재 Goal 변경의 선택 Git stage/commit/push와 원격 SHA 확인을 완료했습니다.",
+            "[과거기록]` 1.1.703 반영 당시 선택 Git stage/commit/push와 원격 SHA 확인을 완료했습니다.",
             readme,
             StringComparison.Ordinal);
     }

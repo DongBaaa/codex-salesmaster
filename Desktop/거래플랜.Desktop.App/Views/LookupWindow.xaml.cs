@@ -19,6 +19,7 @@ public partial class LookupWindow : Window
         Func<Task<IReadOnlyList<LookupRow>>>? registerAndReloadAsync = null)
     {
         InitializeComponent();
+        ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(this);
         Title = title;
         _allRows = rows.ToList();
         _registerAndReloadAsync = registerAndReloadAsync;
@@ -55,15 +56,18 @@ public partial class LookupWindow : Window
     {
         if (e.Key == Key.Down && ResultGrid.Items.Count > 0)
         {
+            e.Handled = true;
             ResultGrid.SelectedIndex = 0;
             ResultGrid.Focus();
         }
         else if (e.Key == Key.Enter)
         {
+            e.Handled = true;
             SearchButton_Click(sender, e);
         }
         else if (e.Key == Key.Escape)
         {
+            e.Handled = true;
             DialogWindowCloseHelper.Close(this, false);
         }
     }
@@ -78,10 +82,12 @@ public partial class LookupWindow : Window
     {
         if (e.Key == Key.Enter)
         {
+            e.Handled = true;
             ConfirmSelection();
         }
         else if (e.Key == Key.Escape)
         {
+            e.Handled = true;
             DialogWindowCloseHelper.Close(this, false);
         }
     }

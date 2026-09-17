@@ -18,18 +18,33 @@ public sealed partial class EnvironmentCustomerRow : ObservableObject
     public string BusinessNumber => Source.BusinessNumber;
     public string Phone => Source.Phone;
     public int ContractCount => _contractSummary?.ContractCount ?? 0;
-    public bool HasContract => ContractCount > 0;
+    public int RegisteredFileCount => _contractSummary?.RegisteredFileCount ?? 0;
+    public int DraftContractCount => _contractSummary?.DraftCount ?? 0;
+    public bool HasContract => RegisteredFileCount > 0;
     public DateOnly? NearestExpireDate => _contractSummary?.NearestExpireDate;
-    public string ContractPresenceText => HasContract ? $"{ContractCount}건" : "-";
-    public string ContractStatusText => _contractSummary switch
+    public string ContractPresenceText => ContractCount == 0 ? "-"
+        : RegisteredFileCount == 0 ? $"초안 {DraftContractCount}건"
+        : DraftContractCount == 0 ? $"PDF {RegisteredFileCount}건"
+        : $"PDF {RegisteredFileCount}건 · 초안 {DraftContractCount}건";
+    public string ContractStatusText
     {
-        null => "없음",
-        { ContractCount: <= 0 } => "없음",
-        { HasExpiredContract: true } => "만료 계약 있음",
-        { ExpiringSoonCount: > 0 } summary => $"{summary.ExpiringSoonCount}건 임박",
-        { NearestExpireDate: not null } summary => $"{summary.NearestExpireDate:yyyy-MM-dd}",
-        _ => "등록됨"
-    };
+        get
+        {
+            if (_contractSummary is null || ContractCount <= 0)
+                return "없음";
+            var status = _contractSummary switch
+            {
+                { HasExpiredContract: true } => "만료 계약 있음",
+                { ExpiringSoonCount: > 0 } summary => $"{summary.ExpiringSoonCount}건 임박",
+                { NearestExpireDate: not null } summary => $"{summary.NearestExpireDate:yyyy-MM-dd}",
+                _ => string.Empty
+            };
+            if (_contractSummary.MissingExpireDateCount > 0)
+                return string.IsNullOrEmpty(status) ? "만료일 미입력"
+                    : $"{status} · 만료일 미입력 {_contractSummary.MissingExpireDateCount}건";
+            return status;
+        }
+    }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsModified))]

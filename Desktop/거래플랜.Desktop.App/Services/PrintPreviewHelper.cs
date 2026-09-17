@@ -2,6 +2,7 @@
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
+using CommunityToolkit.Mvvm.Input;
 using 거래플랜.Desktop.App.Infrastructure;
 
 namespace 거래플랜.Desktop.App.Services;
@@ -15,6 +16,8 @@ public static class PrintPreviewHelper
     public static bool ShowPreviewAndPrint(FlowDocument document, string title, string jobName)
     {
         ArgumentNullException.ThrowIfNull(document);
+        if (!PrintDocumentAuthorization.Validate(document, out var deniedMessage))
+            throw new UnauthorizedAccessException(deniedMessage);
         ConfigureDocumentForA4(document);
 
         var previewWindow = CreatePreviewShell(title, out var root, out var description, out var actionPanel);
@@ -41,6 +44,7 @@ public static class PrintPreviewHelper
         DocumentViewer? viewer = null;
         var printed = false;
         var isPrinting = false;
+        var authorizationInvalidated = false;
         var printButton = new Button
         {
             Content = CreateWrappedButtonText("프린터 선택 후 인쇄"),
@@ -55,7 +59,7 @@ public static class PrintPreviewHelper
         };
         printButton.Click += (_, _) =>
         {
-            if (isPrinting)
+            if (isPrinting || authorizationInvalidated)
                 return;
 
             try
@@ -107,7 +111,7 @@ public static class PrintPreviewHelper
                 if (previewWindow.IsVisible)
                 {
                     isPrinting = false;
-                    printButton.IsEnabled = true;
+                    printButton.IsEnabled = !authorizationInvalidated;
                     closeButton.IsEnabled = true;
                 }
             }
@@ -124,7 +128,19 @@ public static class PrintPreviewHelper
         Grid.SetRow(viewer, 2);
         root.Children.Add(viewer);
 
+        PreviewPrintCommandRouting.Bind(previewWindow, viewer,
+            new RelayCommand(
+                () => printButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)),
+                () => !isPrinting && !authorizationInvalidated));
+
         previewWindow.Content = root;
+        using var authorizationMonitor = PrintDocumentAuthorization.Monitor(document, () =>
+        {
+            authorizationInvalidated = true;
+            viewer.Document = null;
+            printButton.IsEnabled = false;
+            description.Text = PrintDocumentAuthorization.DeniedMessage;
+        });
         DialogWindowCloseHelper.ShowDialog(previewWindow);
         return printed;
     }

@@ -137,7 +137,7 @@ public sealed class IntegrityController : ControllerBase
             "deleted_item_stock_residue",
             deletedItemStockResidueCount,
             "Error",
-            "삭제된 품목에 현재재고 또는 창고 재고 행이 남아 있습니다.");
+            "삭제된 품목의 표시 현재재고 또는 비재고 품목의 창고 행을 확인해야 합니다.");
 
         var crossTenantInventoryTransferCount = (await _officeScopeService.ApplyInventoryTransferScope(
                 _dbContext.InventoryTransfers.IgnoreQueryFilters().AsNoTracking())
@@ -1053,6 +1053,7 @@ public sealed class IntegrityController : ControllerBase
                 item.NameMatchKey,
                 item.SpecificationOriginal,
                 item.CategoryName,
+                item.TrackingType,
                 item.CurrentStock))
             .ToListAsync(cancellationToken);
         if (deletedItems.Count == 0)
@@ -1086,7 +1087,9 @@ public sealed class IntegrityController : ControllerBase
                     : string.Join(", ", itemStocks.Select(stock => $"{NormalizeCellText(stock.WarehouseCode)}:{FormatNumber(stock.Quantity)}"));
                 return new DeletedItemStockResidueSnapshot(item, itemStocks.Count, warehouseSum, warehouseBreakdown);
             })
-            .Where(row => row.Item.CurrentStock != 0m || row.WarehouseRowCount > 0)
+            // Hidden warehouse rows are retained for recycle-bin restoration.
+            .Where(row => row.Item.CurrentStock != 0m ||
+                (!ItemOperationalPolicy.SupportsInventory(row.Item.TrackingType) && row.WarehouseRowCount > 0))
             .OrderBy(row => row.Item.NameOriginal, StringComparer.OrdinalIgnoreCase)
             .ThenBy(row => row.Item.SpecificationOriginal, StringComparer.OrdinalIgnoreCase)
             .ThenBy(row => row.Item.Id)
@@ -4428,7 +4431,7 @@ public sealed class IntegrityController : ControllerBase
             "duplicate_item_name_match_keys" => new IntegrityIssueDefinition("duplicate_item_name_match_keys", "Info", "동일 품명 매칭키를 공유하는 품목이 있습니다. 규격/분류가 다르면 정상일 수 있습니다."),
             "duplicate_item_match_keys" => new IntegrityIssueDefinition("duplicate_item_match_keys", "Warning", "동일한 품명/규격/분류/구분/재고방식 조합이 중복됩니다."),
             "ambiguous_shared_item_tenant_scope" => new IntegrityIssueDefinition("ambiguous_shared_item_tenant_scope", "Warning", "공용(ALL) 품목 중 사용 이력이 서로 다른 업체로 섞여 tenant 자동 보정이 보류된 항목이 있습니다."),
-            "deleted_item_stock_residue" => new IntegrityIssueDefinition("deleted_item_stock_residue", "Error", "삭제된 품목에 현재재고 또는 창고 재고 행이 남아 있습니다."),
+            "deleted_item_stock_residue" => new IntegrityIssueDefinition("deleted_item_stock_residue", "Error", "삭제된 품목의 표시 현재재고 또는 비재고 품목의 창고 행을 확인해야 합니다."),
             "cross_tenant_inventory_transfers" => new IntegrityIssueDefinition("cross_tenant_inventory_transfers", "Error", "업체 간 직접 재고이동 문서가 존재합니다."),
             "inventory_transfer_line_missing_transfer_rows" => new IntegrityIssueDefinition("inventory_transfer_line_missing_transfer_rows", "Error", "부모 재고이동 문서가 없는 재고이동 세부내역이 존재합니다."),
             "active_inventory_transfer_line_missing_item_refs" => new IntegrityIssueDefinition("active_inventory_transfer_line_missing_item_refs", "Error", "활성 재고이동 라인이 삭제되었거나 없는 품목을 참조합니다."),
@@ -5101,6 +5104,7 @@ public sealed class IntegrityController : ControllerBase
         string NameMatchKey,
         string SpecificationOriginal,
         string CategoryName,
+        string TrackingType,
         decimal CurrentStock);
 
     private sealed record DeletedItemStockResidueSnapshot(

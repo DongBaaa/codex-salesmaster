@@ -183,6 +183,64 @@ public sealed class AndroidUpdatePackageIdentityGateTests
             "stable.json")));
     }
 
+    [Theory]
+    [InlineData("echo true", 0)]
+    [InlineData("echo unknown", 0)]
+    [InlineData("echo FALSE", 0)]
+    [InlineData("rem no output", 0)]
+    [InlineData("echo false & echo true", 0)]
+    [InlineData("echo false", 7)]
+    public async Task UpdateAssetPublisher_RejectsDebuggableOrUnverifiedApkBeforeCreatingOutputs(
+        string debugCommand, int debugExitCode)
+    {
+        using var fixture = new PublisherFixture("0.2.81", debugCommand, debugExitCode);
+
+        var result = await fixture.RunPublisherAsync();
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("debuggable", result.StdOut + result.StdErr,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(fixture.OutputRoot));
+        Assert.False(File.Exists(Path.Combine(fixture.ProjectRoot, "배포", "stable.json")));
+        Assert.Empty(Directory.GetFileSystemEntries(fixture.SnapshotTempRoot,
+            "georaeplan-android-apk-*"));
+        Assert.Equal(fixture.ApkBytes, File.ReadAllBytes(fixture.ApkPath));
+    }
+
+    [Fact]
+    public async Task UpdateAssetPublisher_DebuggableRejectionPreservesExistingRelease()
+    {
+        using var fixture = new PublisherFixture("0.2.81");
+        var first = await fixture.RunPublisherAsync();
+        Assert.True(first.ExitCode == 0, first.StdOut + first.StdErr);
+        var roots = new[] { fixture.OutputRoot, Path.Combine(fixture.ProjectRoot, "배포") };
+        var before = roots.SelectMany(root => Directory.GetFiles(root, "*", SearchOption.AllDirectories))
+            .ToDictionary(path => path, File.ReadAllBytes);
+        File.WriteAllText(fixture.AnalyzerPath,
+            File.ReadAllText(fixture.AnalyzerPath).Replace("echo false", "echo true"), Encoding.ASCII);
+
+        var rejected = await fixture.RunPublisherAsync();
+
+        Assert.NotEqual(0, rejected.ExitCode);
+        Assert.Contains("android:debuggable=false", rejected.StdOut + rejected.StdErr);
+        Assert.Equal(before.Keys.OrderBy(path => path),
+            roots.SelectMany(root => Directory.GetFiles(root, "*", SearchOption.AllDirectories))
+                .OrderBy(path => path));
+        foreach (var (path, bytes) in before)
+            Assert.Equal(bytes, File.ReadAllBytes(path));
+    }
+
+    [Fact]
+    public async Task TestEnvironmentPreparation_StillAcceptsDebuggableApk()
+    {
+        using var fixture = new PublisherFixture("0.2.81", "echo true");
+
+        var result = await fixture.RunPreparationHelperAsync();
+
+        Assert.True(result.ExitCode == 0, result.StdOut + result.StdErr);
+        Assert.Equal(fixture.ApkBytes, File.ReadAllBytes(fixture.ApkPath));
+    }
+
     [Fact]
     public async Task UpdateAssetPublisher_RejectsDifferentBytesForExistingVersion()
     {
@@ -1390,6 +1448,56 @@ public sealed class AndroidUpdatePackageIdentityGateTests
         finally
         {
             DeleteDirectoryWithRetries(testRoot);
+        }
+    }
+
+    [Theory]
+    [InlineData("conditional-group", true)]
+    [InlineData("conditional-property", true)]
+    [InlineData("conflicting-default", false)]
+    [InlineData("no-default", false)]
+    public async Task TestEnvironmentPreparation_UsesUnambiguousDefaultIdentity(
+        string variant, bool expectedSuccess)
+    {
+        using var fixture = new PublisherFixture("0.2.81");
+        var projectPath = Path.Combine(fixture.ProjectRoot, "Mobile",
+            "GeoraePlan.Mobile.App", "GeoraePlan.Mobile.App.csproj");
+        var project = File.ReadAllText(projectPath);
+        var extra = variant switch
+        {
+            "conditional-group" => """
+                <PropertyGroup Condition="'$(GeoraePlanMobileUiMatrix)' == 'true'">
+                  <ApplicationId>kr.georaeplan.mobile.uimatrix</ApplicationId>
+                </PropertyGroup>
+                """,
+            "conditional-property" => """
+                <PropertyGroup>
+                  <ApplicationId Condition="'$(GeoraePlanMobileUiMatrix)' == 'true'">kr.georaeplan.mobile.uimatrix</ApplicationId>
+                </PropertyGroup>
+                """,
+            "conflicting-default" => """
+                <PropertyGroup><ApplicationId>kr.georaeplan.mobile.other</ApplicationId></PropertyGroup>
+                """,
+            _ => string.Empty
+        };
+        if (variant == "no-default")
+            project = project.Replace("<ApplicationId>kr.georaeplan.mobile</ApplicationId>",
+                """<ApplicationId Condition="'$(GeoraePlanMobileUiMatrix)' == 'true'">kr.georaeplan.mobile</ApplicationId>""", StringComparison.Ordinal);
+        project = project.Replace("</Project>", extra + "</Project>", StringComparison.Ordinal);
+        File.WriteAllText(projectPath, project);
+        var result = await fixture.RunPreparationHelperAsync();
+        var sidecarPath = Path.Combine(fixture.RuntimeRoot, "Mobile", "android-package.metadata.json");
+        if (expectedSuccess)
+        {
+            Assert.True(result.ExitCode == 0, result.StdOut + result.StdErr);
+            using var metadata = JsonDocument.Parse(File.ReadAllText(sidecarPath));
+            Assert.Equal("kr.georaeplan.mobile", metadata.RootElement.GetProperty("applicationId").GetString());
+        }
+        else
+        {
+            Assert.NotEqual(0, result.ExitCode);
+            Assert.Contains("must have exactly one value", result.StdOut + result.StdErr, StringComparison.Ordinal);
+            Assert.False(File.Exists(sidecarPath));
         }
     }
 
@@ -3475,7 +3583,7 @@ public sealed class AndroidUpdatePackageIdentityGateTests
         private readonly string _preparationScriptPath;
         private readonly string _powerShellPath;
 
-        public PublisherFixture(string analyzerVersionName)
+        public PublisherFixture(string analyzerVersionName, string debugCommand = "echo false", int debugExitCode = 0)
         {
             var repositoryRoot = FindRepositoryRoot();
             Root = Path.Combine(
@@ -3563,6 +3671,10 @@ public sealed class AndroidUpdatePackageIdentityGateTests
                 if /I "%~2"=="version-code" (
                   echo 192
                   exit /b 0
+                )
+                if /I "%~2"=="debuggable" (
+                  {{debugCommand}}
+                  exit /b {{debugExitCode}}
                 )
                 exit /b 92
                 """,

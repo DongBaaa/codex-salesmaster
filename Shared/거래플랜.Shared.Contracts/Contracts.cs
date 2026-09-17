@@ -812,6 +812,8 @@ public sealed class ConflictLogDto
 
 public sealed class SyncPullResponse
 {
+    /// <summary>Complete customer visibility for this authenticated pull scope; null on older servers.</summary>
+    public CustomerScopeSnapshotDto? CustomerScopeSnapshot { get; set; }
     /// <summary>
     /// Advances the client pull cursor only after this response payload has been applied successfully.
     /// </summary>
@@ -846,6 +848,7 @@ public sealed class SyncPullResponse
 public sealed class SyncPushRequest
 {
     public string DeviceId { get; set; } = string.Empty;
+    public int RentalBillingScheduleVersion { get; set; }
     public List<CompanyProfileDto> CompanyProfiles { get; set; } = new();
     public List<UnitDto> Units { get; set; } = new();
     public List<CustomerCategoryDto> CustomerCategories { get; set; } = new();
@@ -923,6 +926,7 @@ public sealed class SyncNoticeDto
 
 public sealed class SyncStatusDto
 {
+    public int RentalBillingScheduleVersion { get; set; }
     public long CurrentServerRevision { get; set; }
     public DateTime ServerUtc { get; set; } = DateTime.UtcNow;
 }
@@ -1042,6 +1046,16 @@ public sealed class RecycleBinMutationResultDto
     public int SucceededCount { get; set; }
     public List<string> Messages { get; set; } = new();
     public List<RecycleBinMutationItemResultDto> Results { get; set; } = new();
+    // Committed restore effects, including cascades. Absent on older servers and purge responses.
+    public List<RecycleBinCommittedRestoreDto> CommittedRestores { get; set; } = new();
+}
+
+public sealed class RecycleBinCommittedRestoreDto
+{
+    public Guid EntityId { get; set; }
+    public string Kind { get; set; } = string.Empty;
+    public long PreviousRevision { get; set; }
+    public long Revision { get; set; }
 }
 
 public sealed class RecycleBinMutationItemResultDto

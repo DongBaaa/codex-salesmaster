@@ -97,7 +97,7 @@ public static class EvidenceAttachmentFilePolicy
 
     private static bool LooksLikePdf(byte[] content)
     {
-        var limit = Math.Min(content.Length - 4, 1024);
+        var limit = Math.Min(content.Length - 5, 1024);
         for (var index = 0; index <= limit; index++)
         {
             if (content[index] == (byte)'%' &&

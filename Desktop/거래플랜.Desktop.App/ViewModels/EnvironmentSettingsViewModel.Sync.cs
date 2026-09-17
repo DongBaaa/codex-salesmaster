@@ -1213,10 +1213,10 @@ public sealed partial class EnvironmentSettingsViewModel
         }
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanUseBackupActions))]
     private async Task RunBackupAsync()
     {
-        if (IsBusy)
+        if (IsBusy || IsBackupListLoading)
             return;
 
         if (!CanManageBackupData)

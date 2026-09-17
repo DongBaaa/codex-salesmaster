@@ -541,7 +541,7 @@ public sealed class SyncRentalReferencePermissionTests
     }
 
     [Fact]
-    public async Task FlushPendingChangesAsync_GlobalAdmin_DoesNotLeakOrphanItemDependentsIntoCurrentDatabase()
+    public async Task FlushPendingChangesAsync_GlobalAdmin_PreservesOrphanItemDependentsWithoutReportingSuccess()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -615,7 +615,13 @@ public sealed class SyncRentalReferencePermissionTests
             dispatcher,
             new SyncDiagnosticsService(session));
 
-        Assert.True(await sync.FlushPendingChangesAsync());
+        await localState.SetSettingAsync("Sync.LastSuccessAt", "previous-success");
+
+        // An orphan cannot be assigned to a business database for upload.
+        // Keep it locally and require attention instead of claiming completion.
+        Assert.False(await sync.FlushPendingChangesAsync());
+        Assert.Equal("previous-success", await localState.GetSettingAsync("Sync.LastSuccessAt"));
+        Assert.Contains("미전송 변경 1건", await localState.GetSettingAsync("Sync.LastError"));
 
         var currentDatabasePush = Assert.Single(handler.PushRequests);
         Assert.Equal("USENET", currentDatabasePush.BusinessDatabaseName, ignoreCase: true);

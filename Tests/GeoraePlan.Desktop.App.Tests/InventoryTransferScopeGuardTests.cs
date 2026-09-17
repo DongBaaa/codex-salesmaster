@@ -8,7 +8,7 @@ using Xunit;
 
 namespace GeoraePlan.Desktop.App.Tests;
 
-public sealed class InventoryTransferScopeGuardTests
+public sealed partial class InventoryTransferScopeGuardTests
 {
     [Fact]
     public void InventoryWindowPermissionState_UsesExplicitResetAndDeliveryPermissions()

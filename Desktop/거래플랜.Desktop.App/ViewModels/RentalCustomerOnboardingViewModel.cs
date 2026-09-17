@@ -110,9 +110,11 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
 
         BillingAdvanceModeOptions.Add("후불");
         BillingAdvanceModeOptions.Add("선불");
+        BillingAdvanceModeOptions.Add(RentalBillingScheduleRules.BillingAdvanceModeCurrentMonth);
 
         BillingDayModeOptions.Add(RentalBillingScheduleRules.BillingDayModeFixedDay);
         BillingDayModeOptions.Add(RentalBillingScheduleRules.BillingDayModeEndOfMonth);
+        BillingDayModeOptions.Add(RentalBillingScheduleRules.BillingDayModeNoFixedDay);
 
         for (var month = 1; month <= 12; month++)
             BillingAnchorMonthOptions.Add(month);
@@ -277,6 +279,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
             CurrentStepIndex = 0;
             StatusMessage = "신규 렌탈 거래처 등록을 시작하세요.";
             UpdateBillingPreview();
+            LegacyDraftRecovery.MarkPristineEditor();
         }
         finally
         {
@@ -583,7 +586,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
 
             case 2:
                 BillingDayMode = RentalBillingScheduleRules.NormalizeBillingDayMode(BillingDayMode);
-                BillingDay = RentalBillingScheduleRules.NormalizeBillingDay(BillingDay);
+                BillingDay = RentalBillingScheduleRules.NormalizeBillingDay(BillingDay, BillingDayMode);
                 BillingCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(BillingCycleMonths);
                 BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
                     BillingCycleMonths,
@@ -1177,7 +1180,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         var referenceDate = ToDateOnly(BillingStartDate) ?? DateOnly.FromDateTime(DateTime.Today);
         var cycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(BillingCycleMonths);
         BillingDayMode = RentalBillingScheduleRules.NormalizeBillingDayMode(BillingDayMode);
-        BillingDay = RentalBillingScheduleRules.NormalizeBillingDay(BillingDay);
+        BillingDay = RentalBillingScheduleRules.NormalizeBillingDay(BillingDay, BillingDayMode);
         BillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
             cycleMonths,
             BillingAnchorMonth,
@@ -1190,7 +1193,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         DocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(DocumentIssueMode);
         DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(DocumentLeadDays);
 
-        var dueDate = RentalBillingScheduleRules.ResolveApplicableBillingDate(
+        var billingPlan = RentalBillingScheduleRules.ResolveApplicableBillingPlan(
             BillingDay,
             BillingDayMode,
             cycleMonths,
@@ -1205,9 +1208,10 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                 ToDateOnly(BillingStartDate),
                 null,
                 null));
-        var period = RentalBillingScheduleRules.ResolveBillingPeriod(cycleMonths, BillingAdvanceMode, dueDate);
+        var dueDate = billingPlan.BillingDate;
+        var period = (StartDate: billingPlan.PeriodStartDate, EndDate: billingPlan.PeriodEndDate);
         var issueDate = RentalBillingScheduleRules.CalculateDocumentIssueDate(dueDate, DocumentIssueMode, DocumentLeadDays);
-        var billingDayText = string.Equals(BillingDayMode, RentalBillingScheduleRules.BillingDayModeEndOfMonth, StringComparison.Ordinal)
+        var billingDayText = RentalBillingScheduleRules.IsNoFixedBillingDay(BillingDayMode) ? "지정일 없음" : string.Equals(BillingDayMode, RentalBillingScheduleRules.BillingDayModeEndOfMonth, StringComparison.Ordinal)
             ? "말일"
             : $"매월 {BillingDay}일";
         var anchorText = cycleMonths == 1 ? "매월" : $"{BillingAnchorMonth}월부터 반복";
@@ -1216,10 +1220,10 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
             ? $"{period.StartDate:yyyy-MM}"
             : $"{period.StartDate:yyyy-MM} ~ {period.EndDate:yyyy-MM}";
         ExpectedBillingAmountText = $"{TemplateItems.Sum(item => item.EffectiveAmount) * cycleMonths:N0}원";
-        BillingSchedulePreviewText = $"청구일 규칙: {billingDayText} / 청구기간 시작월: {anchorText} / 예상 결제일: {dueDate:yyyy-MM-dd}";
+        BillingSchedulePreviewText = $"청구일 규칙: {billingDayText} / 청구기간 시작월: {anchorText} / 예상 결제일: {(dueDate.HasValue ? dueDate.Value.ToString("yyyy-MM-dd") : "지정 없음 (청구 시 작성일 선택)")}";
         DocumentIssuePreviewText = issueDate.HasValue
             ? $"서류 발송 규칙: {BuildDocumentIssueModeText()} / 예상 발송일: {issueDate.Value:yyyy-MM-dd}"
-            : "서류 발송일을 계산할 수 없습니다.";
+            : (RentalBillingScheduleRules.IsNoFixedBillingDay(BillingDayMode) ? "서류 발송일: 지정 없음" : "서류 발송일을 계산할 수 없습니다.");
         ApplySelectedAssetsHint = BuildApplySelectedAssetsHint();
         OnPropertyChanged(nameof(IsFixedBillingDayMode));
         OnPropertyChanged(nameof(IsDocumentLeadDaysVisible));
@@ -1235,13 +1239,15 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
             _ => "결제일과 동일"
         };
 
-    private static DateOnly ResolvePreviewFirstBillingDate(
+    private static DateOnly? ResolvePreviewFirstBillingDate(
         int billingDay,
         string? billingDayMode,
         int anchorMonth,
         DateOnly referenceDate,
         DateOnly? billingStartDate)
     {
+        if (RentalBillingScheduleRules.IsNoFixedBillingDay(billingDayMode))
+            return billingStartDate;
         var startMonth = billingStartDate.HasValue
             ? new DateOnly(billingStartDate.Value.Year, billingStartDate.Value.Month, 1)
             : new DateOnly(referenceDate.Year, Math.Clamp(anchorMonth, 1, 12), 1);

@@ -700,6 +700,7 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
+        await DetachUnchangedCustomerRestoreGraphAsync(kind, entityId, ct);
         var receiptKey = (kind, entityId);
         lock (_recycleBinRestoreReceiptGate)
             _pendingRecycleBinRestoreReceipts.Remove(receiptKey);
@@ -885,6 +886,33 @@ public sealed partial class LocalStateService
                     pendingTrackerSnapshot,
                     detachEntriesNotInSnapshots: false);
             }
+        }
+    }
+
+    private async Task DetachUnchangedCustomerRestoreGraphAsync(
+        RecycleBinEntityKind kind, Guid entityId, CancellationToken ct)
+    {
+        if (kind is not (RecycleBinEntityKind.Customer or RecycleBinEntityKind.CustomerContract))
+            return;
+
+        var customerId = kind == RecycleBinEntityKind.Customer
+            ? entityId
+            : await _db.CustomerContracts.IgnoreQueryFilters().AsNoTracking()
+                .Where(contract => contract.Id == entityId)
+                .Select(contract => contract.CustomerId)
+                .FirstOrDefaultAsync(ct);
+
+        // Background sync acknowledges deletions in another context. The UI's saved
+        // objects can still say IsDirty=true and carry the old revision. Read the
+        // committed graph for this restore; keep genuinely staged edits tracked.
+        _db.ChangeTracker.DetectChanges();
+        foreach (var entry in _db.ChangeTracker.Entries<LocalSyncEntity>()
+                     .Where(entry => entry.State == EntityState.Unchanged &&
+                         (entry.Entity is LocalCustomer customer && customer.Id == customerId ||
+                          entry.Entity is LocalCustomerContract contract && contract.CustomerId == customerId))
+                     .ToList())
+        {
+            entry.State = EntityState.Detached;
         }
     }
 
@@ -2154,10 +2182,11 @@ public sealed partial class LocalStateService
                 transfer.ReceiveEvidencePath);
         }
 
+        var previousInventoryEffects = await GetTransferInventoryEffectsAsync(transferId, ct);
         _db.InventoryTransferLines.RemoveRange(transfer.Lines);
         _db.InventoryTransfers.Remove(transfer);
         await _db.SaveChangesAsync(ct);
-        await RebuildInventorySnapshotsAsync(CreateServerPurgeInvoiceSaveContext(), ct);
+        await RebuildInventoryAfterTransferMutationAsync(transferId, previousInventoryEffects, _session, CreateServerPurgeInvoiceSaveContext(), ct);
         return OfficeMutationResult.Ok(transferId, "재고이동 서버 영구삭제를 로컬에 반영했습니다.");
     }
 
@@ -2383,11 +2412,12 @@ public sealed partial class LocalStateService
         _db.StockLayers.RemoveRange(stockLayers);
         _db.ItemWarehouseStocks.RemoveRange(warehouseStocks);
         _db.ItemPriceGrades.RemoveRange(itemPriceGrades);
+        await RemoveDeletedItemInventoryAsync(itemId, ct);
         if (item is not null)
             _db.Items.Remove(item);
         await _db.SaveChangesAsync(ct);
 
-        await RebuildInventorySnapshotsAsync(CreateServerPurgeInvoiceSaveContext(), ct);
+        await RefreshInventoryDerivedStateAsync(CreateServerPurgeInvoiceSaveContext(), ct);
         RaiseInventoryStateChanged();
         return OfficeMutationResult.Ok(itemId, "품목 서버 영구삭제를 로컬에 반영했습니다.");
     }
@@ -3271,6 +3301,9 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Ok(invoiceId, "전표 서버 영구삭제 상태가 이미 로컬에 반영되어 있습니다.");
         }
 
+        var previousInventoryEffects = target is null
+            ? new Dictionary<(Guid ItemId, string WarehouseCode), decimal>()
+            : await GetInvoiceInventoryEffectsAsync(target, ct);
         _db.Payments.RemoveRange(linkedPayments);
         _db.TransactionAttachments.RemoveRange(staleLinkedTransactionAttachments);
         _db.Transactions.RemoveRange(staleLinkedTransactions);
@@ -3278,7 +3311,8 @@ public sealed partial class LocalStateService
         _db.Invoices.RemoveRange(groupInvoices);
         await _db.SaveChangesAsync(ct);
 
-        await RebuildInventorySnapshotsAsync(CreateServerPurgeInvoiceSaveContext(), ct);
+        await ApplyInventoryDocumentEffectsAsync(previousInventoryEffects,
+            new Dictionary<(Guid ItemId, string WarehouseCode), decimal>(), _session, CreateServerPurgeInvoiceSaveContext(), ct);
         foreach (var attachment in staleLinkedTransactionAttachments)
         {
             StageOrDeleteServerPurgeFile(
@@ -3577,7 +3611,7 @@ public sealed partial class LocalStateService
         return OfficeMutationResult.Ok(contract.Id, "계약서를 휴지통에서 영구삭제했습니다.");
     }
 
-    public async Task<OfficeMutationResult> RestoreItemAsync(
+    private async Task<OfficeMutationResult> RestoreItemCoreAsync(
         Guid itemId,
         SessionState session,
         CancellationToken ct = default)
@@ -3595,6 +3629,7 @@ public sealed partial class LocalStateService
         if (!item.IsDeleted)
             return OfficeMutationResult.Ok(itemId, "이미 활성 상태인 품목입니다.");
 
+        await RestoreDeletedItemInventoryAsync(item, ct);
         var now = DateTime.UtcNow;
         RestoreEntity(item, now);
         AddRestoreAudit(nameof(LocalItem), item.Id, new
@@ -3606,7 +3641,7 @@ public sealed partial class LocalStateService
 
         await _db.SaveChangesAsync(ct);
 
-        await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
+        await RefreshInventoryDerivedStateAsync(new InvoiceSaveContext
         {
             Username = session.User?.Username ?? "local-user",
             Role = session.User?.Role ?? DomainConstants.RoleUser,
@@ -3618,7 +3653,7 @@ public sealed partial class LocalStateService
         return OfficeMutationResult.Ok(item.Id, "품목을 휴지통에서 복원했습니다.");
     }
 
-    public async Task<OfficeMutationResult> PermanentlyDeleteItemAsync(
+    private async Task<OfficeMutationResult> PermanentlyDeleteItemCoreAsync(
         Guid itemId,
         SessionState session,
         CancellationToken ct = default)
@@ -3681,6 +3716,7 @@ public sealed partial class LocalStateService
         _db.StockLayers.RemoveRange(stockLayers);
         _db.ItemWarehouseStocks.RemoveRange(warehouseStocks);
         _db.ItemPriceGrades.RemoveRange(itemPriceGrades);
+        await RemoveDeletedItemInventoryAsync(itemId, ct);
         _db.Items.Remove(item);
         AddPurgeAudit(nameof(LocalItem), item.Id, new
         {
@@ -3691,7 +3727,7 @@ public sealed partial class LocalStateService
 
         await _db.SaveChangesAsync(ct);
 
-        await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
+        await RefreshInventoryDerivedStateAsync(new InvoiceSaveContext
         {
             Username = session.User?.Username ?? "local-user",
             Role = session.User?.Role ?? DomainConstants.RoleUser,
@@ -3703,7 +3739,7 @@ public sealed partial class LocalStateService
         return OfficeMutationResult.Ok(item.Id, "품목을 휴지통에서 영구삭제했습니다.");
     }
 
-    public async Task<OfficeMutationResult> RestoreInvoiceAsync(
+    private async Task<OfficeMutationResult> RestoreInvoiceCoreAsync(
         Guid invoiceId,
         SessionState session,
         CancellationToken ct = default)
@@ -3736,7 +3772,7 @@ public sealed partial class LocalStateService
                 : "전표를 휴지통에서 복원했습니다.");
     }
 
-    public async Task<OfficeMutationResult> PermanentlyDeleteInvoiceAsync(
+    private async Task<OfficeMutationResult> PermanentlyDeleteInvoiceCoreAsync(
         Guid invoiceId,
         SessionState session,
         CancellationToken ct = default)
@@ -3801,18 +3837,20 @@ public sealed partial class LocalStateService
 
         await _db.SaveChangesAsync(ct);
 
-        await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
+        // Deleted invoices already have no stock effect. Purging their history
+        // must not rebuild authoritative quantities from a partial local cache.
+        await _db.ExecuteRuntimeMutationOperationAsync(() => RebuildInventorySnapshotsCoreAsync(new InvoiceSaveContext
         {
             Username = session.User?.Username ?? "local-user",
             Role = session.User?.Role ?? DomainConstants.RoleUser,
             OfficeCode = session.OfficeCode,
             ForceOverride = false
-        }, ct);
+        }, ct, preserveAuthoritativeStock: true), ct);
 
         return OfficeMutationResult.Ok(target.Id, "전표를 휴지통에서 영구삭제했습니다.");
     }
 
-    public async Task<OfficeMutationResult> RestoreDeletedPaymentAsync(
+    private async Task<OfficeMutationResult> RestoreDeletedPaymentCoreAsync(
         Guid paymentId,
         SessionState session,
         CancellationToken ct = default)
@@ -3904,7 +3942,7 @@ public sealed partial class LocalStateService
         return OfficeMutationResult.Ok(payment.Id, "수금/지급 기록을 휴지통에서 영구삭제했습니다.");
     }
 
-    public async Task<OfficeMutationResult> RestoreTransactionAsync(
+    private async Task<OfficeMutationResult> RestoreTransactionCoreAsync(
         Guid transactionId,
         SessionState session,
         CancellationToken ct = default)
@@ -4107,6 +4145,7 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct)
     {
+        var previousInventoryEffects = await GetInvoiceInventoryEffectsAsync(target, ct);
         var groupInvoices = await LoadInvoiceGroupForRecycleBinAsync(target, ct);
         var targetScope = await ResolveInvoiceVersionScopeKeyAsync(target, ct);
         if (!CanWriteInvoiceVersionScope(targetScope, session))
@@ -4159,7 +4198,7 @@ public sealed partial class LocalStateService
 
         await _db.SaveChangesAsync(ct);
 
-        await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
+        await RebuildInventoryAfterInvoiceMutationAsync(target, previousInventoryEffects, session, new InvoiceSaveContext
         {
             Username = session.User?.Username ?? "local-user",
             Role = session.User?.Role ?? DomainConstants.RoleUser,
@@ -4919,7 +4958,7 @@ public sealed partial class LocalStateService
         return OfficeMutationResult.Ok(log.Id, "렌탈 청구로그를 영구삭제했습니다.");
     }
 
-    private async Task<OfficeMutationResult> RestoreInventoryTransferAsync(
+    private async Task<OfficeMutationResult> RestoreInventoryTransferCoreAsync(
         Guid transferId,
         SessionState session,
         CancellationToken ct)
@@ -4958,6 +4997,7 @@ public sealed partial class LocalStateService
             return OfficeMutationResult.Denied(
                 FormatStockShortageMessage("재고가 부족하여 재고이동을 복원할 수 없습니다.", shortages));
 
+        var previousInventoryEffects = await GetTransferInventoryEffectsAsync(transferId, ct);
         RestoreEntity(transfer, now);
         AddRestoreAudit(nameof(LocalInventoryTransfer), transfer.Id, new
         {
@@ -4968,7 +5008,7 @@ public sealed partial class LocalStateService
         }, session, now);
 
         await _db.SaveChangesAsync(ct);
-        await RebuildInventorySnapshotsAsync(new InvoiceSaveContext
+        await RebuildInventoryAfterTransferMutationAsync(transferId, previousInventoryEffects, session, new InvoiceSaveContext
         {
             Username = session.User?.Username ?? "local-user",
             Role = session.User?.Role ?? DomainConstants.RoleUser,

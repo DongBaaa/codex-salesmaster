@@ -1,4 +1,4 @@
-﻿using System.Collections.Specialized;
+using System.Collections.Specialized;
 using System.ComponentModel;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
@@ -10,6 +10,7 @@ public sealed partial class RentalBillingViewModel
     private readonly SemaphoreSlim _autoSaveGate = new(1, 1);
     private CancellationTokenSource? _autoSaveCts;
     private int _autoSaveSuppressionCount;
+    public RentalLegacyDraftRecoveryState LegacyDraftRecovery { get; private set; } = null!;
 
     private static readonly HashSet<string> TrackedAutoSaveProperties = new(StringComparer.Ordinal)
     {
@@ -36,6 +37,7 @@ public sealed partial class RentalBillingViewModel
         nameof(EditDepositAmount),
         nameof(EditSettledAmount),
         nameof(EditRequiresFollowUp),
+        nameof(EditPoolMeterAllowance),
         nameof(EditSubmissionDocuments),
         nameof(EditNotes),
         nameof(LinkAssetsLater),
@@ -51,6 +53,10 @@ public sealed partial class RentalBillingViewModel
 
     private void InitializeAutoSave()
     {
+        LegacyDraftRecovery = new(_rental, _session, RentalDraftKind.Billing,
+            async () => { await FlushAutoSaveAsync(); }, BuildCurrentEditorSignature,
+            async () => { await RestoreAutoSaveDraftAsync(); }, () => IsBusy,
+            message => StatusMessage = message);
         PropertyChanged += HandleAutoSavePropertyChanged;
         TemplateItems.CollectionChanged += HandleTemplateItemsChanged;
         foreach (var item in TemplateItems)
@@ -69,6 +75,7 @@ public sealed partial class RentalBillingViewModel
 
     public async Task<bool> RestoreAutoSaveDraftAsync()
     {
+        await LegacyDraftRecovery.RefreshAsync();
         var draft = await RunOwnerScopeDataOperationAsync(
             ct => _rental.GetBillingEditorDraftAsync(_session, ct));
         if (draft is null)
@@ -230,7 +237,7 @@ public sealed partial class RentalBillingViewModel
             if (IsAutoSaveSuppressed)
                 return false;
 
-            if (HasMeaningfulDraftState() &&
+            if (!LegacyDraftRecovery.IsPristineEditor && HasMeaningfulDraftState() &&
                 (string.IsNullOrWhiteSpace(_selectedRowBaselineSignature) || HasUnsavedEditorChangesAgainstBaseline()))
             {
                 await RunOwnerScopeDataOperationAsync(
@@ -278,6 +285,7 @@ public sealed partial class RentalBillingViewModel
             SettledAmount = EditSettledAmount,
             OutstandingAmount = EditOutstandingAmount,
             RequiresFollowUp = EditRequiresFollowUp,
+            PoolMeterAllowance = EditPoolMeterAllowance,
             SubmissionDocuments = EditSubmissionDocuments,
             Notes = EditNotes,
             LinkAssetsLater = LinkAssetsLater,
@@ -316,12 +324,14 @@ public sealed partial class RentalBillingViewModel
         EditBillingAdvanceMode = string.IsNullOrWhiteSpace(draft.BillingAdvanceMode) ? "후불" : draft.BillingAdvanceMode;
         EditOfficeCode = draft.OfficeCode ?? EditOfficeCode;
         EditBillingMethod = draft.BillingMethod ?? string.Empty;
-        EditBillingStatus = string.IsNullOrWhiteSpace(draft.BillingStatus) ? "예정" : draft.BillingStatus;
+        EditBillingStatus = preserveSelectedRow
+            ? draft.BillingStatus ?? string.Empty
+            : string.IsNullOrWhiteSpace(draft.BillingStatus) ? "예정" : draft.BillingStatus;
         EditSettlementStatus = string.IsNullOrWhiteSpace(draft.SettlementStatus) ? PaymentFlowConstants.SettlementStatusUnpaid : draft.SettlementStatus;
         EditCompletionStatus = string.IsNullOrWhiteSpace(draft.CompletionStatus) ? PaymentFlowConstants.CompletionPending : draft.CompletionStatus;
         EditEmail = draft.Email ?? string.Empty;
         EditBillingDayMode = RentalBillingScheduleRules.NormalizeBillingDayMode(draft.BillingDayMode);
-        EditBillingDay = RentalBillingScheduleRules.NormalizeBillingDay(draft.BillingDay);
+        EditBillingDay = RentalBillingScheduleRules.NormalizeBillingDay(draft.BillingDay, draft.BillingDayMode);
         EditBillingCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(draft.BillingCycleMonths);
         EditBillingAnchorMonth = RentalBillingScheduleRules.NormalizeBillingAnchorMonth(
             EditBillingCycleMonths,
@@ -339,6 +349,7 @@ public sealed partial class RentalBillingViewModel
         EditSettledAmount = draft.SettledAmount;
         EditOutstandingAmount = draft.OutstandingAmount;
         EditRequiresFollowUp = draft.RequiresFollowUp;
+        EditPoolMeterAllowance = draft.PoolMeterAllowance;
         EditSubmissionDocuments = draft.SubmissionDocuments ?? string.Empty;
         EditNotes = draft.Notes ?? string.Empty;
         LinkAssetsLater = draft.LinkAssetsLater;
@@ -394,8 +405,10 @@ public sealed partial class RentalBillingViewModel
             var editorItem = new RentalBillingTemplateEditorItem
             {
                 ItemId = item.ItemId == Guid.Empty ? Guid.NewGuid() : item.ItemId,
+                CatalogItemId = item.CatalogItemId,
                 DisplayItemName = item.DisplayItemName,
                 BillingLineMode = ResolveTemplateBillingLineMode(item.BillingLineMode, EditBillingType),
+                IndividualGroupingMode = NormalizeIndividualGroupingMode(item.IndividualGroupingMode),
                 Specification = item.Specification,
                 Unit = item.Unit,
                 MaterialNumber = item.MaterialNumber,

@@ -177,6 +177,11 @@ public sealed class PaymentsController : ControllerBase
         if (!_officeScopeService.CanEditPayments())
             return Forbid();
 
+        await using var uploadTransaction = await InventoryMutationTransactionScope.BeginAsync(
+            _dbContext,
+            serializeInventoryMutations: true,
+            cancellationToken);
+
         var payment = await _dbContext.Payments
             .Include(x => x.Invoice)
             .ThenInclude(invoice => invoice!.Customer)
@@ -304,7 +309,8 @@ public sealed class PaymentsController : ControllerBase
         ExceptionDispatchInfo? saveFailure = null;
         try
         {
-            await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+            // End this scope before independent file reconciliation if saving fails.
+            await using var transaction = uploadTransaction;
             try
             {
                 await _dbContext.SaveChangesAsync(cancellationToken);

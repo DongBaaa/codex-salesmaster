@@ -10,10 +10,14 @@ namespace 거래플랜.Desktop.App.ViewModels;
 public sealed partial class RentalContractEditorViewModel : ObservableObject
 {
     private readonly RentalDocumentService _documents;
+    private readonly IPrintService _printService;
+    private readonly FixedDocument _authorizationDocument = new();
+    private PrintPreviewViewModel? _printPreview;
     private readonly Dictionary<string, LocalCompanyProfile> _companyProfilesByOfficeCode = new(StringComparer.OrdinalIgnoreCase);
     private bool _suppressManagementOfficeChange;
 
     public event Action? RequestClose;
+    public Func<int?>? CurrentPageNumberProvider { get; set; }
 
     [ObservableProperty] private bool _isEditMode;
     [ObservableProperty] private bool _canEditManagementOffice;
@@ -60,12 +64,16 @@ public sealed partial class RentalContractEditorViewModel : ObservableObject
         IEnumerable<DisplayOption>? managementOfficeOptions = null,
         IEnumerable<LocalCompanyProfile>? companyProfiles = null,
         string? initialManagementOfficeCode = null,
-        bool canEditManagementOffice = false)
+        bool canEditManagementOffice = false,
+        Func<bool>? canReadDocument = null,
+        IPrintService? printService = null)
     {
         ArgumentNullException.ThrowIfNull(model);
         ArgumentNullException.ThrowIfNull(documents);
 
         _documents = documents;
+        _printService = printService ?? new WpfInvoicePrintService();
+        PrintDocumentAuthorization.Attach(_authorizationDocument, canReadDocument ?? (() => true));
         CanEditManagementOffice = canEditManagementOffice;
 
         if (managementOfficeOptions is not null)
@@ -116,8 +124,48 @@ public sealed partial class RentalContractEditorViewModel : ObservableObject
     [RelayCommand]
     private void RefreshPreview()
     {
-        PreviewDocument = _documents.BuildContractDocument(BuildModel());
+        if (!EnsureCurrentOwner())
+            return;
+        var document = _documents.BuildContractDocument(BuildModel());
+        PrintDocumentAuthorization.Attach(document,
+            () => PrintDocumentAuthorization.Validate(_authorizationDocument, out _));
+        PreviewDocument = document;
+        _printPreview = new PrintPreviewViewModel(document, _printService, "렌탈계약서");
+        PrintCommand.NotifyCanExecuteChanged();
         StatusMessage = "계약서 미리보기를 갱신했습니다.";
+    }
+
+    private bool CanPrint() => _printPreview?.PrintCommand.CanExecute(null) == true;
+
+    [RelayCommand(CanExecute = nameof(CanPrint))]
+    private void Print()
+    {
+        if (!EnsureCurrentOwner() || _printPreview is not { } preview)
+            return;
+        preview.CurrentPageNumberProvider = CurrentPageNumberProvider;
+        preview.PrintCommand.Execute(null);
+        if (EnsureCurrentOwner())
+            StatusMessage = preview.StatusMessage;
+    }
+
+    public IDisposable MonitorAuthorization()
+        => PrintDocumentAuthorization.Monitor(_authorizationDocument, InvalidateAuthorization);
+
+    private bool EnsureCurrentOwner()
+    {
+        if (PrintDocumentAuthorization.Validate(_authorizationDocument, out _))
+            return true;
+        InvalidateAuthorization();
+        return false;
+    }
+
+    private void InvalidateAuthorization()
+    {
+        PreviewDocument = null;
+        _printPreview = null;
+        StatusMessage = PrintDocumentAuthorization.DeniedMessage;
+        PrintCommand.NotifyCanExecuteChanged();
+        RequestClose?.Invoke();
     }
 
     [RelayCommand]

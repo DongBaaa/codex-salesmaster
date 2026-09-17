@@ -135,7 +135,8 @@ public sealed class LocalCustomerContract : LocalSyncEntity
     public DateTime UploadedAtUtc { get; set; } = DateTime.UtcNow;
     public byte[] FileContent { get; set; } = [];
     public bool HasAttachedPdf => FileSize > 0 && FileContent is { Length: > 0 };
-    public string FileRegistrationStatus => HasAttachedPdf ? "파일등록" : "초안";
+    public bool HasRegisteredPdf => CustomerContractContentService.HasRegisteredFile(this);
+    public string FileRegistrationStatus => HasRegisteredPdf ? "파일등록" : "초안";
 }
 
 public sealed class LocalItem : LocalSyncEntity

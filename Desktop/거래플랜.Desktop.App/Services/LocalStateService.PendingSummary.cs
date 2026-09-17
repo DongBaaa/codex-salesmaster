@@ -8,7 +8,13 @@ public sealed partial class LocalStateService
 {
     private sealed record DirtyScopeRow(string? OfficeCode, string? TenantCode);
 
-    public async Task<PendingSyncSummary> GetPendingSyncSummaryAsync(CancellationToken ct = default)
+    public Task<PendingSyncSummary> GetPendingSyncSummaryAsync(CancellationToken ct = default)
+        => GetPendingSyncSummaryCoreAsync(includeOutbox: true, ct);
+
+    internal Task<PendingSyncSummary> GetDirtyScopeSummaryAsync(CancellationToken ct = default)
+        => GetPendingSyncSummaryCoreAsync(includeOutbox: false, ct);
+
+    private async Task<PendingSyncSummary> GetPendingSyncSummaryCoreAsync(bool includeOutbox, CancellationToken ct)
     {
         var buckets = new List<PendingSyncBucket>();
 
@@ -217,6 +223,27 @@ public sealed partial class LocalStateService
 
         AppendBuckets(
             buckets,
+            await (from grade in _db.ItemPriceGrades.IgnoreQueryFilters().AsNoTracking()
+                   where grade.IsDirty
+                   join item in _db.Items.IgnoreQueryFilters().AsNoTracking()
+                       on grade.ItemId equals item.Id into items
+                   from item in items.DefaultIfEmpty()
+                   select new DirtyScopeRow(item != null ? item.OfficeCode : OfficeCodeCatalog.Shared,
+                       item != null ? item.TenantCode : string.Empty)).ToListAsync(ct),
+            "품목별 가격등급 변경");
+
+        AppendBuckets(
+            buckets,
+            await _db.RentalAssetAssignmentHistories.IgnoreQueryFilters().AsNoTracking()
+                .Where(entity => entity.IsDirty)
+                .Select(entity => new DirtyScopeRow(entity.ResponsibleOfficeCode, entity.TenantCode))
+                .ToListAsync(ct),
+            "렌탈 배정이력 변경");
+
+        if (includeOutbox)
+        {
+        AppendBuckets(
+            buckets,
             await _db.SyncOutboxEntries
                 .AsNoTracking()
                 .Where(entry => entry.Status != "Acknowledged")
@@ -227,6 +254,7 @@ public sealed partial class LocalStateService
                     entry.TenantCode))
                 .ToListAsync(ct),
             "동기화 전송 확인");
+        }
 
         var orderedBuckets = buckets
             .OrderByDescending(bucket => bucket.Count)

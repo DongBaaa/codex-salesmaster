@@ -11,6 +11,7 @@ public sealed partial class RentalCustomerOnboardingViewModel
     private readonly SemaphoreSlim _autoSaveGate = new(1, 1);
     private CancellationTokenSource? _autoSaveCts;
     private int _autoSaveSuppressionCount;
+    public RentalLegacyDraftRecoveryState LegacyDraftRecovery { get; private set; } = null!;
 
     private static readonly HashSet<string> TrackedAutoSaveProperties = new(StringComparer.Ordinal)
     {
@@ -43,6 +44,10 @@ public sealed partial class RentalCustomerOnboardingViewModel
 
     private void InitializeAutoSave()
     {
+        LegacyDraftRecovery = new(_rental, _session, RentalDraftKind.Onboarding,
+            () => FlushAutoSaveAsync(), () => System.Text.Json.JsonSerializer.Serialize(BuildOnboardingDraft()),
+            async () => { await RestoreAutoSaveDraftAsync(); }, () => IsBusy,
+            message => StatusMessage = message);
         PropertyChanged += HandleAutoSavePropertyChanged;
         TemplateItems.CollectionChanged += HandleTemplateItemsChanged;
         foreach (var item in TemplateItems)
@@ -61,6 +66,7 @@ public sealed partial class RentalCustomerOnboardingViewModel
 
     public async Task<bool> RestoreAutoSaveDraftAsync()
     {
+        await LegacyDraftRecovery.RefreshAsync();
         var draft = await _rental.GetOnboardingDraftAsync(_session);
         if (draft is null)
             return false;
@@ -188,7 +194,7 @@ public sealed partial class RentalCustomerOnboardingViewModel
         await _autoSaveGate.WaitAsync(ct);
         try
         {
-            if (HasMeaningfulDraftState())
+            if (!LegacyDraftRecovery.IsPristineEditor && HasMeaningfulDraftState())
             {
                 await _rental.SaveOnboardingDraftAsync(BuildOnboardingDraft(), _session, ct);
             }
@@ -254,7 +260,7 @@ public sealed partial class RentalCustomerOnboardingViewModel
         BillingType = string.IsNullOrWhiteSpace(draft.BillingType) ? "묶음" : draft.BillingType;
         BillingAdvanceMode = string.IsNullOrWhiteSpace(draft.BillingAdvanceMode) ? "후불" : draft.BillingAdvanceMode;
         BillingDayMode = RentalBillingScheduleRules.NormalizeBillingDayMode(draft.BillingDayMode);
-        BillingDay = RentalBillingScheduleRules.NormalizeBillingDay(draft.BillingDay);
+        BillingDay = RentalBillingScheduleRules.NormalizeBillingDay(draft.BillingDay, draft.BillingDayMode);
         BillingCycleMonths = RentalBillingScheduleRules.NormalizeCycleMonths(draft.BillingCycleMonths);
         BillingStartDate = draft.BillingStartDate;
         var billingReferenceDate = ToDateOnly(BillingStartDate) ?? DateOnly.FromDateTime(DateTime.Today);

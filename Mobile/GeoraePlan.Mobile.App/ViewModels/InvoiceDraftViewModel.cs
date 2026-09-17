@@ -8,6 +8,7 @@ namespace GeoraePlan.Mobile.App.ViewModels;
 
 public sealed class InvoiceDraftViewModel : ObservableObject
 {
+    public const double CustomerSearchResultRowHeight = 72;
     private readonly GeoraePlanApiClient _api;
     private readonly SyncCoordinator _syncCoordinator;
     private readonly MobileRefreshCoordinator _refreshCoordinator;
@@ -416,7 +417,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             return $"{modeText} / 공급가 {totals.SupplyAmount:N0}원 / 부가세 {totals.VatAmount:N0}원 / 합계 {totals.TotalAmount:N0}원";
         }
     }
-    public double CustomerSearchResultsHeight => CalculateListHeight(CustomerSearchResults.Count, 56, 42, 2);
+    public double CustomerSearchResultsHeight => CalculateListHeight(CustomerSearchResults.Count, CustomerSearchResultRowHeight, 42, 2);
     public double ItemSearchResultsHeight => CalculateListHeight(ItemSearchResults.Count, 112, 48, 4);
     public double SelectedItemBranchStocksHeight => CalculateListHeight(SelectedItemBranchStocks.Count, 32, 40, 4);
     public double LineItemsHeight => CalculateListHeight(LineItems.Count, 74, 42, 3);

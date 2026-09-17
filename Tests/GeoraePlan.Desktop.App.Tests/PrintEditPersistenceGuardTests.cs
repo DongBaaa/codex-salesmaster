@@ -168,7 +168,8 @@ public sealed class PrintEditPersistenceGuardTests
             using var viewModel = new PrintEditViewModel(
                 model,
                 _ => Task.CompletedTask,
-                (_, _) => BuildSimpleFixedDocument());
+                (_, _) => BuildSimpleFixedDocument(),
+                () => true);
 
             viewModel.SelectedPreviewDocument = PrintEditViewModel.PreviewDocumentPaymentClaim;
             viewModel.FooterText = "  하단  ";

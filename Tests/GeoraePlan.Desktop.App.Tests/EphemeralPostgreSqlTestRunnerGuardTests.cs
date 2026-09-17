@@ -26,7 +26,9 @@ public sealed class EphemeralPostgreSqlTestRunnerGuardTests
             source,
             StringComparison.Ordinal);
         Assert.Contains(
-            "-o \"-p $port -h 127.0.0.1\"",
+            // The managed pg_ctl launcher passes a quoted argument array to
+            // Start-Process; keep checking the loopback-only startup option.
+            "'-o', ('\"-p {0} -h 127.0.0.1\"' -f $port)",
             source,
             StringComparison.Ordinal);
         Assert.Contains(

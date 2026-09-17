@@ -1172,7 +1172,8 @@ public sealed class TransactionAttachmentFileConsistencyTests
                 attachmentFiles,
                 false,
                 true,
-                null);
+                null,
+                false);
             var pending = await db.TransactionAttachments
                 .IgnoreQueryFilters()
                 .AsNoTracking()
@@ -1946,25 +1947,9 @@ public sealed class TransactionAttachmentFileConsistencyTests
                 .AnyAsync(invoice => invoice.Id == invoiceId));
             Assert.False(await verificationDb.SyncOutboxEntries
                 .AnyAsync(entry => entry.Id == postCommitPendingOutbox.Id));
-            Assert.Equal(
-                1,
-                await verificationDb.Settings.CountAsync(setting =>
-                    setting.Key == "Sync.LastSuccessAt"));
-            Assert.False(string.IsNullOrWhiteSpace(
-                await verificationDb.Settings
-                    .Where(setting => setting.Key == "Sync.LastSuccessAt")
-                    .Select(setting => setting.Value)
-                    .SingleAsync()));
-            Assert.Equal(
-                1,
-                await verificationDb.Settings.CountAsync(setting =>
-                    setting.Key == "Sync.LastError"));
-            Assert.Equal(
-                string.Empty,
-                await verificationDb.Settings
-                    .Where(setting => setting.Key == "Sync.LastError")
-                    .Select(setting => setting.Value)
-                    .SingleAsync());
+            // A cache refresh must preserve upload completion/error metadata.
+            Assert.False(await verificationDb.Settings.AnyAsync(setting =>
+                setting.Key == "Sync.LastSuccessAt" || setting.Key == "Sync.LastError"));
             Assert.False(await verificationDb.Settings.AnyAsync(setting =>
                 setting.Key == "Sync.PendingFullMirrorRefresh"));
         }
@@ -2123,7 +2108,7 @@ public sealed class TransactionAttachmentFileConsistencyTests
                     TenantScopeCatalog.Itworld),
                 session.SelectedBusinessDatabaseName);
             await using var verificationDb = new LocalDbContext(options);
-            Assert.True(await verificationDb.Settings
+            Assert.False(await verificationDb.Settings
                 .AnyAsync(setting =>
                     setting.Key == "Sync.LastSuccessAt"));
         }
@@ -2387,7 +2372,7 @@ public sealed class TransactionAttachmentFileConsistencyTests
                 session.SelectedBusinessDatabaseName);
             await using var verificationDb =
                 new LocalDbContext(options);
-            Assert.True(await verificationDb.Settings
+            Assert.False(await verificationDb.Settings
                 .AnyAsync(setting =>
                     setting.Key == "Sync.LastSuccessAt"));
         }

@@ -55,9 +55,12 @@ public sealed class LocalSettingWriteRetryTests
             await lockTransaction.CommitAsync();
             await writeTask.WaitAsync(TimeSpan.FromSeconds(5));
 
+            await using var verifier = new LocalDbContext(options);
             Assert.Equal(
                 "saved",
-                await local.GetSettingAsync("PeriodicIntegrity.LastRun"));
+                await verifier.Settings.AsNoTracking()
+                    .Where(row => row.Key == "PeriodicIntegrity.LastRun")
+                    .Select(row => row.Value).SingleAsync());
         }
         finally
         {

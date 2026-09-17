@@ -495,11 +495,10 @@ public sealed class ItemsController : ControllerBase
         }
 
         entity.IsDeleted = true;
-        var warehouseStocks = await _dbContext.ItemWarehouseStocks
-            .Where(stock => stock.ItemId == id)
-            .ToListAsync(cancellationToken);
-        if (warehouseStocks.Count > 0)
-            _dbContext.ItemWarehouseStocks.RemoveRange(warehouseStocks);
+        entity.CurrentStock = 0m;
+        // Retain inventory baselines for recycle-bin restore; the item filter
+        // excludes these rows from active stock queries until restoration.
+        await RemoveWarehouseStocksIfNonInventoryAsync(entity, cancellationToken);
 
         await RemoveInventoryLedgerEntriesIfNonInventoryAsync(entity, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
