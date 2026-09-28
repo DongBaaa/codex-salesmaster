@@ -10,7 +10,8 @@ $ast = [Management.Automation.Language.Parser]::ParseFile(
     (Resolve-Path -LiteralPath $SourceScript).Path, [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count -gt 0) { throw 'Scope probe syntax errors.' }
 # Import only function definitions. Never execute the real script's HTTP/report workflow.
-foreach ($name in @('Invoke-JsonRequest', 'Get-ReturnedScopeCheck', 'Get-AccountResult')) {
+$ProjectRoot = Split-Path -Parent (Split-Path -Parent (Resolve-Path -LiteralPath $SourceScript).Path)
+foreach ($name in @('Get-ScopeProbeClientHeaders', 'Invoke-JsonRequest', 'Get-ReturnedScopeCheck', 'Get-AccountResult')) {
     $function = $ast.Find({ param($node)
         $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
     }, $true)
@@ -19,6 +20,16 @@ foreach ($name in @('Invoke-JsonRequest', 'Get-ReturnedScopeCheck', 'Get-Account
 $jsonRequestFunction = ${function:Invoke-JsonRequest}
 function Invoke-JsonRequest {
     param($Uri, $Method, $Headers, $Body)
+    if ($Headers['X-GeoraePlan-Client-AppId'] -ne 'kr.georaeplan.desktop' -or
+        $Headers['X-GeoraePlan-Client-Platform'] -ne 'windows' -or
+        [int]$Headers['X-GeoraePlan-Client-Protocol'] -lt 4 -or
+        [version]$Headers['X-GeoraePlan-Client-Version'] -lt [version]'1.1.746' -or
+        [int]$Headers['X-GeoraePlan-Client-Build'] -le 0) {
+        throw '426: current nullable amount client identity was not sent.'
+    }
+    if ($Uri -notmatch '/auth/login$' -and $Headers.Authorization -ne 'Bearer synthetic-test-token') {
+        throw 'Authenticated probe lost its authorization header.'
+    }
     switch -Regex ($Uri) {
         '/auth/login$' { return [pscustomobject]@{accessToken='synthetic-test-token'} }
         '/runtime/scope-matrix$' { return $script:matrix }

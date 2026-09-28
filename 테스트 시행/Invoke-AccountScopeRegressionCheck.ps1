@@ -59,6 +59,26 @@ function Resolve-AppBaseUrl {
     throw "BaseUrl을 결정할 수 없습니다. -BaseUrl 값을 직접 지정하세요."
 }
 
+function Get-ScopeProbeClientHeaders {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
+    # This read-only probe consumes nullable amounts just like the current desktop.
+    # Derive its identity from the same source instead of silently acting as legacy.
+    [xml]$project = Get-Content -LiteralPath (Join-Path $ProjectRoot 'Desktop\거래플랜.Desktop.App\거래플랜.Desktop.App.csproj') -Raw
+    $versionText = [string](@($project.Project.PropertyGroup.Version | Where-Object { $_ })[0])
+    $version = [version]$versionText
+    if ($version.Build -le 0) { throw 'Desktop client build is not positive.' }
+    $contracts = Get-Content -LiteralPath (Join-Path $ProjectRoot 'Shared\거래플랜.Shared.Contracts\Contracts.cs') -Raw
+    $protocol = [regex]::Match($contracts, 'const int NullableRentalProfileAmountsProtocolVersion\s*=\s*(\d+)\s*;')
+    if (-not $protocol.Success) { throw 'Nullable amount protocol contract was not found.' }
+    return @{
+        'X-GeoraePlan-Client-AppId' = 'kr.georaeplan.desktop'
+        'X-GeoraePlan-Client-Platform' = 'windows'
+        'X-GeoraePlan-Client-Version' = $version.ToString(3)
+        'X-GeoraePlan-Client-Build' = $version.Build.ToString()
+        'X-GeoraePlan-Client-Protocol' = $protocol.Groups[1].Value
+    }
+}
+
 function Invoke-JsonRequest {
     param(
         [string]$Uri,
@@ -178,7 +198,8 @@ function Get-AccountResult {
     }
 
     try {
-        $login = Invoke-JsonRequest -Uri ($BaseUrl + "/auth/login") -Method Post -Body @{
+        $headers = Get-ScopeProbeClientHeaders -ProjectRoot $ProjectRoot
+        $login = Invoke-JsonRequest -Uri ($BaseUrl + "/auth/login") -Method Post -Headers $headers -Body @{
             username = $Username
             password = $Password
         }
@@ -192,7 +213,7 @@ function Get-AccountResult {
             throw "로그인 응답에 accessToken이 없습니다."
         }
 
-        $headers = @{ Authorization = "Bearer $token" }
+        $headers.Authorization = "Bearer $token"
         $scopeMatrix = Invoke-JsonRequest -Uri ($BaseUrl + "/runtime/scope-matrix") -Method Get -Headers $headers
         if (-not [string]::Equals([string]$scopeMatrix.officeCode, $Alias, [StringComparison]::OrdinalIgnoreCase)) {
             throw '로그인 계정의 지점이 요청한 점검 지점과 다릅니다.'
@@ -276,6 +297,8 @@ $lines.Add("") | Out-Null
 $lines.Add("- 실행시각: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')") | Out-Null
 $lines.Add("- 결과: **$overallStatus**") | Out-Null
 $lines.Add("- BaseUrl: $resolvedBaseUrl") | Out-Null
+$probeIdentity = Get-ScopeProbeClientHeaders -ProjectRoot $ProjectRoot
+$lines.Add("- 검사 클라이언트: desktop $($probeIdentity['X-GeoraePlan-Client-Version']), protocol $($probeIdentity['X-GeoraePlan-Client-Protocol']); 구형 앱 호환성을 검증한 결과는 아닙니다.") | Out-Null
 $lines.Add("- 검증 범위: 거래처·품목 반환 행과 서버 조회 범위의 일치. 권한 설정 자체의 타당성, 자산·청구·저장·동기화·실제 화면은 별도 검증이 필요합니다.") | Out-Null
 $lines.Add("") | Out-Null
 $lines.Add("| 계정 | 결과 | 테넌트 | 지점 | 범위 | 거래처 수 | 품목 수 | 비고 |") | Out-Null
