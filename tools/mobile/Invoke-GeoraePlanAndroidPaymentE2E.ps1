@@ -698,15 +698,26 @@ function Get-EditTextNodeByHint {
     param(
         [string]$Content,
         [string]$Hint,
+        [string]$ExpectedText,
         [switch]$RequireFocused
     )
 
-    $escapedHint = [regex]::Escape($Hint)
     $candidates = @()
     foreach ($match in [regex]::Matches($Content, '<node\b[^>]*>')) {
         $node = $match.Value
-        if ($node -notmatch 'class="android\.widget\.(?:EditText|AutoCompleteTextView)"' -or
-            $node -notmatch "hint=`"$escapedHint`"") {
+        if ($node -notmatch 'class="android\.widget\.(?:EditText|AutoCompleteTextView)"') {
+            continue
+        }
+        $hintMatch = [regex]::Match($node, 'hint="([^"]*)"')
+        $textMatch = [regex]::Match($node, 'text="([^"]*)"')
+        $textValue = if ($textMatch.Success) { [Net.WebUtility]::HtmlDecode($textMatch.Groups[1].Value) } else { '' }
+        # Some uiautomator versions expose an empty entry's placeholder as text.
+        # After typing, require the exact expected text and confirmed focus.
+        if ($hintMatch.Success) {
+            if ([Net.WebUtility]::HtmlDecode($hintMatch.Groups[1].Value) -cne $Hint) { continue }
+        }
+        elseif ($textValue -cne $Hint -and
+            ([string]::IsNullOrEmpty($ExpectedText) -or $textValue -cne $ExpectedText)) {
             continue
         }
         if ($RequireFocused -and $node -notmatch 'focused="true"') {
@@ -716,13 +727,12 @@ function Get-EditTextNodeByHint {
             continue
         }
 
-        $textMatch = [regex]::Match($node, 'text="([^"]*)"')
         $candidates += [pscustomobject]@{
             Point = [pscustomobject]@{
                 X = [int](([int]$Matches[1] + [int]$Matches[3]) / 2)
                 Y = [int](([int]$Matches[2] + [int]$Matches[4]) / 2)
             }
-            Text = if ($textMatch.Success) { $textMatch.Groups[1].Value } else { '' }
+            Text = $textValue
         }
     }
 
@@ -735,7 +745,6 @@ function Get-EditTextNodeByHint {
 
     return $null
 }
-
 
 function Get-NodeCenterByAttribute {
     param(
@@ -896,8 +905,10 @@ function Open-BottomTabAndAssert {
         [System.Collections.Generic.List[object]]$Steps
     )
 
-    Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-before-$StepName" | Out-Null
-    Tap-BottomTab -AdbPath $AdbPath -DeviceId $DeviceId -Screen $Screen -XRatio $FallbackXRatio
+    $beforeTabDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-before-$StepName"
+    $tabPoint = Get-NodeCenterByText -Content $beforeTabDump.Content -Text $TabText -ClassName 'android.widget.TextView' -MinY ([int]($Screen.Height * 0.5))
+    if (-not $tabPoint) { throw "bottom tab not found in observed screen: $TabText" }
+    Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $tabPoint.X -Y $tabPoint.Y
     Start-Sleep -Seconds 1
 
     $afterTapDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-after-tap-$StepName"
@@ -1039,7 +1050,7 @@ function Set-AndroidEditTextByHint {
     $focusWasConfirmed = $false
     for ($attempt = 1; $attempt -le 3; $attempt++) {
         $beforeDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-$FieldName-before$attempt"
-        $fieldNode = Get-EditTextNodeByHint -Content $beforeDump.Content -Hint $Hint
+        $fieldNode = Get-EditTextNodeByHint -Content $beforeDump.Content -Hint $Hint -ExpectedText $Value
         if (-not $fieldNode) {
             throw "android text field not found: $Hint"
         }
@@ -1047,7 +1058,7 @@ function Set-AndroidEditTextByHint {
         Tap-Point -AdbPath $AdbPath -DeviceId $DeviceId -X $fieldNode.Point.X -Y $fieldNode.Point.Y
         Start-Sleep -Milliseconds 700
         $focusDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-$FieldName-focus$attempt"
-        $focusedNode = Get-EditTextNodeByHint -Content $focusDump.Content -Hint $Hint -RequireFocused
+        $focusedNode = Get-EditTextNodeByHint -Content $focusDump.Content -Hint $Hint -ExpectedText $Value -RequireFocused
         if (-not $focusedNode) {
             continue
         }
@@ -1058,7 +1069,7 @@ function Set-AndroidEditTextByHint {
         Start-Sleep -Milliseconds 700
 
         $typedDump = Get-UiDump -AdbPath $AdbPath -DeviceId $DeviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$Timestamp-$FieldName-attempt$attempt"
-        $typedNode = Get-EditTextNodeByHint -Content $typedDump.Content -Hint $Hint
+        $typedNode = Get-EditTextNodeByHint -Content $typedDump.Content -Hint $Hint -ExpectedText $Value -RequireFocused
         if ($typedNode -and $typedNode.Text -eq $Value) {
             return $typedDump
         }
@@ -1155,41 +1166,31 @@ function New-TestAttachmentPdf {
 
     $fileName = "georaeplan-payment-e2e-$Timestamp.pdf"
     $path = Join-Path $EvidenceDirectory $fileName
-    $content = @"
-%PDF-1.4
-1 0 obj
-<< /Type /Catalog /Pages 2 0 R >>
-endobj
-2 0 obj
-<< /Type /Pages /Kids [3 0 R] /Count 1 >>
-endobj
-3 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 120] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
-endobj
-4 0 obj
-<< /Length 55 >>
-stream
-BT /F1 12 Tf 24 72 Td (GeoraePlan payment E2E) Tj ET
-endstream
-endobj
-5 0 obj
-<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
-endobj
-xref
-0 6
-0000000000 65535 f
-0000000009 00000 n
-0000000058 00000 n
-0000000115 00000 n
-0000000234 00000 n
-0000000340 00000 n
-trailer
-<< /Size 6 /Root 1 0 R >>
-startxref
-410
-%%EOF
-"@
-    [System.IO.File]::WriteAllText($path, $content, [System.Text.UTF8Encoding]::new($false))
+    # Compute byte offsets and stream length instead of hand-maintained PDF
+    # numbers. ASCII plus explicit LF makes the fixture identical on PS 5/7.
+    $encoding = [System.Text.Encoding]::ASCII
+    $streamText = "BT /F1 12 Tf 24 72 Td (GeoraePlan payment E2E) Tj ET`n"
+    $objects = @(
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 120] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+        ("<< /Length " + $encoding.GetByteCount($streamText) + " >>`nstream`n" + $streamText + 'endstream'),
+        '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'
+    )
+    $pdf = New-Object System.Text.StringBuilder
+    [void]$pdf.Append("%PDF-1.4`n")
+    $offsets = New-Object System.Collections.Generic.List[long]
+    for ($index = 0; $index -lt $objects.Count; $index++) {
+        $offsets.Add($encoding.GetByteCount($pdf.ToString()))
+        [void]$pdf.Append(($index + 1).ToString() + " 0 obj`n" + $objects[$index] + "`nendobj`n")
+    }
+    $xrefOffset = $encoding.GetByteCount($pdf.ToString())
+    [void]$pdf.Append("xref`n0 " + ($objects.Count + 1) + "`n0000000000 65535 f `n")
+    foreach ($offset in $offsets) {
+        [void]$pdf.Append($offset.ToString('0000000000', [Globalization.CultureInfo]::InvariantCulture) + " 00000 n `n")
+    }
+    [void]$pdf.Append("trailer`n<< /Size " + ($objects.Count + 1) + " /Root 1 0 R >>`nstartxref`n" + $xrefOffset + "`n%%EOF`n")
+    [System.IO.File]::WriteAllBytes($path, $encoding.GetBytes($pdf.ToString()))
     return [pscustomobject]@{ LocalPath = $path; FileName = $fileName; RemotePath = "/sdcard/Download/$fileName" }
 }
 
@@ -1256,6 +1257,15 @@ function Select-PdfAttachmentFromDevice {
         if ($pickerDump.Content.Contains($Attachment.FileName)) {
             Tap-UiText -AdbPath $AdbPath -DeviceId $DeviceId -Content $pickerDump.Content -Text $Attachment.FileName -ClassName 'android.widget.TextView' -StepName 'PDF 첨부 파일 선택'
             Start-Sleep -Seconds 5
+            # The selected file row can be below the initial payment viewport.
+            # Expose it without weakening the filename and attachment-count checks.
+            $attachmentScreen = Get-ScreenSize -AdbPath $AdbPath -DeviceId $DeviceId
+            $scrollX = [int]($attachmentScreen.Width * 0.5)
+            Invoke-Adb -AdbPath $AdbPath -Arguments @(
+                '-s', $DeviceId, 'shell', 'input', 'swipe',
+                [string]$scrollX, [string][int]($attachmentScreen.Height * 0.75),
+                [string]$scrollX, [string][int]($attachmentScreen.Height * 0.42), '500') | Out-Null
+            Start-Sleep -Seconds 1
             $selectedDump = Wait-UiContainsAll `
                 -AdbPath $AdbPath `
                 -DeviceId $DeviceId `
@@ -2132,6 +2142,25 @@ function Get-AndroidCurrentFocusSummary {
     }
 }
 
+function Test-AndroidExternalActivityFocus {
+    param([string]$FocusSummary, [string]$PackageName)
+
+    if ([string]::IsNullOrWhiteSpace($FocusSummary) -or
+        $FocusSummary.StartsWith('focus-unavailable:', [StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+    # A focused-app record or an error string alone does not prove that an
+    # external window opened. Require the current window's actual component.
+    $currentWindow = [regex]::Match($FocusSummary,
+        'mCurrentFocus\s*=\s*Window\{[^}\r\n]*?\s(?<package>[A-Za-z][A-Za-z0-9_.]*)/[^}\s]+')
+    if (-not $currentWindow.Success) { return $false }
+    $focusedPackage = $currentWindow.Groups['package'].Value
+    return -not [string]::Equals($focusedPackage, $PackageName, [StringComparison]::OrdinalIgnoreCase) -and
+        $focusedPackage.IndexOf('launcher', [StringComparison]::OrdinalIgnoreCase) -lt 0 -and
+        $focusedPackage -notin @('android', 'com.android.systemui',
+            'com.android.permissioncontroller', 'com.google.android.permissioncontroller')
+}
+
 function Invoke-TestPaymentAttachmentOpenUi {
     param(
         [string]$AdbPath,
@@ -2204,6 +2233,15 @@ function Invoke-TestPaymentAttachmentOpenUi {
     Tap-UiText -AdbPath $AdbPath -DeviceId $DeviceId -Content $detailDump.Content -Text '수금/지급' -ClassName 'android.widget.Button' -StepName '거래처 수금/지급 탭'
     Start-Sleep -Seconds 4
 
+    # Customer details can place payment rows below the tab controls. Scroll
+    # within the content area before waiting for the attachment action.
+    $historyScrollX = [int]($Screen.Width * 0.5)
+    Invoke-Adb -AdbPath $AdbPath -Arguments @(
+        '-s', $DeviceId, 'shell', 'input', 'swipe',
+        [string]$historyScrollX, [string][int]($Screen.Height * 0.79),
+        [string]$historyScrollX, [string][int]($Screen.Height * 0.375), '500') | Out-Null
+    Start-Sleep -Seconds 1
+
     $paymentsDump = Wait-UiContainsAll `
         -AdbPath $AdbPath `
         -DeviceId $DeviceId `
@@ -2241,10 +2279,7 @@ function Invoke-TestPaymentAttachmentOpenUi {
     $friendlyNoViewer = $afterOpenDump.Content.Contains('열 수 있는 앱을 찾지 못했습니다')
     $openedInApp = $afterOpenDump.Content.Contains('첨부 파일을 열었습니다.')
     $androidResolver = $afterOpenDump.Content.Contains('Open with') -or $afterOpenDump.Content.Contains('Just once') -or $afterOpenDump.Content.Contains('Always')
-    $externalActivity = -not [string]::IsNullOrWhiteSpace($focusSummary) -and
-        -not $focusSummary.Contains($PackageName) -and
-        $focusSummary.IndexOf('nexuslauncher', [StringComparison]::OrdinalIgnoreCase) -lt 0 -and
-        $focusSummary.IndexOf('Launcher', [StringComparison]::OrdinalIgnoreCase) -lt 0
+    $externalActivity = Test-AndroidExternalActivityFocus -FocusSummary $focusSummary -PackageName $PackageName
 
     if (-not ($friendlyNoViewer -or $openedInApp -or $androidResolver -or $externalActivity)) {
         if ($afterOpenDump.Content.Contains('첨부 열기 실패')) {
@@ -2515,10 +2550,17 @@ try {
         Start-Sleep -Seconds 3
     }
 
-    Tap-BottomTab -AdbPath $resolvedAdb -DeviceId $deviceId -Screen $screen -XRatio 0.70
-    Start-Sleep -Seconds 5
-    $invoicesDump = Get-UiDump -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Name "mobile-payment-e2e-$voucherSlug-$timestamp-invoices"
-    Assert-UiContains -Content $invoicesDump.Content -Needles @('전표', '수금/지급') -StepName '전표 화면'
+    $invoicesDump = Open-BottomTabAndAssert `
+        -AdbPath $resolvedAdb `
+        -DeviceId $deviceId `
+        -EvidenceDirectory $EvidenceDirectory `
+        -Timestamp "$voucherSlug-$timestamp" `
+        -Screen $screen `
+        -TabText '전표' `
+        -FallbackXRatio 0.70 `
+        -StepName 'invoice-tab-open' `
+        -Needles @('거래처명 / 전표번호 / 메모', '조회') `
+        -Steps $steps
 
     Set-AndroidEditTextByHint -AdbPath $resolvedAdb -DeviceId $deviceId -EvidenceDirectory $EvidenceDirectory -Timestamp "$voucherSlug-$timestamp" -FieldName 'invoice-search' -Hint '거래처명 / 전표번호 / 메모' -Value $fixture.CustomerName | Out-Null
     Invoke-Adb -AdbPath $resolvedAdb -Arguments @('-s', $deviceId, 'shell', 'input', 'keyevent', 'KEYCODE_ESCAPE') | Out-Null

@@ -9,10 +9,13 @@ public sealed record ItemVendorPurchasePriceRow(
     Guid VendorCustomerId,
     string VendorName,
     string VendorTradeType,
-    decimal UnitPrice,
+    decimal? UnitPrice,
     DateOnly LastPurchaseDate,
     string Unit,
-    string InvoiceNumber);
+    string InvoiceNumber)
+{
+    public string UnitPriceDisplay => UnitPrice?.ToString("N0") ?? "비공개";
+}
 
 public sealed record ItemConfirmedInvoiceDates(
     DateOnly? LastPurchaseDate,
@@ -62,16 +65,20 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
+        var access = FinancialAmountVisibility.CaptureAccess(session);
         var scope = await ResolveReadableItemInvoiceHistoryScopeAsync(itemId, session, ct);
-        if (scope is null)
+        if (scope is null || access != FinancialAmountVisibility.CaptureAccess(session))
             return [];
 
         var rows = await QueryPurchasePriceRows(
                 scope.TenantCode,
                 scope.ReadableOfficeCodes,
                 itemId,
-                null)
+                null,
+                access.Purchase)
             .ToListAsync(ct);
+
+        if (access != FinancialAmountVisibility.CaptureAccess(session)) return [];
 
         return rows
             .GroupBy(row => row.VendorCustomerId)
@@ -91,7 +98,8 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
-        if (customerId == Guid.Empty)
+        var access = FinancialAmountVisibility.CaptureAccess(session);
+        if (customerId == Guid.Empty || !access.Purchase)
             return new Dictionary<Guid, decimal>();
 
         var tenantCode = ResolveCurrentTenantCode(session);
@@ -99,8 +107,10 @@ public sealed partial class LocalStateService
         if (readableOfficeCodes.Count == 0)
             return new Dictionary<Guid, decimal>();
 
-        var rows = await QueryPurchasePriceRows(tenantCode, readableOfficeCodes, null, customerId)
+        var rows = await QueryPurchasePriceRows(tenantCode, readableOfficeCodes, null, customerId, access.Purchase)
             .ToListAsync(ct);
+
+        if (access != FinancialAmountVisibility.CaptureAccess(session)) return new Dictionary<Guid, decimal>();
 
         return rows
             .GroupBy(row => row.ItemId)
@@ -109,7 +119,7 @@ public sealed partial class LocalStateService
                 .ThenByDescending(row => row.LastSavedAtUtc)
                 .First())
             .Where(row => row.UnitPrice > 0m)
-            .ToDictionary(row => row.ItemId, row => row.UnitPrice);
+            .ToDictionary(row => row.ItemId, row => row.UnitPrice!.Value);
     }
 
     private async Task<ItemInvoiceHistoryScope?> ResolveReadableItemInvoiceHistoryScopeAsync(
@@ -150,7 +160,8 @@ public sealed partial class LocalStateService
         string tenantCode,
         HashSet<string> readableOfficeCodes,
         Guid? itemId,
-        Guid? customerId)
+        Guid? customerId,
+        bool canViewPurchaseAmounts)
     {
         var query =
             from invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking()
@@ -167,7 +178,9 @@ public sealed partial class LocalStateService
                   && line.ItemId.Value != Guid.Empty
                   && (!itemId.HasValue || line.ItemId.Value == itemId.Value)
                   && (!customerId.HasValue || invoice.CustomerId == customerId.Value)
-                  && line.UnitPrice > 0m
+                  // Retain the positive-price history rule for known amounts, but
+                  // keep hidden rows so they cannot resurrect an older known price.
+                  && (line.UnitPrice > 0m || invoice.AmountsHidden || line.AmountsHidden)
                   && !customer.IsDeleted
                   && invoice.TenantCode == tenantCode
                   && (invoice.OfficeCode == OfficeCodeCatalog.Shared
@@ -178,7 +191,7 @@ public sealed partial class LocalStateService
                 invoice.CustomerId,
                 customer.NameOriginal,
                 customer.TradeType,
-                line.UnitPrice,
+                canViewPurchaseAmounts && !invoice.AmountsHidden && !line.AmountsHidden ? (decimal?)line.UnitPrice : null,
                 invoice.InvoiceDate,
                 line.Unit,
                 invoice.InvoiceNumber == string.Empty ? invoice.LocalTempNumber : invoice.InvoiceNumber,
@@ -192,7 +205,7 @@ public sealed partial class LocalStateService
         Guid VendorCustomerId,
         string VendorName,
         string VendorTradeType,
-        decimal UnitPrice,
+        decimal? UnitPrice,
         DateOnly LastPurchaseDate,
         string Unit,
         string InvoiceNumber,

@@ -36,6 +36,7 @@ public sealed partial class LocalStateService
     private static readonly string[] CachedSessionSettingSuffixes =
     [
         CachedSessionUsernameSuffix,
+        CachedSessionUserIdSuffix,
         CachedSessionRoleSuffix,
         CachedSessionPermissionsSuffix,
         CachedSessionTenantCodeSuffix,
@@ -124,7 +125,14 @@ public sealed partial class LocalStateService
     private static SemaphoreSlim GetAuthenticationCacheGate(string normalizedUsername)
         => AuthenticationCacheGates.GetOrAdd(normalizedUsername, static _ => new SemaphoreSlim(1, 1));
 
-    private LocalDbContext CreateIndependentAuthenticationDb()
+    private async Task<LocalDbContext> CreateIndependentAuthenticationDbAsync(CancellationToken ct = default)
+    {
+        if (_commonAuthenticationDatabase is not null)
+            return await _commonAuthenticationDatabase.OpenAsync(ct);
+        return CreateIndependentBusinessSettingsDb();
+    }
+
+    private LocalDbContext CreateIndependentBusinessSettingsDb()
     {
         var connectionString = _db.Database.GetConnectionString();
         if (string.IsNullOrWhiteSpace(connectionString))
@@ -151,6 +159,9 @@ public sealed partial class LocalStateService
     {
         if (values.Count == 0)
             return;
+        EnsureOrdinarySettings(values.Keys);
+        if (_commonAuthenticationDatabase is not null && values.Keys.Any(key => !IsCommonAuthenticationSetting(key)))
+            throw new InvalidOperationException("업무 설정은 공통 인증 저장소에 기록할 수 없습니다.");
 
         var normalizedUsername = NormalizeUsername(authenticationUsername);
         SemaphoreSlim? gate = null;
@@ -163,7 +174,7 @@ public sealed partial class LocalStateService
         try
         {
             var keys = values.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
-            await using var settingsDb = CreateIndependentAuthenticationDb();
+            await using var settingsDb = await CreateIndependentAuthenticationDbAsync();
             await using var transaction =
                 await settingsDb.BeginRuntimeMutationTransactionAsync(ct);
             try
@@ -279,7 +290,7 @@ public sealed partial class LocalStateService
         {
             GetCachedSessionSettingKey(normalizedUsername, CachedSessionSchemaVersionSuffix)
         };
-        await using var cacheDb = CreateIndependentAuthenticationDb();
+        await using var cacheDb = await CreateIndependentAuthenticationDbAsync();
         await using var transaction =
             await cacheDb.BeginRuntimeMutationTransactionAsync(CancellationToken.None);
         try
@@ -326,7 +337,8 @@ public sealed partial class LocalStateService
         string? scopeType,
         string? officeCode,
         string? password,
-        CancellationToken ct)
+        CancellationToken ct,
+        Guid userId)
     {
         var displayUsername = (username ?? string.Empty).Trim();
         var normalizedUsername = NormalizeUsername(displayUsername);
@@ -363,7 +375,8 @@ public sealed partial class LocalStateService
                 passwordProof,
                 validatedAtUtc,
                 validatedAtUtc,
-                validatedAtUtc);
+                validatedAtUtc,
+                userId);
             var keysToWrite = values.Keys
                 .Select(suffix => GetCachedSessionSettingKey(normalizedUsername, suffix))
                 .Concat(values.Keys.Select(suffix => "CachedSession_" + suffix))
@@ -371,7 +384,7 @@ public sealed partial class LocalStateService
 
             try
             {
-                await using var cacheDb = CreateIndependentAuthenticationDb();
+                await using var cacheDb = await CreateIndependentAuthenticationDbAsync();
                 await using var transaction =
                     await cacheDb.BeginRuntimeMutationTransactionAsync(CancellationToken.None);
                 try
@@ -459,7 +472,7 @@ public sealed partial class LocalStateService
 
             try
             {
-                await using var cacheDb = CreateIndependentAuthenticationDb();
+                await using var cacheDb = await CreateIndependentAuthenticationDbAsync();
                 await using var transaction =
                     await cacheDb.BeginRuntimeMutationTransactionAsync(CancellationToken.None);
                 try
@@ -471,6 +484,10 @@ public sealed partial class LocalStateService
                         requireFresh: false,
                         validatedAtUtc);
                     if (latest is null)
+                        return;
+                    // A recreated account must not inherit the old password proof.
+                    // Retain the revocation barrier until a fresh login succeeds.
+                    if (latest.UserId != Guid.Empty && refreshedUser.UserId != latest.UserId)
                         return;
 
                     if (validatedAtUtc < latest.CachedAtUtc)
@@ -489,7 +506,8 @@ public sealed partial class LocalStateService
                         latest.PasswordProof,
                         latest.CachedAtUtc,
                         validatedAtUtc,
-                        lastAcceptedOfflineUtc);
+                        lastAcceptedOfflineUtc,
+                        refreshedUser.UserId);
                     await WriteCachedSessionValuesAsync(
                         cacheDb,
                         normalizedUsername,
@@ -592,7 +610,7 @@ public sealed partial class LocalStateService
                 return null;
 
             var capturedNowUtc = _timeProvider.GetUtcNow().ToUniversalTime();
-            await using var readDb = CreateIndependentAuthenticationDb();
+            await using var readDb = await CreateIndependentAuthenticationDbAsync();
             var cached = await ReadCachedSessionRecordAsync(
                 readDb,
                 username,
@@ -619,7 +637,7 @@ public sealed partial class LocalStateService
     {
         var user = new UserSessionDto
         {
-            UserId = Guid.Empty,
+            UserId = cached.UserId,
             Username = cached.Username,
             Role = cached.Role,
             TenantCode = cached.TenantCode,
@@ -643,7 +661,7 @@ public sealed partial class LocalStateService
             return null;
 
         CachedSessionRecord? cached;
-        await using (var readDb = CreateIndependentAuthenticationDb())
+        await using (var readDb = await CreateIndependentAuthenticationDbAsync())
         {
             cached = await ReadCachedSessionRecordAsync(
                 readDb,
@@ -683,7 +701,7 @@ public sealed partial class LocalStateService
 
         try
         {
-            await using var cacheDb = CreateIndependentAuthenticationDb();
+            await using var cacheDb = await CreateIndependentAuthenticationDbAsync();
             await using var transaction =
                 await cacheDb.BeginRuntimeMutationTransactionAsync(CancellationToken.None);
             try
@@ -717,7 +735,8 @@ public sealed partial class LocalStateService
                     latest.CachedAtUtc.ToString("O", CultureInfo.InvariantCulture),
                     latest.LastOnlineValidationAtUtc.ToString("O", CultureInfo.InvariantCulture),
                     lastAcceptedText,
-                    latest.PasswordProof));
+                    latest.PasswordProof,
+                    latest.UserId));
                 if (string.IsNullOrWhiteSpace(metadataProof))
                     return null;
 
@@ -777,7 +796,7 @@ public sealed partial class LocalStateService
             if (HasAuthenticationRevocationTombstone(normalizedUsername))
                 return false;
 
-            await using var cacheDb = CreateIndependentAuthenticationDb();
+            await using var cacheDb = await CreateIndependentAuthenticationDbAsync();
             var userProofKey =
                 GetCachedSessionSettingKey(normalizedUsername, CachedSessionPasswordProofSuffix);
             var passwordProof = await cacheDb.Settings
@@ -835,7 +854,7 @@ public sealed partial class LocalStateService
 
         try
         {
-            await using var revocationDb = CreateIndependentAuthenticationDb();
+            await using var revocationDb = await CreateIndependentAuthenticationDbAsync();
             await using var transaction =
                 await revocationDb.BeginRuntimeMutationTransactionAsync(CancellationToken.None);
             try
@@ -964,6 +983,9 @@ public sealed partial class LocalStateService
             return null;
         }
 
+        var userIdRaw = Read(CachedSessionUserIdSuffix, useLegacy);
+        if (!Guid.TryParse(userIdRaw, out var userId))
+            return null;
         var role = Read(CachedSessionRoleSuffix, useLegacy);
         var permissionsText = Read(CachedSessionPermissionsSuffix, useLegacy);
         var tenantCode = Read(CachedSessionTenantCodeSuffix, useLegacy);
@@ -1003,7 +1025,8 @@ public sealed partial class LocalStateService
             cachedAtRaw,
             lastOnlineRaw,
             lastAcceptedRaw,
-            passwordProof);
+            passwordProof,
+            userId);
         if (!VerifyOfflineSessionMetadata(metadataProof, expectedMetadata)
             || !IsOfflinePasswordProofReadable(passwordProof)
             || requireFresh
@@ -1028,7 +1051,8 @@ public sealed partial class LocalStateService
             cachedAtUtc,
             lastOnlineValidationAtUtc,
             lastAcceptedOfflineUtc,
-            useLegacy);
+            useLegacy,
+            userId);
     }
 
     private Dictionary<string, string> CreateCachedSessionValues(
@@ -1042,7 +1066,8 @@ public sealed partial class LocalStateService
         string passwordProof,
         DateTimeOffset cachedAtUtc,
         DateTimeOffset lastOnlineValidationAtUtc,
-        DateTimeOffset lastAcceptedOfflineUtc)
+        DateTimeOffset lastAcceptedOfflineUtc,
+        Guid userId)
     {
         var cachedAtText = cachedAtUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
         var lastOnlineText =
@@ -1060,13 +1085,15 @@ public sealed partial class LocalStateService
             cachedAtText,
             lastOnlineText,
             lastAcceptedText,
-            passwordProof));
+            passwordProof,
+            userId));
         if (string.IsNullOrWhiteSpace(metadataProof))
             throw new InvalidOperationException("오프라인 인증 캐시 보호 데이터 생성에 실패했습니다.");
 
         return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             [CachedSessionUsernameSuffix] = displayUsername,
+            [CachedSessionUserIdSuffix] = userId.ToString("D"),
             [CachedSessionRoleSuffix] = role,
             [CachedSessionPermissionsSuffix] = permissionsText,
             [CachedSessionTenantCodeSuffix] = tenantCode,
@@ -1141,6 +1168,13 @@ public sealed partial class LocalStateService
     }
 
     private void DetachAuthenticationSettings(IEnumerable<string> keys)
+    {
+        if (_commonAuthenticationDatabase is not null)
+            return;
+        DetachBusinessSettings(keys);
+    }
+
+    private void DetachBusinessSettings(IEnumerable<string> keys)
     {
         var keySet = keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var trackedSetting in _db.ChangeTracker.Entries<LocalSetting>()

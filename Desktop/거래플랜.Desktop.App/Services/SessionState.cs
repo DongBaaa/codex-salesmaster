@@ -46,6 +46,7 @@ public sealed class SessionState
         HasAdministrativePrivileges && string.Equals(ScopeType, TenantScopeCatalog.ScopeAdmin, StringComparison.OrdinalIgnoreCase);
     public bool HasSystemConfigurationScope => IsGodMode || HasGlobalDataScope;
     public event EventHandler? BusinessDatabaseChanged;
+    public event EventHandler? AccessChanged;
 
     public void SetSession(string token, UserSessionDto user, DateTime? expiresAtUtc = null)
     {
@@ -61,6 +62,7 @@ public sealed class SessionState
                 preserveBusinessDatabaseSelection: false);
         }
 
+        AccessChanged?.Invoke(this, EventArgs.Empty);
         if (businessDatabaseChanged)
             BusinessDatabaseChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -80,6 +82,7 @@ public sealed class SessionState
                 Interlocked.Increment(ref _syncScopeEpoch);
         }
 
+        AccessChanged?.Invoke(this, EventArgs.Empty);
         if (businessDatabaseChanged)
             BusinessDatabaseChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -132,28 +135,32 @@ public sealed class SessionState
             businessDatabaseChanged = ResetBusinessDatabaseSelection();
         }
 
+        AccessChanged?.Invoke(this, EventArgs.Empty);
         if (businessDatabaseChanged)
             BusinessDatabaseChanged?.Invoke(this, EventArgs.Empty);
     }
 
     public void SetOfficeCode(string? officeCode)
     {
-        using var scopeWriteLease = AcquireSyncScopeWriteLease();
         if (string.IsNullOrWhiteSpace(officeCode))
             return;
 
-        var before = CaptureSyncScopeIdentity();
-        OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, OfficeCode);
-        AuthenticatedTenantCode = ResolveTenantCode(AuthenticatedTenantCode, OfficeCode);
-        if (!HasAdministrativePrivileges)
+        using (AcquireSyncScopeWriteLease())
         {
-            TenantCode = AuthenticatedTenantCode;
-            BusinessOfficeCode = ResolveBusinessOfficeCode(TenantCode);
-            _ = ResetBusinessDatabaseSelection();
-        }
+            var before = CaptureSyncScopeIdentity();
+            OfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(officeCode, OfficeCode);
+            AuthenticatedTenantCode = ResolveTenantCode(AuthenticatedTenantCode, OfficeCode);
+            if (!HasAdministrativePrivileges)
+            {
+                TenantCode = AuthenticatedTenantCode;
+                BusinessOfficeCode = ResolveBusinessOfficeCode(TenantCode);
+                _ = ResetBusinessDatabaseSelection();
+            }
 
-        if (before != CaptureSyncScopeIdentity())
-            Interlocked.Increment(ref _syncScopeEpoch);
+            if (before != CaptureSyncScopeIdentity())
+                Interlocked.Increment(ref _syncScopeEpoch);
+        }
+        AccessChanged?.Invoke(this, EventArgs.Empty);
     }
 
     public void SetBusinessDatabase(string? databaseName, string? displayName = null)
@@ -167,6 +174,7 @@ public sealed class SessionState
                 Interlocked.Increment(ref _syncScopeEpoch);
         }
 
+        AccessChanged?.Invoke(this, EventArgs.Empty);
         if (businessDatabaseChanged)
             BusinessDatabaseChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -214,6 +222,7 @@ public sealed class SessionState
             businessDatabaseChanged = ResetBusinessDatabaseSelection();
         }
 
+        AccessChanged?.Invoke(this, EventArgs.Empty);
         if (businessDatabaseChanged)
             BusinessDatabaseChanged?.Invoke(this, EventArgs.Empty);
     }

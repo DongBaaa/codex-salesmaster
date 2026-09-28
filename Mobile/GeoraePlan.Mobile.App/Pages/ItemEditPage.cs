@@ -11,6 +11,8 @@ public sealed class ItemEditPage : ContentPage
 {
     private readonly GeoraePlanApiClient _api;
     private readonly SessionStore _sessionStore;
+    private readonly MobileSessionOwner _editorOwner;
+    private MobileItemAmountAccess? _lastAmountAccess;
     private readonly SyncCoordinator _syncCoordinator;
     private ItemDto? _source;
     private readonly Func<ItemDto?, MobileSessionOwner, Task> _afterSaved;
@@ -35,6 +37,7 @@ public sealed class ItemEditPage : ContentPage
     {
         _api = ServiceHelper.GetRequiredService<GeoraePlanApiClient>();
         _sessionStore = ServiceHelper.GetRequiredService<SessionStore>();
+        _editorOwner = _sessionStore.CaptureOwner();
         _syncCoordinator = ServiceHelper.GetRequiredService<SyncCoordinator>();
         _source = item;
         _afterSaved = afterSaved;
@@ -67,6 +70,7 @@ public sealed class ItemEditPage : ContentPage
             ? "수정 후 저장하면 PC와 모바일 품목 목록에 함께 반영됩니다."
             : "필수 항목은 품명입니다. 재고/단가는 필요 시 0으로 둘 수 있습니다.";
         ApplyStockFieldState(item);
+        RefreshAmountAccess();
 
         var title = GeoraePlanTheme.CreateSectionTitle(isEdit ? "품목 정보 수정" : "새 품목 등록", 18);
         var guide = GeoraePlanTheme.CreateBodyText("모바일에서는 전표 입력에 필요한 기본 품목 정보와 단가를 빠르게 등록합니다.", true, 12);
@@ -142,6 +146,53 @@ public sealed class ItemEditPage : ContentPage
         };
     }
 
+    protected override void OnAppearing()
+    {
+        base.OnAppearing();
+        _sessionStore.SessionChanged -= HandleSessionChanged;
+        _sessionStore.SessionChanged += HandleSessionChanged;
+        RefreshAmountAccess();
+    }
+
+    protected override void OnDisappearing()
+    {
+        _sessionStore.SessionChanged -= HandleSessionChanged;
+        base.OnDisappearing();
+    }
+
+    private void HandleSessionChanged(object? sender, EventArgs e)
+        => MainThread.BeginInvokeOnMainThread(RefreshAmountAccess);
+
+    private MobileItemAmountAccess CaptureAmountAccess()
+    {
+        if (!_sessionStore.IsOwnerCurrent(_editorOwner)) return default;
+        var snapshot = _sessionStore.GetSnapshot();
+        return MobileItemAmountAccess.Capture(snapshot.IsAuthenticated, snapshot.Role,
+            snapshot.Permissions, snapshot.CanEditItems);
+    }
+
+    private void RefreshAmountAccess()
+    {
+        var access = CaptureAmountAccess();
+        access = access with { Purchase = access.Purchase && _source?.PurchaseAmountsHidden != true,
+            Sales = access.Sales && _source?.SalesAmountsHidden != true };
+        if (_lastAmountAccess == access) return;
+        SetPriceAccess(_purchasePriceEntry, access.Purchase, access.Edit, _source?.PurchasePrice ?? 0m,
+            _lastAmountAccess?.Purchase == true);
+        SetPriceAccess(_salePriceEntry, access.Sales, access.Edit, _source?.SalePrice ?? 0m,
+            _lastAmountAccess?.Sales == true);
+        SetPriceAccess(_retailPriceEntry, access.Sales, access.Edit, _source?.RetailPrice ?? 0m,
+            _lastAmountAccess?.Sales == true);
+        _lastAmountAccess = access;
+    }
+
+    private static void SetPriceAccess(Entry entry, bool visible, bool edit, decimal value, bool wasVisible)
+    {
+        entry.IsReadOnly = !visible || !edit;
+        if (!visible || !wasVisible)
+            entry.Text = visible ? FormatDecimal(value) : "비공개";
+    }
+
     private static Entry CreateFormEntry(string placeholder, string? value = null)
     {
         var entry = GeoraePlanTheme.CreateCompactEntry(placeholder);
@@ -173,7 +224,8 @@ public sealed class ItemEditPage : ContentPage
         if (_isBusy)
             return;
 
-        var apiOwner = _sessionStore.CaptureOwner();
+        var apiOwner = _editorOwner;
+        _sessionStore.ThrowIfOwnerChanged(apiOwner);
         if (!_sessionStore.GetSnapshot().CanEditItems)
         {
             _statusLabel.Text = "권한이 없어 품목을 저장할 수 없습니다.";
@@ -256,7 +308,8 @@ public sealed class ItemEditPage : ContentPage
         if (_isBusy || _source is null)
             return;
 
-        var apiOwner = _sessionStore.CaptureOwner();
+        var apiOwner = _editorOwner;
+        _sessionStore.ThrowIfOwnerChanged(apiOwner);
         if (!_sessionStore.GetSnapshot().CanEditItems)
         {
             _statusLabel.Text = "권한이 없어 품목을 삭제할 수 없습니다.";
@@ -466,15 +519,15 @@ public sealed class ItemEditPage : ContentPage
         _unitEntry.Text = string.IsNullOrWhiteSpace(item.Unit) ? "EA" : item.Unit;
         _currentStockEntry.Text = FormatDecimal(item.CurrentStock);
         _safetyStockEntry.Text = FormatDecimal(item.SafetyStock);
-        _purchasePriceEntry.Text = FormatDecimal(item.PurchasePrice);
-        _salePriceEntry.Text = FormatDecimal(item.SalePrice);
-        _retailPriceEntry.Text = FormatDecimal(item.RetailPrice);
+        _lastAmountAccess = null;
+        RefreshAmountAccess();
         _memoEditor.Text = item.SimpleMemo ?? string.Empty;
         ApplyStockFieldState(item);
     }
 
     private ItemDto BuildDto(string name, string tenantCode, string officeCode)
     {
+        _sessionStore.ThrowIfOwnerChanged(_editorOwner);
         var dto = _source is null ? new ItemDto() : Clone(_source);
         dto.Id = _source?.Id ?? Guid.NewGuid();
         dto.TenantCode = string.IsNullOrWhiteSpace(dto.TenantCode) ? tenantCode : dto.TenantCode;
@@ -487,9 +540,8 @@ public sealed class ItemEditPage : ContentPage
         dto.Unit = DefaultIfBlank(Read(_unitEntry), "EA");
         dto.CurrentStock = ReadDecimal(_currentStockEntry);
         dto.SafetyStock = ReadDecimal(_safetyStockEntry);
-        dto.PurchasePrice = ReadDecimal(_purchasePriceEntry);
-        dto.SalePrice = ReadDecimal(_salePriceEntry);
-        dto.RetailPrice = ReadDecimal(_retailPriceEntry);
+        CaptureAmountAccess().ApplyEditedPrices(dto, _source,
+            ReadDecimal(_purchasePriceEntry), ReadDecimal(_salePriceEntry), ReadDecimal(_retailPriceEntry));
         dto.ItemKind = string.IsNullOrWhiteSpace(dto.ItemKind) ? ItemKinds.Product : dto.ItemKind;
         dto.TrackingType = string.IsNullOrWhiteSpace(dto.TrackingType) ? ItemTrackingTypes.Stock : dto.TrackingType;
         dto.IsSale = _source?.IsSale ?? true;

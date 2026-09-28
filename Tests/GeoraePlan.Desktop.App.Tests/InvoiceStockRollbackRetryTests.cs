@@ -25,6 +25,12 @@ public sealed class InvoiceStockRollbackRetryTests
     [InlineData("purge-record")]
     [InlineData("wrong-conflict-id")]
     [InlineData("retry-write-failure")]
+    [InlineData("mixed-company")]
+    [InlineData("mixed-company-id")]
+    [InlineData("mixed-company-kind")]
+    [InlineData("mixed-stock")]
+    [InlineData("mixed-stock-id")]
+    [InlineData("invoice-missing")]
     public async Task WholePushRollback_PreservesPendingData_AndRetriesOnlyEquivalentRevision(string mode)
     {
         var previousRoot = Environment.GetEnvironmentVariable("GEORAEPLAN_APP_ROOT");
@@ -42,6 +48,7 @@ public sealed class InvoiceStockRollbackRetryTests
             var invoiceId = Guid.NewGuid();
             var itemId = Guid.NewGuid();
             var unitId = Guid.NewGuid();
+            var companyId = Guid.NewGuid();
             var connectionString = new SqliteConnectionStringBuilder { DataSource = Path.Combine(root, "test.db") }.ToString();
             var options = new DbContextOptionsBuilder<LocalDbContext>().UseSqlite(connectionString).Options;
             var handler = new RollbackHandler(mode, invoiceId, options);
@@ -69,6 +76,8 @@ public sealed class InvoiceStockRollbackRetryTests
                 db.Items.Add(new LocalItem { Id = itemId, NameOriginal = "rollback item", NameMatchKey = "rollback item", TenantCode = "USENET_GROUP", OfficeCode = "SHARED", ItemKind = ItemKinds.Product, TrackingType = ItemTrackingTypes.Stock, CurrentStock = 10, Revision = 11, IsDirty = true, CreatedAtUtc = now, UpdatedAtUtc = now });
                 db.ItemWarehouseStocks.Add(new LocalItemWarehouseStock { ItemId = itemId, WarehouseCode = "USENET_MAIN", Quantity = 10, Revision = 31, UpdatedAtUtc = now });
                 db.Units.Add(new LocalUnit { Id = unitId, Name = "rollback unrelated", Revision = 2, IsDirty = true, CreatedAtUtc = now, UpdatedAtUtc = now });
+                if (mode.StartsWith("mixed-company", StringComparison.Ordinal) || mode == "invoice-missing")
+                    db.RentalManagementCompanies.Add(new LocalRentalManagementCompany { Id = companyId, Name = "rollback company", Revision = 2, IsDirty = true, CreatedAtUtc = now, UpdatedAtUtc = now });
                 db.Invoices.Add(new LocalInvoice
                 {
                     Id = invoiceId, CustomerId = customerId, TenantCode = "USENET_GROUP", OfficeCode = "USENET", ResponsibleOfficeCode = "USENET", SourceWarehouseCode = "USENET_MAIN",
@@ -88,12 +97,19 @@ public sealed class InvoiceStockRollbackRetryTests
             {
                 var invoice = await db.Invoices.IgnoreQueryFilters().SingleAsync(x => x.Id == invoiceId);
                 Assert.True(invoice.IsDirty);
-                Assert.Equal(mode == "equivalent" ? 8 : 7, invoice.Revision);
+                Assert.Equal(mode is "equivalent" or "mixed-company" or "mixed-stock" ? 8 : 7, invoice.Revision);
                 Assert.Equal(mode == "local-edit" ? "new local edit" : "original invoice", invoice.Memo);
                 Assert.True((await db.Items.SingleAsync(x => x.Id == itemId)).IsDirty);
                 Assert.True((await db.Units.SingleAsync(x => x.Id == unitId)).IsDirty);
                 Assert.Equal(10, (await db.ItemWarehouseStocks.SingleAsync()).Quantity);
                 Assert.Equal(31, (await db.ItemWarehouseStocks.SingleAsync()).Revision);
+                if (mode.StartsWith("mixed-company", StringComparison.Ordinal) || mode == "invoice-missing")
+                {
+                    var company = await db.RentalManagementCompanies.SingleAsync(x => x.Id == companyId);
+                    Assert.True(company.IsDirty);
+                    Assert.Equal(2, company.Revision);
+                    Assert.Equal("rollback company", company.Name);
+                }
                 Assert.DoesNotContain(await db.SyncOutboxEntries.ToListAsync(), x => x.Status == "Acknowledged");
             }
             if (mode != "equivalent") return;
@@ -167,6 +183,28 @@ public sealed class InvoiceStockRollbackRetryTests
                 if (mode == "accepted-count") result.AcceptedCount = 1;
                 if (mode == "accepted-revision") result.AcceptedRevisions.Add(new SyncAcceptedRevisionDto { EntityName = "Invoice", EntityId = invoiceId, Revision = 99 });
                 if (mode == "purge-record") result.PurgeRecords.Add(new RecycleBinPurgeRecordDto());
+                if (mode.StartsWith("mixed-company", StringComparison.Ordinal) || mode == "invoice-missing")
+                {
+                    var company = Assert.Single(push.RentalManagementCompanies);
+                    result.Conflicts.Add(new ConflictLogDto
+                    {
+                        EntityName = mode == "mixed-company-kind" ? "UnknownEntity" : "RentalManagementCompany",
+                        EntityId = (mode == "mixed-company-id" ? Guid.NewGuid() : company.Id).ToString(),
+                        Reason = "Expected revision mismatch."
+                    });
+                    if (mode == "invoice-missing") result.Conflicts.RemoveAt(0);
+                }
+                if (mode.StartsWith("mixed-stock", StringComparison.Ordinal))
+                {
+                    var stock = push.ItemWarehouseStocks[0];
+                    result.Conflicts.Add(new ConflictLogDto
+                    {
+                        EntityName = "ItemWarehouseStock",
+                        EntityId = $"{(mode == "mixed-stock-id" ? Guid.NewGuid() : stock.ItemId):D}|{stock.WarehouseCode}",
+                        Reason = "Expected revision mismatch."
+                    });
+                }
+                result.ConflictCount = result.Conflicts.Count;
                 return new(HttpStatusCode.OK) { Content = JsonContent.Create(result) };
             }
             var accepted = new SyncPushResult { CurrentServerRevision = 100 };

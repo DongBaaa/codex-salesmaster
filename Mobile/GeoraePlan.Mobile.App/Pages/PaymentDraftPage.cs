@@ -226,6 +226,31 @@ await _viewModel.LoadAsync();
         MobileOwnerCallbackContext ownerContext)
     {
         var lifecycleEpoch = _lifecycle.Capture();
+        Task? acknowledgementTask = null;
+        await ownerContext.TryCommitAsync(
+            () =>
+            {
+                _lifecycle.TryCommitTopPage(
+                    lifecycleEpoch,
+                    Navigation.NavigationStack,
+                    this,
+                    () =>
+                    {
+                        if (_viewModel.RequiresSaveAcknowledgement)
+                        {
+                            acknowledgementTask = DisplayAlert(
+                                "수금/지급 저장 안내",
+                                _viewModel.StatusMessage +
+                                "\n\n이미 저장된 내역이므로 같은 내용을 다시 입력하지 않아도 됩니다.",
+                                "확인");
+                        }
+                    });
+            });
+        if (acknowledgementTask is not null)
+            await acknowledgementTask;
+
+        // Recheck both owner and page after acknowledgement: the user may have
+        // signed out or navigated away while the native dialog was open.
         Task? navigationTask = null;
         var started = await ownerContext.TryCommitAsync(
             () =>

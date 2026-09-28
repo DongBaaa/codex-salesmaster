@@ -25,6 +25,11 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     private readonly RentalDocumentService _documents;
     private readonly IPrintService _printService;
     private readonly SessionState _session;
+    private FinancialAmountVisibility.AccessKey _amountAccess;
+    private bool _purchaseAmountsHidden;
+    private bool _salesAmountsHidden;
+    public bool ArePurchaseAmountsReadOnly => _purchaseAmountsHidden || !_session.HasPermission(AppPermissionNames.AmountViewPurchase);
+    public bool AreSalesAmountsReadOnly => _salesAmountsHidden || !_session.HasPermission(AppPermissionNames.AmountViewSales);
     private const int EditAutoSaveDebounceMilliseconds = 800;
 
     private readonly UiDebouncer _searchDebouncer = new();
@@ -92,8 +97,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     [ObservableProperty] private string _editItemName = string.Empty;
     [ObservableProperty] private string _editMachineNumber = string.Empty;
     [ObservableProperty] private string _editPurchaseVendor = string.Empty;
-    [ObservableProperty] private decimal _editPurchasePrice;
-    [ObservableProperty] private decimal _editSalePrice;
+    [ObservableProperty] private decimal? _editPurchasePrice;
+    [ObservableProperty] private decimal? _editSalePrice;
     [ObservableProperty] private string _editCustomerName = string.Empty;
     [ObservableProperty] private string _editCurrentCustomerName = string.Empty;
     [ObservableProperty] private string _editInstallLocation = string.Empty;
@@ -101,8 +106,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     [ObservableProperty] private string _editLastInstallLocation = string.Empty;
     [ObservableProperty] private string _editLastBillingProfileDisplay = string.Empty;
     [ObservableProperty] private string _editLastAssignmentClearedAtText = string.Empty;
-    [ObservableProperty] private string _editDepositText = string.Empty;
-    [ObservableProperty] private decimal _editMonthlyFee;
+    [ObservableProperty] private string? _editDepositText = string.Empty;
+    [ObservableProperty] private decimal? _editMonthlyFee;
     [ObservableProperty] private int _editContractMonths;
     [ObservableProperty] private string _editFreeSupplyItems = string.Empty;
     [ObservableProperty] private string _editPaidSupplyItems = string.Empty;
@@ -243,6 +248,11 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         _documents = documents;
         _printService = printService;
         _session = session;
+        _editPurchasePrice = session.HasPermission(AppPermissionNames.AmountViewPurchase) ? 0m : null;
+        _editSalePrice = _editMonthlyFee = session.HasPermission(AppPermissionNames.AmountViewSales) ? 0m : null;
+        _editDepositText = session.HasPermission(AppPermissionNames.AmountViewSales) ? string.Empty : null;
+        _amountAccess = FinancialAmountVisibility.CaptureAccess(session);
+        _session.AccessChanged += HandleAmountAccessChanged;
         _externalStateRefresh = new UiAsyncRefreshCoalescer(
             () => _backgroundWork.TryStart(RefreshAfterRentalStateChangedAsync) ?? Task.CompletedTask,
             task => UiTaskHelper.Forget(
@@ -278,14 +288,17 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     public async Task LoadAsync()
     {
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
         var totalStopwatch = Stopwatch.StartNew();
         var stepStopwatch = Stopwatch.StartNew();
 
         await ReloadFiltersAsync();
+        if (_isDisposed || access != FinancialAmountVisibility.CaptureAccess(_session)) return;
         LogRentalAssetViewModelLoadStep("Rental asset filters load", stepStopwatch);
 
         stepStopwatch.Restart();
         await ReloadItemCategoryOptionsAsync();
+        if (_isDisposed || access != FinancialAmountVisibility.CaptureAccess(_session)) return;
         LogRentalAssetViewModelLoadStep("Rental asset item category options load", stepStopwatch);
 
         stepStopwatch.Restart();
@@ -331,6 +344,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             return false;
 
         _isDisposed = true;
+        _session.AccessChanged -= HandleAmountAccessChanged;
         _backgroundWork.BeginShutdown();
         Interlocked.Exchange(ref _editAutoSaveDebounceScheduled, 0);
         if (_rental is not null)
@@ -341,6 +355,35 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         CancelAssignmentHistoryLoad();
         CancelSelectedAssetDetailLoad();
         return true;
+    }
+
+    private void HandleAmountAccessChanged(object? sender, EventArgs e)
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess()) _ = dispatcher.InvokeAsync(InvalidateAmountAccess);
+        else InvalidateAmountAccess();
+    }
+
+    private void InvalidateAmountAccess()
+    {
+        if (_isDisposed) return;
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
+        if (access == _amountAccess) return;
+        _amountAccess = access;
+        CancelPendingFilterReload(); CancelSelectedAssetDetailLoad(); CancelAssignmentHistoryLoad();
+        Interlocked.Increment(ref _filterReloadVersion);
+        using (SuppressSelectionAutoSave())
+        {
+            ReplaceRows(Array.Empty<RentalAssetViewRow>());
+            ResetForNewAsset("계정 또는 권한이 변경되었습니다. 렌탈 자산을 다시 조회하세요.");
+        }
+        RefreshAmountEditorAccess();
+    }
+
+    private void RefreshAmountEditorAccess()
+    {
+        OnPropertyChanged(nameof(ArePurchaseAmountsReadOnly));
+        OnPropertyChanged(nameof(AreSalesAmountsReadOnly));
     }
 
     private void HandleRentalStateChanged(object? sender, RentalStateChangedEventArgs e)
@@ -370,20 +413,24 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     public async Task LoadAndSelectAssetAsync(Guid assetId)
     {
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
         using var ownership = await AcquireEditAutoSaveOwnershipAsync();
         using var selectionAutoSaveSuppression = SuppressSelectionAutoSave();
         var totalStopwatch = Stopwatch.StartNew();
         var stepStopwatch = Stopwatch.StartNew();
 
         await ReloadFiltersAsync();
+        if (_isDisposed || access != FinancialAmountVisibility.CaptureAccess(_session)) return;
         LogRentalAssetViewModelLoadStep("Rental asset filters load", stepStopwatch);
 
         stepStopwatch.Restart();
         await ReloadItemCategoryOptionsAsync();
+        if (_isDisposed || access != FinancialAmountVisibility.CaptureAccess(_session)) return;
         LogRentalAssetViewModelLoadStep("Rental asset item category options load", stepStopwatch);
 
         stepStopwatch.Restart();
         await LoadSingleAssetRowAsync(assetId);
+        if (_isDisposed || access != FinancialAmountVisibility.CaptureAccess(_session)) return;
         LogRentalAssetViewModelLoadStep("Rental asset single row load", stepStopwatch);
 
         stepStopwatch.Restart();
@@ -490,12 +537,12 @@ public sealed partial class RentalAssetViewModel : ObservableObject
     partial void OnEditItemNameChanged(string value) => NotifyEditFieldChanged(nameof(EditItemName));
     partial void OnEditMachineNumberChanged(string value) => NotifyEditFieldChanged(nameof(EditMachineNumber));
     partial void OnEditPurchaseVendorChanged(string value) => NotifyEditFieldChanged(nameof(EditPurchaseVendor));
-    partial void OnEditPurchasePriceChanged(decimal value) => NotifyEditFieldChanged(nameof(EditPurchasePrice));
-    partial void OnEditSalePriceChanged(decimal value) => NotifyEditFieldChanged(nameof(EditSalePrice));
+    partial void OnEditPurchasePriceChanged(decimal? value) => NotifyEditFieldChanged(nameof(EditPurchasePrice));
+    partial void OnEditSalePriceChanged(decimal? value) => NotifyEditFieldChanged(nameof(EditSalePrice));
     partial void OnEditCurrentCustomerNameChanged(string value) => NotifyEditFieldChanged(nameof(EditCurrentCustomerName));
     partial void OnEditInstallLocationChanged(string value) => NotifyEditFieldChanged(nameof(EditInstallLocation));
-    partial void OnEditDepositTextChanged(string value) => NotifyEditFieldChanged(nameof(EditDepositText));
-    partial void OnEditMonthlyFeeChanged(decimal value) => NotifyEditFieldChanged(nameof(EditMonthlyFee));
+    partial void OnEditDepositTextChanged(string? value) => NotifyEditFieldChanged(nameof(EditDepositText));
+    partial void OnEditMonthlyFeeChanged(decimal? value) => NotifyEditFieldChanged(nameof(EditMonthlyFee));
     partial void OnEditContractMonthsChanged(int value) => NotifyEditFieldChanged(nameof(EditContractMonths));
     partial void OnEditFreeSupplyItemsChanged(string value) => NotifyEditFieldChanged(nameof(EditFreeSupplyItems));
     partial void OnEditPaidSupplyItemsChanged(string value) => NotifyEditFieldChanged(nameof(EditPaidSupplyItems));
@@ -821,11 +868,13 @@ public sealed partial class RentalAssetViewModel : ObservableObject
 
     private async Task LoadSingleAssetRowAsync(Guid assetId)
     {
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
         CancelPendingFilterReload();
         IsBusy = true;
         try
         {
             var row = await _rental.GetAssetRowAsync(assetId, _session);
+            if (_isDisposed || access != FinancialAmountVisibility.CaptureAccess(_session)) return;
             ReplaceRows(row is null ? Array.Empty<RentalAssetViewRow>() : new[] { row });
             RefreshRentalAssetMutationCommandStates();
         }
@@ -1382,6 +1431,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         }
 
         var source = value.Source;
+        _purchaseAmountsHidden = source.PurchaseAmountsHidden;
+        _salesAmountsHidden = source.SalesAmountsHidden;
+        RefreshAmountEditorAccess();
         _suppressEditAutoSave = true;
         try
         {
@@ -1392,20 +1444,22 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             EditItemId = source.ItemId;
             EditManagementId = source.ManagementId;
             EditManagementNumber = source.ManagementNumber;
-            EditOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
+            var selectedOfficeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
                 string.IsNullOrWhiteSpace(source.ResponsibleOfficeCode)
                     ? source.ManagementCompanyCode
                     : source.ResponsibleOfficeCode,
                 _session.OfficeCode);
-            EnsureEditOfficeOption(EditOfficeCode);
+            // WPF cannot select a value before its option exists.
+            EnsureEditOfficeOption(selectedOfficeCode);
+            EditOfficeCode = selectedOfficeCode;
             EditCurrentLocation = source.CurrentLocation;
             EditItemCategoryName = source.ItemCategoryName;
             EditManufacturer = source.Manufacturer;
             EditItemName = source.ItemName;
             EditMachineNumber = source.MachineNumber;
             EditPurchaseVendor = source.PurchaseVendor;
-            EditPurchasePrice = source.PurchasePrice;
-            EditSalePrice = source.SalePrice;
+            EditPurchasePrice = ArePurchaseAmountsReadOnly ? null : source.PurchasePrice;
+            EditSalePrice = AreSalesAmountsReadOnly ? null : source.SalePrice;
             EditCustomerName = source.CustomerName;
             EditCurrentCustomerName = string.IsNullOrWhiteSpace(source.CurrentCustomerName) ? source.CustomerName : source.CurrentCustomerName;
             EditInstallLocation = string.IsNullOrWhiteSpace(source.InstallLocation) ? source.InstallSiteName : source.InstallLocation;
@@ -1413,18 +1467,18 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             EditLastInstallLocation = source.LastInstallLocation;
             EditLastBillingProfileDisplay = source.LastBillingProfileDisplay;
             EditLastAssignmentClearedAtText = source.LastAssignmentClearedAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? string.Empty;
-            EditDepositText = source.DepositText;
-            EditMonthlyFee = source.MonthlyFee;
+            EditDepositText = AreSalesAmountsReadOnly ? null : source.DepositText;
+            EditMonthlyFee = AreSalesAmountsReadOnly ? null : source.MonthlyFee;
             EditContractMonths = source.ContractMonths;
             EditFreeSupplyItems = source.FreeSupplyItems;
             EditPaidSupplyItems = source.PaidSupplyItems;
             EditMeterBillingEnabled = source.MeterBillingEnabled;
             EditBlackIncludedMode = RentalMeterPolicyModes.Normalize(source.BlackIncludedMode, source.BlackIncludedPages);
             EditBlackIncludedPages = source.BlackIncludedPages;
-            EditBlackOverageUnitPrice = source.BlackOverageUnitPrice;
+            EditBlackOverageUnitPrice = AreSalesAmountsReadOnly ? null : source.BlackOverageUnitPrice;
             EditColorIncludedMode = RentalMeterPolicyModes.Normalize(source.ColorIncludedMode, source.ColorIncludedPages);
             EditColorIncludedPages = source.ColorIncludedPages;
-            EditColorOverageUnitPrice = source.ColorOverageUnitPrice;
+            EditColorOverageUnitPrice = AreSalesAmountsReadOnly ? null : source.ColorOverageUnitPrice;
             EditMeterReadingsJson = source.MeterReadingsJson;
             EditMeterEvidenceJson = source.MeterEvidenceJson;
             EditMeterPolicySource = source.MeterPolicySource;
@@ -1681,6 +1735,10 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         asset = new LocalRentalAsset
         {
             Id = EditId,
+            PurchaseAmountsHidden = ArePurchaseAmountsReadOnly,
+            SalesAmountsHidden = AreSalesAmountsReadOnly,
+            TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+                SelectedRow?.Source.TenantCode, documentOfficeCode),
             CustomerId = EditCustomerId ?? SelectedRow?.Source.CustomerId,
             ItemId = EditItemId ?? SelectedRow?.Source.ItemId,
             BillingProfileId = SelectedRow?.Source.BillingProfileId,
@@ -1696,13 +1754,13 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             PurchaseVendor = EditPurchaseVendor,
             PurchaseDate = ToDateOnly(EditPurchaseDate),
             DisposalDate = ToDateOnly(EditDisposalDate),
-            PurchasePrice = EditPurchasePrice,
-            SalePrice = EditSalePrice,
+            PurchasePrice = EditPurchasePrice ?? 0m,
+            SalePrice = EditSalePrice ?? 0m,
             CustomerName = EditCustomerName,
             InstallLocation = EditInstallLocation,
             InstallSiteName = EditInstallLocation,
-            DepositText = EditDepositText,
-            MonthlyFee = EditMonthlyFee,
+            DepositText = EditDepositText ?? string.Empty,
+            MonthlyFee = EditMonthlyFee ?? 0m,
             ContractMonths = EditContractMonths,
             ContractDate = ToDateOnly(EditContractDate),
             InstallDate = ToDateOnly(EditInstallDate),
@@ -1741,9 +1799,17 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(asset.CustomerName))
             return null;
 
-        return (await _local.GetCustomersForRentalScopeAsync(_session))
-            .FirstOrDefault(current =>
-                string.Equals((current.NameOriginal ?? string.Empty).Trim(), asset.CustomerName.Trim(), StringComparison.CurrentCultureIgnoreCase));
+        // Shared rental visibility does not make a same-name foreign customer the
+        // document's customer. Only an explicit link above can identify that row.
+        var tenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
+            asset.TenantCode, asset.OfficeCode);
+        var candidates = (await _local.GetCustomersForRentalScopeAsync(_session))
+            .Where(current =>
+                string.Equals(current.TenantCode, tenantCode, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals((current.NameOriginal ?? string.Empty).Trim(), asset.CustomerName.Trim(), StringComparison.CurrentCultureIgnoreCase))
+            .Take(2)
+            .ToList();
+        return candidates.Count == 1 ? candidates[0] : null;
     }
 
     private static void MergeCurrentDocumentAsset(LocalRentalAsset currentAsset, IList<LocalRentalAsset> assets)
@@ -1929,9 +1995,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         EditItemId = item.Id;
         EditItemName = item.NameOriginal?.Trim() ?? string.Empty;
         EditItemCategoryName = item.CategoryName?.Trim() ?? string.Empty;
-        if (EditPurchasePrice <= 0m && item.PurchasePrice > 0m)
+        if (!ArePurchaseAmountsReadOnly && !item.PurchaseAmountsHidden && IsNewAsset && EditPurchasePrice == 0m && item.PurchasePrice > 0m)
             EditPurchasePrice = item.PurchasePrice;
-        if (EditSalePrice <= 0m && item.SalePrice > 0m)
+        if (!AreSalesAmountsReadOnly && !item.SalesAmountsHidden && IsNewAsset && EditSalePrice == 0m && item.SalePrice > 0m)
             EditSalePrice = item.SalePrice;
         if (string.IsNullOrWhiteSpace(EditCurrentLocation))
             EditCurrentLocation = item.StorageLocation?.Trim() ?? string.Empty;
@@ -1940,7 +2006,10 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(EditMachineNumber) && !string.IsNullOrWhiteSpace(item.SerialNumber))
             EditMachineNumber = item.SerialNumber.Trim();
 
+        var itemAccess = FinancialAmountVisibility.CaptureAccess(_session);
+        var draftId = EditId;
         var vendorName = await _local.GetLatestPurchaseVendorNameAsync(item.Id);
+        if (_isDisposed || itemAccess != FinancialAmountVisibility.CaptureAccess(_session) || EditId != draftId) return;
         if (!string.IsNullOrWhiteSpace(vendorName))
             EditPurchaseVendor = vendorName;
     }
@@ -2829,7 +2898,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
                 return false;
             }
 
-            if (_isDisposed)
+            if (_isDisposed || snapshot.Access != FinancialAmountVisibility.CaptureAccess(_session))
                 return true;
 
             var savedAssetId = result.EntityId == Guid.Empty ? snapshot.EditId : result.EntityId;
@@ -2891,6 +2960,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         out bool isDetailLoading)
     {
         isDetailLoading = false;
+        if (snapshot.Access != FinancialAmountVisibility.CaptureAccess(_session)) return false;
+        if (!snapshot.PurchaseAmountsHidden && !snapshot.EditPurchasePrice.HasValue ||
+            !snapshot.SalesAmountsHidden && (!snapshot.EditSalePrice.HasValue || !snapshot.EditMonthlyFee.HasValue)) return false;
         if (!snapshot.IsNewAsset)
         {
             if (!snapshot.HadFullDetailAtCapture)
@@ -2916,7 +2988,7 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         RentalAssetEditSnapshot savedSnapshot)
     {
         var refreshedRow = await _rental.GetAssetRowAsync(assetId, _session);
-        if (refreshedRow is null)
+        if (refreshedRow is null || savedSnapshot.Access != FinancialAmountVisibility.CaptureAccess(_session) || _isDisposed)
             return;
 
         var currentRow = Rows.FirstOrDefault(row => row.Source.Id == assetId);
@@ -3161,13 +3233,19 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             EditRentalEndDate,
             IsNewAsset,
             IsNewAsset ||
-            (SelectedRow?.Source.Id == EditId && SelectedRow.HasFullDetail));
+            (SelectedRow?.Source.Id == EditId && SelectedRow.HasFullDetail),
+            ArePurchaseAmountsReadOnly, AreSalesAmountsReadOnly, FinancialAmountVisibility.CaptureAccess(_session),
+            SelectedRow?.Source.TenantCode, SelectedRow?.Source.OfficeCode, SelectedRow?.Source.ManagementCompanyCode);
 
     private void ApplySnapshot(RentalAssetEditSnapshot snapshot, bool resetBaseline)
     {
+        if (snapshot.Access != FinancialAmountVisibility.CaptureAccess(_session)) return;
         _suppressEditAutoSave = true;
         try
         {
+            _purchaseAmountsHidden = snapshot.PurchaseAmountsHidden;
+            _salesAmountsHidden = snapshot.SalesAmountsHidden;
+            RefreshAmountEditorAccess();
             _editRevision = snapshot.EditRevision;
             EditId = snapshot.EditId;
             EditCustomerId = snapshot.EditCustomerId;
@@ -3175,16 +3253,16 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             EditItemId = snapshot.EditItemId;
             EditManagementId = snapshot.EditManagementId;
             EditManagementNumber = snapshot.EditManagementNumber;
+            EnsureEditOfficeOption(snapshot.EditOfficeCode);
             EditOfficeCode = snapshot.EditOfficeCode;
-            EnsureEditOfficeOption(EditOfficeCode);
             EditCurrentLocation = snapshot.EditCurrentLocation;
             EditItemCategoryName = snapshot.EditItemCategoryName;
             EditManufacturer = snapshot.EditManufacturer;
             EditItemName = snapshot.EditItemName;
             EditMachineNumber = snapshot.EditMachineNumber;
             EditPurchaseVendor = snapshot.EditPurchaseVendor;
-            EditPurchasePrice = snapshot.EditPurchasePrice;
-            EditSalePrice = snapshot.EditSalePrice;
+            EditPurchasePrice = ArePurchaseAmountsReadOnly ? null : snapshot.EditPurchasePrice;
+            EditSalePrice = AreSalesAmountsReadOnly ? null : snapshot.EditSalePrice;
             EditCustomerName = snapshot.EditCustomerName;
             EditCurrentCustomerName = snapshot.EditCurrentCustomerName;
             EditInstallLocation = snapshot.EditInstallLocation;
@@ -3192,18 +3270,18 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             EditLastInstallLocation = snapshot.EditLastInstallLocation;
             EditLastBillingProfileDisplay = snapshot.EditLastBillingProfileDisplay;
             EditLastAssignmentClearedAtText = snapshot.EditLastAssignmentClearedAtText;
-            EditDepositText = snapshot.EditDepositText;
-            EditMonthlyFee = snapshot.EditMonthlyFee;
+            EditDepositText = AreSalesAmountsReadOnly ? null : snapshot.EditDepositText;
+            EditMonthlyFee = AreSalesAmountsReadOnly ? null : snapshot.EditMonthlyFee;
             EditContractMonths = snapshot.EditContractMonths;
             EditFreeSupplyItems = snapshot.EditFreeSupplyItems;
             EditPaidSupplyItems = snapshot.EditPaidSupplyItems;
             EditMeterBillingEnabled = snapshot.EditMeterBillingEnabled;
             EditBlackIncludedMode = snapshot.EditBlackIncludedMode;
             EditBlackIncludedPages = snapshot.EditBlackIncludedPages;
-            EditBlackOverageUnitPrice = snapshot.EditBlackOverageUnitPrice;
+            EditBlackOverageUnitPrice = AreSalesAmountsReadOnly ? null : snapshot.EditBlackOverageUnitPrice;
             EditColorIncludedMode = snapshot.EditColorIncludedMode;
             EditColorIncludedPages = snapshot.EditColorIncludedPages;
-            EditColorOverageUnitPrice = snapshot.EditColorOverageUnitPrice;
+            EditColorOverageUnitPrice = AreSalesAmountsReadOnly ? null : snapshot.EditColorOverageUnitPrice;
             EditMeterReadingsJson = snapshot.EditMeterReadingsJson;
             EditMeterEvidenceJson = snapshot.EditMeterEvidenceJson;
             EditMeterPolicySource = snapshot.EditMeterPolicySource;
@@ -3290,7 +3368,11 @@ public sealed partial class RentalAssetViewModel : ObservableObject
             EditContractStartDate: null,
             EditRentalEndDate: null,
             IsNewAsset: true,
-            HadFullDetailAtCapture: true);
+            HadFullDetailAtCapture: true,
+            PurchaseAmountsHidden: !_session.HasPermission(AppPermissionNames.AmountViewPurchase),
+            SalesAmountsHidden: !_session.HasPermission(AppPermissionNames.AmountViewSales),
+            Access: FinancialAmountVisibility.CaptureAccess(_session),
+            OriginalTenantCode: null, OriginalOwnerOfficeCode: null, OriginalManagementCompanyCode: null);
 
     private LocalRentalAsset BuildAsset(RentalAssetEditSnapshot snapshot)
     {
@@ -3303,28 +3385,30 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         {
             Id = snapshot.EditId,
             Revision = snapshot.EditRevision,
-            TenantCode = TenantScopeCatalog.GetTenantCodeForOffice(officeCode),
-            OfficeCode = officeCode,
+            PurchaseAmountsHidden = snapshot.PurchaseAmountsHidden,
+            SalesAmountsHidden = snapshot.SalesAmountsHidden,
+            TenantCode = snapshot.OriginalTenantCode ?? TenantScopeCatalog.GetTenantCodeForOffice(officeCode),
+            OfficeCode = snapshot.OriginalOwnerOfficeCode ?? officeCode,
             CustomerId = snapshot.EditCustomerId,
             BillingProfileId = snapshot.EditBillingProfileId,
             ItemId = snapshot.EditItemId,
             ManagementId = snapshot.EditManagementId,
             ManagementNumber = snapshot.EditManagementNumber,
-            ManagementCompanyCode = managementCompanyCode,
+            ManagementCompanyCode = snapshot.OriginalManagementCompanyCode ?? managementCompanyCode,
             CurrentLocation = snapshot.EditCurrentLocation,
             ItemCategoryName = snapshot.EditItemCategoryName,
             Manufacturer = snapshot.EditManufacturer,
             ItemName = snapshot.EditItemName,
             MachineNumber = snapshot.EditMachineNumber,
             PurchaseVendor = snapshot.EditPurchaseVendor,
-            PurchasePrice = snapshot.EditPurchasePrice,
-            SalePrice = snapshot.EditSalePrice,
+            PurchasePrice = snapshot.PurchaseAmountsHidden ? 0m : DisclosedAmount.Require(snapshot.EditPurchasePrice),
+            SalePrice = snapshot.SalesAmountsHidden ? 0m : DisclosedAmount.Require(snapshot.EditSalePrice),
             CustomerName = snapshot.EditCustomerName,
             CurrentCustomerName = snapshot.EditCurrentCustomerName,
             InstallLocation = snapshot.EditInstallLocation,
             InstallSiteName = snapshot.EditInstallLocation,
-            DepositText = snapshot.EditDepositText,
-            MonthlyFee = snapshot.EditMonthlyFee,
+            DepositText = snapshot.EditDepositText ?? string.Empty,
+            MonthlyFee = snapshot.SalesAmountsHidden ? 0m : DisclosedAmount.Require(snapshot.EditMonthlyFee),
             ContractMonths = snapshot.EditContractMonths,
             FreeSupplyItems = snapshot.EditFreeSupplyItems,
             PaidSupplyItems = snapshot.EditPaidSupplyItems,
@@ -3379,9 +3463,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
            || snapshot.EditColorIncludedPages.HasValue
            || snapshot.EditColorOverageUnitPrice.HasValue
            || RentalMeterBillingRules.ParseReadings(snapshot.EditMeterReadingsJson).Count > 0
-           || snapshot.EditPurchasePrice != 0m
-           || snapshot.EditSalePrice != 0m
-           || snapshot.EditMonthlyFee != 0m
+           || snapshot.EditPurchasePrice is decimal purchasePrice && purchasePrice != 0m
+           || snapshot.EditSalePrice is decimal salePrice && salePrice != 0m
+           || snapshot.EditMonthlyFee is decimal monthlyFee && monthlyFee != 0m
            || snapshot.EditContractMonths != 0
            || snapshot.EditPurchaseDate.HasValue
            || snapshot.EditDisposalDate.HasValue
@@ -3497,8 +3581,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         string EditItemName,
         string EditMachineNumber,
         string EditPurchaseVendor,
-        decimal EditPurchasePrice,
-        decimal EditSalePrice,
+        decimal? EditPurchasePrice,
+        decimal? EditSalePrice,
         string EditCustomerName,
         string EditCurrentCustomerName,
         string EditInstallLocation,
@@ -3506,8 +3590,8 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         string EditLastInstallLocation,
         string EditLastBillingProfileDisplay,
         string EditLastAssignmentClearedAtText,
-        string EditDepositText,
-        decimal EditMonthlyFee,
+        string? EditDepositText,
+        decimal? EditMonthlyFee,
         int EditContractMonths,
         string EditFreeSupplyItems,
         string EditPaidSupplyItems,
@@ -3533,5 +3617,9 @@ public sealed partial class RentalAssetViewModel : ObservableObject
         DateTime? EditContractStartDate,
         DateTime? EditRentalEndDate,
         bool IsNewAsset,
-        bool HadFullDetailAtCapture);
+        bool HadFullDetailAtCapture,
+        bool PurchaseAmountsHidden,
+        bool SalesAmountsHidden,
+        FinancialAmountVisibility.AccessKey Access,
+        string? OriginalTenantCode, string? OriginalOwnerOfficeCode, string? OriginalManagementCompanyCode);
 }

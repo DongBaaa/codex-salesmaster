@@ -390,7 +390,7 @@
                             </Grid>
                             <TextBlock Grid.Column="6" Text="{Binding ReserveBalanceLabelText}" Style="{StaticResource InlineInfoLabelStyle}"/>
                             <TextBlock Grid.Column="7"
-                                       Text="{Binding AdvanceBalance, StringFormat={}{0:N0}}"
+                                       Text="{Binding AdvanceBalanceDisplay}"
                                        Style="{StaticResource InlineInfoValueStyle}"/>
 
                             <TextBlock Grid.Row="1"
@@ -717,8 +717,8 @@
                                 <DataGridTextColumn Header="일자" Binding="{Binding TransactionDate}" Width="82"/>
                                 <DataGridTextColumn Header="구분" Binding="{Binding TransactionKindDisplay}" Width="84"/>
                                 <DataGridTextColumn Header="거래내역" Binding="{Binding LinkedInvoiceNumber}" Width="108"/>
-                                <DataGridTextColumn Header="수금합계" Binding="{Binding ReceiptTotal, StringFormat={}{0:N0}}" Width="84"/>
-                                <DataGridTextColumn Header="지급합계" Binding="{Binding PaymentTotal, StringFormat={}{0:N0}}" Width="84"/>
+                                <DataGridTextColumn Header="수금합계" Binding="{Binding ReceiptTotalDisplay}" Width="84"/>
+                                <DataGridTextColumn Header="지급합계" Binding="{Binding PaymentTotalDisplay}" Width="84"/>
                                 <DataGridTextColumn Header="거래내용" Binding="{Binding Note}" Width="*"/>
                                 <DataGridTextColumn Header="메모" Binding="{Binding Memo}" Width="0.72*"/>
                             </DataGrid.Columns>

@@ -27,6 +27,7 @@ public partial class PaymentWindow : Window
         ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(this);
         _vm = vm;
         DataContext = vm;
+        Closed += (_, _) => _vm.Dispose();
         Loaded += (_, _) => ApplyResponsiveWorkspaceLayout();
         SizeChanged += (_, _) => ApplyResponsiveWorkspaceLayout();
     }

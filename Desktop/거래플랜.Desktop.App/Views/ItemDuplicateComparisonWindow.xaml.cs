@@ -19,6 +19,8 @@ public partial class ItemDuplicateComparisonWindow : Window, INotifyPropertyChan
         InitializeComponent();
         ChildWindowResponsiveLayoutPolicy.ApplyInitialWindowSize(this);
         DataContext = this;
+        Comparison.AttachAmountAccess();
+        Closed += (_, _) => Comparison.DetachAmountAccess();
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

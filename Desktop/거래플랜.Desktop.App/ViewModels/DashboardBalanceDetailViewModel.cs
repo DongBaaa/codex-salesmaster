@@ -9,7 +9,7 @@ using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.ViewModels;
 
-public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
+public sealed partial class DashboardBalanceDetailViewModel : ObservableObject, IDisposable
 {
     private readonly LocalStateService _local;
     private readonly SessionState _session;
@@ -30,6 +30,8 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
         _session = session;
         _voucherType = voucherType;
         _afterPaymentSavedAsync = afterPaymentSavedAsync;
+        _access = FinancialAmountVisibility.CaptureAccess(session);
+        _session.AccessChanged += OnAccessChanged;
         Title = title;
         Subtitle = subtitle;
         BalanceKindText = balanceKindText;
@@ -38,6 +40,53 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
         ProcessActionText = $"{PaymentKindText} 등록";
         ProcessFullActionText = $"잔액 전액 {PaymentKindText}";
         StatusMessage = $"{BalanceKindText} 내역을 불러오는 중입니다.";
+    }
+
+    private FinancialAmountVisibility.AccessKey _access;
+    private int _refreshVersion;
+    private bool _disposed;
+    public bool CanViewAmounts => !_disposed && FinancialAmountVisibility.CanViewInvoice(_session, _voucherType);
+    public bool CanProcessPayments => CanViewAmounts && _session.HasPermission(AppPermissionNames.PaymentEdit);
+
+    private void OnAccessChanged(object? sender, EventArgs e)
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+            _ = dispatcher.InvokeAsync(InvalidateAccess);
+        else InvalidateAccess();
+    }
+
+    private void InvalidateAccess()
+    {
+        if (_disposed) return;
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
+        if (access == _access) return;
+        _access = access;
+        Interlocked.Increment(ref _refreshVersion);
+        ClearPrivateState();
+        StatusMessage = "권한이 변경되었습니다. 최신 내역을 다시 조회하세요.";
+    }
+
+    private void ClearPrivateState()
+    {
+        ReplaceRows(Array.Empty<DashboardBalanceDetailRow>());
+        TotalAmount = null;
+        ProcessAmountText = ProcessNote = string.Empty;
+        StatusMessage = string.Empty;
+        IsBusy = false;
+        OnPropertyChanged(nameof(TotalAmountText));
+        OnPropertyChanged(nameof(SummaryText));
+        OnPropertyChanged(nameof(CanViewAmounts));
+        OnPropertyChanged(nameof(CanProcessPayments));
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _session.AccessChanged -= OnAccessChanged;
+        Interlocked.Increment(ref _refreshVersion);
+        ClearPrivateState();
     }
 
     public string Title { get; }
@@ -50,7 +99,7 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
     public ObservableCollection<DashboardBalanceDetailRow> Rows { get; } = new();
 
     [ObservableProperty] private DashboardBalanceDetailRow? _selectedRow;
-    [ObservableProperty] private decimal _totalAmount;
+    [ObservableProperty] private decimal? _totalAmount;
     [ObservableProperty] private int _customerCount;
     [ObservableProperty] private int _invoiceCount;
     [ObservableProperty] private DateTime? _processDate = DateTime.Today;
@@ -62,7 +111,7 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
     public bool HasRows => Rows.Count > 0;
     public bool HasSelectedRow => SelectedRow is not null;
     public bool HasCheckedRows => Rows.Any(row => row.IsBatchSelected);
-    public string TotalAmountText => $"{TotalAmount:N0}원";
+    public string TotalAmountText => CanViewAmounts && TotalAmount.HasValue ? $"{TotalAmount:N0}원" : "비공개";
     public string CustomerCountText => $"{CustomerCount:N0}곳";
     public string InvoiceCountText => $"{InvoiceCount:N0}건";
     public string CheckedRowsSummaryText
@@ -70,6 +119,7 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
         get
         {
             var checkedRows = GetCheckedRows();
+            if (!CanViewAmounts || checkedRows.Any(row => row.AmountsHidden)) return "체크 전표 금액 비공개";
             if (checkedRows.Count == 0)
                 return "체크한 전표가 없습니다. 여러 건을 처리하려면 왼쪽 표의 처리 칸을 체크하세요.";
 
@@ -78,26 +128,29 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
             return $"체크 {checkedRows.Count:N0}건 / {customerText} / 합계 {checkedRows.Sum(row => row.BalanceAmount):N0}원";
         }
     }
-    public string SummaryText => HasRows
+    public string SummaryText => !CanViewAmounts || !TotalAmount.HasValue
+        ? $"{BalanceKindText} 비공개 · 최신 권한으로 조회하세요."
+        : HasRows
         ? $"{BalanceKindText} {TotalAmount:N0}원 · 거래처 {CustomerCount:N0}곳 · 전표 {InvoiceCount:N0}건"
         : $"{BalanceKindText}이 남은 전표가 없습니다.";
 
     partial void OnSelectedRowChanged(DashboardBalanceDetailRow? value)
     {
         OnPropertyChanged(nameof(HasSelectedRow));
-        if (value is null)
+        if (value is null || !CanViewAmounts || value.AmountsHidden)
         {
             ProcessAmountText = string.Empty;
             ProcessNote = string.Empty;
+            StatusMessage = value is null ? string.Empty : "금액이 비공개인 전표입니다. 수금/지급 처리에는 금액 조회 권한이 필요합니다.";
             return;
         }
 
-        ProcessAmountText = value.BalanceAmount.ToString("N0", CultureInfo.CurrentCulture);
+        ProcessAmountText = value.BalanceAmount!.Value.ToString("N0", CultureInfo.CurrentCulture);
         ProcessNote = $"{PaymentKindText} 처리 - {value.InvoiceNumberDisplay}";
         StatusMessage = $"{value.CustomerName} / {value.InvoiceNumberDisplay} 잔액 {value.BalanceAmount:N0}원을 선택했습니다.";
     }
 
-    partial void OnTotalAmountChanged(decimal value)
+    partial void OnTotalAmountChanged(decimal? value)
     {
         OnPropertyChanged(nameof(TotalAmountText));
         OnPropertyChanged(nameof(SummaryText));
@@ -118,16 +171,20 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
 
     public async Task RefreshAsync(CancellationToken ct = default)
     {
+        if (_disposed) return;
+        var version = Interlocked.Increment(ref _refreshVersion);
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
         IsBusy = true;
         try
         {
             var rows = await LoadRowsAsync(ct);
+            if (_disposed || version != Volatile.Read(ref _refreshVersion) || access != FinancialAmountVisibility.CaptureAccess(_session)) return;
             ReplaceRows(rows);
             StatusMessage = SummaryText;
         }
         finally
         {
-            IsBusy = false;
+            if (version == Volatile.Read(ref _refreshVersion)) IsBusy = false;
         }
     }
 
@@ -146,7 +203,7 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
         if (!TryValidateCheckedRows(checkedRows))
             return;
 
-        var total = checkedRows.Sum(row => row.BalanceAmount);
+        var total = checkedRows.Sum(row => row.BalanceAmount!.Value);
         ProcessAmountText = total.ToString("N0", CultureInfo.CurrentCulture);
         ProcessNote = $"{checkedRows[0].CustomerName} {PaymentKindText} 일괄 처리 {checkedRows.Count:N0}건";
         StatusMessage = $"체크한 전표 {checkedRows.Count:N0}건의 합계 {total:N0}원을 처리금액에 입력했습니다.";
@@ -162,7 +219,8 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
         if (!TryValidateCheckedRows(checkedRows))
             return;
 
-        var totalBalance = checkedRows.Sum(row => row.BalanceAmount);
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
+        var totalBalance = checkedRows.Sum(row => row.BalanceAmount!.Value);
         var amount = totalBalance;
         if (!string.IsNullOrWhiteSpace(ProcessAmountText) && !TryParseAmount(ProcessAmountText, out amount))
         {
@@ -197,7 +255,7 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
                 if (remaining <= 0m)
                     break;
 
-                var allocatedAmount = Math.Min(row.BalanceAmount, remaining);
+                var allocatedAmount = Math.Min(row.BalanceAmount!.Value, remaining);
                 if (allocatedAmount <= 0m)
                     continue;
 
@@ -211,6 +269,7 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
             }
 
             var result = await _local.SaveTransactionsAsync(transactions, _session);
+            if (_disposed || access != FinancialAmountVisibility.CaptureAccess(_session)) return;
             if (!result.Success)
             {
                 StatusMessage = string.IsNullOrWhiteSpace(result.Message)
@@ -226,13 +285,14 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
             if (_afterPaymentSavedAsync is not null)
                 await _afterPaymentSavedAsync();
 
+            if (_disposed || access != FinancialAmountVisibility.CaptureAccess(_session)) return;
             StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(
                 $"{PaymentKindText} {amount:N0}원이 체크 전표 {transactions.Count:N0}건에 배분 저장되었습니다.",
                 serverWriteResult);
         }
         catch (Exception ex)
         {
-            StatusMessage = $"일괄 {PaymentKindText} 저장 실패: {ex.Message}";
+            StatusMessage = CanViewAmounts && access == FinancialAmountVisibility.CaptureAccess(_session) ? $"일괄 {PaymentKindText} 저장 실패: {ex.Message}" : "권한이 변경되어 처리 결과를 다시 확인해야 합니다.";
         }
         finally
         {
@@ -242,14 +302,20 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
 
     private async Task SaveSelectedPaymentAsync(bool useFullBalance)
     {
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
         var row = SelectedRow;
+        if (!CanProcessPayments || row?.AmountsHidden == true)
+        {
+            StatusMessage = "금액 조회 및 수금/지급 권한으로 최신 내역을 확인해 주세요.";
+            return;
+        }
         if (row is null)
         {
             StatusMessage = "처리할 전표를 먼저 선택하세요.";
             return;
         }
 
-        var amount = row.BalanceAmount;
+        var amount = row.BalanceAmount!.Value;
         if (!useFullBalance && !TryParseAmount(ProcessAmountText, out amount))
         {
             StatusMessage = "처리금액을 숫자로 입력하세요.";
@@ -280,6 +346,7 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
                 NormalizeNote(ProcessNote, row),
                 memo: string.Empty);
             var result = await _local.SaveTransactionAsync(transaction, _session);
+            if (_disposed || access != FinancialAmountVisibility.CaptureAccess(_session)) return;
             if (!result.Success)
             {
                 StatusMessage = string.IsNullOrWhiteSpace(result.Message)
@@ -295,13 +362,14 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
             if (_afterPaymentSavedAsync is not null)
                 await _afterPaymentSavedAsync();
 
+            if (_disposed || access != FinancialAmountVisibility.CaptureAccess(_session)) return;
             StatusMessage = LocalStateService.ComposeServerWriteStatusMessage(
                 $"{PaymentKindText} {amount:N0}원이 거래내역과 전표 잔액에 함께 저장되었습니다.",
                 serverWriteResult);
         }
         catch (Exception ex)
         {
-            StatusMessage = $"{PaymentKindText} 저장 실패: {ex.Message}";
+            StatusMessage = CanViewAmounts && access == FinancialAmountVisibility.CaptureAccess(_session) ? $"{PaymentKindText} 저장 실패: {ex.Message}" : "권한이 변경되어 처리 결과를 다시 확인해야 합니다.";
         }
         finally
         {
@@ -318,8 +386,7 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
             session: _session,
             ct: ct);
         var candidateInvoices = invoices
-            .Where(invoice => invoice.VoucherType == _voucherType
-                              && Math.Max(0m, invoice.TotalAmount - invoice.SettledAmount) > 0m)
+            .Where(invoice => invoice.VoucherType == _voucherType)
             .ToList();
         var customerIds = candidateInvoices
             .Select(invoice => invoice.CustomerId)
@@ -327,7 +394,7 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
             .Distinct()
             .ToList();
         var customerMap = await _local.GetCustomerNameMapAsync(customerIds, ct);
-        return DashboardBalanceDetailBuilder.BuildRows(candidateInvoices, customerMap, _voucherType);
+        return DashboardBalanceDetailBuilder.BuildRows(candidateInvoices, customerMap, _voucherType, _session);
     }
 
     private void ReplaceRows(IReadOnlyList<DashboardBalanceDetailRow> rows)
@@ -343,7 +410,7 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
             Rows.Add(row);
         }
 
-        TotalAmount = rows.Sum(row => row.BalanceAmount);
+        TotalAmount = !CanViewAmounts || rows.Any(row => row.AmountsHidden) ? null : rows.Sum(row => row.BalanceAmount);
         CustomerCount = rows.Select(row => row.CustomerId).Distinct().Count();
         InvoiceCount = rows.Count;
         SelectedRow = previousInvoiceId.HasValue
@@ -371,6 +438,11 @@ public sealed partial class DashboardBalanceDetailViewModel : ObservableObject
 
     private bool TryValidateCheckedRows(IReadOnlyList<DashboardBalanceDetailRow> checkedRows)
     {
+        if (!CanProcessPayments || checkedRows.Any(row => row.AmountsHidden))
+        {
+            StatusMessage = "금액 조회 및 수금/지급 권한으로 최신 내역을 확인해 주세요.";
+            return false;
+        }
         if (checkedRows.Count == 0)
         {
             StatusMessage = "일괄 처리할 전표의 처리 칸을 먼저 체크하세요.";
@@ -464,7 +536,8 @@ public sealed partial class DashboardBalanceDetailRow : ObservableObject
 
     public Guid CustomerId { get; init; }
     public string CustomerName { get; init; } = string.Empty;
-    public decimal CustomerBalance { get; init; }
+    public decimal? CustomerBalance { get; init; }
+    public string CustomerBalanceDisplay => CustomerBalance?.ToString("N0", CultureInfo.CurrentCulture) ?? "비공개";
     public Guid InvoiceId { get; init; }
     public string InvoiceNumberDisplay { get; init; } = string.Empty;
     public DateOnly InvoiceDate { get; init; }
@@ -480,9 +553,14 @@ public sealed partial class DashboardBalanceDetailRow : ObservableObject
         _ => VoucherType.ToString()
     };
     public string FirstItemSummary { get; init; } = string.Empty;
-    public decimal TotalAmount { get; init; }
-    public decimal SettledAmount { get; init; }
-    public decimal BalanceAmount { get; init; }
+    public decimal? TotalAmount { get; init; }
+    public string TotalAmountDisplay => TotalAmount?.ToString("N0", CultureInfo.CurrentCulture) ?? "비공개";
+    public decimal? SettledAmount { get; init; }
+    public string SettledAmountDisplay => SettledAmount?.ToString("N0", CultureInfo.CurrentCulture) ?? "비공개";
+    public decimal? BalanceAmount { get; init; }
+    public string BalanceAmountDisplay => BalanceAmount?.ToString("N0", CultureInfo.CurrentCulture) ?? "비공개";
     public string ResponsibleOfficeCode { get; init; } = string.Empty;
     public long Revision { get; init; }
+    public bool AmountsHidden => !TotalAmount.HasValue || !SettledAmount.HasValue || !BalanceAmount.HasValue;
+    public bool CanSelectForProcessing => !AmountsHidden;
 }

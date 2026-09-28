@@ -287,7 +287,8 @@ public sealed class DesktopCompatibilityPersistenceTests
                 UpgradeException(
                     appId: "kr.georaeplan.desktop",
                     platform: "windows",
-                    policyVersion: 7));
+                    policyVersion: 7,
+                    protocolVersion: DesktopClientIdentityProvider.CurrentProtocolVersion));
 
             var loaded = await store.LoadAsync();
             Assert.True(latch.Snapshot.IsBlocked);
@@ -331,7 +332,8 @@ public sealed class DesktopCompatibilityPersistenceTests
                 UpgradeException(
                     appId: "kr.georaeplan.desktop",
                     platform: "windows",
-                    policyVersion: 7));
+                    policyVersion: 7,
+                    protocolVersion: DesktopClientIdentityProvider.CurrentProtocolVersion));
 
             var loaded = await store.LoadAsync();
             Assert.True(latch.Snapshot.IsBlocked);
@@ -711,7 +713,8 @@ public sealed class DesktopCompatibilityPersistenceTests
     private static DesktopClientUpgradeRequiredException UpgradeException(
         string appId,
         string platform,
-        int policyVersion)
+        int policyVersion,
+        int? protocolVersion = null)
         => new(
             "/sync/push",
             new ClientUpgradeRequiredResponse
@@ -723,7 +726,7 @@ public sealed class DesktopCompatibilityPersistenceTests
                     Version = Runtime.Version,
                     Build = Runtime.Build,
                     ProtocolVersion =
-                        Runtime.ProtocolVersion
+                        protocolVersion ?? Runtime.ProtocolVersion
                 },
                 Required = new ClientCompatibilityPolicyDto
                 {

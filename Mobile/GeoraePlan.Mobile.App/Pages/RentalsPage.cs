@@ -3,7 +3,6 @@ using GeoraePlan.Mobile.App.Theme;
 using GeoraePlan.Mobile.App.ViewModels;
 using Microsoft.Maui.ApplicationModel;
 using Microsoft.Maui.Controls.Shapes;
-using System.Text.Json;
 using 거래플랜.Shared.Contracts;
 
 namespace GeoraePlan.Mobile.App.Pages;
@@ -12,6 +11,7 @@ public sealed class RentalsPage : ContentPage
 {
     private readonly RentalsViewModel _viewModel;
     private readonly MobileRefreshCoordinator _refreshCoordinator;
+    private readonly SessionStore _sessionStore;
     private int _seenRentalsVersion;
 
     public RentalsPage()
@@ -20,6 +20,7 @@ public sealed class RentalsPage : ContentPage
 
         _viewModel = ServiceHelper.GetRequiredService<RentalsViewModel>();
         _refreshCoordinator = ServiceHelper.GetRequiredService<MobileRefreshCoordinator>();
+        _sessionStore = ServiceHelper.GetRequiredService<SessionStore>();
         _refreshCoordinator.AllChanged += HandleRealtimeRefreshRequested;
         BindingContext = _viewModel;
 
@@ -129,6 +130,9 @@ public sealed class RentalsPage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
+        _sessionStore.SessionChanged -= HandleSessionChanged;
+        _sessionStore.SessionChanged += HandleSessionChanged;
+        _viewModel.RefreshAmountAccess();
 
         await MobileErrorHandler.RunGuardedAsync(
             async () =>
@@ -154,6 +158,15 @@ public sealed class RentalsPage : ContentPage
             },
             "렌탈 화면 초기화");
     }
+
+    protected override void OnDisappearing()
+    {
+        _sessionStore.SessionChanged -= HandleSessionChanged;
+        base.OnDisappearing();
+    }
+
+    private void HandleSessionChanged(object? sender, EventArgs e)
+        => MainThread.BeginInvokeOnMainThread(_viewModel.RefreshAmountAccess);
 
     private void HandleRealtimeRefreshRequested(object? sender, EventArgs e)
     {
@@ -361,7 +374,7 @@ public sealed class RentalsPage : ContentPage
             if (value is not RentalBillingProfileDto profile)
                 return string.Empty;
 
-            return $"{Normalize(profile.ItemName, "품명 미지정")} · 상태 {Normalize(profile.BillingStatus, "예정")} / 정산 {Normalize(profile.SettlementStatus, "미수")} · 월 {profile.MonthlyAmount:N0}원";
+            return $"{Normalize(profile.ItemName, "품명 미지정")} · 상태 {Normalize(profile.BillingStatus, "예정")} / 정산 {Normalize(profile.SettlementStatus, "미수")} · 월 {MobileRentalAmountAccess.Money(profile.MonthlyAmount, !profile.AmountsHidden)}";
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
@@ -392,17 +405,7 @@ public sealed class RentalsPage : ContentPage
             if (value is not RentalBillingProfileDto profile)
                 return string.Empty;
 
-            var run = MobileRentalRunSnapshot.ResolveDisplayRun(profile.BillingRunsJson);
-            if (run is not null)
-            {
-                var outstandingAmount = Math.Max(0m, run.BilledAmount - run.SettledAmount);
-                var dateLabel = RentalBillingScheduleRules.IsNoFixedBillingDay(profile.BillingDayMode) ? "청구 기준일" : "예정";
-                return $"최근 회차 {Normalize(run.PeriodLabel, "기간 미정")} / {dateLabel} {run.ScheduledDate:yyyy-MM-dd} / {Normalize(run.Status, "예정")} / 미수 {outstandingAmount:N0}원";
-            }
-
-            return string.IsNullOrWhiteSpace(profile.Notes)
-                ? $"정산 {Normalize(profile.SettlementStatus, "미정")} / 미수 {profile.OutstandingAmount:N0}원"
-                : profile.Notes.Trim();
+            return MobileRentalAmountAccess.ProfileNote(profile);
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
@@ -446,7 +449,7 @@ public sealed class RentalsPage : ContentPage
             if (value is not RentalAssetDto asset)
                 return string.Empty;
 
-            return $"월 {asset.MonthlyFee:N0}원 / 설치 {FormatDate(asset.InstallDate)} / 지점 {ResolveOffice(asset.ResponsibleOfficeCode, asset.OfficeCode)}";
+            return $"월 {MobileRentalAmountAccess.Money(asset.MonthlyFee, !asset.SalesAmountsHidden)} / 설치 {FormatDate(asset.InstallDate)} / 지점 {ResolveOffice(asset.ResponsibleOfficeCode, asset.OfficeCode)}";
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
@@ -480,37 +483,4 @@ public sealed class RentalsPage : ContentPage
     private static string FormatDate(DateOnly? value)
         => value.HasValue ? value.Value.ToString("yyyy-MM-dd") : "미정";
 
-    private sealed class MobileRentalRunSnapshot
-    {
-        public Guid RunId { get; set; }
-        public string RunKey { get; set; } = string.Empty;
-        public DateOnly ScheduledDate { get; set; }
-        public DateOnly PeriodStartDate { get; set; }
-        public DateOnly PeriodEndDate { get; set; }
-        public int CycleMonths { get; set; }
-        public string PeriodLabel { get; set; } = string.Empty;
-        public string Status { get; set; } = string.Empty;
-        public decimal BilledAmount { get; set; }
-        public decimal SettledAmount { get; set; }
-
-        public static MobileRentalRunSnapshot? ResolveDisplayRun(string? billingRunsJson)
-        {
-            if (string.IsNullOrWhiteSpace(billingRunsJson))
-                return null;
-
-            try
-            {
-                var runs = JsonSerializer.Deserialize<List<MobileRentalRunSnapshot>>(billingRunsJson);
-                return runs?
-                    .Where(run => run.RunId != Guid.Empty)
-                    .OrderByDescending(run => run.ScheduledDate)
-                    .ThenByDescending(run => run.PeriodEndDate)
-                    .FirstOrDefault();
-            }
-            catch
-            {
-                return null;
-            }
-        }
-    }
 }

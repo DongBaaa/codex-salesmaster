@@ -20,6 +20,8 @@ public sealed class RentalsViewModel : ObservableObject
     private readonly SyncCoordinator _syncCoordinator;
     private readonly SessionStore _sessionStore;
     private readonly MobileOwnerOperationGate _ownerOperations;
+    private MobileRentalAmountAccess? _visibleAmountAccess;
+    private (string Role, string ScopeType)? _visibleScope;
 
     private string _searchText = string.Empty;
     private string _statusMessage = "렌탈 서버 동기화 데이터를 불러올 준비가 되었습니다.";
@@ -129,6 +131,19 @@ public sealed class RentalsViewModel : ObservableObject
 
     public bool NeedsRefresh(TimeSpan maxAge)
         => !_lastRefreshUtc.HasValue || DateTime.UtcNow - _lastRefreshUtc.Value >= maxAge;
+
+    public void RefreshAmountAccess()
+    {
+        EnsureCurrentOwner();
+        var session = _sessionStore.GetSnapshot();
+        var access = MobileRentalAmountAccess.Capture(session);
+        var scope = (session.Role, session.ScopeType);
+        if (_visibleAmountAccess == access && _visibleScope == scope) return;
+        _visibleAmountAccess = access;
+        _visibleScope = scope;
+        ClearRentalDisplay("금액 권한이 변경되어 렌탈 데이터를 다시 확인합니다.");
+        _lastRefreshUtc = null;
+    }
 
     public MobileSessionOwner EnsureCurrentOwner()
     {
@@ -284,25 +299,34 @@ public sealed class RentalsViewModel : ObservableObject
 
         state.Normalize();
 
+        // A token refresh can change permissions without changing the owner generation.
+        // Re-read scope and amount access after the final await, before publishing rows.
+        sessionSnapshot = _sessionStore.GetSnapshot();
+        var amountAccess = MobileRentalAmountAccess.Capture(sessionSnapshot);
+
         var effectiveBillingProfiles = MergeForDisplay(
             state.SyncedRentalBillingProfiles,
             state.PendingPush.RentalBillingProfiles)
             .Where(profile => MobileSessionScopeFilter.CanAccessRentalBillingProfile(sessionSnapshot, profile))
+            .Select(amountAccess.Display)
             .ToList();
         var effectiveRentalAssets = MergeForDisplay(
             state.SyncedRentalAssets,
             state.PendingPush.RentalAssets)
             .Where(asset => MobileSessionScopeFilter.CanAccessRentalAsset(sessionSnapshot, asset))
+            .Select(amountAccess.Display)
             .ToList();
         var effectiveAssignmentHistories = MergeForDisplay(
             state.SyncedRentalAssetAssignmentHistories,
             state.PendingPush.RentalAssetAssignmentHistories)
             .Where(history => MobileSessionScopeFilter.CanAccessRentalAssetAssignmentHistory(sessionSnapshot, history))
+            .Select(amountAccess.Display)
             .ToList();
         var effectiveBillingLogs = MergeForDisplay(
             state.SyncedRentalBillingLogs,
             state.PendingPush.RentalBillingLogs)
             .Where(log => MobileSessionScopeFilter.CanAccessRentalBillingLog(sessionSnapshot, log))
+            .Select(amountAccess.Display)
             .ToList();
         var effectiveInvoices = MergeForDisplay(
             state.SyncedInvoices,
@@ -373,6 +397,8 @@ public sealed class RentalsViewModel : ObservableObject
         Replace(RentalAssets, filteredAssets);
         Replace(BillingLogs, filteredLogs);
         Replace(AssignmentHistories, filteredAssignmentHistories);
+        _visibleAmountAccess = amountAccess;
+        _visibleScope = (sessionSnapshot.Role, sessionSnapshot.ScopeType);
 
         var totalCount = filteredProfiles.Count + filteredAssets.Count + filteredLogs.Count + filteredAssignmentHistories.Count;
         _lastRefreshUtc = DateTime.UtcNow;
@@ -397,6 +423,8 @@ public sealed class RentalsViewModel : ObservableObject
 
     private void ResetForOwner()
     {
+        _visibleAmountAccess = null;
+        _visibleScope = null;
         SearchText = string.Empty;
         SelectedSection = RentalMobileSection.BillingProfiles;
         BillingProfiles.Clear();
@@ -649,7 +677,7 @@ public sealed class RentalsViewModel : ObservableObject
                       !transaction.IsDeleted &&
                       transaction.LinkedRentalBillingProfileId.HasValue &&
                       transaction.LinkedRentalBillingRunId.HasValue &&
-                      transaction.SettlementAmount > 0m))
+                      (transaction.AmountsHidden || transaction.SettlementAmount > 0m)))
         {
             AddTransactionBillingRunEvidence(
                 GetEvidence(transaction.LinkedRentalBillingProfileId!.Value, transaction.LinkedRentalBillingRunId!.Value),
@@ -702,7 +730,9 @@ public sealed class RentalsViewModel : ObservableObject
 
     private static void AddInvoiceBillingRunEvidence(MobileRentalBillingRunEvidence evidence, InvoiceDto invoice)
     {
-        evidence.InvoiceAmount += Math.Max(0m, invoice.TotalAmount);
+        evidence.AmountsHidden |= invoice.AmountsHidden;
+        if (!invoice.AmountsHidden)
+            evidence.InvoiceAmount += Math.Max(0m, DisclosedAmount.Require(invoice.TotalAmount));
         evidence.InvoiceDate = Max(evidence.InvoiceDate, invoice.InvoiceDate);
         evidence.OfficeCode = ResolveOffice(invoice.ResponsibleOfficeCode, invoice.OfficeCode);
         evidence.HasInvoice = true;
@@ -710,10 +740,17 @@ public sealed class RentalsViewModel : ObservableObject
 
     private static void AddTransactionBillingRunEvidence(MobileRentalBillingRunEvidence evidence, TransactionDto transaction)
     {
+        evidence.AmountsHidden |= transaction.AmountsHidden;
+        if (transaction.AmountsHidden)
+        {
+            evidence.SettledDate = Max(evidence.SettledDate, transaction.TransactionDate);
+            evidence.HasTransaction = true;
+            return;
+        }
         if (transaction.SettlementAmount <= 0m)
             return;
 
-        evidence.SettlementAmount += Math.Max(0m, transaction.SettlementAmount);
+        evidence.SettlementAmount += Math.Max(0m, DisclosedAmount.Require(transaction.SettlementAmount));
         evidence.SettledDate = Max(evidence.SettledDate, transaction.TransactionDate);
         evidence.OfficeCode = ResolveOffice(transaction.ResponsibleOfficeCode, transaction.OfficeCode);
         evidence.HasTransaction = true;
@@ -721,30 +758,23 @@ public sealed class RentalsViewModel : ObservableObject
 
     private static void AddPaymentBillingRunEvidence(MobileRentalBillingRunEvidence evidence, PaymentDto payment)
     {
+        evidence.AmountsHidden |= payment.AmountsHidden;
+        if (payment.AmountsHidden)
+        {
+            evidence.SettledDate = Max(evidence.SettledDate, payment.PaymentDate);
+            evidence.HasPayment = true;
+            return;
+        }
         if (payment.Amount <= 0m)
             return;
 
-        evidence.SettlementAmount += Math.Max(0m, payment.Amount);
+        evidence.SettlementAmount += Math.Max(0m, DisclosedAmount.Require(payment.Amount));
         evidence.SettledDate = Max(evidence.SettledDate, payment.PaymentDate);
         evidence.HasPayment = true;
     }
 
     private static IReadOnlyList<MobileRentalRunSnapshot> ParseBillingRuns(string? billingRunsJson)
-    {
-        if (string.IsNullOrWhiteSpace(billingRunsJson))
-            return [];
-
-        try
-        {
-            return JsonSerializer.Deserialize<List<MobileRentalRunSnapshot>>(billingRunsJson)?
-                .Where(run => run.RunId != Guid.Empty)
-                .ToList() ?? [];
-        }
-        catch
-        {
-            return [];
-        }
-    }
+        => MobileRentalRunSnapshot.Parse(billingRunsJson);
 
     private static DateOnly? Max(DateOnly? current, DateOnly candidate)
         => !current.HasValue || candidate > current.Value ? candidate : current;
@@ -782,7 +812,7 @@ public sealed class RentalAssignmentHistoryDisplayRow
         {
             Title = $"{stateLabel} · {customerName} · {itemName}",
             Subtitle = $"관리번호 {managementNumber} / 기계번호 {machineNumber}",
-            Meta = $"연결 {FormatDateTime(history.LinkedAtUtc)} / 해제 {FormatDateTime(history.UnlinkedAtUtc)} / 월 {history.MonthlyFee:N0}원 / 지점 {officeCode}",
+            Meta = $"연결 {FormatDateTime(history.LinkedAtUtc)} / 해제 {FormatDateTime(history.UnlinkedAtUtc)} / 월 {(history.AmountsHidden ? "비공개" : $"{history.MonthlyFee:N0}원")} / 지점 {officeCode}",
             Note = string.IsNullOrWhiteSpace(history.ChangeReason)
                 ? $"{profileKey} · {installLocation}"
                 : $"{history.ChangeReason.Trim()} · {profileKey} · {installLocation}",
@@ -824,6 +854,7 @@ public sealed class MobileRentalBillingRunEvidence
     public decimal RunBilledAmount { get; private set; }
     public decimal RunSettledAmount { get; private set; }
     public decimal InvoiceAmount { get; set; }
+    public bool AmountsHidden { get; set; }
     public decimal SettlementAmount { get; set; }
     public DateOnly? InvoiceDate { get; set; }
     public DateOnly? SettledDate { get; set; }
@@ -835,8 +866,12 @@ public sealed class MobileRentalBillingRunEvidence
     public void AddRun(RentalBillingProfileDto profile, MobileRentalRunSnapshot run)
     {
         Run = run;
-        RunBilledAmount = Math.Max(RunBilledAmount, Math.Max(0m, run.BilledAmount));
-        RunSettledAmount = Math.Max(RunSettledAmount, Math.Max(0m, run.SettledAmount));
+        AmountsHidden |= profile.AmountsHidden || run.AmountsHidden;
+        if (!run.AmountsHidden)
+        {
+            RunBilledAmount = Math.Max(RunBilledAmount, Math.Max(0m, run.BilledAmount!.Value));
+            RunSettledAmount = Math.Max(RunSettledAmount, Math.Max(0m, run.SettledAmount!.Value));
+        }
         SettledDate = Max(SettledDate, run.SettledDate);
         OfficeCode = ResolveOffice(profile.ResponsibleOfficeCode, profile.OfficeCode);
     }
@@ -884,7 +919,7 @@ public sealed class RentalBillingHistoryDisplayRow
             Title = string.IsNullOrWhiteSpace(profile?.CustomerName)
                 ? $"청구로그 {log.BillingYearMonth}"
                 : $"{profile.CustomerName} · {log.BillingYearMonth}",
-            Subtitle = $"{(profile is null ? "프로필 미지정" : Normalize(profile.ItemName, "품명 미지정"))} · {Normalize(log.Status, "예정")} · {log.BilledAmount:N0}원",
+            Subtitle = $"{(profile is null ? "프로필 미지정" : Normalize(profile.ItemName, "품명 미지정"))} · {Normalize(log.Status, "예정")} · {(log.AmountsHidden ? "금액 비공개" : $"{log.BilledAmount:N0}원")}",
             Meta = $"청구로그 / 예정일 {log.ScheduledDate:yyyy-MM-dd} / 처리일 {FormatDate(log.ProcessedDate)} / 지점 {ResolveOffice(log.ResponsibleOfficeCode, log.OfficeCode)}",
             Note = Normalize(log.Note, "메모 없음")
         };
@@ -901,15 +936,16 @@ public sealed class RentalBillingHistoryDisplayRow
                             ?? profile.LastSettledDate
                             ?? profile.LastBilledDate
                             ?? DateOnly.FromDateTime(DateTime.Today);
-        var settledAmount = evidence.SettlementAmount > 0m
+        var amountsHidden = evidence.AmountsHidden || profile.AmountsHidden;
+        decimal? settledAmount = amountsHidden ? null : evidence.HasTransaction || evidence.HasPayment
             ? evidence.SettlementAmount
             : evidence.RunSettledAmount;
-        var billedAmount = evidence.InvoiceAmount > 0m
+        decimal? billedAmount = amountsHidden ? null : evidence.HasInvoice
             ? evidence.InvoiceAmount
-            : evidence.RunBilledAmount > 0m
+            : run is not null
                 ? evidence.RunBilledAmount
-                : Math.Max(Math.Max(0m, profile.MonthlyAmount) * cycleMonths, settledAmount);
-        var outstandingAmount = Math.Max(0m, billedAmount - settledAmount);
+                : Math.Max(Math.Max(0m, DisclosedAmount.Require(profile.MonthlyAmount)) * cycleMonths, DisclosedAmount.Require(settledAmount));
+        decimal? outstandingAmount = amountsHidden ? null : Math.Max(0m, DisclosedAmount.Require(billedAmount) - DisclosedAmount.Require(settledAmount));
         var source = ResolveEvidenceSource(evidence);
 
         return new RentalBillingHistoryDisplayRow
@@ -919,19 +955,19 @@ public sealed class RentalBillingHistoryDisplayRow
             SourcePriority = 2,
             ProfileKey = profile.ProfileKey,
             CustomerName = profile.CustomerName,
-            Status = RentalBillingEvidenceStatusResolver.Resolve(
+            Status = amountsHidden ? "금액 비공개" : RentalBillingEvidenceStatusResolver.Resolve(
                 run?.Status,
                 evidence.HasInvoice || evidence.HasTransaction || evidence.HasPayment,
-                settledAmount,
-                outstandingAmount,
-                billedAmount),
+                DisclosedAmount.Require(settledAmount),
+                DisclosedAmount.Require(outstandingAmount),
+                DisclosedAmount.Require(billedAmount)),
             OfficeCode = Normalize(evidence.OfficeCode, ResolveOffice(profile.ResponsibleOfficeCode, profile.OfficeCode)),
             SortDate = evidence.SettledDate ?? evidence.InvoiceDate ?? scheduledDate,
             Title = string.IsNullOrWhiteSpace(profile.CustomerName)
                 ? $"청구회차 {scheduledDate:yyyy-MM-dd}"
                 : $"{profile.CustomerName} · {scheduledDate:yyyy-MM-dd}",
-            Subtitle = $"{Normalize(profile.ItemName, "품명 미지정")} · {source} · 청구 {billedAmount:N0}원 · 수금 {settledAmount:N0}원",
-            Meta = $"기간 {Normalize(run?.PeriodLabel, "기간 미지정")} / 예정일 {scheduledDate:yyyy-MM-dd} / 미수 {outstandingAmount:N0}원 / 지점 {Normalize(evidence.OfficeCode, ResolveOffice(profile.ResponsibleOfficeCode, profile.OfficeCode))}",
+            Subtitle = amountsHidden ? $"{Normalize(profile.ItemName, "품명 미지정")} · {source} · 금액 비공개" : $"{Normalize(profile.ItemName, "품명 미지정")} · {source} · 청구 {billedAmount:N0}원 · 수금 {settledAmount:N0}원",
+            Meta = $"기간 {Normalize(run?.PeriodLabel, "기간 미지정")} / 예정일 {scheduledDate:yyyy-MM-dd} / 미수 {(amountsHidden ? "비공개" : $"{outstandingAmount:N0}원")} / 지점 {Normalize(evidence.OfficeCode, ResolveOffice(profile.ResponsibleOfficeCode, profile.OfficeCode))}",
             Note = run is null
                 ? "전표/수금 근거로 복원된 청구 이력"
                 : "청구회차와 전표/수금 근거를 함께 표시합니다."
@@ -975,7 +1011,20 @@ public sealed class MobileRentalRunSnapshot
     public int CycleMonths { get; set; }
     public string PeriodLabel { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
-    public decimal BilledAmount { get; set; }
-    public decimal SettledAmount { get; set; }
+    public decimal? BilledAmount { get; set; }
+    public decimal? SettledAmount { get; set; }
     public DateOnly? SettledDate { get; set; }
+    public bool AmountsHidden => BilledAmount is null || SettledAmount is null;
+
+    public static IReadOnlyList<MobileRentalRunSnapshot> Parse(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try
+        {
+            return JsonSerializer.Deserialize<List<MobileRentalRunSnapshot>>(json,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true })?
+                .Where(run => run is not null && run.RunId != Guid.Empty).ToList() ?? [];
+        }
+        catch (JsonException) { return []; }
+    }
 }

@@ -27,9 +27,9 @@ public sealed class RentalBillingMixedZeroFeeTests
     {
         var (vm, item, assets) = Create(mode, fees);
         Invoke(vm, "ApplyIncludedAssetMonthlyFeesToTemplateItem", item, true);
-        Assert.Equal(Math.Round(fees.Sum(), 2), Math.Round(item.EffectiveAmount, 2));
+        Assert.Equal(Math.Round(fees.Sum(), 2), Math.Round(DisclosedAmount.Require(item.EffectiveAmount), 2));
         Assert.Equal(mode == "묶음" ? 1m : fees.Length, item.Quantity);
-        Assert.Equal(fees, assets.Select(x => x.MonthlyFee));
+        Assert.Equal<decimal?>(fees.Select(value => (decimal?)value), assets.Select(x => x.MonthlyFee));
         var edits = Invoke<IReadOnlyList<RentalBillingAssetLinkEdit>>(vm, "BuildPendingAssetLinkEdits");
         foreach (var edit in edits.Where(x => x.MonthlyFee.HasValue))
             Assert.Equal(assets.Single(x => x.AssetId == edit.AssetId).MonthlyFee, edit.MonthlyFee.GetValueOrDefault());
@@ -45,7 +45,7 @@ public sealed class RentalBillingMixedZeroFeeTests
         Assert.Equal(240_000m, grouped.Amount);
         Assert.Equal(3m, grouped.Quantity);
         Assert.Equal(assets.Select(x => x.AssetId).OrderBy(x => x), grouped.IncludedAssetIds.OrderBy(x => x));
-        Assert.Equal(new decimal[] { 240_000m, 0m, 0m }, assets.Select(x => x.MonthlyFee));
+        Assert.Equal(new decimal?[] { 240_000m, 0m, 0m }, assets.Select(x => x.MonthlyFee));
     }
 
     [Fact]
@@ -68,7 +68,7 @@ public sealed class RentalBillingMixedZeroFeeTests
         var session = new SessionState();
         session.SetOfflineSession(new UserSessionDto { UserId = Guid.NewGuid(), Username = "fee-regression", Role = DomainConstants.RoleUser,
             TenantCode = TenantScopeCatalog.UsenetGroup, OfficeCode = OfficeCodeCatalog.Usenet, ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
-            Permissions = [AppPermissionNames.RentalProfileEdit, AppPermissionNames.RentalAssetEdit] });
+            Permissions = [AppPermissionNames.RentalProfileEdit, AppPermissionNames.RentalAssetEdit, AppPermissionNames.AmountViewSales] });
         var vm = new RentalBillingViewModel(null!, null!, session) { EditBillingType = mode, EditCustomerName = "격리 요금 검증" };
         var assets = (List<RentalBillingAssetOption>)typeof(RentalBillingViewModel).GetField("_includedAssetPool", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(vm)!;
         var quantity = mode == "묶음" ? 1m : fees.Length;

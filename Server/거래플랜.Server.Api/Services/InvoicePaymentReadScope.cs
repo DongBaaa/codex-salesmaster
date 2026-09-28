@@ -26,8 +26,11 @@ public static class InvoicePaymentReadScope
 
         // Invoice sharing and payment sharing are independent, including nested responses.
         foreach (var invoice in invoices)
+        {
             invoice.Payments = (invoice.Payments ?? [])
                 .Where(payment => payment.Id != Guid.Empty && readableIds.Contains(payment.Id))
                 .ToList();
+            InvoiceAmountReadPolicy.Apply(invoice, officeScopeService);
+        }
     }
 }

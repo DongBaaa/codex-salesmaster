@@ -545,7 +545,8 @@ public sealed class RentalAssetAutoBillingProfileScopeTests
             TenantCode = tenantCode,
             OfficeCode = officeCode,
             ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
-            Permissions = [AppPermissionNames.RentalAssetEdit]
+            // These cases verify profile/office linkage with disclosed contract amounts.
+            Permissions = [AppPermissionNames.RentalAssetEdit, AppPermissionNames.AmountViewPurchase, AppPermissionNames.AmountViewSales]
         });
         return session;
     }

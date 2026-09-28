@@ -160,7 +160,20 @@ public sealed class ItemsViewModel : ObservableObject
 
     public string SelectedItemPriceSummary => SelectedItem is null
         ? "기본 단가 정보 없음"
-        : $"매입 {SelectedItem.PurchasePrice:N0}원 / 판매 {SelectedItem.SalePrice:N0}원 / 소매 {SelectedItem.RetailPrice:N0}원";
+        : CaptureAmountAccess().Summary(SelectedItem);
+
+    public MobileItemAmountAccess CaptureAmountAccess()
+    {
+        var snapshot = _sessionStore.GetSnapshot();
+        return MobileItemAmountAccess.Capture(snapshot.IsAuthenticated, snapshot.Role,
+            snapshot.Permissions, snapshot.CanEditItems);
+    }
+
+    public void RefreshAmountAccess()
+    {
+        EnsureCurrentOwner();
+        OnPropertyChanged(nameof(SelectedItemPriceSummary));
+    }
 
     public string SelectedItemStockSummary => SelectedItem is null
         ? "재고 정보 없음"

@@ -31,6 +31,7 @@ public sealed class CustomersViewModel : ObservableObject
     private string _detailStatusMessage = "거래처를 선택하면 상세 정보가 표시됩니다.";
     private CustomerDetailSection _selectedDetailSection = CustomerDetailSection.Summary;
     private CacheOwnerSession? _visibleOwnerSession;
+    private (bool Authenticated, string Role, string Scope, MobileRentalAmountAccess Amounts)? _visibleAccess;
     private long _refreshOperationToken;
     private long _detailOperationToken;
     private bool _deferredRefreshRequested;
@@ -142,6 +143,8 @@ public sealed class CustomersViewModel : ObservableObject
 
     public bool NeedsRefresh(TimeSpan maxAge)
         => !_lastRefreshUtc.HasValue || DateTime.UtcNow - _lastRefreshUtc.Value >= maxAge;
+
+    public void RefreshAccess() => EnsureVisibleOwner(_cacheStore.CaptureOwnerSession());
 
     public async Task RefreshAsync(
         CacheOwnerSession? expectedOwnerSession = null)
@@ -419,6 +422,18 @@ public sealed class CustomersViewModel : ObservableObject
                 ? BuildCustomerPaymentRowsFromSyncedState(displayCustomer, invoices, syncState)
                 : BuildPaymentRows(detail);
 
+            ThrowIfOperationStale(operation);
+            var displaySession = _sessionStore.GetSnapshot();
+            if (!MobileSessionScopeFilter.CanAccessCustomer(displaySession, displayCustomer))
+            {
+                ClearSelectedCustomer();
+                DetailStatusMessage = "현재 로그인 범위에서 조회할 수 없는 거래처입니다.";
+                return;
+            }
+            invoices = invoices.Where(invoice => invoice.CustomerId == displayCustomer.Id &&
+                    MobileSessionScopeFilter.CanAccessInvoice(displaySession, invoice))
+                .Select(invoice => MobileCustomerAmountAccess.Display(invoice, displaySession)).ToList();
+            payments = payments.Select(row => MobileCustomerAmountAccess.Display(row, displaySession)).ToList();
             _cacheStore.ThrowIfOwnerSessionStale(ownerSession);
             ThrowIfOperationStale(operation);
             SelectedCustomer = displayCustomer;
@@ -463,14 +478,17 @@ public sealed class CustomersViewModel : ObservableObject
     private void EnsureVisibleOwner(
         CacheOwnerSession ownerSession)
     {
+        var session = _sessionStore.GetSnapshot();
+        var access = (session.IsAuthenticated, session.Role, session.ScopeType, MobileRentalAmountAccess.Capture(session));
         if (_visibleOwnerSession is not null &&
             _visibleOwnerSession.HasSameOwnerAndSession(
-                ownerSession))
+                ownerSession) && _visibleAccess == access)
         {
             return;
         }
 
         ResetForOwner(ownerSession);
+        _visibleAccess = access;
     }
 
     private void ResetForOwner(
@@ -532,6 +550,7 @@ public sealed class CustomersViewModel : ObservableObject
     private void ThrowIfOperationStale(
         CustomerUiOperation operation)
     {
+        EnsureVisibleOwner(_cacheStore.CaptureOwnerSession());
         var currentToken = operation.IsDetail
             ? _detailOperationToken
             : _refreshOperationToken;
@@ -857,28 +876,26 @@ public sealed class CustomersViewModel : ObservableObject
             .Where(profile => !profile.IsDeleted &&
                               profile.Id != Guid.Empty &&
                               MobileSessionScopeFilter.CanAccessRentalBillingProfile(snapshot, profile))
+            .Select(MobileRentalAmountAccess.Capture(snapshot).Display)
             .GroupBy(profile => profile.Id)
             .ToDictionary(group => group.Key, group => group.First(), EqualityComparer<Guid>.Default);
         var assetMap = state.SyncedRentalAssets
             .Where(asset => !asset.IsDeleted &&
                             asset.Id != Guid.Empty &&
                             MobileSessionScopeFilter.CanAccessRentalAsset(snapshot, asset))
+            .Select(MobileRentalAmountAccess.Capture(snapshot).Display)
             .GroupBy(asset => asset.Id)
             .ToDictionary(group => group.Key, group => group.First(), EqualityComparer<Guid>.Default);
         var matchContext = BuildCustomerRentalMatchContext(customer, state, snapshot);
 
         var rows = new List<CustomerRentalLinkRow>();
-        foreach (var profile in state.SyncedRentalBillingProfiles.Where(profile =>
-                     !profile.IsDeleted &&
-                     MobileSessionScopeFilter.CanAccessRentalBillingProfile(snapshot, profile)))
+        foreach (var profile in profileMap.Values)
         {
             if (MatchesSelectedCustomer(matchContext, profile.CustomerId, profile.BusinessNumber, profile.CustomerName))
                 rows.Add(CustomerRentalLinkRow.FromProfile(profile));
         }
 
-        foreach (var asset in state.SyncedRentalAssets.Where(asset =>
-                     !asset.IsDeleted &&
-                     MobileSessionScopeFilter.CanAccessRentalAsset(snapshot, asset)))
+        foreach (var asset in assetMap.Values)
         {
             profileMap.TryGetValue(asset.BillingProfileId ?? Guid.Empty, out var profile);
             if (MatchesSelectedCustomer(
@@ -896,7 +913,8 @@ public sealed class CustomersViewModel : ObservableObject
 
         foreach (var history in state.SyncedRentalAssetAssignmentHistories.Where(history =>
                      !history.IsDeleted &&
-                     MobileSessionScopeFilter.CanAccessRentalAssetAssignmentHistory(snapshot, history)))
+                     MobileSessionScopeFilter.CanAccessRentalAssetAssignmentHistory(snapshot, history))
+                     .Select(MobileRentalAmountAccess.Capture(snapshot).Display))
         {
             profileMap.TryGetValue(history.BillingProfileId ?? Guid.Empty, out var profile);
             assetMap.TryGetValue(history.AssetId, out var asset);
@@ -1090,7 +1108,7 @@ public sealed class CustomerRentalLinkRow
             SourcePriority = 1,
             Title = $"청구프로필 · {profileKey}",
             Subtitle = $"{itemName} · {FirstText(profile.BillingType, "청구유형 미지정")} · {status}",
-            Meta = $"월 {profile.MonthlyAmount:N0}원 / 미수 {profile.OutstandingAmount:N0}원 / 지점 {ResolveOffice(profile.ResponsibleOfficeCode, profile.OfficeCode)}",
+            Meta = $"월 {MobileRentalAmountAccess.Money(profile.MonthlyAmount, !profile.AmountsHidden)} / 미수 {MobileRentalAmountAccess.Money(profile.OutstandingAmount, !profile.AmountsHidden)} / 지점 {ResolveOffice(profile.ResponsibleOfficeCode, profile.OfficeCode)}",
             Note = $"계약 {FormatDate(profile.ContractStartDate)}~{FormatDate(profile.ContractEndDate)} / 최종청구 {FormatDate(profile.LastBilledDate)} / {FirstText(profile.InstallSiteName, "설치지 미지정")}",
             SortDate = sortDate
         };
@@ -1112,7 +1130,7 @@ public sealed class CustomerRentalLinkRow
             SourcePriority = 2,
             Title = $"렌탈자산 · {itemName}",
             Subtitle = $"관리번호 {managementNumber} / 기계번호 {machineNumber}",
-            Meta = $"{status} / 월 {asset.MonthlyFee:N0}원 / 지점 {ResolveOffice(asset.ResponsibleOfficeCode, asset.OfficeCode)}",
+            Meta = $"{status} / 월 {MobileRentalAmountAccess.Money(asset.MonthlyFee, !asset.SalesAmountsHidden)} / 지점 {ResolveOffice(asset.ResponsibleOfficeCode, asset.OfficeCode)}",
             Note = $"청구프로필 {FirstText(profile?.ProfileKey, asset.LastBillingProfileDisplay, "미연결")} / 설치 {FormatDate(asset.InstallDate)} / {location}",
             SortDate = sortDate
         };
@@ -1138,7 +1156,7 @@ public sealed class CustomerRentalLinkRow
             SourcePriority = 3,
             Title = $"설치이력 · {currentLabel} · {itemName}",
             Subtitle = $"관리번호 {managementNumber} / 기계번호 {machineNumber}",
-            Meta = $"연결 {FormatDateTime(history.LinkedAtUtc)} / 해제 {FormatDateTime(history.UnlinkedAtUtc)} / 월 {history.MonthlyFee:N0}원",
+            Meta = $"연결 {FormatDateTime(history.LinkedAtUtc)} / 해제 {FormatDateTime(history.UnlinkedAtUtc)} / 월 {MobileRentalAmountAccess.Money(history.MonthlyFee)}",
             Note = $"{FirstText(history.ChangeReason, "변경사유 미기재")} / {profileKey} / {location}",
             SortDate = sortDate
         };

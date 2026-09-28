@@ -6,7 +6,7 @@ internal static class OfflineSessionCachePolicy
 {
     internal const string MaximumOfflineGraceHoursEnvironmentKey = "GEORAEPLAN_OFFLINE_GRACE_HOURS";
 
-    internal const int CurrentSchemaVersion = 4;
+    internal const int CurrentSchemaVersion = 5;
 
     internal static readonly TimeSpan DefaultMaximumOfflineGrace = TimeSpan.FromHours(24);
 

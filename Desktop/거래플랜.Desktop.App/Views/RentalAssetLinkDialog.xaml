@@ -173,7 +173,7 @@
                         </DataGridTemplateColumn>
                         <DataGridTextColumn Header="시리얼번호" Binding="{Binding MachineNumber}" Width="150"/>
                         <DataGridTextColumn Header="품명" Binding="{Binding ItemName}" Width="150"/>
-                        <DataGridTextColumn Header="월요금" Binding="{Binding MonthlyFee, StringFormat=N0}" Width="90"/>
+                        <DataGridTextColumn Header="월요금" Binding="{Binding MonthlyFee, StringFormat=N0, TargetNullValue=비공개}" Width="90"/>
                         <DataGridTextColumn Header="현재 거래처" Binding="{Binding CurrentCustomerName}" Width="170"/>
                         <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocation}" Width="180"/>
                         <DataGridTextColumn Header="상태" Binding="{Binding AssetStatus}" Width="84"/>
@@ -237,7 +237,7 @@
                             <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding SelectedAsset.InstallLocation, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
 
                             <TextBlock Grid.Row="3" Grid.Column="0" Text="월 렌탈료" VerticalAlignment="Center" Margin="0,0,4,8"/>
-                            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding SelectedAsset.MonthlyFee, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                            <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding SelectedAsset.MonthlyFee, UpdateSourceTrigger=PropertyChanged, TargetNullValue=비공개}" IsReadOnly="{Binding SelectedAsset.SalesAmountsReadOnly}" Margin="0,0,0,8"/>
 
                             <TextBlock Grid.Row="4" Grid.Column="0" Text="계약 시작일" VerticalAlignment="Center" Margin="0,0,4,8"/>
                             <DatePicker Grid.Row="4" Grid.Column="1" SelectedDate="{Binding SelectedAsset.ContractStartDate}" SelectedDateFormat="Short" Margin="0,0,0,8">

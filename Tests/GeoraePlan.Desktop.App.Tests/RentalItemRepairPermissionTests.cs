@@ -89,4 +89,70 @@ public sealed class RentalItemRepairPermissionTests
         db.ChangeTracker.Clear();
         Assert.Equal(original, JsonSerializer.Serialize(await db.Items.IgnoreQueryFilters().AsNoTracking().SingleAsync()));
     }
+
+    [Theory]
+    [InlineData("USENET", false, false)]
+    [InlineData("USENET", false, true)]
+    [InlineData("USENET", true, false)]
+    [InlineData("USENET", true, true)]
+    [InlineData("ITWORLD", false, false)]
+    [InlineData("ITWORLD", false, true)]
+    [InlineData("ITWORLD", true, false)]
+    [InlineData("ITWORLD", true, true)]
+    public async Task ExplicitRepair_PreservesUnrelatedSameOwnerOrphan(
+        string office, bool isDirty, bool authenticatedScope)
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = new LocalDbContext(new DbContextOptionsBuilder<LocalDbContext>().UseSqlite(connection).Options);
+        await db.Database.EnsureCreatedAsync();
+        var tenant = office == "ITWORLD" ? "ITWORLD" : "USENET_GROUP";
+        var selected = new LocalItem
+        {
+            Id = Guid.NewGuid(), TenantCode = tenant, OfficeCode = office,
+            NameOriginal = "SELECTED DEVICE", NameMatchKey = "SELECTEDDEVICE",
+            MaterialNumber = "SELECTED-001", SerialNumber = "SELECTED-SERIAL",
+            ItemKind = ItemKinds.Asset, TrackingType = ItemTrackingTypes.Asset,
+            IsRental = true, IsSale = false, IsDirty = false, Revision = 101
+        };
+        var unrelated = new LocalItem
+        {
+            Id = Guid.NewGuid(), TenantCode = tenant, OfficeCode = office,
+            NameOriginal = "UNRELATED ORPHAN", NameMatchKey = "UNRELATEDORPHAN",
+            MaterialNumber = "UNRELATED-001", SerialNumber = "UNRELATED-SERIAL",
+            ItemKind = ItemKinds.Asset, TrackingType = ItemTrackingTypes.Asset,
+            SimpleMemo = RentalStateService.AutoCreatedRentalItemMemo,
+            IsRental = true, IsSale = false, IsDirty = isDirty, Revision = 102,
+            Notes = "Preserve this unselected record and its pending changes."
+        };
+        var asset = new LocalRentalAsset
+        {
+            Id = Guid.NewGuid(), TenantCode = tenant, OfficeCode = office,
+            ResponsibleOfficeCode = office, ManagementCompanyCode = office,
+            ItemId = selected.Id, ItemName = selected.NameOriginal,
+            ManagementNumber = selected.MaterialNumber, MachineNumber = selected.SerialNumber,
+            MonthlyFee = 55000m, IsDirty = true
+        };
+        db.Items.AddRange(selected, unrelated);
+        db.RentalAssets.Add(asset);
+        await db.SaveChangesAsync();
+        var expected = JsonSerializer.Serialize(await db.Items.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == unrelated.Id));
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto
+        {
+            UserId = Guid.NewGuid(), Username = "explicit-repair", Role = DomainConstants.RoleAdmin,
+            TenantCode = tenant, OfficeCode = office, ScopeType = "TenantAll"
+        });
+        var service = new RentalStateService(db);
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            if (authenticatedScope)
+                await service.RepairRentalCatalogLinksAsync([asset.Id], session);
+            else
+                await service.RepairRentalCatalogLinksAsync([asset.Id]);
+            db.ChangeTracker.Clear();
+            Assert.Equal(expected, JsonSerializer.Serialize(await db.Items.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == unrelated.Id)));
+            Assert.Equal(selected.Id, (await db.RentalAssets.AsNoTracking().SingleAsync()).ItemId);
+        }
+    }
 }

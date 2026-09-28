@@ -42,7 +42,6 @@ public sealed class SyncSharedDirtyPermissionGuardTests
                  {
                      ("Units", "단위 변경"),
                      ("CustomerCategories", "거래처분류 변경"),
-                     ("PriceGradeOptions", "가격등급 변경"),
                      ("TradeTypeOptions", "거래유형 변경"),
                      ("ItemCategoryOptions", "품목분류 변경")
                  })
@@ -57,6 +56,11 @@ public sealed class SyncSharedDirtyPermissionGuardTests
                 localSetName: mapping.Item1,
                 entityDisplayName: mapping.Item2);
         }
+
+        Assert.Contains("var canSyncPriceGradeOptions = canSyncSettings && session.HasPermission(AppPermissionNames.AmountViewSales);", syncServiceSource);
+        Assert.Contains("var dirtyPriceGradeOptions = canSyncPriceGradeOptions", syncServiceSource);
+        Assert.Contains("!session.HasPermission(AppPermissionNames.SettingsEdit) || !session.HasPermission(AppPermissionNames.AmountViewSales)", localStateSource);
+        Assert.Contains("\"가격등급 변경\" or \"가격등급 전송 확인\" => session.HasPermission(AppPermissionNames.SettingsEdit) &&", pendingSummarySource);
 
         AssertSharedPermissionMapping(
             syncServiceSource,
@@ -109,6 +113,9 @@ public sealed class SyncSharedDirtyPermissionGuardTests
 
         foreach (var itemCollection in new[] { "Items", "ItemWarehouseStocks" })
             AssertServerPermissionRequirement(syncServiceSource, serverSyncControllerSource, itemCollection, "ItemEdit");
+
+        AssertServerPermissionRequirement(syncServiceSource, serverSyncControllerSource, "ItemPriceGrades", "AmountViewSales");
+        AssertServerPermissionRequirement(syncServiceSource, serverSyncControllerSource, "PriceGradeOptions", "AmountViewSales");
 
         AssertServerPermissionRequirement(syncServiceSource, serverSyncControllerSource, "Invoices", "InvoiceEdit");
 

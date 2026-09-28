@@ -16,6 +16,73 @@ namespace GeoraePlan.Desktop.App.Tests;
 public sealed class PaymentPullChannelPreservationTests
 {
     [Theory]
+    [InlineData(0)]
+    [InlineData(150)]
+    public async Task HiddenPayment_TransactionOnlyPullPreservesUnknownUntilCanonicalPaymentArrives(int amount)
+    {
+        await using var f = await Fixture.CreateAsync(VoucherType.Purchase);
+        var hidden = f.Payment(); hidden.Amount = null;
+        await f.PullAsync(hidden);
+        var incoming = f.Transaction("cash"); incoming.Revision = 99;
+        incoming.SettlementAmount = amount; incoming.CashPayment = amount;
+        await f.PullAsync(null, incoming);
+        var stored = await f.Db.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync();
+        Assert.True(stored.AmountsHidden);
+        Assert.Equal(0, stored.Amount);
+        Assert.False(stored.IsDeleted);
+        Assert.False(stored.IsDirty);
+        Assert.Equal(hidden.Revision, stored.Revision);
+        await f.PullAsync(f.Payment());
+        Assert.False((await f.Db.Payments.AsNoTracking().SingleAsync()).AmountsHidden);
+    }
+
+    [Theory]
+    [InlineData("USENET", false)]
+    [InlineData("YEONSU", false)]
+    [InlineData("ITWORLD", false)]
+    [InlineData("USENET", true)]
+    public async Task HiddenPayment_PullDoesNotZeroMirrorOrOverwritePendingPayment(string office, bool dirty)
+    {
+        await using var f=await Fixture.CreateAsync(VoucherType.Purchase,office);
+        await f.StoreAsync(f.Transaction("cash"));
+        var existing=LocalMappings.ToLocal(f.Payment()); existing.IsDirty=dirty;
+        f.Db.Payments.Add(existing); await f.Db.SaveChangesAsync(); f.Db.ChangeTracker.Clear();
+        var incoming=f.Payment();incoming.Amount=null;incoming.Revision=19;
+        await f.PullAsync(incoming);
+        var stored=await f.Db.Payments.AsNoTracking().SingleAsync();
+        Assert.Equal(!dirty,stored.AmountsHidden);
+        Assert.Equal(dirty ? 100m : 0m,stored.Amount);
+        Assert.Equal(dirty,stored.IsDirty);
+        var mirror=await f.StoredAsync();
+        Assert.Equal(100m,mirror.SettlementAmount);Assert.Equal(100m,mirror.CashPayment);Assert.False(mirror.IsDeleted);
+        if(!dirty)
+        {
+            var visible=f.Payment();visible.Amount=150;visible.Revision=20;
+            await f.PullAsync(visible);
+            Assert.False((await f.Db.Payments.AsNoTracking().SingleAsync()).AmountsHidden);
+            Assert.Equal(150m,(await f.StoredAsync()).SettlementAmount);
+        }
+    }
+
+    [Fact]
+    public async Task HiddenPayment_PullPreservesAuthoritativeRentalSummary()
+    {
+        await using var f=await Fixture.CreateAsync(VoucherType.Sales);
+        var profile=new LocalRentalBillingProfile {Id=Guid.NewGuid(),ProfileKey="hidden-payment",SettledAmount=77,OutstandingAmount=23,
+            BillingStatus="기존 청구",SettlementStatus="기존 정산",CompletionStatus="기존 완료",BillingRunsJson="[]",IsDirty=false};
+        f.Db.RentalBillingProfiles.Add(profile);
+        f.Invoice.LinkedRentalBillingProfileId=profile.Id;
+        await f.Db.SaveChangesAsync();f.Db.ChangeTracker.Clear();
+        var payment=f.Payment();payment.Amount=null;
+        await f.PullAsync(payment);
+        var stored=await f.Db.RentalBillingProfiles.AsNoTracking().SingleAsync();
+        Assert.Equal(77m,stored.SettledAmount);Assert.Equal(23m,stored.OutstandingAmount);
+        Assert.Equal("기존 청구",stored.BillingStatus);Assert.Equal("기존 정산",stored.SettlementStatus);
+        Assert.Equal("기존 완료",stored.CompletionStatus);Assert.False(stored.IsDirty);
+        Assert.Empty(await f.Db.Transactions.ToListAsync());
+    }
+
+    [Theory]
     [InlineData("USENET", "split")]
     [InlineData("YEONSU", "split")]
     [InlineData("ITWORLD", "split")]

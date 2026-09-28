@@ -72,15 +72,19 @@ public sealed partial class LocalStateService
         CancellationToken ct,
         bool preserveInventoryEditorHiddenFields = false)
     {
-
+        var amountAccess = new ItemAmountWriteAccess(session);
         if (_db.Database.CurrentTransaction is not null)
-            return await SaveItemAndPriceGradesAsync(item, session, preferredOfficeCode, itemPriceGrades, allowDeletedRestore, ct, preserveInventoryEditorHiddenFields);
+            return await SaveItemAndPriceGradesAsync(item, session, preferredOfficeCode, itemPriceGrades, allowDeletedRestore, ct, preserveInventoryEditorHiddenFields, amountAccess);
 
         await using var transaction = await _db.BeginRuntimeMutationTransactionAsync(ct);
         try
         {
-            var saved = await SaveItemAndPriceGradesAsync(item, session, preferredOfficeCode, itemPriceGrades, allowDeletedRestore, ct, preserveInventoryEditorHiddenFields);
-            await transaction.CommitAsync(ct);
+            var saved = await SaveItemAndPriceGradesAsync(item, session, preferredOfficeCode, itemPriceGrades, allowDeletedRestore, ct, preserveInventoryEditorHiddenFields, amountAccess);
+            using (await session.AcquireSyncScopeCommitLeaseAsync(ct))
+            {
+                amountAccess.EnsureCurrent();
+                await transaction.CommitAsync(ct).ConfigureAwait(false);
+            }
             return saved;
         }
         catch
@@ -98,7 +102,8 @@ public sealed partial class LocalStateService
         IEnumerable<LocalItemPriceGrade>? itemPriceGrades,
         bool allowDeletedRestore,
         CancellationToken ct,
-        bool preserveInventoryEditorHiddenFields = false)
+        bool preserveInventoryEditorHiddenFields,
+        ItemAmountWriteAccess amountAccess)
     {
         var saved = await UpsertItemAsync(
             item,
@@ -107,10 +112,40 @@ public sealed partial class LocalStateService
             preserveExistingInventoryStock: true,
             allowDeletedRestore,
             ct,
-            preserveInventoryEditorHiddenFields);
-        if (itemPriceGrades is not null)
+            preserveInventoryEditorHiddenFields,
+            amountAccess);
+        amountAccess.EnsureCurrent();
+        if (itemPriceGrades is not null && amountAccess.CanViewSales && !saved.SalesAmountsHidden)
             await SaveItemPriceGradesForItemAsync(saved.Id, itemPriceGrades, ct);
+        amountAccess.EnsureCurrent();
         return saved;
+    }
+
+    private sealed class ItemAmountWriteAccess(SessionState session)
+    {
+        private readonly FinancialAmountVisibility.AccessKey _access = FinancialAmountVisibility.CaptureAccess(session);
+        public bool CanViewSales => _access.Sales;
+        public void EnsureCurrent()
+        {
+            if (_access != FinancialAmountVisibility.CaptureAccess(session))
+                throw new UnauthorizedAccessException("계정 또는 접근 권한이 변경되었습니다. 품목을 다시 조회한 뒤 저장해 주세요.");
+        }
+        public void PreserveHiddenPrices(LocalItem candidate, LocalItem? persisted)
+        {
+            EnsureCurrent();
+            if (!_access.Purchase || candidate.PurchaseAmountsHidden || persisted?.PurchaseAmountsHidden == true)
+            {
+                candidate.PurchasePrice = persisted?.PurchasePrice ?? 0m;
+                candidate.PurchaseAmountsHidden = persisted?.PurchaseAmountsHidden ?? candidate.PurchaseAmountsHidden;
+            }
+            if (_access.Sales && !candidate.SalesAmountsHidden && persisted?.SalesAmountsHidden != true) return;
+            candidate.SalesAmountsHidden = persisted?.SalesAmountsHidden ?? candidate.SalesAmountsHidden;
+            candidate.SalePrice = persisted?.SalePrice ?? 0m;
+            candidate.RetailPrice = persisted?.RetailPrice ?? 0m;
+            candidate.PriceGradeA = persisted?.PriceGradeA ?? 0m;
+            candidate.PriceGradeB = persisted?.PriceGradeB ?? 0m;
+            candidate.PriceGradeC = persisted?.PriceGradeC ?? 0m;
+        }
     }
 
     public void EnsureCanUpsertItem(LocalItem item, SessionState session, string? preferredOfficeCode = null)

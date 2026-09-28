@@ -30,7 +30,7 @@ public sealed class RentalBillingSpecificationTests
     {
         var assetAId = Guid.NewGuid();
         var assetBId = Guid.NewGuid();
-        var vm = new RentalCustomerOnboardingViewModel(null!, null!, new SessionState());
+        var vm = new RentalCustomerOnboardingViewModel(null!, null!, CreateUserSession(AppPermissionNames.AmountViewSales));
         vm.CandidateAssets.Add(new RentalBillingAssetOption
         {
             AssetId = assetAId,
@@ -103,7 +103,7 @@ public sealed class RentalBillingSpecificationTests
     {
         var representativeAssetId = Guid.Parse("16161616-1616-1616-1616-161616161616");
         var otherAssetId = Guid.Parse("17171717-1717-1717-1717-171717171717");
-        var vm = new RentalBillingViewModel(null!, null!, new SessionState())
+        var vm = new RentalBillingViewModel(null!, null!, CreateUserSession(AppPermissionNames.AmountViewSales))
         {
             EditBillingType = "\uBB36\uC74C",
             EditBillingCycleMonths = 3,
@@ -260,7 +260,7 @@ public sealed class RentalBillingSpecificationTests
         var assetAId = Guid.NewGuid();
         var assetBId = Guid.NewGuid();
         var assetCId = Guid.NewGuid();
-        var vm = new RentalBillingViewModel(null!, null!, new SessionState())
+        var vm = new RentalBillingViewModel(null!, null!, CreateUserSession(AppPermissionNames.AmountViewSales))
         {
             EditBillingType = "개별"
         };
@@ -379,7 +379,7 @@ public sealed class RentalBillingSpecificationTests
     {
         var assetAId = Guid.Parse("33333333-3333-3333-3333-3333333336a1");
         var assetBId = Guid.Parse("33333333-3333-3333-3333-3333333336b2");
-        var vm = new RentalBillingViewModel(null!, null!, new SessionState())
+        var vm = new RentalBillingViewModel(null!, null!, CreateUserSession(AppPermissionNames.AmountViewSales))
         {
             EditBillingType = "\uAC1C\uBCC4"
         };
@@ -903,7 +903,7 @@ public sealed class RentalBillingSpecificationTests
         var vm = new RentalBillingViewModel(
             null!,
             null!,
-            CreateUserSession(AppPermissionNames.RentalProfileEdit, AppPermissionNames.RentalAssetEdit))
+            CreateUserSession(AppPermissionNames.RentalProfileEdit, AppPermissionNames.RentalAssetEdit, AppPermissionNames.AmountViewSales))
         {
             EditBillingType = "개별",
             EditCustomerName = "동일 모델 테스트 거래처"

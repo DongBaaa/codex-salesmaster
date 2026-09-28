@@ -1028,7 +1028,7 @@ public sealed class RentalBillingRunTombstoneSafeguardTests : IDisposable
                 IsLatestVersion = true,
                 VoucherType = dto.VoucherType,
                 InvoiceDate = dto.InvoiceDate,
-                TotalAmount = dto.TotalAmount,
+                TotalAmount = DisclosedAmount.Require(dto.TotalAmount),
                 LinkedRentalBillingProfileId = profileId,
                 LinkedRentalBillingRunId = runId
             });

@@ -12681,7 +12681,9 @@ public sealed partial class SyncControllerTests : IDisposable
             Permissions =
             [
                 PermissionNames.RentalProfileEdit,
-                PermissionNames.RentalAssetEdit
+                PermissionNames.RentalAssetEdit,
+                PermissionNames.AmountViewSales,
+                PermissionNames.AmountViewPurchase
             ]
         };
         await using var scopedDb = CreateDbContext(currentUser);
@@ -13899,7 +13901,7 @@ public sealed partial class SyncControllerTests : IDisposable
             TenantCode = TenantScopeCatalog.UsenetGroup,
             OfficeCode = OfficeCodeCatalog.Usenet,
             ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
-            Permissions = [PermissionNames.RentalProfileEdit]
+            Permissions = [PermissionNames.AmountViewSales, PermissionNames.RentalProfileEdit]
         };
         await using var scopedDb = CreateDbContext(currentUser);
         var controller = CreateController(scopedDb, currentUser);
@@ -17636,7 +17638,7 @@ public sealed partial class SyncControllerTests : IDisposable
         var response = await controller.Push(request, CancellationToken.None);
         var ok = Assert.IsType<OkObjectResult>(response.Result);
         var result = Assert.IsType<SyncPushResult>(ok.Value);
-        Assert.Equal(grantCustomerEdit ? 1 : 0, result.AcceptedCount);
+        Assert.True(result.AcceptedCount == (grantCustomerEdit ? 1 : 0), string.Join(" | ", result.Conflicts.Select(x => x.Reason)));
         Assert.Equal(grantCustomerEdit ? 0 : 1, result.ConflictCount);
 
         scopedDb.ChangeTracker.Clear();
@@ -25762,7 +25764,7 @@ public sealed partial class SyncControllerTests : IDisposable
             ScopeType = TenantScopeCatalog.ScopeOfficeOnly,
             Permissions =
             [
-                PermissionNames.RentalProfileEdit,
+                PermissionNames.AmountViewSales, PermissionNames.RentalProfileEdit,
                 PermissionNames.RentalAssetEdit
             ]
         };

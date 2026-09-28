@@ -595,6 +595,33 @@ public sealed class RentalBillingSelectionCacheTests
         Assert.False(nextPhaseEntered);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SelectionPipelineCoordinator_DisposeAndDrain_WaitsForExclusiveDatabaseWork(bool afterCurrent)
+    {
+        using var coordinator = new SelectionPipelineCoordinator();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        async Task Work(CancellationToken ct)
+        {
+            entered.SetResult();
+            // A database operation may finish only after cancellation is requested.
+            await release.Task;
+        }
+        var operation = afterCurrent
+            ? coordinator.RunExclusiveAfterCurrentAsync(Work, CancellationToken.None)
+            : coordinator.RunExclusiveAsync(Work, CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var drain = coordinator.DisposeAndDrainAsync();
+        try { Assert.False(drain.IsCompleted); }
+        finally { release.TrySetResult(); }
+        await drain.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => coordinator.RunExclusiveAsync(
+            _ => throw new InvalidOperationException("Disposed coordinator must not enter work."), CancellationToken.None));
+    }
+
     [Fact]
     public async Task SelectionPipelineCoordinator_DisposeWhileWaitingForGate_CancelsWaiterWithoutEntry()
     {

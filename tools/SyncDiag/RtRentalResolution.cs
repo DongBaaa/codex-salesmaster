@@ -744,6 +744,8 @@ internal static class RtRentalResolutionPlanner
         RtRentalResolutionPlan plan,
         string managementNumber)
     {
+        if (current?.SalesAmountsHidden == true || preservedProfile?.AmountsHidden == true)
+            throw new InvalidDataException("비공개 렌탈 금액으로 정리안을 만들 수 없습니다.");
         var rawFee = ParseFee(source.MonthlyFeeText);
         if (preservedProfile is not null)
         {
@@ -753,7 +755,7 @@ internal static class RtRentalResolutionPlanner
                 plan.Audit.BillingProfilePreservedFeeCount++;
                 AddDecision(plan, managementNumber, "청구금액", source,
                     (current?.MonthlyFee ?? 0).ToString("N0", CultureInfo.InvariantCulture),
-                    desired.MonthlyFee.ToString("N0", CultureInfo.InvariantCulture),
+                    DisclosedAmount.Require(desired.MonthlyFee).ToString("N0", CultureInfo.InvariantCulture),
                     "프로필 금액 유지",
                     "거래플랜 청구 프로필 금액은 부가세 포함 실제 청구구조이므로 RT 원시 금액으로 덮어쓰지 않았습니다.");
             }

@@ -196,8 +196,14 @@ public sealed class InvoicesController : ControllerBase
 
         var entityId = dto.Id == Guid.Empty ? Guid.NewGuid() : dto.Id;
         NormalizeNewInvoiceVersionMetadata(dto, entityId);
+        var amountResult = await InvoiceAmountWritePolicy.NormalizeAsync(
+            _dbContext, _currentUserContext, _officeScopeService, dto, null, cancellationToken);
+        if (amountResult.Error is { } amountError)
+            return BadRequest(amountError);
+
         var entity = new Invoice { Id = entityId };
         entity.Apply(dto);
+        InvoiceAuthorPolicy.RecordAcceptedSave(entity, _currentUserContext, isNew: true);
         if (string.IsNullOrWhiteSpace(entity.InvoiceNumber))
         {
             entity.InvoiceNumber = await _invoiceNumberService.GenerateAsync(entity.CustomerId, entity.InvoiceDate, cancellationToken);
@@ -205,6 +211,7 @@ public sealed class InvoicesController : ControllerBase
         await TaxInvoiceNumberAssignmentService.EnsureAssignedAsync(_dbContext, entity, cancellationToken);
 
         ApplyInvoiceLines(entity, dto.Lines);
+        amountResult.ApplyTo(entity);
         var currentStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
 
         await _invoiceStockSnapshotService.ApplyInvoiceStockDeltaDifferenceAsync(
@@ -312,6 +319,11 @@ public sealed class InvoicesController : ControllerBase
             return rentalRunError;
         }
 
+        var amountResult = await InvoiceAmountWritePolicy.NormalizeAsync(
+            _dbContext, _currentUserContext, _officeScopeService, dto, entity, cancellationToken);
+        if (amountResult.Error is { } amountError)
+            return BadRequest(amountError);
+
         if (await InvoiceStructuralMutationGuard.ShouldProtectExistingInvoiceFromSameIdStructuralMutationAsync(
                 _dbContext,
                 entity,
@@ -414,10 +426,16 @@ public sealed class InvoicesController : ControllerBase
         };
 
         entity.Apply(dto);
+        InvoiceAuthorPolicy.RecordAcceptedSave(entity, _currentUserContext, isNew: false);
         await TaxInvoiceNumberAssignmentService.EnsureAssignedAsync(_dbContext, entity, cancellationToken);
+        var previousLineIds = entity.Lines.Select(line => line.Id).ToHashSet();
         _dbContext.InvoiceLines.RemoveRange(entity.Lines);
         entity.Lines.Clear();
         ApplyInvoiceLines(entity, dto.Lines);
+        // A client-generated nonempty key would otherwise be discovered as a
+        // Modified dependent of an existing invoice, causing an UPDATE of no row.
+        _dbContext.InvoiceLines.AddRange(entity.Lines.Where(line => !previousLineIds.Contains(line.Id)));
+        amountResult.ApplyTo(entity);
         foreach (var candidate in versionParticipants)
         {
             candidate.IsLatestVersion =
@@ -1177,8 +1195,9 @@ public sealed class InvoicesController : ControllerBase
         entity.SpecificationOriginal = line.SpecificationOriginal;
         entity.Unit = line.Unit;
         entity.Quantity = line.Quantity;
-        entity.UnitPrice = line.UnitPrice;
-        entity.LineAmount = line.LineAmount == 0 ? line.Quantity * line.UnitPrice : line.LineAmount;
+        entity.UnitPrice = DisclosedAmount.Require(line.UnitPrice);
+        entity.LineAmount = DisclosedAmount.Require(line.LineAmount) == 0
+            ? line.Quantity * entity.UnitPrice : DisclosedAmount.Require(line.LineAmount);
         entity.Remark = line.Remark;
         entity.SerialNumber = line.SerialNumber;
         entity.MaterialNumber = line.MaterialNumber;

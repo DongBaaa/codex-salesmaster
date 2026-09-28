@@ -275,7 +275,15 @@
         </Border>
 
         <Border DockPanel.Dock="Bottom" Background="#122038" BorderBrush="#2E4060" BorderThickness="0,1,0,0" Padding="8">
-            <TextBlock Text="{Binding StatusMessage}" Foreground="#A5D6A7"/>
+            <StackPanel>
+                <TextBlock Text="{Binding StatusMessage}" Foreground="#A5D6A7" TextWrapping="Wrap"/>
+                <TextBlock x:Name="SalesLastSavedText"
+                           Text="{Binding LastSavedSummary}"
+                           Foreground="#B8C7D8"
+                           TextWrapping="Wrap"
+                           TextAlignment="Right"
+                           Margin="0,4,0,0"/>
+            </StackPanel>
         </Border>
 
         <Grid x:Name="SalesWorkspaceGrid" Margin="6" Grid.IsSharedSizeScope="True">
@@ -423,15 +431,15 @@
 
                             <TextBlock Grid.Row="0" Grid.ColumnSpan="2" Text="금액 요약" Style="{StaticResource InfoSectionTitleTextStyle}"/>
                             <TextBlock Grid.Row="1" Grid.Column="0" Text="합계금액" Style="{StaticResource InfoLabelTextStyle}"/>
-                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding TotalAmount, StringFormat={}{0:N0}}" Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}" HorizontalAlignment="Stretch" Margin="0,0,0,3"/>
+                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding TotalAmountDisplay}" Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}" HorizontalAlignment="Stretch" Margin="0,0,0,3"/>
                             <TextBlock Grid.Row="2" Grid.Column="0" Text="공급가" Style="{StaticResource InfoLabelTextStyle}"/>
-                            <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SupplyAmount, StringFormat={}{0:N0}}" Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}" HorizontalAlignment="Stretch" Margin="0,0,0,3"/>
+                            <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SupplyAmountDisplay}" Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}" HorizontalAlignment="Stretch" Margin="0,0,0,3"/>
                             <TextBlock Grid.Row="3" Grid.Column="0" Text="부가세" Style="{StaticResource InfoLabelTextStyle}"/>
-                            <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding VatAmount, StringFormat={}{0:N0}}" Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}" HorizontalAlignment="Stretch" Margin="0,0,0,3"/>
+                            <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding VatAmountDisplay}" Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}" HorizontalAlignment="Stretch" Margin="0,0,0,3"/>
                             <TextBlock Grid.Row="4" Grid.Column="0" Text="{Binding CustomerBalanceLabelText}" Style="{StaticResource InfoLabelTextStyle}"/>
-                            <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding CustomerBalance, StringFormat={}{0:N0}}" Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}" HorizontalAlignment="Stretch" Margin="0,0,0,3"/>
+                            <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding CustomerBalanceDisplay}" Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}" HorizontalAlignment="Stretch" Margin="0,0,0,3"/>
                             <TextBlock Grid.Row="5" Grid.Column="0" Text="{Binding CustomerReserveLabelText}" Style="{StaticResource InfoLabelTextStyle}" Margin="0,0,8,0"/>
-                            <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding CustomerAdvanceBalance, StringFormat={}{0:N0}}" Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}" HorizontalAlignment="Stretch" Margin="0"/>
+                            <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding CustomerAdvanceBalanceDisplay}" Style="{StaticResource ReadOnlyMoneyDisplayTextStyle}" HorizontalAlignment="Stretch" Margin="0"/>
                             <CheckBox Grid.Row="6"
                                       Grid.ColumnSpan="2"
                                       Content="부가세 없음"
@@ -578,14 +586,14 @@
                             <TextBox Grid.Row="1" Grid.Column="2" Height="32" MinWidth="0" Text="{Binding InputSpec, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0"/>
                             <TextBox Grid.Row="1" Grid.Column="3" Height="32" Width="50" MinWidth="0" Padding="4,3" FontSize="12" Text="{Binding InputQty, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0" HorizontalAlignment="Left" TextAlignment="Right"/>
                             <TextBox Grid.Row="1" Grid.Column="4" Height="32" Width="50" MinWidth="0" Padding="4,3" FontSize="12" Text="{Binding InputUnit, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0" HorizontalAlignment="Left" TextAlignment="Center"/>
-                            <TextBox Grid.Row="1" Grid.Column="5" Height="32" Width="110" MinWidth="0" Padding="4,3" FontSize="12" Text="{Binding InputUnitPrice, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0" HorizontalAlignment="Left" TextAlignment="Right"/>
+                            <TextBox Grid.Row="1" Grid.Column="5" Height="32" Width="110" MinWidth="0" Padding="4,3" FontSize="12" IsEnabled="{Binding CanEditInputAmounts}" ToolTip="금액 비공개 계정은 서버에서 계산합니다." Text="{Binding EditableInputUnitPrice, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}" Margin="4,0,0,0" HorizontalAlignment="Left" TextAlignment="Right"/>
                             <TextBox Grid.Row="1" Grid.Column="6"
                                      Height="32"
                                      Width="110"
                                      MinWidth="0"
                                      Padding="4,3"
                                      FontSize="12"
-                                     Text="{Binding InputLineAmount, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}"
+                                     IsEnabled="{Binding CanEditInputAmounts}" ToolTip="금액 비공개 계정은 서버에서 계산합니다." Text="{Binding EditableInputLineAmount, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}"
                                      Margin="4,0,0,0"
                                      HorizontalAlignment="Left"
                                      TextAlignment="Right"/>
@@ -620,8 +628,22 @@
                             <DataGridTextColumn Header="규격" Width="220" ElementStyle="{StaticResource GridCellTextBlockStyle}" EditingElementStyle="{StaticResource GridCellTextBoxStyle}" Binding="{Binding Specification, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                             <DataGridTextColumn Header="수량" Width="64" ElementStyle="{StaticResource RightGridCellTextBlockStyle}" EditingElementStyle="{StaticResource RightGridCellTextBoxStyle}" Binding="{Binding Quantity, Mode=TwoWay, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=LostFocus}"/>
                             <DataGridTextColumn Header="단위" Width="56" ElementStyle="{StaticResource GridCellTextBlockStyle}" EditingElementStyle="{StaticResource GridCellTextBoxStyle}" Binding="{Binding Unit, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
-                            <DataGridTextColumn Header="단가" Width="120" ElementStyle="{StaticResource RightGridCellTextBlockStyle}" EditingElementStyle="{StaticResource RightGridCellTextBoxStyle}" Binding="{Binding UnitPrice, Mode=TwoWay, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=LostFocus}"/>
-                            <DataGridTextColumn Header="금액" Width="124" ElementStyle="{StaticResource RightGridCellTextBlockStyle}" EditingElementStyle="{StaticResource RightGridCellTextBoxStyle}" Binding="{Binding LineAmount, Mode=TwoWay, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=LostFocus}"/>
+                            <DataGridTemplateColumn Header="단가" Width="120">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate><TextBlock Text="{Binding UnitPriceDisplay}" Style="{StaticResource RightGridCellTextBlockStyle}"/></DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                                <DataGridTemplateColumn.CellEditingTemplate>
+                                    <DataTemplate><TextBox Text="{Binding EditableUnitPrice, Mode=TwoWay, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=LostFocus}" IsEnabled="{Binding CanEditAmounts}" Style="{StaticResource RightGridCellTextBoxStyle}"/></DataTemplate>
+                                </DataGridTemplateColumn.CellEditingTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Header="금액" Width="124">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate><TextBlock Text="{Binding LineAmountDisplay}" Style="{StaticResource RightGridCellTextBlockStyle}"/></DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                                <DataGridTemplateColumn.CellEditingTemplate>
+                                    <DataTemplate><TextBox Text="{Binding EditableLineAmount, Mode=TwoWay, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=LostFocus}" IsEnabled="{Binding CanEditAmounts}" Style="{StaticResource RightGridCellTextBoxStyle}"/></DataTemplate>
+                                </DataGridTemplateColumn.CellEditingTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTextColumn Header="비고" Width="170" ElementStyle="{StaticResource GridCellTextBlockStyle}" EditingElementStyle="{StaticResource GridCellTextBoxStyle}" Binding="{Binding Remark, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                         </DataGrid.Columns>
                     </DataGrid>
@@ -865,12 +887,112 @@
                             <DataGridTextColumn Header="규격" Binding="{Binding SpecificationOriginal}" Width="116"/>
                             <DataGridTextColumn Header="자재번호" Binding="{Binding MaterialNumber}" Width="110"/>
                             <DataGridTextColumn Header="현재재고" Binding="{Binding CurrentStock, StringFormat=N0}" Width="84"/>
-                            <DataGridTextColumn Header="매출단가" Binding="{Binding SalePrice, StringFormat=N0}" Width="84"/>
-                            <DataGridTextColumn Header="소매단가" Binding="{Binding RetailPrice, StringFormat=N0}" Width="84"/>
+                            <DataGridTemplateColumn Header="매출단가" Width="84">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock>
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource RightGridCellTextBlockStyle}">
+                                                    <Setter Property="Text" Value="{Binding SalePrice, StringFormat=N0}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding SalesAmountsHidden}" Value="True">
+                                                            <Setter Property="Text" Value="비공개"/>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding DataContext.CanViewCatalogSalesAmounts, RelativeSource={RelativeSource AncestorType=Window}}" Value="False">
+                                                            <Setter Property="Text" Value="비공개"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Header="소매단가" Width="84">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock>
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource RightGridCellTextBlockStyle}">
+                                                    <Setter Property="Text" Value="{Binding RetailPrice, StringFormat=N0}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding SalesAmountsHidden}" Value="True">
+                                                            <Setter Property="Text" Value="비공개"/>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding DataContext.CanViewCatalogSalesAmounts, RelativeSource={RelativeSource AncestorType=Window}}" Value="False">
+                                                            <Setter Property="Text" Value="비공개"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTextColumn Header="단위" Binding="{Binding Unit}" Width="62"/>
-                            <DataGridTextColumn Header="A.단가" Binding="{Binding PriceGradeA, StringFormat=N0}" Width="76"/>
-                            <DataGridTextColumn Header="B.단가" Binding="{Binding PriceGradeB, StringFormat=N0}" Width="76"/>
-                            <DataGridTextColumn Header="C.단가" Binding="{Binding PriceGradeC, StringFormat=N0}" Width="76"/>
+                            <DataGridTemplateColumn Header="A.단가" Width="76">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock>
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource RightGridCellTextBlockStyle}">
+                                                    <Setter Property="Text" Value="{Binding PriceGradeA, StringFormat=N0}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding SalesAmountsHidden}" Value="True">
+                                                            <Setter Property="Text" Value="비공개"/>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding DataContext.CanViewCatalogSalesAmounts, RelativeSource={RelativeSource AncestorType=Window}}" Value="False">
+                                                            <Setter Property="Text" Value="비공개"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Header="B.단가" Width="76">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock>
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource RightGridCellTextBlockStyle}">
+                                                    <Setter Property="Text" Value="{Binding PriceGradeB, StringFormat=N0}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding SalesAmountsHidden}" Value="True">
+                                                            <Setter Property="Text" Value="비공개"/>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding DataContext.CanViewCatalogSalesAmounts, RelativeSource={RelativeSource AncestorType=Window}}" Value="False">
+                                                            <Setter Property="Text" Value="비공개"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Header="C.단가" Width="76">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock>
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource RightGridCellTextBlockStyle}">
+                                                    <Setter Property="Text" Value="{Binding PriceGradeC, StringFormat=N0}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding SalesAmountsHidden}" Value="True">
+                                                            <Setter Property="Text" Value="비공개"/>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding DataContext.CanViewCatalogSalesAmounts, RelativeSource={RelativeSource AncestorType=Window}}" Value="False">
+                                                            <Setter Property="Text" Value="비공개"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>

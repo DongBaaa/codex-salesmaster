@@ -5,6 +5,7 @@ namespace GeoraePlan.Mobile.App.Services;
 
 public sealed class SessionStore
 {
+    public event EventHandler? SessionChanged;
     private const string HasSessionKey = "session.has";
     private const string TokenKey = "session.token";
     private const string UsernameKey = "session.username";
@@ -115,6 +116,7 @@ public sealed class SessionStore
         finally
         {
             _ownerMutationGate.Release();
+            SessionChanged?.Invoke(this, EventArgs.Empty);
         }
     }
 
@@ -181,6 +183,7 @@ public sealed class SessionStore
         finally
         {
             _ownerMutationGate.Release();
+            SessionChanged?.Invoke(this, EventArgs.Empty);
         }
     }
 
@@ -244,6 +247,7 @@ public sealed class SessionStore
         finally
         {
             _ownerMutationGate.Release();
+            SessionChanged?.Invoke(this, EventArgs.Empty);
         }
     }
 
@@ -331,6 +335,7 @@ public sealed class SessionStore
         finally
         {
             _ownerMutationGate.Release();
+            SessionChanged?.Invoke(this, EventArgs.Empty);
         }
     }
 #endif
@@ -345,6 +350,7 @@ public sealed class SessionStore
         finally
         {
             _ownerMutationGate.Release();
+            SessionChanged?.Invoke(this, EventArgs.Empty);
         }
     }
 

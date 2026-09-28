@@ -183,7 +183,7 @@ public sealed class RuntimeSafetyMonitorService
                 report = await local.BuildIntegrityReportAsync(_session, ct);
         }
 
-        if (!report.HasIssues)
+        if (!report.RequiresFullMirrorRefresh)
         {
             await ClearActivePeriodicIntegrityReportAsync(local, ct);
             var successMessage = autoRecoveryAttempted

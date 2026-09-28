@@ -34,7 +34,7 @@ public sealed partial class InventoryTransferScopeGuardTests
     [InlineData("unsynced", true)]
     [InlineData("received", true)]
     [InlineData("foreign-route", true)]
-    [InlineData("wrong-destination", true)]
+    [InlineData("wrong-destination", false)] // Neither endpoint belongs to the current office.
     [InlineData("deleted-item", true)]
     [InlineData("no-snapshot", true)]
     public async Task ReceivedItemAccess_IntegrityDistinguishesPendingSnapshotFromBrokenReferences(string scenario, bool issueExpected)

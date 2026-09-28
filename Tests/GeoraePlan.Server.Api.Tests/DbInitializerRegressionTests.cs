@@ -43,9 +43,12 @@ public sealed class DbInitializerRegressionTests : IDisposable
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task RentalLinkageRepair_RepeatedStartupWithItworldOwnerAndUsenetCustomer_DoesNotTouchUnchangedRecords(bool pendingFeeChange)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task RentalLinkageRepair_RepeatedStartupWithItworldOwnerAndUsenetCustomer_DoesNotTouchUnchangedRecords(
+        bool pendingFeeChange, bool clientTemplateSerialization)
     {
         var customerId = Guid.NewGuid();
         var profileId = Guid.NewGuid();
@@ -91,6 +94,18 @@ public sealed class DbInitializerRegressionTests : IDisposable
         Assert.Equal(OfficeCodeCatalog.Usenet, profile.ResponsibleOfficeCode);
         Assert.Equal(OfficeCodeCatalog.Itworld, asset.OfficeCode);
         Assert.Equal(OfficeCodeCatalog.Usenet, asset.ResponsibleOfficeCode);
+        if (clientTemplateSerialization)
+        {
+            // Desktop saves can order the same properties differently and add
+            // extension fields that the startup template model must preserve.
+            var items = JsonSerializer.Deserialize<List<Dictionary<string, JsonElement>>>(profile.BillingTemplateJson)!;
+            items[0]["IndividualGroupingMode"] = JsonSerializer.SerializeToElement("개별");
+            items[0]["ClientDisplayOptions"] = JsonSerializer.SerializeToElement(new { Note = "보존", Columns = new[] { "asset", "amount" } });
+            profile.BillingTemplateJson = JsonSerializer.Serialize(
+                items.Select(item => item.Reverse().ToDictionary(pair => pair.Key, pair => pair.Value)),
+                new JsonSerializerOptions { WriteIndented = true });
+            await _dbContext.SaveChangesAsync();
+        }
         var profileBefore = Snapshot(profile);
         var assetBefore = Snapshot(asset);
         if (pendingFeeChange)
@@ -113,6 +128,79 @@ public sealed class DbInitializerRegressionTests : IDisposable
         }
         Assert.Equal(profileBefore, Snapshot(profile));
         Assert.Equal(assetBefore, Snapshot(asset));
+        if (clientTemplateSerialization)
+        {
+            using var template = JsonDocument.Parse(profile.BillingTemplateJson);
+            var item = template.RootElement[0];
+            Assert.Equal("개별", item.GetProperty("IndividualGroupingMode").GetString());
+            Assert.Equal("보존", item.GetProperty("ClientDisplayOptions").GetProperty("Note").GetString());
+            Assert.Equal(new[] { "asset", "amount" }, item.GetProperty("ClientDisplayOptions").GetProperty("Columns")
+                .EnumerateArray().Select(value => value.GetString()));
+        }
+    }
+
+    [Theory]
+    [InlineData(TenantScopeCatalog.Itworld, OfficeCodeCatalog.Itworld, TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet)]
+    [InlineData(TenantScopeCatalog.UsenetGroup, OfficeCodeCatalog.Usenet, TenantScopeCatalog.Itworld, OfficeCodeCatalog.Itworld)]
+    public async Task RentalLinkageRepair_WithoutOwnTenantCustomers_DoesNotAdoptForeignSameNameCustomer(
+        string ownerTenant, string ownerOffice, string foreignTenant, string foreignOffice)
+    {
+        const string customerName = "Tenant boundary fixture customer";
+        var foreignCustomer = new Customer
+        {
+            Id = Guid.NewGuid(), TenantCode = foreignTenant, OfficeCode = foreignOffice,
+            ResponsibleOfficeCode = foreignOffice, NameOriginal = customerName,
+            NameMatchKey = "TENANTBOUNDARYFIXTURECUSTOMER"
+        };
+        var item = new Item
+        {
+            Id = Guid.NewGuid(), TenantCode = ownerTenant,
+            NameOriginal = "Tenant boundary fixture item", NameMatchKey = "TENANTBOUNDARYFIXTUREITEM"
+        };
+        var profile = new RentalBillingProfile
+        {
+            Id = Guid.NewGuid(), TenantCode = ownerTenant, OfficeCode = ownerOffice,
+            ResponsibleOfficeCode = ownerOffice, ManagementCompanyCode = ownerOffice,
+            CustomerName = customerName, ItemName = item.NameOriginal,
+            MonthlyAmount = 55000m, BillingTemplateJson = "[]"
+        };
+        var asset = new RentalAsset
+        {
+            Id = Guid.NewGuid(), TenantCode = ownerTenant, OfficeCode = ownerOffice,
+            ResponsibleOfficeCode = ownerOffice, ManagementCompanyCode = ownerOffice,
+            CustomerName = customerName, CurrentCustomerName = customerName,
+            ItemId = item.Id, ItemName = item.NameOriginal, MonthlyFee = 55000m,
+            ManagementNumber = "TENANT-BOUNDARY", AssetKey = ownerOffice + "|TENANT-BOUNDARY",
+            InstallLocation = "Fixture site", InstallSiteName = "Fixture site"
+        };
+        _dbContext.AddRange(foreignCustomer, item, profile, asset);
+        await _dbContext.SaveChangesAsync();
+        var foreignCustomerBefore = JsonSerializer.Serialize(foreignCustomer);
+        var itemBefore = JsonSerializer.Serialize(item);
+        var method = typeof(DbInitializer).GetMethod(
+            "RepairRentalCustomerLinkageAsync", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        for (var run = 0; run < 2; run++)
+        {
+            await (Task)method.Invoke(null, [_dbContext, CancellationToken.None])!;
+            await _dbContext.SaveChangesAsync();
+
+            Assert.Null(asset.CustomerId);
+            Assert.Null(profile.CustomerId);
+            Assert.Equal(ownerTenant, asset.TenantCode);
+            Assert.Equal(ownerOffice, asset.OfficeCode);
+            Assert.Equal(ownerOffice, asset.ManagementCompanyCode);
+            Assert.Equal(ownerOffice, asset.ResponsibleOfficeCode);
+            Assert.Equal(ownerTenant, profile.TenantCode);
+            Assert.Equal(ownerOffice, profile.OfficeCode);
+            Assert.Equal(ownerOffice, profile.ManagementCompanyCode);
+            Assert.Equal(ownerOffice, profile.ResponsibleOfficeCode);
+            Assert.Equal(item.Id, asset.ItemId);
+            Assert.Equal(55000m, asset.MonthlyFee);
+            Assert.Equal(55000m, profile.MonthlyAmount);
+            Assert.Equal(foreignCustomerBefore, JsonSerializer.Serialize(foreignCustomer));
+            Assert.Equal(itemBefore, JsonSerializer.Serialize(item));
+        }
     }
 
     [Fact]

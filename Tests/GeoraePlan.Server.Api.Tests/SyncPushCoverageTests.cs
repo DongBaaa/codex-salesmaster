@@ -317,7 +317,8 @@ public sealed class SyncPushCoverageTests
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null)
         {
-            if (Directory.Exists(Path.Combine(directory.FullName, ".git")) &&
+            var gitMarker = Path.Combine(directory.FullName, ".git");
+            if ((Directory.Exists(gitMarker) || File.Exists(gitMarker)) &&
                 Directory.Exists(Path.Combine(directory.FullName, "Server")) &&
                 Directory.Exists(Path.Combine(directory.FullName, "Shared")))
             {

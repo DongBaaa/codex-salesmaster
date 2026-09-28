@@ -17,6 +17,9 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
     private readonly SessionState _session;
     private List<LocalCustomer> _customers = new();
     private CancellationTokenSource? _contractDateRefreshCts;
+    private bool _hasManualContractDate;
+    private bool _applyingResolvedContractDate;
+    private long _contractDateEditVersion;
     private bool _updatingTemplateTotals;
 
     [ObservableProperty] private int _currentStepIndex;
@@ -44,7 +47,9 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
     [ObservableProperty] private string _documentIssueMode = RentalBillingScheduleRules.DocumentIssueModeSameAsDueDate;
     [ObservableProperty] private int _documentLeadDays;
     [ObservableProperty] private DateTime? _billingStartDate;
-    [ObservableProperty] private decimal _monthlyAmount;
+    public bool AreRentalAmountsReadOnly => !_session.HasPermission(AppPermissionNames.AmountViewSales);
+
+    [ObservableProperty] private decimal? _monthlyAmount = 0m;
     [ObservableProperty] private string _billingMethod = string.Empty;
     [ObservableProperty] private string _submissionDocuments = string.Empty;
     [ObservableProperty] private string _notes = string.Empty;
@@ -193,6 +198,11 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
     partial void OnDocumentLeadDaysChanged(int value) => UpdateBillingPreview();
     partial void OnBillingStartDateChanged(DateTime? value)
     {
+        if (!_applyingResolvedContractDate)
+        {
+            _hasManualContractDate = true;
+            _contractDateEditVersion++;
+        }
         OnPropertyChanged(nameof(IsContractDateMissing));
         OnPropertyChanged(nameof(ShouldShowContractDateWarning));
         OnPropertyChanged(nameof(ContractDateWarningMessage));
@@ -220,7 +230,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
             NormalizeIndividualTemplateGroupsByModel(resetCustomGroups: false);
         UpdateTemplateTotals();
     }
-    partial void OnMonthlyAmountChanged(decimal value)
+    partial void OnMonthlyAmountChanged(decimal? value)
     {
         if (_updatingTemplateTotals)
             return;
@@ -229,7 +239,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         {
             var templateItem = TemplateItems[0];
             var quantity = templateItem.Quantity <= 0m ? 1m : templateItem.Quantity;
-            templateItem.UnitPrice = Math.Max(0m, value) / quantity;
+            templateItem.UnitPrice = RentalBillingTemplateEditorItem.NormalizeAmount(value) / quantity;
             templateItem.NormalizeCalculatedAmount();
         }
 
@@ -303,6 +313,8 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
     {
         if (!ValidateCurrentStep())
             return;
+
+        StatusMessage = string.Empty;
 
         if (CurrentStepIndex == 3)
             await LoadCandidateAssetsAsync();
@@ -506,7 +518,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                 BillingStartDate = ToDateOnly(BillingStartDate),
                 BillingAnchorDate = ToDateOnly(BillingStartDate),
                 ContractDate = ToDateOnly(BillingStartDate),
-                MonthlyAmount = MonthlyAmount,
+                MonthlyAmount = DisclosedAmount.Require(MonthlyAmount),
                 SubmissionDocuments = SubmissionDocuments,
                 Notes = Notes,
                 Email = (Email ?? string.Empty).Trim(),
@@ -676,7 +688,8 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                 InstallLocation = string.IsNullOrWhiteSpace(asset.InstallSiteName) ? asset.InstallLocation : asset.InstallSiteName,
                 AssetStatus = asset.AssetStatus,
                 BillingEligibilityStatus = string.IsNullOrWhiteSpace(asset.BillingEligibilityStatus) ? "미확인" : asset.BillingEligibilityStatus,
-                MonthlyFee = Math.Max(0m, asset.MonthlyFee)
+                MonthlyFee = _session.HasPermission(AppPermissionNames.AmountViewSales) && !asset.SalesAmountsHidden ? Math.Max(0m, asset.MonthlyFee) : null,
+                SalesAmountsReadOnly = !_session.HasPermission(AppPermissionNames.AmountViewSales) || asset.SalesAmountsHidden
             };
             option.PropertyChanged += (_, _) =>
             {
@@ -736,6 +749,12 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
     {
         ArgumentNullException.ThrowIfNull(customer);
 
+        // A manual date belongs to the selected customer, not the next customer.
+        if (CustomerId != customer.Id)
+        {
+            _hasManualContractDate = false;
+            _contractDateEditVersion++;
+        }
         CustomerId = customer.Id;
         CustomerName = customer.NameOriginal?.Trim() ?? string.Empty;
         BusinessNumber = customer.BusinessNumber?.Trim() ?? string.Empty;
@@ -775,12 +794,24 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
 
     private async Task RefreshContractDateFromSourcesAsync(bool preserveExistingValue, CancellationToken ct = default)
     {
-        if (preserveExistingValue && BillingStartDate.HasValue)
+        if (_hasManualContractDate || (preserveExistingValue && BillingStartDate.HasValue))
             return;
 
+        var editVersion = _contractDateEditVersion;
         var contractDate = await ResolveContractDateFromSourcesAsync(ct);
         ct.ThrowIfCancellationRequested();
-        BillingStartDate = ToDateTime(contractDate);
+        if (editVersion != _contractDateEditVersion)
+            return;
+
+        _applyingResolvedContractDate = true;
+        try
+        {
+            BillingStartDate = ToDateTime(contractDate);
+        }
+        finally
+        {
+            _applyingResolvedContractDate = false;
+        }
     }
 
     private async Task<DateOnly?> ResolveContractDateFromSourcesAsync(CancellationToken ct = default)
@@ -866,7 +897,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
 
     private bool CanAutoGroupIndividualTemplateItemsByModel()
         => TemplateItems.Any(item =>
-               string.Equals(ResolveTemplateBillingLineMode(item.BillingLineMode, BillingType), "개별", StringComparison.Ordinal)) &&
+               !item.AmountsHidden && string.Equals(ResolveTemplateBillingLineMode(item.BillingLineMode, BillingType), "개별", StringComparison.Ordinal)) &&
            TemplateItems.SelectMany(item => item.IncludedAssetIds).Any(id => id != Guid.Empty);
 
     [RelayCommand(CanExecute = nameof(CanAutoGroupIndividualTemplateItemsByModel))]
@@ -887,7 +918,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
     {
         var automaticItems = TemplateItems
             .Where(item =>
-                string.Equals(ResolveTemplateBillingLineMode(item.BillingLineMode, BillingType), "개별", StringComparison.Ordinal) &&
+                !item.AmountsHidden && string.Equals(ResolveTemplateBillingLineMode(item.BillingLineMode, BillingType), "개별", StringComparison.Ordinal) &&
                 (resetCustomGroups ||
                  !string.Equals(
                      NormalizeIndividualGroupingMode(item.IndividualGroupingMode),
@@ -986,8 +1017,14 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         if (assets.Count == 0)
             return;
 
-        var total = assets.Sum(asset => Math.Max(0m, asset.MonthlyFee));
-        var positiveFees = assets.Select(asset => Math.Max(0m, asset.MonthlyFee)).Where(fee => fee > 0m).Distinct().ToList();
+        if (AreRentalAmountsReadOnly || assets.Any(asset => !asset.MonthlyFee.HasValue))
+        {
+            item.Quantity = assets.Count; item.UnitPrice = null; item.Amount = null;
+            return;
+        }
+
+        var total = assets.Sum(asset => Math.Max(0m, asset.MonthlyFee!.Value));
+        var positiveFees = assets.Select(asset => Math.Max(0m, asset.MonthlyFee!.Value)).Where(fee => fee > 0m).Distinct().ToList();
         item.Quantity = assets.Count;
         item.UnitPrice = positiveFees.Count == 1 && assets.All(asset => asset.MonthlyFee <= 0m || asset.MonthlyFee == positiveFees[0])
             ? positiveFees[0]
@@ -1044,8 +1081,8 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
             Unit = (item.Unit ?? string.Empty).Trim(),
             MaterialNumber = (item.MaterialNumber ?? string.Empty).Trim(),
             Quantity = item.Quantity <= 0m ? 1m : item.Quantity,
-            UnitPrice = Math.Max(0m, item.UnitPrice),
-            Amount = item.Amount > 0m ? item.Amount : item.EffectiveAmount,
+            UnitPrice = item.AmountsHidden ? null : RentalBillingTemplateEditorItem.NormalizeAmount(item.UnitPrice),
+            Amount = item.AmountsHidden ? null : item.Amount > 0m ? item.Amount : item.EffectiveAmount,
             Note = (item.Note ?? string.Empty).Trim(),
             IncludedAssetIds = item.IncludedAssetIds.Distinct().ToList()
         }).ToList();
@@ -1139,6 +1176,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
 
     private void UpdateTemplateTotals()
     {
+        OnPropertyChanged(nameof(AreRentalAmountsReadOnly));
         if (_updatingTemplateTotals)
             return;
 
@@ -1152,7 +1190,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
                     item.Amount = item.EffectiveAmount;
             }
 
-            MonthlyAmount = TemplateItems.Sum(item => item.EffectiveAmount);
+            MonthlyAmount = RentalBillingTemplateEditorItem.SumKnownAmounts(TemplateItems);
             AutoGroupIndividualTemplateItemsByModelCommand.NotifyCanExecuteChanged();
             UpdateBillingPreview();
         }
@@ -1167,7 +1205,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         if (!BillingStartDate.HasValue)
         {
             BillingPreviewPeriod = "계약 체결일 확인 필요";
-            ExpectedBillingAmountText = $"{TemplateItems.Sum(item => item.EffectiveAmount) * RentalBillingScheduleRules.NormalizeCycleMonths(BillingCycleMonths):N0}원";
+            ExpectedBillingAmountText = RentalBillingTemplateEditorItem.FormatAmount(RentalBillingTemplateEditorItem.SumKnownAmounts(TemplateItems) * RentalBillingScheduleRules.NormalizeCycleMonths(BillingCycleMonths));
             BillingSchedulePreviewText = "계약 체결일을 확인하면 다음 결제일이 표시됩니다.";
             DocumentIssuePreviewText = "계약 체결일을 확인하면 예상 발송일이 표시됩니다.";
             ApplySelectedAssetsHint = BuildApplySelectedAssetsHint();
@@ -1219,7 +1257,7 @@ public sealed partial class RentalCustomerOnboardingViewModel : ObservableObject
         BillingPreviewPeriod = period.StartDate == period.EndDate || (period.StartDate.Year == period.EndDate.Year && period.StartDate.Month == period.EndDate.Month)
             ? $"{period.StartDate:yyyy-MM}"
             : $"{period.StartDate:yyyy-MM} ~ {period.EndDate:yyyy-MM}";
-        ExpectedBillingAmountText = $"{TemplateItems.Sum(item => item.EffectiveAmount) * cycleMonths:N0}원";
+        ExpectedBillingAmountText = RentalBillingTemplateEditorItem.FormatAmount(RentalBillingTemplateEditorItem.SumKnownAmounts(TemplateItems) * cycleMonths);
         BillingSchedulePreviewText = $"청구일 규칙: {billingDayText} / 청구기간 시작월: {anchorText} / 예상 결제일: {(dueDate.HasValue ? dueDate.Value.ToString("yyyy-MM-dd") : "지정 없음 (청구 시 작성일 선택)")}";
         DocumentIssuePreviewText = issueDate.HasValue
             ? $"서류 발송 규칙: {BuildDocumentIssueModeText()} / 예상 발송일: {issueDate.Value:yyyy-MM-dd}"

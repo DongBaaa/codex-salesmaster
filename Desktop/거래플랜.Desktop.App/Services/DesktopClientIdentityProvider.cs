@@ -16,6 +16,7 @@ public sealed class DesktopClientIdentityProvider
 {
     public const string DesktopAppId = "kr.georaeplan.desktop";
     public const string DesktopPlatform = "windows";
+    public const int CurrentProtocolVersion = ClientCompatibilityHeaders.NullableRentalProfileAmountsProtocolVersion;
 
     private readonly string _version;
     private readonly string _build;
@@ -26,7 +27,7 @@ public sealed class DesktopClientIdentityProvider
     {
     }
 
-    internal DesktopClientIdentityProvider(Version? assemblyVersion)
+    internal DesktopClientIdentityProvider(Version? assemblyVersion, int protocolVersion = CurrentProtocolVersion)
     {
         var resolvedVersion = assemblyVersion ?? new Version(1, 0, 0);
         _version = FormatVersion(resolvedVersion);
@@ -34,7 +35,7 @@ public sealed class DesktopClientIdentityProvider
             .ToString(CultureInfo.InvariantCulture);
         _protocol = Math.Max(
                 1,
-                ClientCompatibilityHeaders.CurrentProtocolVersion)
+                protocolVersion)
             .ToString(CultureInfo.InvariantCulture);
     }
 

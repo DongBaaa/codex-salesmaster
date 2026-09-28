@@ -15,6 +15,7 @@ public sealed class LocalInvoiceListSummary
     public string TaxInvoiceNumber { get; set; } = string.Empty;
     public DateOnly InvoiceDate { get; set; }
     public VoucherType VoucherType { get; set; }
+    public bool AmountsHidden { get; set; }
     public decimal TotalAmount { get; set; }
     public decimal SupplyAmount { get; set; }
     public decimal VatAmount { get; set; }

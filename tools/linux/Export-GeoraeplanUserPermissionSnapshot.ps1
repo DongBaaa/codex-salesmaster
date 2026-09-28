@@ -6,7 +6,11 @@ param(
     [string]$LinuxSshKeyPath = (
         Join-Path $env:USERPROFILE '.ssh\itwserver_codex_ed25519'),
     [string]$RemoteOpsDirectory = '/srv/georaeplan/ops',
-    [string]$OutputDirectory
+    [string]$OutputDirectory,
+    [ValidateSet(
+        'https://trade.2884.kr/healthz',
+        'http://192.168.0.199:18082/healthz')]
+    [string]$HealthCheckUrl = 'https://trade.2884.kr/healthz'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -512,10 +516,14 @@ Assert-SourceUsersSnapshotAcl `
 
 $health = Invoke-WebRequest `
     -UseBasicParsing `
-    -Uri 'https://trade.2884.kr/healthz' `
+    -Uri $HealthCheckUrl `
+    -MaximumRedirection 0 `
     -TimeoutSec 30
 if ($health.StatusCode -ne 200) {
-    throw 'trade.2884.kr preflight health check failed.'
+    throw 'TradePlan preflight health check failed.'
+}
+if (($health.Content | ConvertFrom-Json).status -cne 'ok') {
+    throw 'TradePlan preflight returned an unexpected health response.'
 }
 
 $sshExecutable = Resolve-SshExecutable

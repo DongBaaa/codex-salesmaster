@@ -322,9 +322,22 @@ public sealed class SyncController : ControllerBase
                 .ToList()
         };
 
+        // Authorize monetary direction against the original link before unreadable
+        // links are stripped; a missing parent must not become an unlinked receipt.
+        await TransactionAmountReadPolicy.ApplyAsync(response.Transactions, _dbContext, _officeScopeService, cancellationToken);
         await RemoveUnreadableItemLinesFromPullResponseAsync(response, cancellationToken);
         await RemoveUnreadableInvoicePaymentLinksFromPullResponseAsync(response, cancellationToken);
         await RemoveUnreadableRentalSettlementLinksFromPullResponseAsync(response, cancellationToken);
+
+        foreach (var item in response.Items) ItemAmountReadPolicy.Apply(item, _officeScopeService);
+        foreach (var grade in response.ItemPriceGrades) ItemAmountReadPolicy.Apply(grade, _officeScopeService);
+        foreach (var profile in response.RentalBillingProfiles) RentalProfileAmountReadPolicy.Apply(profile, _officeScopeService);
+        foreach (var asset in response.RentalAssets) RentalAssetAmountReadPolicy.Apply(asset, _officeScopeService);
+        foreach (var history in response.RentalAssetAssignmentHistories) RentalAssetAmountReadPolicy.Apply(history, _officeScopeService);
+        foreach (var log in response.RentalBillingLogs) RentalAssetAmountReadPolicy.Apply(log, _officeScopeService);
+        foreach (var invoice in response.Invoices)
+            InvoiceAmountReadPolicy.Apply(invoice, _officeScopeService);
+        await InvoiceAmountReadPolicy.ApplyPaymentsAsync(response.Payments, _dbContext, _officeScopeService, cancellationToken);
 
         response.CurrentServerRevision = upperRevision;
         if (!rentalAdministrationOnly && _currentUserContext.UserId is { } scopeUserId && scopeUserId != Guid.Empty)
@@ -700,6 +713,10 @@ public sealed class SyncController : ControllerBase
             HasAny(request.ItemWarehouseStockSnapshotMarkers),
             PermissionNames.ItemEdit,
             "품목/재고");
+        Require(
+            HasAny(request.ItemPriceGrades) || HasAny(request.PriceGradeOptions),
+            PermissionNames.AmountViewSales,
+            "매출 단가/단가 등급");
         Require(HasAny(request.Invoices), PermissionNames.InvoiceEdit, "전표");
         Require(
             HasAny(request.Transactions) ||
@@ -1150,7 +1167,8 @@ public sealed class SyncController : ControllerBase
             RemapIncomingItemReferences(request, resolvedIncomingItemIds);
             await EnsureItemCategoryOptionsForItemsAsync(scopedItems, cancellationToken);
             var acceptedItems = await UpsertEntitiesAsync(scopedItems, _dbContext.Items,
-                (e, d) => e.Apply(d), d => new Item { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+                (e, d) => ItemAmountWritePolicy.Apply(e, d, _officeScopeService),
+                d => new Item { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
             if (scopedItems.Count > 0)
             {
                 await _dbContext.SaveChangesAsync(cancellationToken);
@@ -1288,6 +1306,8 @@ public sealed class SyncController : ControllerBase
                     cancellationToken)
                 : null;
             var acknowledgedRentalProfileIds = new Dictionary<Guid, Guid>();
+            var rentalAssetRelinkIntents = await CaptureRentalAssetRelinkIntentsAsync(
+                request.RentalAssets ?? [], rentalProfilePushSnapshot, cancellationToken);
             var acceptedActiveRentalProfileIdsForReferences = new Dictionary<Guid, Guid>();
             var rentalProfileTombstoneSettlementTargets = new List<(Guid ProfileId, Guid? RunId)>();
             var blockedPriorGenerationRentalProfileIdentitiesForReferences =
@@ -1327,7 +1347,8 @@ public sealed class SyncController : ControllerBase
                 nonReplayRentalProfiles,
                 result,
                 cancellationToken,
-                rentalProfilePushSnapshot);
+                rentalProfilePushSnapshot,
+                rentalProfileRestoreCustomerIds);
             validRentalProfiles = FilterAmbiguousIncomingRentalBillingProfiles(
                 validRentalProfiles,
                 originalRentalProfileIds,
@@ -1422,7 +1443,12 @@ public sealed class SyncController : ControllerBase
             }
             var scopedTransactions = await PrepareScopedTransactionsAsync(request.Transactions ?? [], result, cancellationToken);
             var validTransactions = await FilterValidTransactionsAsync(scopedTransactions, result, cancellationToken);
-            var validPayments = await FilterValidPaymentsAsync(request.Payments ?? [], result, cancellationToken);
+            var explicitlyDeletedTransactionIds = validTransactions
+                .Where(transaction => transaction.IsDeleted)
+                .Select(transaction => transaction.Id)
+                .ToHashSet();
+            var validPayments = await FilterValidPaymentsAsync(
+                request.Payments ?? [], explicitlyDeletedTransactionIds, result, cancellationToken);
             var paymentTransactionAtomicity = await FilterAtomicPaymentTransactionPairsAsync(
                 request.Transactions ?? [],
                 validTransactions,
@@ -1543,6 +1569,9 @@ public sealed class SyncController : ControllerBase
                 rentalProfileAssetAtomicityProfileIds = await FindAcceptedRentalBillingProfilesWithUnavailableTemplateAssetsAsync(
                     acceptedRentalProfiles,
                     cancellationToken);
+                rentalProfileAssetAtomicityProfileIds.AddRange(await FindIncompleteRentalAssetRelinksAsync(
+                    rentalAssetRelinkIntents, acceptedRentalProfiles, acceptedRentalAssets,
+                    resolvedRentalProfileIds, cancellationToken));
                 if (rentalProfileAssetAtomicityProfileIds.Count > 0)
                 {
                     rentalProfileAssetAtomicityRollback = true;
@@ -1555,7 +1584,8 @@ public sealed class SyncController : ControllerBase
                 var scopedRentalBillingLogs = await PrepareScopedRentalBillingLogsAsync(request.RentalBillingLogs ?? [], result, cancellationToken);
                 var validRentalBillingLogs = await FilterValidRentalBillingLogsAsync(scopedRentalBillingLogs, result, cancellationToken);
                 await UpsertEntitiesAsync(validRentalBillingLogs, _dbContext.RentalBillingLogs,
-                    (e, d) => e.Apply(d), d => new RentalBillingLog { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
+                    (e, d) => e.Apply(d), d => new RentalBillingLog { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken,
+                    preserveOriginalIncomingPayloadHashForReceipt: true);
                 var acceptedPayments = await UpsertEntitiesAsync(validPayments, _dbContext.Payments,
                     (e, d) => e.Apply(d), d => new Payment { Id = d.Id == Guid.Empty ? Guid.NewGuid() : d.Id }, result, deviceId, cancellationToken);
                 var paymentRentalSettlementTargets =
@@ -1565,6 +1595,13 @@ public sealed class SyncController : ControllerBase
                     await SynchronizeAcceptedPaymentsToLinkedTransactionsAsync(acceptedPayments, cancellationToken);
                 var paymentLinkedTransactionSettlementTargets =
                     await CascadeDeletedPaymentsToLinkedTransactionsAsync(acceptedPayments, cancellationToken);
+
+                // Validate and apply explicit receipt deletes against the pre-cascade
+                // links/revisions. Invoice-only deletion still preserves detached receipts.
+                await _rentalSettlementRecalculationService.DetachTransactionsFromInvoicesAsync(
+                    invoiceUpsertResult.AcceptedDeletedInvoiceIds, cancellationToken);
+                await _rentalSettlementRecalculationService.MarkPaymentsDeletedForInvoicesAsync(
+                    invoiceUpsertResult.AcceptedDeletedInvoiceIds, cancellationToken);
 
                 await SynchronizeAcceptedCustomerRentalLinksAsync(acceptedCustomers, cancellationToken);
                 await _dbContext.SaveChangesAsync(cancellationToken);
@@ -1763,7 +1800,7 @@ public sealed class SyncController : ControllerBase
             AddNotice(result, nameof(Invoice), Guid.Empty, "invoice-stock-atomicity-rollback",
                 "The entire Push was rolled back because a rejected invoice shared an applied client stock snapshot. No mutation or stock acknowledgement was committed.");
             result.CurrentServerRevision = await GetCurrentRevisionAsync(cancellationToken);
-            return Ok(result);
+            return Ok(await ToAmountScopedPushResultAsync(result, cancellationToken));
         }
 
         if (inventoryTransferStockAtomicityRollback)
@@ -1780,7 +1817,7 @@ public sealed class SyncController : ControllerBase
                 "The entire Push was rolled back because a rejected inventory transfer shared an applied client stock snapshot. No mutation or stock acknowledgement was committed.");
             result.CurrentServerRevision =
                 await GetCurrentRevisionAsync(cancellationToken);
-            return Ok(result);
+            return Ok(await ToAmountScopedPushResultAsync(result, cancellationToken));
         }
 
         if (rentalProfileAssetAtomicityRollback)
@@ -1796,11 +1833,11 @@ public sealed class SyncController : ControllerBase
                     nameof(RentalBillingProfile),
                     profileId,
                     "rental-profile-asset-atomicity-rollback",
-                    "청구 프로필이 참조한 신규 또는 복원 자산이 같은 동기화에서 승인되지 않아 전체 Push를 롤백했습니다. 자산 충돌을 해결한 뒤 다시 동기화하세요.");
+                    "청구 프로필과 자산 연결을 같은 동기화에서 모두 반영하지 못해 전체 Push를 롤백했습니다. 자산 또는 청구 충돌을 해결한 뒤 다시 동기화하세요.");
             }
             result.CurrentServerRevision =
                 await GetCurrentRevisionAsync(cancellationToken);
-            return Ok(result);
+            return Ok(await ToAmountScopedPushResultAsync(result, cancellationToken));
         }
 
         await _storedFileReferenceReconciler.DeleteUnreferencedAsync(
@@ -1808,7 +1845,17 @@ public sealed class SyncController : ControllerBase
             CancellationToken.None);
 
         result.CurrentServerRevision = await GetCurrentRevisionAsync(cancellationToken);
-        return Ok(result);
+        return Ok(await ToAmountScopedPushResultAsync(result, cancellationToken));
+    }
+
+    private async Task<SyncPushResult> ToAmountScopedPushResultAsync(SyncPushResult result, CancellationToken ct)
+    {
+        ItemAmountReadPolicy.ApplyConflicts(result.Conflicts, _officeScopeService);
+        RentalProfileAmountReadPolicy.ApplyConflicts(result.Conflicts, _officeScopeService);
+        RentalAssetAmountReadPolicy.ApplyConflicts(result.Conflicts, _officeScopeService);
+        await InvoiceAmountReadPolicy.ApplyConflictsAsync(result.Conflicts, _dbContext, _officeScopeService, ct);
+        await TransactionAmountReadPolicy.ApplyConflictsAsync(result.Conflicts, _dbContext, _officeScopeService, ct);
+        return result;
     }
 
     private async Task PopulateAcceptedRevisionsAsync<TEntity, TDto>(
@@ -3063,7 +3110,8 @@ public sealed class SyncController : ControllerBase
         int AcceptedCount,
         Dictionary<
             InvoiceStockSnapshotService.InvoiceStockKey,
-            decimal> StockDeltaDifferences)> UpsertInvoicesAsync(
+            decimal> StockDeltaDifferences,
+        List<Guid> AcceptedDeletedInvoiceIds)> UpsertInvoicesAsync(
         IEnumerable<InvoiceDto> payload,
         SyncPushResult result,
         string deviceId,
@@ -3148,10 +3196,24 @@ public sealed class SyncController : ControllerBase
                     }
                 }
 
+                var createdAmounts = await InvoiceAmountWritePolicy.NormalizeAsync(
+                    _dbContext, _currentUserContext, _officeScopeService, dto, null, cancellationToken);
+                if (createdAmounts.Error is { } createAmountError)
+                {
+                    AddClientConflict(dto, nameof(Invoice), createAmountError, result);
+                    continue;
+                }
+
                 entity = new Invoice { Id = invoiceId };
                 entity.Apply(dto);
                 if (!entity.IsDeleted)
                 {
+                    // ValidateNewInvoiceVersionAsync already established this exact
+                    // predecessor's customer, tenant, office and revision boundary.
+                    var previous = dto.PreviousVersionId is Guid previousId
+                        ? _dbContext.Invoices.Local.Single(row => row.Id == previousId)
+                        : null;
+                    InvoiceAuthorPolicy.RecordAcceptedSave(entity, _currentUserContext, isNew: true, previous);
                     if (entity.VersionGroupId == Guid.Empty)
                         entity.VersionGroupId = invoiceId;
                     entity.IsLatestVersion = true;
@@ -3179,6 +3241,7 @@ public sealed class SyncController : ControllerBase
                     result.AssignedTaxInvoiceNumbers[dto.Id] = assignedTaxInvoiceNumber;
 
                 ApplyInvoiceLines(entity, dto.Lines ?? []);
+                createdAmounts.ApplyTo(entity);
                 var createdStockDeltas = await _invoiceStockSnapshotService.BuildInvoiceStockDeltasAsync(entity, cancellationToken);
                 AccumulateStockDeltaDifferences(
                     acceptedStockDeltaDifferences,
@@ -3200,7 +3263,8 @@ public sealed class SyncController : ControllerBase
                     acceptedDeletedInvoiceIds.Add(entity.Id);
                     AddTouchedInvoiceVersionScope(deletedVersionScopes, entity);
                 }
-                RegisterProcessedMutation(dto, nameof(Invoice), deviceId);
+                RegisterProcessedMutation(dto, nameof(Invoice), deviceId,
+                    preserveOriginalIncomingPayloadHash: createdAmounts.Calculated);
                 acceptedEntityIdsForHistoricalConflictResolution.Add(entity.Id);
                 acceptedCount++;
                 result.AcceptedCount++;
@@ -3249,6 +3313,14 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
+            var updatedAmounts = await InvoiceAmountWritePolicy.NormalizeAsync(
+                _dbContext, _currentUserContext, _officeScopeService, dto, entity, cancellationToken);
+            if (updatedAmounts.Error is { } updateAmountError)
+            {
+                AddClientConflict(dto, nameof(Invoice), updateAmountError, result);
+                continue;
+            }
+
             if (!dto.IsDeleted &&
                 await InvoiceStructuralMutationGuard.ShouldProtectExistingInvoiceFromSameIdStructuralMutationAsync(_dbContext, entity, dto, cancellationToken) &&
                 InvoiceStructuralMutationGuard.HasSameIdInvoiceStructuralMutation(entity, dto))
@@ -3287,6 +3359,7 @@ public sealed class SyncController : ControllerBase
                 var preservedIsLatestVersion =
                     entity.IsLatestVersion;
                 entity.Apply(dto);
+                InvoiceAuthorPolicy.RecordAcceptedSave(entity, _currentUserContext, isNew: false);
                 entity.VersionGroupId =
                     preservedVersionGroupId;
                 entity.VersionNumber =
@@ -3315,9 +3388,12 @@ public sealed class SyncController : ControllerBase
                 if (!string.IsNullOrWhiteSpace(updatedTaxInvoiceNumber))
                     result.AssignedTaxInvoiceNumbers[dto.Id] = updatedTaxInvoiceNumber;
 
+                var previousLineIds = entity.Lines.Select(line => line.Id).ToHashSet();
                 _dbContext.InvoiceLines.RemoveRange(entity.Lines);
                 entity.Lines.Clear();
                 ApplyInvoiceLines(entity, dto.Lines ?? []);
+                _dbContext.InvoiceLines.AddRange(entity.Lines.Where(line => !previousLineIds.Contains(line.Id)));
+                updatedAmounts.ApplyTo(entity);
             }
 
             AddTouchedInvoiceVersionScope(touchedVersionScopes, entity);
@@ -3338,7 +3414,8 @@ public sealed class SyncController : ControllerBase
                 updatedInvoiceStockDeltas,
                 itemWarehouseStockKeysHandledByClient,
                 cancellationToken);
-            RegisterProcessedMutation(dto, nameof(Invoice), deviceId);
+            RegisterProcessedMutation(dto, nameof(Invoice), deviceId,
+                preserveOriginalIncomingPayloadHash: updatedAmounts.Calculated);
             acceptedEntityIdsForHistoricalConflictResolution.Add(entity.Id);
             acceptedCount++;
             result.AcceptedCount++;
@@ -3371,14 +3448,13 @@ public sealed class SyncController : ControllerBase
         {
             rentalSettlementTargets.AddRange(await _rentalSettlementRecalculationService
                 .LoadRentalSettlementTargetsForInvoiceDeleteAsync(distinctDeletedInvoiceIds, cancellationToken));
-            await _rentalSettlementRecalculationService.DetachTransactionsFromInvoicesAsync(distinctDeletedInvoiceIds, cancellationToken);
-            await _rentalSettlementRecalculationService.MarkPaymentsDeletedForInvoicesAsync(distinctDeletedInvoiceIds, cancellationToken);
         }
 
         return (
             rentalSettlementTargets.Distinct().ToList(),
             acceptedCount,
-            acceptedStockDeltaDifferences);
+            acceptedStockDeltaDifferences,
+            distinctDeletedInvoiceIds);
     }
 
     private async Task PopulateExactReplayAssignedInvoiceNumbersAsync(
@@ -4494,10 +4570,10 @@ public sealed class SyncController : ControllerBase
         transaction.LinkedInvoiceNumber = ResolveInvoiceDisplayNumber(invoice);
         transaction.LinkedRentalBillingProfileId = invoice.LinkedRentalBillingProfileId;
         transaction.LinkedRentalBillingRunId = invoice.LinkedRentalBillingRunId;
-        transaction.SettlementAmount = payment.Amount;
+        transaction.SettlementAmount = DisclosedAmount.Require(payment.Amount);
         var transactionKind = ResolveLinkedTransactionKind(invoice);
         transaction.TransactionKind = transactionKind;
-        ApplyLinkedTransactionTotals(transaction, payment.Amount, IsPaymentVoucher(invoice.VoucherType));
+        ApplyLinkedTransactionTotals(transaction, DisclosedAmount.Require(payment.Amount), IsPaymentVoucher(invoice.VoucherType));
         transaction.Note = NormalizeLinkedPaymentNote(payment.Note, transactionKind);
         transaction.IsDeleted = false;
     }
@@ -5889,6 +5965,13 @@ public sealed class SyncController : ControllerBase
                 continue;
             }
 
+            if (dto.AmountsHidden)
+            {
+                AddClientConflict(dto, nameof(TransactionRecord),
+                    "비공개 수금/지급 금액으로는 저장할 수 없습니다. 최신 금액을 조회한 뒤 다시 시도하세요.", result);
+                continue;
+            }
+
             Invoice? invoice = null;
             if (dto.LinkedInvoiceId.HasValue && dto.LinkedInvoiceId.Value != Guid.Empty)
             {
@@ -5909,7 +5992,7 @@ public sealed class SyncController : ControllerBase
 
                     dto.LinkedInvoiceId = null;
                     dto.SettlementAmount = 0m;
-                    dto.TransactionKind = NormalizeTransactionKindWithoutInvoice(dto.TransactionKind, dto.PaymentTotal, dto.ReceiptTotal);
+                    dto.TransactionKind = NormalizeTransactionKindWithoutInvoice(dto.TransactionKind, DisclosedAmount.Require(dto.PaymentTotal), DisclosedAmount.Require(dto.ReceiptTotal));
                     invoice = null;
                     AddNotice(
                         result,
@@ -5945,7 +6028,7 @@ public sealed class SyncController : ControllerBase
                     continue;
                 }
 
-                var transactionSettlementAmount = Math.Abs(dto.SettlementAmount);
+                var transactionSettlementAmount = Math.Abs(DisclosedAmount.Require(dto.SettlementAmount));
                 if (invoice is not null && existing is null && !dto.IsDeleted && dto.ExpectedRevision > 0 && transactionSettlementAmount > 0m)
                 {
                     var serverSettledAmounts = await _dbContext.Payments.IgnoreQueryFilters()
@@ -5959,7 +6042,9 @@ public sealed class SyncController : ControllerBase
                     if (transactionSettlementAmount > outstandingAmount)
                     {
                         AddClientConflict(dto, nameof(TransactionRecord),
-                            $"Transaction amount exceeds current outstanding balance. outstanding={outstandingAmount:N0}, amount={transactionSettlementAmount:N0}.", result);
+                            InvoiceAmountReadPolicy.CanView(invoice.VoucherType, _officeScopeService)
+                                ? $"Transaction amount exceeds current outstanding balance. outstanding={outstandingAmount:N0}, amount={transactionSettlementAmount:N0}."
+                                : "Transaction amount exceeds current outstanding balance. Ask a user with amount permission to review it.", result);
                         continue;
                     }
                 }
@@ -11331,6 +11416,88 @@ public sealed class SyncController : ControllerBase
         run[existingPropertyName ?? propertyName] = value;
     }
 
+    private sealed record RentalAssetRelinkIntent(Guid AssetId, Guid PreviousProfileId, Guid TargetProfileId);
+
+    private async Task<List<RentalAssetRelinkIntent>> CaptureRentalAssetRelinkIntentsAsync(
+        IReadOnlyCollection<RentalAssetDto> mutations, RentalBillingProfilePushSnapshot? snapshot, CancellationToken ct)
+    {
+        var candidates = mutations.Where(dto => dto.Id != Guid.Empty && !dto.IsDeleted &&
+            dto.BillingProfileId.HasValue && dto.BillingProfileId != Guid.Empty).ToList();
+        var assets = new Dictionary<Guid, RentalAsset>();
+        if (snapshot is not null)
+        {
+            foreach (var id in candidates.Select(dto => dto.Id).Distinct())
+                if (snapshot.FindAsset(id) is { IsDeleted: false } asset) assets[id] = asset;
+        }
+        else
+        {
+            foreach (var batch in candidates.Select(dto => dto.Id).Distinct().Chunk(500))
+                foreach (var asset in await _dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking()
+                    .Where(asset => batch.Contains(asset.Id) && !asset.IsDeleted).ToListAsync(ct))
+                    assets[asset.Id] = asset;
+        }
+        var profiles = new Dictionary<Guid, RentalBillingProfile>();
+        var previousIds = assets.Values.Where(asset => asset.BillingProfileId.HasValue)
+            .Select(asset => asset.BillingProfileId!.Value).Distinct().ToList();
+        foreach (var id in previousIds)
+            if (snapshot?.FindProfile(id) is { } profile) profiles[id] = profile;
+        foreach (var batch in previousIds.Where(id => !profiles.ContainsKey(id)).Chunk(500))
+            foreach (var profile in await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking()
+                .Where(profile => batch.Contains(profile.Id) && !profile.IsDeleted).ToListAsync(ct))
+                profiles[profile.Id] = profile;
+        // Capture before profile normalization/upserts mutate the shared snapshot.
+        return candidates.Where(dto => assets.TryGetValue(dto.Id, out var asset) &&
+                asset.BillingProfileId is Guid previous && previous != dto.BillingProfileId &&
+                profiles.TryGetValue(previous, out var profile) &&
+                RentalBillingTemplateAssetCoverageRules.Evaluate(profile.BillingTemplateJson, asset.Id) is
+                    RentalBillingTemplateAssetCoverage.UniqueReference or
+                    RentalBillingTemplateAssetCoverage.AmbiguousReference or
+                    RentalBillingTemplateAssetCoverage.MalformedTemplate)
+            .Select(dto => new RentalAssetRelinkIntent(dto.Id, assets[dto.Id].BillingProfileId!.Value,
+                dto.BillingProfileId!.Value)).Distinct().ToList();
+    }
+
+    private async Task<List<Guid>> FindIncompleteRentalAssetRelinksAsync(
+        IReadOnlyCollection<RentalAssetRelinkIntent> intents,
+        IReadOnlyCollection<RentalBillingProfileDto> acceptedProfiles,
+        IReadOnlyCollection<RentalAssetDto> acceptedAssets,
+        IReadOnlyDictionary<Guid, Guid> resolvedProfileIds, CancellationToken ct)
+    {
+        if (intents.Count == 0) return [];
+        Guid Resolve(Guid id) => resolvedProfileIds.TryGetValue(id, out var resolved) ? resolved : id;
+        var acceptedProfileIds = acceptedProfiles.Select(dto => dto.Id).ToHashSet();
+        var acceptedAssetIds = acceptedAssets.Select(dto => dto.Id).ToHashSet();
+        var participating = intents.Where(intent => acceptedAssetIds.Contains(intent.AssetId) ||
+            acceptedProfileIds.Contains(intent.PreviousProfileId) || acceptedProfileIds.Contains(Resolve(intent.TargetProfileId))).ToList();
+        if (participating.Count == 0) return [];
+        var assets = new Dictionary<Guid, RentalAsset>();
+        foreach (var batch in participating.Select(intent => intent.AssetId).Distinct().Chunk(500))
+            foreach (var asset in await _dbContext.RentalAssets.IgnoreQueryFilters().AsNoTracking()
+                .Where(asset => batch.Contains(asset.Id)).ToListAsync(ct)) assets[asset.Id] = asset;
+        var profiles = new Dictionary<Guid, RentalBillingProfile>();
+        foreach (var batch in participating.SelectMany(intent => new[] { intent.PreviousProfileId, Resolve(intent.TargetProfileId) })
+            .Distinct().Chunk(500))
+            foreach (var profile in await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking()
+                .Where(profile => batch.Contains(profile.Id)).ToListAsync(ct)) profiles[profile.Id] = profile;
+        var incomplete = new HashSet<Guid>();
+        foreach (var intent in participating)
+        {
+            var targetId = Resolve(intent.TargetProfileId);
+            var previousRemoved = profiles.TryGetValue(intent.PreviousProfileId, out var previous) &&
+                (previous.IsDeleted || RentalBillingTemplateAssetCoverageRules.Evaluate(previous.BillingTemplateJson, intent.AssetId) is
+                    RentalBillingTemplateAssetCoverage.NoExplicitCoverage or RentalBillingTemplateAssetCoverage.MissingFromExplicitCoverage);
+            var targetReady = profiles.TryGetValue(targetId, out var target) && !target.IsDeleted && target.IsActive &&
+                RentalBillingTemplateAssetCoverageRules.Evaluate(target.BillingTemplateJson, intent.AssetId) == RentalBillingTemplateAssetCoverage.UniqueReference;
+            if (!previousRemoved || !targetReady || !assets.TryGetValue(intent.AssetId, out var asset) ||
+                asset.IsDeleted || asset.BillingProfileId != targetId || asset.CustomerId != target!.CustomerId)
+            {
+                incomplete.Add(intent.PreviousProfileId);
+                incomplete.Add(targetId);
+            }
+        }
+        return incomplete.ToList();
+    }
+
     private async Task<List<RentalBillingProfileDto>> FilterRentalBillingProfilesWithSafeProjectedAssetCoverageAsync(
         IEnumerable<RentalBillingProfileDto> profiles,
         IReadOnlyCollection<RentalAssetDto> rentalAssets,
@@ -11344,9 +11511,10 @@ public sealed class SyncController : ControllerBase
             .Where(asset => asset.Id != Guid.Empty)
             .GroupBy(asset => asset.Id)
             .ToDictionary(group => group.Key, group => group.ToList());
+        var profileCandidates = profiles.ToList();
         var valid = new List<RentalBillingProfileDto>();
 
-        foreach (var dto in profiles)
+        foreach (var dto in profileCandidates)
         {
             var templateCoverage = RentalBillingTemplateAssetCoverageRules.Evaluate(
                 dto.BillingTemplateJson,
@@ -11418,8 +11586,16 @@ public sealed class SyncController : ControllerBase
                 var safelyRequestsUnlink = assetMutation.IsDeleted ||
                     (!assetMutation.BillingProfileId.HasValue ||
                      assetMutation.BillingProfileId.Value == Guid.Empty);
+                var targetProfiles = profileCandidates.Where(target =>
+                    target.Id == assetMutation.BillingProfileId && target.Id != existing.Id &&
+                    !target.IsDeleted && target.IsActive).ToList();
+                var safelyRequestsRelink = !assetMutation.IsDeleted && targetProfiles.Count == 1 &&
+                    _officeScopeService.CanViewSalesAmounts() && _officeScopeService.CanViewPurchaseAmounts() &&
+                    RentalBillingTemplateAssetCoverageRules.Evaluate(
+                        targetProfiles[0].BillingTemplateJson, linkedAsset.Id) == RentalBillingTemplateAssetCoverage.UniqueReference;
                 var preservesServerReferences =
-                    assetMutation.CustomerId == linkedAsset.CustomerId &&
+                    (assetMutation.CustomerId == linkedAsset.CustomerId ||
+                     (safelyRequestsRelink && assetMutation.CustomerId == targetProfiles[0].CustomerId)) &&
                     assetMutation.ItemId == linkedAsset.ItemId &&
                     string.Equals(assetMutation.TenantCode, linkedAsset.TenantCode, StringComparison.OrdinalIgnoreCase) &&
                     string.Equals(assetMutation.OfficeCode, linkedAsset.OfficeCode, StringComparison.OrdinalIgnoreCase) &&
@@ -11450,7 +11626,7 @@ public sealed class SyncController : ControllerBase
                         !linkedCustomer.IsDeleted &&
                         CanReadCustomerForRentalReference(linkedCustomer);
                 }
-                if (!safelyRequestsUnlink ||
+                if ((!safelyRequestsUnlink && !safelyRequestsRelink) ||
                     !preservesServerReferences ||
                     !hasUniqueMutationId ||
                     usesReservedMutationId ||
@@ -11864,24 +12040,13 @@ public sealed class SyncController : ControllerBase
         IEnumerable<RentalBillingProfileDto> payload,
         SyncPushResult result,
         CancellationToken cancellationToken,
-        RentalBillingProfilePushSnapshot? pushSnapshot = null)
+        RentalBillingProfilePushSnapshot? pushSnapshot = null,
+        IReadOnlyDictionary<Guid, Guid>? approvedCustomerRestores = null)
     {
         var valid = new List<RentalBillingProfileDto>();
 
         foreach (var dto in payload)
         {
-            if (!TryValidateIncomingRentalBillingRuns(
-                    dto.BillingRunsJson,
-                    out var rentalBillingRunsValidationError))
-            {
-                AddClientConflict(
-                    dto,
-                    nameof(RentalBillingProfile),
-                    rentalBillingRunsValidationError,
-                    result);
-                continue;
-            }
-
             var requestedCustomerId = dto.CustomerId;
             dto.CustomerId = await ResolveRentalBillingProfileCustomerReferenceAsync(
                 dto,
@@ -11946,6 +12111,31 @@ public sealed class SyncController : ControllerBase
             {
                 AddClientConflict(dto, nameof(RentalBillingProfile),
                     $"Rental billing profile resolves outside the writable office scope: {dto.ResponsibleOfficeCode}.", result);
+                continue;
+            }
+
+            var amountBasis = pushSnapshot is null
+                ? await _dbContext.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking()
+                    .FirstOrDefaultAsync(x => x.Id == dto.Id, cancellationToken)
+                : pushSnapshot.FindProfile(dto.Id);
+            amountBasis ??= await FindExistingRentalBillingProfileByNaturalKeyAsync(
+                dto, dto.TenantCode, cancellationToken, pushSnapshot);
+            // Active-reference lookup omits deleted customers. Carry forward
+            // only the existing link already authorized by the restore gate.
+            if (dto.CustomerId is null && amountBasis is { IsDeleted: true } && !dto.IsDeleted &&
+                approvedCustomerRestores is not null && approvedCustomerRestores.TryGetValue(dto.Id, out var restoreCustomerId) &&
+                amountBasis.CustomerId == restoreCustomerId)
+                dto.CustomerId = restoreCustomerId;
+            var amountError = await RentalProfileAmountWritePolicy.NormalizeAsync(
+                _dbContext, _currentUserContext, _officeScopeService, dto, amountBasis, cancellationToken);
+            if (amountError is not null)
+            {
+                AddClientConflict(dto, nameof(RentalBillingProfile), amountError, result);
+                continue;
+            }
+            if (!TryValidateIncomingRentalBillingRuns(dto.BillingRunsJson, out var rentalBillingRunsValidationError))
+            {
+                AddClientConflict(dto, nameof(RentalBillingProfile), rentalBillingRunsValidationError, result);
                 continue;
             }
 
@@ -12881,10 +13071,18 @@ public sealed class SyncController : ControllerBase
                 dto.ItemName = string.IsNullOrWhiteSpace(dto.ItemName) ? asset.ItemName : dto.ItemName.Trim();
                 dto.MachineNumber = string.IsNullOrWhiteSpace(dto.MachineNumber) ? asset.MachineNumber : dto.MachineNumber.Trim();
                 dto.ManagementNumber = string.IsNullOrWhiteSpace(dto.ManagementNumber) ? asset.ManagementNumber : dto.ManagementNumber.Trim();
-                if (dto.MonthlyFee <= 0m)
-                    dto.MonthlyFee = asset.MonthlyFee;
-                dto.ContractStartDate ??= asset.ContractStartDate;
-                dto.ContractEndDate ??= asset.RentalEndDate;
+                if (existing is null)
+                {
+                    dto.ContractStartDate ??= asset.ContractStartDate;
+                    dto.ContractEndDate ??= asset.RentalEndDate;
+                }
+            }
+
+            var historyAmountError = RentalHistoryAmountWritePolicy.Normalize(dto, existing, asset, _officeScopeService);
+            if (historyAmountError is not null)
+            {
+                AddClientConflict(dto, nameof(RentalAssetAssignmentHistory), historyAmountError, result);
+                continue;
             }
 
             dto.CustomerName = dto.CustomerName?.Trim() ?? string.Empty;
@@ -14389,6 +14587,12 @@ public sealed class SyncController : ControllerBase
                 dto.MachineNumber,
                 dto.CustomerName,
                 dto.ItemName);
+            var amountError = RentalAssetAmountWritePolicy.Normalize(dto, existingAsset, _officeScopeService);
+            if (amountError is not null)
+            {
+                AddClientConflict(dto, nameof(RentalAsset), amountError, result);
+                continue;
+            }
             valid.Add(dto);
         }
 
@@ -15232,6 +15436,14 @@ public sealed class SyncController : ControllerBase
                 billingProfile.OfficeCode,
                 billingProfile.TenantCode,
                 billingProfile.OfficeCode);
+            var existingLog = await _dbContext.RentalBillingLogs.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(log => log.Id == dto.Id, cancellationToken);
+            var logAmountError = RentalHistoryAmountWritePolicy.Normalize(dto, existingLog, billingProfile, _officeScopeService);
+            if (logAmountError is not null)
+            {
+                AddClientConflict(dto, nameof(RentalBillingLog), logAmountError, result);
+                continue;
+            }
             valid.Add(dto);
         }
 
@@ -16343,10 +16555,12 @@ public sealed class SyncController : ControllerBase
     {
         if (transaction.IsDeleted || payment.IsDeleted)
             return transaction.IsDeleted && payment.IsDeleted;
+        if (transaction.AmountsHidden || payment.AmountsHidden)
+            return false;
         if (invoice is null || invoice.IsDeleted ||
             transaction.LinkedInvoiceId != payment.InvoiceId ||
             transaction.TransactionDate != payment.PaymentDate ||
-            Math.Abs(transaction.SettlementAmount) != payment.Amount)
+            Math.Abs(DisclosedAmount.Require(transaction.SettlementAmount)) != payment.Amount)
         {
             return false;
         }
@@ -16422,7 +16636,8 @@ public sealed class SyncController : ControllerBase
         Payment? existing,
         Guid targetInvoiceId,
         SyncPushResult result,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool explicitlyDeletesDetachedReceipt = false)
     {
         if (dto.Id == Guid.Empty)
             return true;
@@ -16466,6 +16681,11 @@ public sealed class SyncController : ControllerBase
         if (!linkedTransaction.LinkedInvoiceId.HasValue ||
             linkedTransaction.LinkedInvoiceId.Value == Guid.Empty)
         {
+            // Invoice-only deletion preserves the detached receipt. Deleting it later
+            // requires an explicit pair; atomic preflight still checks its revision.
+            if (explicitlyDeletesDetachedReceipt)
+                return true;
+
             AddClientConflict(dto, nameof(Payment),
                 $"Linked transaction does not point to a payment invoice: {linkedTransaction.Id}.", result);
             return false;
@@ -16484,7 +16704,8 @@ public sealed class SyncController : ControllerBase
     }
 
     private async Task<List<PaymentDto>> FilterValidPaymentsAsync(
-        IEnumerable<PaymentDto> payload, SyncPushResult result, CancellationToken cancellationToken)
+        IEnumerable<PaymentDto> payload, IReadOnlySet<Guid> explicitlyDeletedTransactionIds,
+        SyncPushResult result, CancellationToken cancellationToken)
     {
         var valid = new List<PaymentDto>();
         var acceptedAmountByInvoiceId = new Dictionary<Guid, decimal>();
@@ -16527,6 +16748,9 @@ public sealed class SyncController : ControllerBase
 
                 if (existing is not null)
                 {
+                    var explicitlyDeletesDetachedReceipt = dto.IsDeleted && existing.IsDeleted &&
+                        dto.InvoiceId == existing.InvoiceId && existing.Invoice?.IsDeleted == true &&
+                        explicitlyDeletedTransactionIds.Contains(dto.Id);
                     dto.IsDeleted = true;
                     dto.InvoiceId = existing.InvoiceId;
                     if (!await ValidateCompatibleLinkedTransactionForPaymentAsync(
@@ -16534,7 +16758,8 @@ public sealed class SyncController : ControllerBase
                             existing,
                             existing.InvoiceId,
                             result,
-                            cancellationToken))
+                            cancellationToken,
+                            explicitlyDeletesDetachedReceipt))
                     {
                         continue;
                     }
@@ -16620,7 +16845,7 @@ public sealed class SyncController : ControllerBase
 
             if (!dto.IsDeleted)
             {
-                if (dto.Amount <= 0m)
+                if (dto.Amount is null || dto.Amount <= 0m)
                 {
                     AddClientConflict(dto, nameof(Payment), "Payment amount must be greater than zero.", result);
                     continue;
@@ -16645,11 +16870,13 @@ public sealed class SyncController : ControllerBase
                 if (dto.Amount > outstandingAmount)
                 {
                     AddClientConflict(dto, nameof(Payment),
-                        $"Payment amount exceeds current outstanding balance. outstanding={outstandingAmount:N0}, amount={dto.Amount:N0}.", result);
+                        InvoiceAmountReadPolicy.CanView(invoice.VoucherType, _officeScopeService)
+                            ? $"Payment amount exceeds current outstanding balance. outstanding={outstandingAmount:N0}, amount={dto.Amount:N0}."
+                            : "Payment amount exceeds current outstanding balance. Ask a user with amount permission to review it.", result);
                     continue;
                 }
 
-                acceptedAmountByInvoiceId[dto.InvoiceId] = acceptedBatchAmount + dto.Amount;
+                acceptedAmountByInvoiceId[dto.InvoiceId] = acceptedBatchAmount + dto.Amount.Value;
             }
 
             valid.Add(dto);
@@ -16731,7 +16958,7 @@ public sealed class SyncController : ControllerBase
             }
 
             dto.PriceGradeName = option.Name?.Trim() ?? dto.PriceGradeName?.Trim() ?? string.Empty;
-            dto.UnitPrice = Math.Max(0m, dto.UnitPrice);
+            if (dto.UnitPrice is { } unitPrice) dto.UnitPrice = Math.Max(0m, unitPrice);
             dto.IsActive = !dto.IsDeleted && dto.IsActive;
             valid.Add(dto);
         }
@@ -17440,7 +17667,8 @@ public sealed class SyncController : ControllerBase
 
     private static void ApplyInvoiceLine(InvoiceLine entity, Guid invoiceId, InvoiceLineDto line, Guid resolvedId, int fallbackOrderIndex)
     {
-        var lineAmount = line.LineAmount == 0 ? line.Quantity * line.UnitPrice : line.LineAmount;
+        var lineAmount = DisclosedAmount.Require(line.LineAmount) == 0
+            ? line.Quantity * DisclosedAmount.Require(line.UnitPrice) : DisclosedAmount.Require(line.LineAmount);
         entity.Id = resolvedId;
         entity.InvoiceId = invoiceId;
         entity.ItemId = line.ItemId;
@@ -17448,7 +17676,7 @@ public sealed class SyncController : ControllerBase
         entity.SpecificationOriginal = line.SpecificationOriginal;
         entity.Unit = line.Unit;
         entity.Quantity = line.Quantity;
-        entity.UnitPrice = line.UnitPrice;
+        entity.UnitPrice = DisclosedAmount.Require(line.UnitPrice);
         entity.LineAmount = lineAmount;
         entity.Remark = line.Remark;
         entity.SerialNumber = line.SerialNumber;

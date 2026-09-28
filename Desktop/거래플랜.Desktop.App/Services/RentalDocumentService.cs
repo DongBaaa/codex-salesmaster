@@ -221,8 +221,9 @@ public sealed class RentalDocumentService
             ManagementNumber = Coalesce(asset.ManagementNumber, asset.ManagementId, "미입력"),
             ItemName = Coalesce(asset.ItemName, "미입력"),
             MachineNumber = Coalesce(asset.MachineNumber, "미입력"),
-            DepositText = string.IsNullOrWhiteSpace(asset.DepositText) ? "면제" : asset.DepositText.Trim(),
-            MonthlyFee = asset.MonthlyFee,
+            DepositText = asset.SalesAmountsHidden ? "비공개" : string.IsNullOrWhiteSpace(asset.DepositText) ? "면제" : asset.DepositText.Trim(),
+            MonthlyFee = asset.SalesAmountsHidden ? null : asset.MonthlyFee,
+            AmountsHidden = asset.SalesAmountsHidden,
             InstallLocation = Coalesce(asset.InstallLocation, "미입력"),
             ContractDate = contractDate,
             ContractStartDate = startDate,
@@ -1006,8 +1007,8 @@ public sealed class RentalDocumentService
             AddEquipmentValueCell(grid, ValueOrDash(row.ItemCategoryName), rowIndex, 1);
             AddEquipmentValueCell(grid, ValueOrDash(row.ItemName), rowIndex, 2, autoShrink: true);
             AddEquipmentValueCell(grid, ValueOrDash(row.MachineNumber), rowIndex, 3, autoShrink: true);
-            AddEquipmentValueCell(grid, ValueOrDash(row.DepositText), rowIndex, 4, TextAlignment.Center);
-            AddEquipmentValueCell(grid, row.MonthlyFee > 0m ? $"{row.MonthlyFee:N0}" : ValueOrDash(null), rowIndex, 5, TextAlignment.Right);
+            AddEquipmentValueCell(grid, row.SalesAmountsHidden ? "비공개" : ValueOrDash(row.DepositText), rowIndex, 4, TextAlignment.Center);
+            AddEquipmentValueCell(grid, row.SalesAmountsHidden ? "비공개" : $"{row.MonthlyFee:N0}", rowIndex, 5, TextAlignment.Right);
             AddEquipmentValueCell(grid, "-", rowIndex, 6, TextAlignment.Center);
             AddEquipmentValueCell(grid, "-", rowIndex, 7, TextAlignment.Center);
             AddEquipmentValueCell(grid, "-", rowIndex, 8, TextAlignment.Center);
@@ -1251,9 +1252,9 @@ public sealed class RentalDocumentService
         AddCell(grid, "설치위치", 1, 2, true, TextAlignment.Center);
         AddCell(grid, model.InstallLocation, 1, 3, false);
         AddCell(grid, "보증금", 2, 0, true, TextAlignment.Center);
-        AddCell(grid, model.DepositText, 2, 1, false);
+        AddCell(grid, model.AmountsHidden ? "비공개" : model.DepositText, 2, 1, false);
         AddCell(grid, "월 렌탈요금", 2, 2, true, TextAlignment.Center);
-        AddCell(grid, model.MonthlyFee == 0m ? string.Empty : $"{model.MonthlyFee:N0}원", 2, 3, false);
+        AddCell(grid, model.AmountsHidden || !model.MonthlyFee.HasValue ? "비공개" : $"{model.MonthlyFee:N0}원", 2, 3, false);
         AddCell(grid, "안내", 3, 0, true, TextAlignment.Center);
         AddCell(grid, "별첨 렌탈장비내역서를 기준으로 계약 장비 상세를 확인합니다.", 3, 1, false);
         Grid.SetColumnSpan(grid.Children[^1], 3);

@@ -1528,6 +1528,52 @@ public sealed class MobileMutationOwnerBoundaryTests
         }
     }
 
+    [Theory]
+    [InlineData("first-write-failure")]
+    [InlineData("response-loss")]
+    [InlineData("forbidden")]
+    [InlineData("accepted-pull-failure")]
+    public async Task InvoiceWriteAhead_PersistsBeforeTransport_AndRetainsOnlyUnknownOutcomes(string scenario)
+    {
+        var snapshot = Snapshot("alice", "generation-invoice-wal");
+        var session = new SessionStore { Snapshot = snapshot };
+        using var store = new JsonSyncStateStore(session, StateFor(snapshot, revision: 7));
+        var invoice = new InvoiceDto { Id = Guid.NewGuid(), MutationId = Guid.NewGuid().ToString("N"), CustomerName = "invoice journal" };
+        var api = new GeoraePlanApiClient();
+        if (scenario == "first-write-failure")
+            store.BeforeOwnerSaveAsync = (_, _) => throw new IOException("invoice write-ahead unavailable");
+        api.BeforeInvoiceReturnAsync = async () =>
+        {
+            var persisted = await store.LoadForOwnerAsync(MobileSessionOwner.Capture(snapshot));
+            Assert.Contains(persisted.PendingPush.Invoices, x => x.Id == invoice.Id && x.MutationId == invoice.MutationId);
+            if (scenario == "response-loss") throw new HttpRequestException("unknown outcome");
+            if (scenario == "forbidden") throw new HttpRequestException("rejected", null, System.Net.HttpStatusCode.Forbidden);
+        };
+        var cacheRoot = CreateTestRoot();
+        try
+        {
+            var coordinator = new SyncCoordinator(store, api, new PaymentAttachmentDraftStore(),
+                new CustomerContractCacheStore(session, cacheRoot, beforeAtomicPublishAsync: null), session);
+            if (scenario == "first-write-failure")
+            {
+                await Assert.ThrowsAsync<IOException>(() => coordinator.SaveInvoiceImmediatelyAsync(invoice));
+                Assert.Empty(api.SubmittedInvoiceOwners); Assert.Empty(api.SubmittedPushes); Assert.Empty(store.SavedStates);
+                return;
+            }
+            // The API test double has no pull response: after a successful write its refresh fails.
+            var result = await coordinator.SaveInvoiceImmediatelyAsync(invoice);
+            var reopened = await store.LoadForOwnerAsync(MobileSessionOwner.Capture(snapshot));
+            Assert.Single(api.SubmittedInvoiceOwners);
+            if (scenario == "response-loss")
+            {
+                Assert.Equal(invoice.MutationId, Assert.Single(result.PendingPush.Invoices).MutationId);
+                Assert.Equal(invoice.MutationId, Assert.Single(reopened.PendingPush.Invoices).MutationId);
+            }
+            else { Assert.Empty(result.PendingPush.Invoices); Assert.Empty(reopened.PendingPush.Invoices); }
+        }
+        finally { DeleteTestRoot(cacheRoot); }
+    }
+
     [Fact]
     public void ApiClient_AllAuthenticatedMutationFamiliesExposeCapturedOwnerOverloads()
     {
@@ -1722,11 +1768,12 @@ public sealed class MobileMutationOwnerBoundaryTests
             recycleBin,
             StringComparison.Ordinal);
 
+        Assert.Contains("_draftOwner = sessionStore.CaptureOwner();", invoiceDraft, StringComparison.Ordinal);
         AssertInOrder(
             ExtractMethod(
                 invoiceDraft,
                 "public async Task SaveDraftAsync()"),
-            "var owner = _sessionStore.CaptureOwner();",
+            "var owner = _draftOwner;",
             "var invoice = BuildCurrentInvoiceDto(forSave: true);",
             "_sessionStore.ThrowIfOwnerChanged(owner);",
             "SaveInvoiceImmediatelyAsync(",

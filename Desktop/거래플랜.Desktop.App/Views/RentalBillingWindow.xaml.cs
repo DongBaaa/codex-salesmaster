@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.ComponentModel;
 using System.Windows;
 using System.Linq;
@@ -164,7 +164,7 @@ public partial class RentalBillingWindow : Window
             {
                 var confirm = MessageBox.Show(
                     this,
-                    $"{viewModel.SelectedRow.CustomerDisplayName} 거래처에 이전 청구 미처리 내역 {viewModel.SelectedRow.PastUnresolvedCount:N0}건 / 미수 {viewModel.SelectedRow.PastUnresolvedAmount:N0}원이 있습니다.{Environment.NewLine}{Environment.NewLine}그래도 조회/작성 기준일의 청구서를 만들까요?",
+                    $"{viewModel.SelectedRow.CustomerDisplayName} 거래처에 이전 청구 미처리 내역 {viewModel.SelectedRow.PastUnresolvedCount:N0}건 / 미수 {RentalReadAmount.Format(viewModel.SelectedRow.PastUnresolvedAmount, "원")}이 있습니다.{Environment.NewLine}{Environment.NewLine}그래도 조회/작성 기준일의 청구서를 만들까요?",
                     "과거 미처리 확인",
                     MessageBoxButton.YesNo,
                     MessageBoxImage.Warning);
@@ -274,6 +274,14 @@ public partial class RentalBillingWindow : Window
 
     private void IncludedAssetsDataGrid_BeginningEdit(object sender, DataGridBeginningEditEventArgs e)
     {
+        if (e.Row.Item is RentalBillingAssetOption amountAsset &&
+            e.Column is DataGridBoundColumn { Binding: System.Windows.Data.Binding { Path.Path: nameof(RentalBillingAssetOption.MonthlyFee) } } &&
+            (amountAsset.SalesAmountsReadOnly || DataContext is RentalBillingViewModel { AreRentalAmountsReadOnly: true }))
+        {
+            e.Cancel = true;
+            return;
+        }
+
         if (e.Row.Item is not RentalBillingAssetOption includedAsset ||
             !includedAsset.IsReferenceOnly)
         {
@@ -471,9 +479,14 @@ public partial class RentalBillingWindow : Window
         var billingRunId = history is not null && history.BillingRunId != Guid.Empty
             ? history.BillingRunId
             : viewModel.SelectedRow.CurrentBillingRunId;
-        var billedAmount = history is not null && history.BilledAmount > 0m
+        var billedAmount = history is not null
             ? history.BilledAmount
             : viewModel.SelectedRow.CurrentBilledAmount;
+        if (!billedAmount.HasValue || viewModel.SelectedRow.AmountsHidden)
+        {
+            MessageBox.Show("금액이 비공개인 청구는 이 화면에서 입금 금액을 계산할 수 없습니다.", "알림", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         var periodLabel = !string.IsNullOrWhiteSpace(history?.PeriodLabel)
             ? history!.PeriodLabel
             : viewModel.SelectedRow.CurrentBillingPeriodLabel;
@@ -483,7 +496,7 @@ public partial class RentalBillingWindow : Window
         await paymentViewModel.ConfigureForRentalBillingAsync(
             viewModel.SelectedRow.Source,
             billingRunId,
-            billedAmount,
+            billedAmount.Value,
             periodLabel);
 
         var paymentWindow = new PaymentWindow(paymentViewModel)

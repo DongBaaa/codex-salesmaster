@@ -1141,7 +1141,7 @@ public sealed class StartupResponsivenessGuardTests
 
         var end = source.IndexOf(endMarker, start + startMarker.Length, StringComparison.Ordinal);
         Assert.True(end > start, $"종료 마커를 찾지 못했습니다: {endMarker}");
-        return source[start..end];
+        return source[start..end].ReplaceLineEndings("\n");
     }
 
     private static string FindRepositoryRoot()

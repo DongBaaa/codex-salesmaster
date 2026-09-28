@@ -111,14 +111,7 @@ public sealed partial class LoginViewModel : ObservableObject
                 return;
             }
             // Cache session for offline fallback
-            await _local.SaveSessionCacheAsync(
-                result.User.Username,
-                result.User.Role,
-                result.User.Permissions,
-                result.User.TenantCode,
-                result.User.ScopeType,
-                ResolveOfficeCode(result.User),
-                Password);
+            await _local.SaveSessionCacheAsync(result.User, Password);
             await _local.SaveOfficeSyncCredentialAsync(result.User, Username, Password);
             await SaveRememberOptionsAsync();
             _session.SetSession(result.Token, result.User, result.ExpiresAtUtc);

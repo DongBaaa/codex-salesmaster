@@ -39,6 +39,36 @@ function Assert-ManagedChildPath {
     }
 }
 
+function Invoke-ManagedPgCtl {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][ValidateSet('start', 'stop')][string]$Stage
+    )
+
+    # Native invocation through a redirected PowerShell pipeline can wait for
+    # PostgreSQL's long-lived descendants after pg_ctl itself has already exited.
+    # Wait for this process only; keep its output out of the inherited pipeline.
+    $stdoutPath = Join-Path $clusterRoot "pg_ctl-$Stage.stdout.log"
+    $stderrPath = Join-Path $clusterRoot "pg_ctl-$Stage.stderr.log"
+    $process = Start-Process -FilePath $pgCtl -ArgumentList $Arguments `
+        -WindowStyle Hidden -PassThru `
+        -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    try {
+        $process.WaitForExit()
+        $process.Refresh()
+        $exitCode = $process.ExitCode
+        foreach ($outputPath in @($stdoutPath, $stderrPath)) {
+            if (Test-Path -LiteralPath $outputPath -PathType Leaf) {
+                Get-Content -LiteralPath $outputPath | ForEach-Object { Write-Host $_ }
+            }
+        }
+        return $exitCode
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
 $requiredExecutables = @('initdb.exe', 'pg_ctl.exe')
 foreach ($name in $requiredExecutables) {
     $path = Join-Path $PostgreSqlBin $name
@@ -102,14 +132,13 @@ try {
         throw "initdb failed with exit code $LASTEXITCODE."
     }
 
-    & $pgCtl `
-        -D $dataDirectory `
-        -l $postgresLog `
-        -o "-p $port -h 127.0.0.1" `
-        -w `
-        start
-    if ($LASTEXITCODE -ne 0) {
-        throw "pg_ctl start failed with exit code $LASTEXITCODE."
+    $pgCtlExitCode = Invoke-ManagedPgCtl -Stage start -Arguments @(
+        '-D', ('"{0}"' -f $dataDirectory),
+        '-l', ('"{0}"' -f $postgresLog),
+        '-o', ('"-p {0} -h 127.0.0.1"' -f $port), '-w', 'start'
+    )
+    if ($pgCtlExitCode -ne 0) {
+        throw "pg_ctl start failed with exit code $pgCtlExitCode."
     }
     $started = $true
 
@@ -149,8 +178,10 @@ finally {
         -ErrorAction SilentlyContinue
 
     if ($started) {
-        & $pgCtl -D $dataDirectory -m fast -w stop
-        $stopped = $LASTEXITCODE -eq 0
+        $pgCtlExitCode = Invoke-ManagedPgCtl -Stage stop -Arguments @(
+            '-D', ('"{0}"' -f $dataDirectory), '-m', 'fast', '-w', 'stop'
+        )
+        $stopped = $pgCtlExitCode -eq 0
         if (-not $stopped) {
             Write-Warning (
                 "Temporary PostgreSQL did not stop cleanly. " +

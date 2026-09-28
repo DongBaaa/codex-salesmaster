@@ -496,7 +496,7 @@
                                         </StackPanel>
                                         <StackPanel Orientation="Horizontal" Margin="0,0,18,8">
                                             <TextBlock Text="재고자산 금액"/>
-                                            <TextBlock Text="{Binding AssetValue, StringFormat=N0}"
+                                            <TextBlock Text="{Binding AssetValue, StringFormat=N0, TargetNullValue=비공개}"
                                                        Margin="6,0,0,0"
                                                        Foreground="#A5D6A7"
                                                        FontWeight="Bold"/>
@@ -555,13 +555,16 @@
 
                                                 <Label Grid.Row="0" Grid.Column="0" Content="매입단가"/>
                                                 <TextBox Grid.Row="0" Grid.Column="1"
-                                                         Text="{Binding EditPurchasePrice, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}"/>
+                                                         IsReadOnly="{Binding IsPurchasePriceReadOnly}"
+                                                         Text="{Binding EditablePurchasePrice, Converter={StaticResource DecimalToString}, ConverterParameter=hiddenWhenNull, UpdateSourceTrigger=PropertyChanged}"/>
                                                 <Label Grid.Row="1" Grid.Column="0" Content="매출단가"/>
                                                 <TextBox Grid.Row="1" Grid.Column="1"
-                                                         Text="{Binding EditSalePrice, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}"/>
+                                                         IsReadOnly="{Binding IsSalesPriceReadOnly}"
+                                                         Text="{Binding EditableSalePrice, Converter={StaticResource DecimalToString}, ConverterParameter=hiddenWhenNull, UpdateSourceTrigger=PropertyChanged}"/>
                                                 <Label Grid.Row="2" Grid.Column="0" Content="소매단가"/>
                                                 <TextBox Grid.Row="2" Grid.Column="1"
-                                                         Text="{Binding EditRetailPrice, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}"/>
+                                                         IsReadOnly="{Binding IsSalesPriceReadOnly}"
+                                                         Text="{Binding EditableRetailPrice, Converter={StaticResource DecimalToString}, ConverterParameter=hiddenWhenNull, UpdateSourceTrigger=PropertyChanged}"/>
                                             </Grid>
                                         </StackPanel>
                                     </Border>
@@ -610,7 +613,7 @@
                                                       MinHeight="118"
                                                       MaxHeight="170"
                                                       ClipboardCopyMode="IncludeHeader"
-                                                      IsReadOnly="False">
+                                                      IsReadOnly="{Binding IsSalesPriceReadOnly}">
                                                 <DataGrid.Columns>
                                                     <DataGridTextColumn Header="등급"
                                                                         Binding="{Binding PriceGradeName}"
@@ -621,8 +624,14 @@
                                                                         IsReadOnly="True"
                                                                         Width="1*"/>
                                                     <DataGridTextColumn Header="단가"
-                                                                        Binding="{Binding UnitPrice, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}"
-                                                                        Width="1*"/>
+                                                                        Binding="{Binding EditableUnitPrice, Converter={StaticResource DecimalToString}, ConverterParameter=hiddenWhenNull, UpdateSourceTrigger=PropertyChanged}"
+                                                                        Width="1*">
+                                                        <DataGridTextColumn.EditingElementStyle>
+                                                            <Style TargetType="TextBox" BasedOn="{x:Static DataGridTextColumn.DefaultEditingElementStyle}">
+                                                                <Setter Property="IsReadOnly" Value="{Binding IsPriceReadOnly}"/>
+                                                            </Style>
+                                                        </DataGridTextColumn.EditingElementStyle>
+                                                    </DataGridTextColumn>
                                                 </DataGrid.Columns>
                                             </DataGrid>
                                         </Grid>
@@ -659,7 +668,7 @@
                                             <DataGrid.Columns>
                                                 <DataGridTextColumn Header="매입처" Binding="{Binding VendorName}" Width="2*"/>
                                                 <DataGridTextColumn Header="거래구분" Binding="{Binding VendorTradeType}" Width="90"/>
-                                                <DataGridTextColumn Header="최근단가" Binding="{Binding UnitPrice, StringFormat=N0}" Width="100"/>
+                                                <DataGridTextColumn Header="최근단가" Binding="{Binding UnitPriceDisplay}" Width="100"/>
                                                 <DataGridTextColumn Header="일자" Binding="{Binding LastPurchaseDate}" Width="100"/>
                                                 <DataGridTextColumn Header="단위" Binding="{Binding Unit}" Width="70"/>
                                                 <DataGridTextColumn Header="전표번호" Binding="{Binding InvoiceNumber}" Width="*"/>

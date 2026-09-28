@@ -11,6 +11,9 @@ obj/
 
 # Logs
 *.log
+*.dmp
+*.dump
+logs/
 
 # Windows
 Thumbs.db
@@ -50,10 +53,32 @@ publish/
 *.db-shm
 *.db-wal
 
+# Local SDKs, package caches, and test results
+/.dotnet/
+/.android-sdk/
+/.nuget/
+/.cache/
+cache/
+**/TestResults/
+/TestResults/
+
+# Frontend/Python generated dependencies (used by local audit helpers)
+node_modules/
+.next/
+dist/
+build/
+coverage/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
 # Local verification / scratch artifacts
 server-smoke.pid
 tmp/
 .tmp/
+/output/
+/audit-output/
 tmp_voucher_test.cs
 tmp_*.ps1
 tmp_*.json
@@ -101,6 +126,11 @@ temp/
 배포/로컬테스트/
 테스트 시행/임시소스스냅샷/
 테스트 시행/실행환경-원본스냅샷-*/
+테스트 시행/.georaeplan-stage-*/
+테스트 시행/.georaeplan-backup-*/
+테스트 시행/.georaeplan-quarantine-*/
+**/.georaeplan-release-transaction-*/
+**/.georaeplan-prepare.lock
 **/__pycache__/
 *.codex-stage.*
 

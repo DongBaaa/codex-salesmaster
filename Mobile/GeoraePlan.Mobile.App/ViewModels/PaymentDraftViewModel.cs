@@ -70,8 +70,8 @@ public sealed class PaymentDraftViewModel : ObservableObject
             RefreshPaymentMethodOptions();
 
             var outstanding = CalculateOutstandingAmount(value);
-            if (outstanding > 0m && (string.IsNullOrWhiteSpace(AmountText) || AmountText == "0"))
-                AmountText = outstanding.ToString("0.##");
+            if (outstanding is { } knownOutstanding && knownOutstanding > 0m && (string.IsNullOrWhiteSpace(AmountText) || AmountText == "0"))
+                AmountText = knownOutstanding.ToString("0.##");
         }
     }
 
@@ -111,6 +111,8 @@ public sealed class PaymentDraftViewModel : ObservableObject
         set => SetProperty(ref _isBusy, value);
     }
 
+    public bool RequiresSaveAcknowledgement { get; private set; }
+
     public string AttachmentSummary => Attachments.Count == 0
         ? "첨부 없음"
         : $"첨부 {Attachments.Count:N0}건";
@@ -132,12 +134,14 @@ public sealed class PaymentDraftViewModel : ObservableObject
         {
             if (SelectedInvoice is null)
                 return "전표를 먼저 선택하세요.";
+            if (SelectedInvoice.AmountsHidden)
+                return "금액 비공개 · 수금/지급은 금액을 확인할 수 있는 담당자가 처리해야 합니다.";
 
             var isPaymentVoucher = MobileVoucherTypeRules.IsPaymentVoucher(SelectedInvoice.VoucherType);
             var kind = MobileVoucherTypeRules.GetDocumentKindLabel(SelectedInvoice.VoucherType);
             var paid = SelectedInvoice.Payments?.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount) ?? 0m;
             var outstandingLabel = isPaymentVoucher ? "미지급금" : "미수금";
-            return $"{kind} · {SelectedInvoice.CustomerName} · 합계 {SelectedInvoice.TotalAmount:N0}원 · {outstandingLabel} {Math.Max(0m, SelectedInvoice.TotalAmount - paid):N0}원";
+            return $"{kind} · {SelectedInvoice.CustomerName} · 합계 {SelectedInvoice.TotalAmount:N0}원 · {outstandingLabel} {Math.Max(0m, DisclosedAmount.Require(SelectedInvoice.TotalAmount) - paid):N0}원";
         }
     }
 
@@ -696,6 +700,12 @@ public sealed class PaymentDraftViewModel : ObservableObject
             }
 
             var outstandingAmount = CalculateOutstandingAmount(latestInvoice);
+            if (outstandingAmount is null)
+            {
+                await _ownerOperations.TryCommitAsync(operation, () =>
+                    StatusMessage = "금액이 비공개인 전표에는 수금/지급을 저장할 수 없습니다. 금액 권한이 있는 담당자가 확인해 주세요.");
+                return;
+            }
             if (amount > outstandingAmount)
             {
                 await _ownerOperations.TryCommitAsync(
@@ -777,6 +787,8 @@ public sealed class PaymentDraftViewModel : ObservableObject
                         if (isAccepted)
                             _refreshCoordinator.MarkInvoicesChanged();
                         StatusMessage = statusMessage;
+                        RequiresSaveAcknowledgement =
+                            saveResult.RequiresSaveAcknowledgement;
                     }))
             {
                 return;
@@ -1068,17 +1080,18 @@ public sealed class PaymentDraftViewModel : ObservableObject
         Note = string.Empty;
         PaymentDate = DateTime.Today;
         StatusMessage = "현재 로그인 소유자의 전표를 다시 불러오세요.";
+        RequiresSaveAcknowledgement = false;
         IsBusy = false;
         OnPropertyChanged(nameof(AttachmentSummary));
     }
 
-    private static decimal CalculateOutstandingAmount(InvoiceDto? invoice)
+    private static decimal? CalculateOutstandingAmount(InvoiceDto? invoice)
     {
-        if (invoice is null)
-            return 0m;
+        if (invoice is null || invoice.AmountsHidden)
+            return null;
 
         var paid = invoice.Payments?.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount) ?? 0m;
-        return Math.Max(0m, invoice.TotalAmount - paid);
+        return Math.Max(0m, DisclosedAmount.Require(invoice.TotalAmount) - paid);
     }
 
     private void RefreshPaymentMethodOptions()

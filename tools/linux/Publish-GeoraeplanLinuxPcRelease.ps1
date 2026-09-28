@@ -14,7 +14,9 @@ param(
     [string]$LinuxSshKeyPath = (Join-Path $env:USERPROFILE '.ssh\itwserver_codex_ed25519'),
     [string]$LinuxRemoteRoot = '/srv/georaeplan',
     [string]$LinuxRemoteOpsPath = '/srv/georaeplan/ops',
-    [int]$KeepReleaseCount = 2,
+    [ValidateRange(0, 2147483647)][int]$KeepReleaseCount = 0,
+    [ValidateRange(1, 3600)][int]$ReleaseHealthTimeoutSeconds = 900,
+    [ValidateRange(1, 3600)][int]$RollbackHealthTimeoutSeconds = 900,
     [int64]$MinimumLinuxFreeBytes = 2147483648,
     [switch]$SkipConfigSync,
     [switch]$AllowLegacyLiveMirror,
@@ -3309,6 +3311,16 @@ function Invoke-RemoteReadOnlyCheck {
     ($output.StdOut -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { Write-Host $_ }
 }
 
+function Assert-RemoteReleaseDeadlineSupport {
+    param([Parameter(Mandatory = $true)]$Config)
+
+    $quotedScript = Convert-ToSingleQuotedShellLiteral -Value ($Config.RemoteOpsPath + '/apply-release.sh')
+    $probe = Invoke-SshCommand -Config $Config -Command "/bin/bash $quotedScript --capabilities" -BatchMode
+    if ($probe.StdOut.Trim() -cne 'georaeplan-release-health-deadlines-v1') {
+        throw 'The installed apply-release.sh does not support bounded health deadlines. Install the reviewed release guard before publishing.'
+    }
+}
+
 function Invoke-LinuxPcRemotePrune {
     param(
         [Parameter(Mandatory = $true)]$Config,
@@ -4663,6 +4675,11 @@ if ($MirrorToLive -and -not $SkipPlatformHealthChecks) {
     Invoke-RemoteReadOnlyCheck -Config $linuxConfig
 }
 
+if ($MirrorToLive) {
+    # Required even when optional platform health checks are skipped; before upload.
+    Assert-RemoteReleaseDeadlineSupport -Config $linuxConfig
+}
+
 $remoteEnv = Get-RemoteEnvMap -Config $linuxConfig
 $publicBaseUrl = if ($remoteEnv.ContainsKey('PUBLIC_BASE_URL')) { "$($remoteEnv['PUBLIC_BASE_URL'])".Trim() } else { '' }
 $resolvedPreDeployBaseUrl = if (-not [string]::IsNullOrWhiteSpace($PreDeployBaseUrl)) { $PreDeployBaseUrl } elseif (-not [string]::IsNullOrWhiteSpace($PostDeployBaseUrl)) { $PostDeployBaseUrl } else { $publicBaseUrl }
@@ -4843,11 +4860,6 @@ try {
 
     $remoteReleaseRoot = $linuxConfig.RemoteRoot + '/releases/' + $ReleaseId
 
-    if ($MirrorToLive) {
-        Invoke-LinuxPcRemotePrune -Config $linuxConfig -RelativePath 'app/backups' -Pattern 'live-*' -KeepCount $KeepReleaseCount -Label 'live-backups'
-        Invoke-LinuxPcRemotePrune -Config $linuxConfig -RelativePath 'releases' -Pattern '*' -KeepCount $KeepReleaseCount -Label 'releases'
-    }
-
     Invoke-LinuxPcDiskPreflight -Config $linuxConfig -Path $linuxConfig.RemoteRoot -MinimumFreeBytes $MinimumLinuxFreeBytes -Label 'pre-upload'
 
     Write-Host "linux_pc_upload_start release_id=$ReleaseId remote_path=$remoteReleaseRoot"
@@ -4855,12 +4867,13 @@ try {
     Write-Host "linux_pc_upload_done release_id=$ReleaseId remote_path=$remoteReleaseRoot"
 
     if ($MirrorToLive) {
+        Assert-RemoteReleaseDeadlineSupport -Config $linuxConfig
         Invoke-LinuxPcDiskPreflight -Config $linuxConfig -Path $linuxConfig.RemoteRoot -MinimumFreeBytes $MinimumLinuxFreeBytes -Label 'pre-apply'
 
         Write-Host "linux_pc_apply_release_mode=ssh host=$($linuxConfig.Host) user=$($linuxConfig.User) port=$($linuxConfig.Port)"
         $quotedOps = Convert-ToSingleQuotedShellLiteral -Value $linuxConfig.RemoteOpsPath
         $quotedReleaseId = Convert-ToSingleQuotedShellLiteral -Value $ReleaseId
-        $applyCommand = "cd $quotedOps && HEALTH_CHECK_RETRIES=900 /bin/bash ./apply-release.sh $quotedReleaseId"
+        $applyCommand = "cd $quotedOps && HEALTH_CHECK_TIMEOUT_SECONDS=$ReleaseHealthTimeoutSeconds ROLLBACK_HEALTH_TIMEOUT_SECONDS=$RollbackHealthTimeoutSeconds /bin/bash ./apply-release.sh $quotedReleaseId"
         $applyResult = Invoke-SshCommand -Config $linuxConfig -Command $applyCommand
         ($applyResult.StdOut -split "`r?`n") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { Write-Host $_ }
         if (-not [string]::IsNullOrWhiteSpace($applyResult.StdErr)) {
@@ -4891,8 +4904,12 @@ try {
             Write-Warning 'Post-deploy operational gate was skipped by request. Use only when a separate strict gate has already passed.'
         }
 
-        Invoke-LinuxPcRemotePrune -Config $linuxConfig -RelativePath 'releases' -Pattern '*' -KeepCount $KeepReleaseCount -Label 'releases'
-        Invoke-LinuxPcRemotePrune -Config $linuxConfig -RelativePath 'app/backups' -Pattern 'live-*' -KeepCount $KeepReleaseCount -Label 'live-backups'
+        if (-not $SkipPostDeployOperationalGate.IsPresent -and $KeepReleaseCount -gt 0) {
+            Invoke-LinuxPcRemotePrune -Config $linuxConfig -RelativePath 'releases' -Pattern '*' -KeepCount $KeepReleaseCount -Label 'releases'
+            Invoke-LinuxPcRemotePrune -Config $linuxConfig -RelativePath 'app/backups' -Pattern 'live-*' -KeepCount $KeepReleaseCount -Label 'live-backups'
+        } else {
+            Write-Host 'linux_pc_retention_skipped reason=not-requested-or-post-deploy-gate-skipped'
+        }
     }
 
     Write-Host "publish_done release_id=$ReleaseId release_path=$remoteReleaseRoot"

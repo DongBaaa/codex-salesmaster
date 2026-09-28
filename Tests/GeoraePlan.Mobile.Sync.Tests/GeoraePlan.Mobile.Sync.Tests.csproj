@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileRentalPendingPrivacy.cs" Link="Production\MobileRentalPendingPrivacy.cs" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="8.0.15" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
+    <ProjectReference Include="..\..\Shared\거래플랜.Shared.Contracts\거래플랜.Shared.Contracts.csproj" />
+    <Compile Include="..\GeoraePlan.Mobile.Session.Tests\PlatformStorage.cs" Link="PlatformStorage.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Models\SessionSnapshot.cs" Link="Production\SessionSnapshot.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Models\MobileSyncState.cs" Link="Production\MobileSyncState.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Models\PendingPaymentAttachmentRecord.cs" Link="Production\PendingPaymentAttachmentRecord.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\SessionStore.cs" Link="Production\SessionStore.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\JsonSyncStateStore.cs" Link="Production\JsonSyncStateStore.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\SyncCoordinator.cs" Link="Production\SyncCoordinator.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\CustomerContractCacheStore.cs" Link="Production\CustomerContractCacheStore.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\OwnerBoundFileMutation.cs" Link="Production\OwnerBoundFileMutation.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobilePendingScopeFilter.cs" Link="Production\MobilePendingScopeFilter.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileSessionScopeFilter.cs" Link="Production\MobileSessionScopeFilter.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileRetryableNetworkFailure.cs" Link="Production\MobileRetryableNetworkFailure.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileClientUpgradeRequiredException.cs" Link="Production\MobileClientUpgradeRequiredException.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileClientUpgradeRequiredSignal.cs" Link="Production\MobileClientUpgradeRequiredSignal.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobilePaymentWriteAheadJournal.cs" Link="Production\MobilePaymentWriteAheadJournal.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileImmediatePaymentSaveResult.cs" Link="Production\MobileImmediatePaymentSaveResult.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\PaymentAttachmentUploadIntegrity.cs" Link="Production\PaymentAttachmentUploadIntegrity.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileAuthenticationException.cs" Link="Production\MobileAuthenticationException.cs" />
+  </ItemGroup>
+</Project>

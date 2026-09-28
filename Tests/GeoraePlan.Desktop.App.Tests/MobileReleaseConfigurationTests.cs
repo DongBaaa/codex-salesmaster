@@ -1204,7 +1204,7 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("createSalesInvoiceButton.IsVisible = canCreateInvoices;", mobileInvoicesPageSource, StringComparison.Ordinal);
         Assert.Contains("createPurchaseInvoiceButton.IsVisible = canCreateInvoices;", mobileInvoicesPageSource, StringComparison.Ordinal);
         Assert.Contains("selectedEditButton.IsVisible = canCreateInvoices;", mobileInvoicesPageSource, StringComparison.Ordinal);
-        Assert.Contains("public bool CanCreateInvoices => _sessionStore.GetSnapshot().CanCreateInvoices;", mobileInvoiceDraftViewModelSource, StringComparison.Ordinal);
+        Assert.Contains("public bool CanCreateInvoices => _sessionStore.IsOwnerCurrent(_draftOwner) && _sessionStore.GetSnapshot().CanCreateInvoices;", mobileInvoiceDraftViewModelSource, StringComparison.Ordinal);
         Assert.True(CountOccurrences(mobileInvoiceDraftViewModelSource, "if (!CanCreateInvoices)") >= 2);
         Assert.Contains("saveButton.SetBinding(VisualElement.IsEnabledProperty, nameof(InvoiceDraftViewModel.CanCreateInvoices));", mobileInvoiceDraftPageSource, StringComparison.Ordinal);
 
@@ -1674,7 +1674,7 @@ public sealed class MobileReleaseConfigurationTests
             StringComparison.Ordinal);
 
         Assert.Contains(
-            "catch (Exception ex) when (IsNonRetryableClientFailure(ex))\n            {\n                MarkFailure(state, ex);\n            }",
+            "catch (Exception ex) when (IsNonRetryableClientFailure(ex))\n            {\n                state.PendingPush.Invoices.RemoveAll(x => x.Id == invoice.Id);\n                MarkFailure(state, ex);\n            }",
             saveInvoiceMethod,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -2547,7 +2547,7 @@ public sealed class MobileReleaseConfigurationTests
         Assert.Contains("state.SyncedItems", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("state.SyncedItemWarehouseStocks", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("MatchesItem(item, keyword)", viewModelSource, StringComparison.Ordinal);
-        Assert.Contains("ResolveDefaultUnitPrice(selected).ToString(\"0.##\")", viewModelSource, StringComparison.Ordinal);
+        Assert.Contains("ResolveDefaultUnitPrice(selected)?.ToString(\"0.##\") ?? \"비공개\"", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("AddFallbackWholeStockRow", viewModelSource, StringComparison.Ordinal);
         Assert.Contains("동기화 캐시 기준으로 선택했습니다", viewModelSource, StringComparison.Ordinal);
 

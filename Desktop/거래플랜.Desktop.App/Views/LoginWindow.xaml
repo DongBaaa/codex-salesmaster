@@ -49,7 +49,7 @@
         </Style>
     </Window.Resources>
     <ScrollViewer x:Name="LoginWindowScrollViewer"
-                  HorizontalScrollBarVisibility="Auto"
+                  HorizontalScrollBarVisibility="Disabled"
                   VerticalScrollBarVisibility="Auto">
     <Grid Margin="22">
         <Border Background="#10233D"

@@ -5,10 +5,13 @@ using 거래플랜.Desktop.App.Services;
 
 namespace 거래플랜.Desktop.App.ViewModels;
 
-public sealed partial class RentalDashboardViewModel : ObservableObject
+public sealed partial class RentalDashboardViewModel : ObservableObject, IDisposable
 {
     private readonly RentalStateService _rental;
     private readonly SessionState _session;
+    private FinancialAmountVisibility.AccessKey _access;
+    private int _loadVersion;
+    private bool _disposed;
 
     [ObservableProperty] private int _dueTodayCount;
     [ObservableProperty] private int _upcomingCount;
@@ -34,6 +37,44 @@ public sealed partial class RentalDashboardViewModel : ObservableObject
     {
         _rental = rental;
         _session = session;
+        _access = FinancialAmountVisibility.CaptureAccess(session);
+        _session.AccessChanged += OnAccessChanged;
+    }
+
+    private void OnAccessChanged(object? sender, EventArgs e)
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+            _ = dispatcher.InvokeAsync(InvalidateAccess);
+        else InvalidateAccess();
+    }
+
+    private void InvalidateAccess()
+    {
+        if (_disposed) return;
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
+        if (access == _access) return;
+        _access = access;
+        ClearPrivateState();
+        StatusMessage = "권한이 변경되었습니다. 최신 렌탈 현황을 다시 조회하세요.";
+    }
+
+    private void ClearPrivateState()
+    {
+        Interlocked.Increment(ref _loadVersion);
+        AlertItems.Clear(); ExpiringAssets.Clear(); UnresolvedLinkItems.Clear();
+        DueTodayCount = UpcomingCount = OverdueCount = ActiveAssetCount = ExpiringContractCount = UnassignedCount = 0;
+        BillingCustomerUnlinkedCount = AssetCustomerUnlinkedCount = AssetBillingUnlinkedCount = AssetlessBillingProfileCount = 0;
+        UnresolvedLinkSummaryText1 = UnresolvedLinkSummaryText2 = StatusMessage = string.Empty;
+        IsBusy = false;
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _session.AccessChanged -= OnAccessChanged;
+        ClearPrivateState();
     }
 
     public async Task LoadAsync()
@@ -44,10 +85,14 @@ public sealed partial class RentalDashboardViewModel : ObservableObject
     [RelayCommand]
     private async Task ReloadAsync()
     {
+        if (_disposed) return;
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
+        var version = Interlocked.Increment(ref _loadVersion);
         IsBusy = true;
         try
         {
             var summary = await _rental.GetDashboardSummaryAsync(_session, ReferenceDate);
+            if (_disposed || version != Volatile.Read(ref _loadVersion) || access != FinancialAmountVisibility.CaptureAccess(_session)) return;
             DueTodayCount = summary.DueTodayCount;
             UpcomingCount = summary.UpcomingCount;
             OverdueCount = summary.OverdueCount;
@@ -81,7 +126,7 @@ public sealed partial class RentalDashboardViewModel : ObservableObject
         }
         finally
         {
-            IsBusy = false;
+            if (version == Volatile.Read(ref _loadVersion)) IsBusy = false;
         }
     }
 }

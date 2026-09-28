@@ -255,7 +255,7 @@ internal static class RtRentalFullStagePlanner
                 {
                     if (current.BillingProfileId is Guid billingProfileId && billingProfileId != Guid.Empty)
                     {
-                        values.MonthlyFee = current.MonthlyFee;
+                        values.MonthlyFee = DisclosedAmount.Require(current.MonthlyFee);
                         profilesById.TryGetValue(billingProfileId, out var profile);
                         feeCandidates.Add(new RtRentalBillingFeeCandidate
                         {
@@ -266,9 +266,9 @@ internal static class RtRentalFullStagePlanner
                             AssetId = current.Id,
                             BillingProfileId = billingProfileId,
                             BillingProfileKey = profile?.ProfileKey ?? string.Empty,
-                            CurrentAssetMonthlyFee = current.MonthlyFee,
-                            RtMonthlyFee = parsed.MonthlyFee ?? current.MonthlyFee,
-                            BillingProfileMonthlyAmount = profile?.MonthlyAmount ?? 0
+                            CurrentAssetMonthlyFee = DisclosedAmount.Require(current.MonthlyFee),
+                            RtMonthlyFee = parsed.MonthlyFee ?? DisclosedAmount.Require(current.MonthlyFee),
+                            BillingProfileMonthlyAmount = profile is null ? 0m : DisclosedAmount.Require(profile.MonthlyAmount)
                         });
                     }
                     else
@@ -408,6 +408,8 @@ internal static class RtRentalFullStagePlanner
         RentalAssetDto current,
         string targetStatus)
     {
+        if (current.SalesAmountsHidden)
+            throw new InvalidDataException("비공개 렌탈 금액으로 정리안을 만들 수 없습니다.");
         var eligibility = ResolveEligibility(
             current.AssetStatus,
             current.BillingProfileId,
@@ -423,7 +425,7 @@ internal static class RtRentalFullStagePlanner
             MachineNumber = PreferSource(source.MachineNumber, current.MachineNumber),
             DisposalDate = parsed.DisposalDate ?? current.DisposalDate,
             InstallLocation = PreferSource(source.InstallLocation, current.InstallLocation),
-            MonthlyFee = parsed.MonthlyFee ?? current.MonthlyFee,
+            MonthlyFee = parsed.MonthlyFee ?? DisclosedAmount.Require(current.MonthlyFee),
             ContractMonths = parsed.ContractMonths ?? current.ContractMonths,
             ContractStartDate = parsed.ContractStartDate ?? current.ContractStartDate,
             RentalEndDate = parsed.RentalEndDate ?? current.RentalEndDate,

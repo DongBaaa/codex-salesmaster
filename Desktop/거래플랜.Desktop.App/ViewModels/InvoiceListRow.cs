@@ -26,21 +26,22 @@ public sealed class InvoiceListRow
     public Guid? LinkedRentalBillingProfileId { get; init; }
     public Guid? LinkedRentalBillingRunId { get; init; }
     public VoucherType VoucherType { get; init; }
-    public decimal TotalAmount { get; init; }
-    public decimal SupplyAmount { get; init; }
-    public decimal VatAmount { get; init; }
+    public bool AmountsHidden { get; init; }
+    public decimal? TotalAmount { get; init; } = 0m;
+    public decimal? SupplyAmount { get; init; } = 0m;
+    public decimal? VatAmount { get; init; } = 0m;
     public string VatMode { get; init; } = InvoiceVatModes.Included;
-    public decimal ReceiptAmount { get; init; }
-    public decimal PaymentAmount { get; init; }
+    public decimal? ReceiptAmount { get; init; } = 0m;
+    public decimal? PaymentAmount { get; init; } = 0m;
     public decimal? BalanceAmountOverride { get; init; }
-    public decimal BalanceAmount => BalanceAmountOverride ?? (TotalAmount - (VoucherType == VoucherType.Purchase ? PaymentAmount : ReceiptAmount));
+    public decimal? BalanceAmount => AmountsHidden ? null : BalanceAmountOverride ?? (TotalAmount - (VoucherType == VoucherType.Purchase ? PaymentAmount : ReceiptAmount));
     public string? VoucherTypeDisplayOverride { get; init; }
     public DateTime UpdatedAtUtc { get; init; }
     public bool IsRentalBillingInvoice =>
         LinkedRentalBillingProfileId is Guid profileId && profileId != Guid.Empty ||
         LinkedRentalBillingRunId is Guid runId && runId != Guid.Empty;
     public bool IsSettlementInvoice => VoucherType is VoucherType.Sales or VoucherType.Purchase;
-    public bool IsBalanceCleared => IsSettlementInvoice && BalanceAmount == 0m;
+    public bool IsBalanceCleared => !AmountsHidden && IsSettlementInvoice && BalanceAmount == 0m;
     public bool TaxInvoiceIssued { get; init; }
     public bool PurchaseReceivingRequired { get; init; }
     public string PurchaseReceivingStatus { get; init; } = InvoiceReceivingStatuses.NotApplicable;
@@ -84,9 +85,10 @@ public sealed class InvoiceListRow
         }
     }
 
-    public static InvoiceListRow From(LocalInvoice inv, string customerName, bool showCustomerName)
+    public static InvoiceListRow From(LocalInvoice inv, string customerName, bool showCustomerName, SessionState? session = null)
     {
-        var settledAmount = inv.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount);
+        var hidden = session is not null && !FinancialAmountVisibility.CanViewInvoice(session, inv.VoucherType) || inv.AmountsHidden || inv.Lines.Any(line => !line.IsDeleted && line.AmountsHidden) || inv.Payments.Any(payment => !payment.IsDeleted && payment.AmountsHidden);
+        decimal? settledAmount = hidden ? null : inv.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount);
         var firstItemSummary = BuildFirstItemSummary(inv);
         return new InvoiceListRow
         {
@@ -104,12 +106,13 @@ public sealed class InvoiceListRow
             LinkedRentalBillingProfileId = inv.LinkedRentalBillingProfileId,
             LinkedRentalBillingRunId = inv.LinkedRentalBillingRunId,
             VoucherType = inv.VoucherType,
-            TotalAmount = inv.TotalAmount,
-            SupplyAmount = inv.SupplyAmount,
-            VatAmount = inv.VatAmount,
+            AmountsHidden = hidden,
+            TotalAmount = hidden ? null : inv.TotalAmount,
+            SupplyAmount = hidden ? null : inv.SupplyAmount,
+            VatAmount = hidden ? null : inv.VatAmount,
             VatMode = InvoiceVatModes.Normalize(inv.VatMode),
-            ReceiptAmount = inv.VoucherType == VoucherType.Sales ? settledAmount : 0m,
-            PaymentAmount = inv.VoucherType == VoucherType.Purchase ? settledAmount : 0m,
+            ReceiptAmount = hidden ? null : inv.VoucherType == VoucherType.Sales ? settledAmount : 0m,
+            PaymentAmount = hidden ? null : inv.VoucherType == VoucherType.Purchase ? settledAmount : 0m,
             TaxInvoiceIssued = inv.TaxInvoiceIssued,
             PurchaseReceivingRequired = inv.PurchaseReceivingRequired ||
                                         (inv.VoucherType == VoucherType.Purchase &&
@@ -128,8 +131,9 @@ public sealed class InvoiceListRow
         };
     }
 
-    public static InvoiceListRow From(LocalInvoiceListSummary summary, string customerName, bool showCustomerName)
+    public static InvoiceListRow From(LocalInvoiceListSummary summary, string customerName, bool showCustomerName, SessionState? session = null)
     {
+        var hidden = summary.AmountsHidden || session is not null && !FinancialAmountVisibility.CanViewInvoice(session, summary.VoucherType);
         var firstItemSummary = string.IsNullOrWhiteSpace(summary.FirstItemSummary)
             ? "(품목 없음)"
             : summary.FirstItemSummary;
@@ -149,12 +153,13 @@ public sealed class InvoiceListRow
             LinkedRentalBillingProfileId = summary.LinkedRentalBillingProfileId,
             LinkedRentalBillingRunId = summary.LinkedRentalBillingRunId,
             VoucherType = summary.VoucherType,
-            TotalAmount = summary.TotalAmount,
-            SupplyAmount = summary.SupplyAmount,
-            VatAmount = summary.VatAmount,
+            AmountsHidden = hidden,
+            TotalAmount = hidden ? null : summary.TotalAmount,
+            SupplyAmount = hidden ? null : summary.SupplyAmount,
+            VatAmount = hidden ? null : summary.VatAmount,
             VatMode = InvoiceVatModes.Normalize(summary.VatMode),
-            ReceiptAmount = summary.VoucherType == VoucherType.Sales ? summary.SettledAmount : 0m,
-            PaymentAmount = summary.VoucherType == VoucherType.Purchase ? summary.SettledAmount : 0m,
+            ReceiptAmount = hidden ? null : summary.VoucherType == VoucherType.Sales ? summary.SettledAmount : 0m,
+            PaymentAmount = hidden ? null : summary.VoucherType == VoucherType.Purchase ? summary.SettledAmount : 0m,
             TaxInvoiceIssued = summary.TaxInvoiceIssued,
             PurchaseReceivingRequired = summary.PurchaseReceivingRequired ||
                                         (summary.VoucherType == VoucherType.Purchase &&
@@ -173,9 +178,12 @@ public sealed class InvoiceListRow
         };
     }
 
-    public static InvoiceListRow From(LocalTransaction transaction, string customerName, bool showCustomerName)
+    public static InvoiceListRow From(LocalTransaction transaction, string customerName, bool showCustomerName, SessionState? session = null)
     {
-        var isPayment = transaction.PaymentTotal > 0m && transaction.ReceiptTotal <= 0m;
+        var hidden = transaction.AmountsHidden || session is not null && !FinancialAmountVisibility.CanViewTransaction(session, transaction, null);
+        var isPayment = hidden
+            ? transaction.TransactionKind?.Trim() is "일반지급" or "전표지급" or "선수금환불"
+            : transaction.PaymentTotal > 0m && transaction.ReceiptTotal <= 0m;
         var amount = isPayment ? transaction.PaymentTotal : transaction.ReceiptTotal;
         var entryText = isPayment ? "지불 입력" : "수금 입력";
         var primaryText = showCustomerName
@@ -200,13 +208,14 @@ public sealed class InvoiceListRow
             LinkedRentalBillingProfileId = transaction.LinkedRentalBillingProfileId,
             LinkedRentalBillingRunId = transaction.LinkedRentalBillingRunId,
             VoucherType = VoucherType.Collection,
-            TotalAmount = 0m,
-            SupplyAmount = 0m,
-            VatAmount = 0m,
-            ReceiptAmount = isPayment ? 0m : transaction.ReceiptTotal,
-            PaymentAmount = isPayment ? transaction.PaymentTotal : 0m,
-            BalanceAmountOverride = amount,
-            VoucherTypeDisplayOverride = ResolveTransactionMethodDisplay(transaction, isPayment),
+            AmountsHidden = hidden,
+            TotalAmount = hidden ? null : 0m,
+            SupplyAmount = hidden ? null : 0m,
+            VatAmount = hidden ? null : 0m,
+            ReceiptAmount = hidden ? null : isPayment ? 0m : transaction.ReceiptTotal,
+            PaymentAmount = hidden ? null : isPayment ? transaction.PaymentTotal : 0m,
+            BalanceAmountOverride = hidden ? null : amount,
+            VoucherTypeDisplayOverride = hidden ? "수금/지급" : ResolveTransactionMethodDisplay(transaction, isPayment),
             IsDirty = transaction.IsDirty,
             Revision = transaction.Revision,
             UpdatedAtUtc = transaction.UpdatedAtUtc
@@ -269,6 +278,6 @@ public sealed class InvoiceListRow
         };
     }
 
-    private static string FormatAmount(decimal amount)
-        => amount.ToString("N0", CultureInfo.CurrentCulture);
+    private string FormatAmount(decimal? amount)
+        => AmountsHidden ? "비공개" : amount?.ToString("N0", CultureInfo.CurrentCulture) ?? "비공개";
 }

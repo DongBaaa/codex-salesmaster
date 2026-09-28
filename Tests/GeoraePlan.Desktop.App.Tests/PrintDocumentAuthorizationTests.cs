@@ -23,6 +23,10 @@ public sealed class PrintDocumentAuthorizationTests
     [InlineData("logout")]
     [InlineData("new-session")]
     [InlineData("office-change")]
+    [InlineData("amount-permission")]
+    [InlineData("invoice-amount-hidden")]
+    [InlineData("line-amount-hidden")]
+    [InlineData("payment-amount-hidden")]
     public async Task CapturedInvoiceAccess_SeesCommittedRevocationWithoutChangingDirtyRows(string change)
     {
         var folder = Path.Combine(Path.GetTempPath(), "trade-output-access-" + Guid.NewGuid().ToString("N"));
@@ -60,10 +64,57 @@ public sealed class PrintDocumentAuthorizationTests
             case "logout": session.Clear(); break;
             case "new-session": session.SetOfflineSession(CreateSession().User!); break;
             case "office-change": session.SetOfficeCode(OfficeCodeCatalog.Yeonsu); break;
+            case "amount-permission": session.User!.Permissions.Remove(AppPermissionNames.AmountViewSales); break;
+            case "invoice-amount-hidden": await db.Invoices.ExecuteUpdateAsync(set=>set.SetProperty(row=>row.AmountsHidden,true)); break;
+            case "line-amount-hidden":
+                db.InvoiceLines.Add(new LocalInvoiceLine { Id=Guid.NewGuid(), InvoiceId=invoice.Id, AmountsHidden=true });
+                await db.SaveChangesAsync();
+                break;
+            case "payment-amount-hidden":
+                db.Payments.Add(new LocalPayment { Id=Guid.NewGuid(), InvoiceId=invoice.Id, AmountsHidden=true });
+                await db.SaveChangesAsync();
+                break;
         }
         Assert.False(access());
         var retained=await db.Customers.IgnoreQueryFilters().AsNoTracking().SingleAsync(row=>row.Id==customer.Id);
         Assert.True(retained.IsDirty); Assert.Equal("KEEP-DIRTY",retained.Notes);
+    }
+
+    [Theory]
+    [InlineData(VoucherType.Sales, AppPermissionNames.AmountViewSales)]
+    [InlineData(VoucherType.Collection, AppPermissionNames.AmountViewSales)]
+    [InlineData(VoucherType.Purchase, AppPermissionNames.AmountViewPurchase)]
+    [InlineData(VoucherType.Procurement, AppPermissionNames.AmountViewPurchase)]
+    [InlineData(VoucherType.Expense, AppPermissionNames.AmountViewPurchase)]
+    public async Task MonetaryPrintRequiresMatchingPermissionAndKnownAmountsWithoutMutatingInvoice(VoucherType type, string permission)
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "trade-output-money-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        var options = new DbContextOptionsBuilder<LocalDbContext>().UseSqlite("Data Source=" + Path.Combine(folder, "fixture.db")).Options;
+        await using var db = new LocalDbContext(options);
+        await db.Database.EnsureCreatedAsync();
+        var session = CreateSession();
+        var customer = new LocalCustomer { Id=Guid.NewGuid(), NameOriginal="MONEY-PROBE", TenantCode=session.TenantCode,
+            OfficeCode=session.OfficeCode, ResponsibleOfficeCode=session.OfficeCode };
+        var invoice = new LocalInvoice { Id=Guid.NewGuid(), CustomerId=customer.Id, VoucherType=type, TenantCode=session.TenantCode,
+            OfficeCode=session.OfficeCode, ResponsibleOfficeCode=session.OfficeCode, InvoiceDate=new DateOnly(2026,9,24),
+            VersionGroupId=Guid.NewGuid(), IsLatestVersion=true, TotalAmount=98765, IsDirty=true, Memo="KEEP-EDIT" };
+        db.Customers.Add(customer); db.Invoices.Add(invoice);
+        db.InvoiceLines.Add(new LocalInvoiceLine { Id=Guid.NewGuid(), InvoiceId=invoice.Id, IsDeleted=true, AmountsHidden=true });
+        db.Payments.Add(new LocalPayment { Id=Guid.NewGuid(), InvoiceId=invoice.Id, IsDeleted=true, AmountsHidden=true });
+        await db.SaveChangesAsync(); db.ChangeTracker.Clear();
+        var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+        var access = local.CreateInvoicePrintAuthorization(invoice.Id, customer.Id, session);
+        session.User!.Permissions.Remove(permission); // The other money permission must not authorize this document.
+        Assert.False(access());
+        session.User.Permissions.Add(permission);
+        Assert.True(access()); // A deleted hidden row must not revoke an otherwise readable document.
+        await db.Invoices.ExecuteUpdateAsync(set=>set.SetProperty(row=>row.AmountsHidden,true));
+        Assert.False(access()); // Even a newly granted permission cannot make an unknown cached price valid.
+        var retained=await db.Invoices.IgnoreQueryFilters().AsNoTracking().SingleAsync(row=>row.Id==invoice.Id);
+        Assert.Equal(98765m,retained.TotalAmount);
+        Assert.True(retained.IsDirty);
+        Assert.Equal("KEEP-EDIT",retained.Memo);
     }
 
     [Fact]
@@ -173,7 +224,8 @@ public sealed class PrintDocumentAuthorizationTests
     {
         var session=new SessionState();
         session.SetOfflineSession(new UserSessionDto { UserId=Guid.NewGuid(), Username="output-probe", Role=DomainConstants.RoleUser,
-            TenantCode=TenantScopeCatalog.UsenetGroup, OfficeCode=OfficeCodeCatalog.Usenet, ScopeType=TenantScopeCatalog.ScopeOfficeOnly });
+            TenantCode=TenantScopeCatalog.UsenetGroup, OfficeCode=OfficeCodeCatalog.Usenet, ScopeType=TenantScopeCatalog.ScopeOfficeOnly,
+            Permissions=[AppPermissionNames.AmountViewSales, AppPermissionNames.AmountViewPurchase] });
         return session;
     }
     private static void RunOnSta(Action action)

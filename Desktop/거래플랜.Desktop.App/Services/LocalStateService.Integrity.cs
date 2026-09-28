@@ -38,7 +38,8 @@ public sealed partial class LocalStateService
             issues,
             "out_of_scope_customers",
             Math.Max(0, totalCustomerCount - readableCustomerCount),
-            "현재 계정 범위 밖 거래처 캐시가 로컬 DB에 남아 있습니다.",
+            "다른 계정 범위의 거래처 캐시를 보존하고 있습니다.",
+            severity: "Info",
             directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var itemQuery = _db.Items
@@ -51,7 +52,8 @@ public sealed partial class LocalStateService
             issues,
             "out_of_scope_items",
             Math.Max(0, totalItemCount - readableItemCount),
-            "현재 계정 범위 밖 품목/재고 캐시가 로컬 DB에 남아 있습니다.",
+            "다른 계정 범위의 품목/재고 캐시를 보존하고 있습니다.",
+            severity: "Info",
             directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var invoiceQuery = _db.Invoices
@@ -64,7 +66,8 @@ public sealed partial class LocalStateService
             issues,
             "out_of_scope_invoices",
             Math.Max(0, totalInvoiceCount - readableInvoiceCount),
-            "현재 계정 범위 밖 전표 캐시가 로컬 DB에 남아 있습니다.",
+            "다른 계정 범위의 전표 캐시를 보존하고 있습니다.",
+            severity: "Info",
             directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var transactionQuery = _db.Transactions
@@ -77,7 +80,8 @@ public sealed partial class LocalStateService
             issues,
             "out_of_scope_transactions",
             Math.Max(0, totalTransactionCount - readableTransactionCount),
-            "현재 계정 범위 밖 거래/수금 캐시가 로컬 DB에 남아 있습니다.",
+            "다른 계정 범위의 거래/수금 캐시를 보존하고 있습니다.",
+            severity: "Info",
             directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var rentalProfileScopes = await _db.RentalBillingProfiles
@@ -92,7 +96,8 @@ public sealed partial class LocalStateService
             issues,
             "out_of_scope_rental_profiles",
             outOfScopeRentalProfileCount,
-            "현재 계정 범위 밖 렌탈 청구 프로필 캐시가 로컬 DB에 남아 있습니다.",
+            "다른 계정 범위의 렌탈 청구 프로필 캐시를 보존하고 있습니다.",
+            severity: "Info",
             directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var rentalAssetScopes = await _db.RentalAssets
@@ -107,7 +112,8 @@ public sealed partial class LocalStateService
             issues,
             "out_of_scope_rental_assets",
             outOfScopeRentalAssetCount,
-            "현재 계정 범위 밖 렌탈 자산 캐시가 로컬 DB에 남아 있습니다.",
+            "다른 계정 범위의 렌탈 자산 캐시를 보존하고 있습니다.",
+            severity: "Info",
             directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics);
 
         var staleOutboxSentCutoffUtc = DateTime.UtcNow - StaleSyncOutboxSentThreshold;
@@ -214,6 +220,12 @@ public sealed partial class LocalStateService
         var activeItemIds = integrityItemQuery
             .Where(item => !item.IsDeleted)
             .Select(item => item.Id);
+        // Reference existence is tenant-wide: received stock and rental assets
+        // may legitimately refer to an item master owned by another office.
+        // Keep the narrower integrityItemQuery for ownership-based stock totals.
+        var activeTenantItemIds = _db.Items.IgnoreQueryFilters()
+            .Where(item => !item.IsDeleted && item.TenantCode == integrityTenantCode)
+            .Select(item => item.Id);
         var activeInvoiceIds = integrityInvoiceQuery
             .IgnoreQueryFilters()
             .Where(invoice => !invoice.IsDeleted)
@@ -255,9 +267,7 @@ public sealed partial class LocalStateService
                 stock.Quantity
             })
             .ToListAsync(ct);
-        var inventoryItemIdSet = inventoryItemSnapshots
-            .Select(item => item.Id)
-            .ToHashSet();
+        var activeTenantItemIdSet = (await activeTenantItemIds.ToListAsync(ct)).ToHashSet();
         var warehouseStockTotals = warehouseStockSnapshots
             .GroupBy(stock => stock.ItemId)
             .ToDictionary(group => group.Key, group => group.Sum(stock => stock.Quantity));
@@ -368,7 +378,7 @@ public sealed partial class LocalStateService
 
         var orphanWarehouseStockCount = warehouseStockSnapshots.Count(stock =>
             integrityWarehouseCodes.Contains(OfficeCodeCatalog.NormalizeWarehouseCodeOrDefault(stock.WarehouseCode, null)) &&
-            !inventoryItemIdSet.Contains(stock.ItemId));
+            !activeTenantItemIdSet.Contains(stock.ItemId));
         AddIssueIfNeeded(
             issues,
             "orphan_item_warehouse_stock_refs",
@@ -382,7 +392,7 @@ public sealed partial class LocalStateService
             .Where(layer =>
                 integrityWarehouseCodes.Contains(layer.WarehouseCode) &&
                 layer.ItemId.HasValue &&
-                !activeItemIds.Contains(layer.ItemId.Value))
+                !activeTenantItemIds.Contains(layer.ItemId.Value))
             .CountAsync(ct);
         AddIssueIfNeeded(
             issues,
@@ -397,7 +407,7 @@ public sealed partial class LocalStateService
             .Where(movement =>
                 integrityWarehouseCodes.Contains(movement.WarehouseCode) &&
                 movement.ItemId.HasValue &&
-                !activeItemIds.Contains(movement.ItemId.Value))
+                !activeTenantItemIds.Contains(movement.ItemId.Value))
             .CountAsync(ct);
         AddIssueIfNeeded(
             issues,
@@ -412,7 +422,7 @@ public sealed partial class LocalStateService
             .Where(ledger =>
                 integrityWarehouseCodes.Contains(ledger.WarehouseCode) &&
                 ledger.ItemId.HasValue &&
-                !activeItemIds.Contains(ledger.ItemId.Value))
+                !activeTenantItemIds.Contains(ledger.ItemId.Value))
             .CountAsync(ct);
         AddIssueIfNeeded(
             issues,
@@ -437,11 +447,17 @@ public sealed partial class LocalStateService
                 line.ItemId.HasValue && !knownItemIds.Contains(line.ItemId.Value) &&
                 line.ItemNameOriginal != "" && line.Quantity > 0m
             select line.Id;
-        var orphanInventoryTransferLineItemCount = await _db.InventoryTransferLines
-            .AsNoTracking()
-            .Where(line => !line.IsDeleted && line.ItemId.HasValue && !activeItemIds.Contains(line.ItemId.Value) &&
-                !snapshotOnlyTransferLineIds.Contains(line.Id))
-            .CountAsync(ct);
+        // The shared cache can contain another tenant's documents and deleted
+        // document lines. A received item can also remain owned by the sender.
+        var orphanInventoryTransferLineItemCount = await (
+            from line in _db.InventoryTransferLines.AsNoTracking()
+            join transfer in _db.InventoryTransfers.AsNoTracking() on line.TransferId equals transfer.Id
+            where !transfer.IsDeleted && !line.IsDeleted &&
+                (integrityWarehouseCodes.Contains(transfer.FromWarehouseCode) ||
+                 integrityWarehouseCodes.Contains(transfer.ToWarehouseCode)) &&
+                line.ItemId.HasValue && !activeTenantItemIds.Contains(line.ItemId.Value) &&
+                !snapshotOnlyTransferLineIds.Contains(line.Id)
+            select line.Id).CountAsync(ct);
         AddIssueIfNeeded(
             issues,
             "orphan_inventory_transfer_line_item_refs",
@@ -618,7 +634,7 @@ public sealed partial class LocalStateService
         var orphanRentalAssetItemQuery = integrityRentalAssetQuery
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(asset => !asset.IsDeleted && asset.ItemId.HasValue && !activeItemIds.Contains(asset.ItemId.Value));
+            .Where(asset => !asset.IsDeleted && asset.ItemId.HasValue && !activeTenantItemIds.Contains(asset.ItemId.Value));
         var orphanRentalAssetItemCount = await orphanRentalAssetItemQuery.CountAsync(ct);
         var orphanRentalAssetItemRows = await orphanRentalAssetItemQuery
             .OrderBy(asset => asset.ItemName)

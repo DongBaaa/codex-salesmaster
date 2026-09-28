@@ -15,6 +15,7 @@ public sealed class ItemsPage : ContentPage
     private readonly MobileRefreshCoordinator _refreshCoordinator;
     private readonly SessionStore _sessionStore;
     private readonly FlexLayout _categoryButtonLayout;
+    private readonly CollectionView _itemList;
     private int _seenItemsVersion;
 
     public ItemsPage()
@@ -134,7 +135,7 @@ public sealed class ItemsPage : ContentPage
 
                 var priceLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 priceLabel.LineHeight = 1.0;
-                priceLabel.SetBinding(Label.TextProperty, new Binding(path: ".", converter: new ItemPriceConverter()));
+                priceLabel.SetBinding(Label.TextProperty, new Binding(path: ".", converter: new ItemPriceConverter(_viewModel)));
 
                 var stockLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 stockLabel.LineHeight = 1.0;
@@ -167,6 +168,7 @@ public sealed class ItemsPage : ContentPage
                 return border;
             })
         };
+        _itemList = itemList;
         itemList.SetBinding(ItemsView.ItemsSourceProperty, nameof(ItemsViewModel.Items));
         itemList.SetBinding(VisualElement.HeightRequestProperty, nameof(ItemsViewModel.ItemListHeight));
         itemList.SetBinding(VisualElement.IsVisibleProperty, nameof(ItemsViewModel.CanShowItemList));
@@ -296,6 +298,9 @@ public sealed class ItemsPage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
+        _sessionStore.SessionChanged -= HandleSessionChanged;
+        _sessionStore.SessionChanged += HandleSessionChanged;
+        RefreshPriceBindings();
 
         await MobileErrorHandler.RunGuardedAsync(
             async () =>
@@ -327,6 +332,23 @@ public sealed class ItemsPage : ContentPage
                 }
             },
             "품목 화면 초기화");
+    }
+
+    protected override void OnDisappearing()
+    {
+        _sessionStore.SessionChanged -= HandleSessionChanged;
+        base.OnDisappearing();
+    }
+
+    private void HandleSessionChanged(object? sender, EventArgs e)
+        => MainThread.BeginInvokeOnMainThread(RefreshPriceBindings);
+
+    private void RefreshPriceBindings()
+    {
+        _viewModel.RefreshAmountAccess();
+        // DTO rows are not observable. Recreate their bindings after an access change.
+        _itemList.ItemsSource = null;
+        _itemList.ItemsSource = _viewModel.Items;
     }
 
     private void HandleRealtimeRefreshRequested(object? sender, EventArgs e)
@@ -495,19 +517,14 @@ public sealed class ItemsPage : ContentPage
         return false;
     }
 
-    private sealed class ItemPriceConverter : IValueConverter
+    private sealed class ItemPriceConverter(ItemsViewModel viewModel) : IValueConverter
     {
         public object Convert(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
         {
             if (value is not ItemDto item)
                 return string.Empty;
 
-            var displayPrice = item.SalePrice > 0m
-                ? item.SalePrice
-                : item.RetailPrice > 0m
-                    ? item.RetailPrice
-                    : item.PurchasePrice;
-            return displayPrice > 0m ? $"기본 단가 {displayPrice:N0}원" : "기본 단가 미등록";
+            return viewModel.CaptureAmountAccess().ListSummary(item);
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)

@@ -234,7 +234,8 @@ public sealed class MasterUiWiringGuardTests
 
         AssertContainsAll(
             mainWindow,
-            "(invoiceId, owner) => OpenInvoiceWindowAsync(invoiceId, owner),",
+            "(invoiceId, owner) => OpenInvoiceWindowAsync(",
+            "() => vm.ReloadCommand.ExecuteAsync(null)),",
             "() => _vm.LoadInvoiceListCommand.ExecuteAsync(null))");
         Assert.Contains(
             "public Guid? InvoiceId { get; init; }",
@@ -602,7 +603,10 @@ public sealed class MasterUiWiringGuardTests
             "_ => _rental.CancelBillingAsync(targetId, ReferenceDate, string.Empty, _session, expectedRevision: expectedRevision)",
             "_ => _rental.RegisterBillingSettlementAsync(targetId, ReferenceDate, settledAmount, string.Empty, _session, expectedRevision: expectedRevision)",
             "_ => _rental.DeleteBillingHistoryAsync(",
-            "expectedRevision: SelectedRow.Source.Revision,",
+            "var expectedRevision = SelectedRow.Source.Revision;",
+            "await DeleteConfirmedBillingHistoryAsync(targetId, history, expectedRevision)",
+            "private async Task<LocalMutationResult> DeleteConfirmedBillingHistoryAsync(",
+            "expectedRevision: expectedRevision,",
             "expectedInvoiceRevision: history.InvoiceRevision),",
             "? _rental.DeleteBillingProfileAsync(targetProfileId, _session, SelectedRow.Source.Revision)",
             "_ => _rental.DeleteBillingProfileAsync(row.Source.Id, _session, row.Source.Revision)",
@@ -759,7 +763,7 @@ public sealed class MasterUiWiringGuardTests
         AssertContainsAll(
             viewModel,
             "private readonly UiDebouncer _editAutoSaveDebouncer = new();",
-            "partial void OnEditMonthlyFeeChanged(decimal value) => NotifyEditFieldChanged(nameof(EditMonthlyFee));",
+            "partial void OnEditMonthlyFeeChanged(decimal? value) => NotifyEditFieldChanged(nameof(EditMonthlyFee));",
             "partial void OnEditInstallLocationChanged(string value) => NotifyEditFieldChanged(nameof(EditInstallLocation));",
             "private void NotifyEditFieldChanged(string fieldName)",
             "public int CheckedAssetCount => Rows.Count(row => row.IsSelected);",
@@ -976,7 +980,8 @@ public sealed class MasterUiWiringGuardTests
             "private void ShowModelessWithDeferredLoad(",
             "WindowShowHelper.ShowModelessWithDeferredLoad",
             "ShowModelessWithDeferredLoad(",
-            "(invoiceId, owner) => OpenInvoiceWindowAsync(invoiceId, owner),",
+            "(invoiceId, owner) => OpenInvoiceWindowAsync(",
+            "() => vm.ReloadCommand.ExecuteAsync(null)),",
             "() => _vm.LoadInvoiceListCommand.ExecuteAsync(null))",
             "거래처 관리 닫기 후 거래처 목록 새로고침",
             "환경설정 닫기 후 거래처·전표 목록 새로고침");

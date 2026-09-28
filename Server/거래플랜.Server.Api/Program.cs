@@ -376,6 +376,7 @@ if (securityOptions.EnableRateLimiting)
 }
 
 app.UseAuthorization();
+app.UseMiddleware<InvoiceAmountCompatibilityMiddleware>();
 app.UseMiddleware<ClientCompatibilityGateMiddleware>();
 app.MapControllers();
 app.MapGet("/healthz", (

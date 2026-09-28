@@ -180,7 +180,7 @@ public sealed class BackupService
             : string.Empty;
         message =
             $"선택한 백업을 다음 실행 시 복원하도록 예약했습니다.{legacyNotice}{Environment.NewLine}" +
-            "앱을 완전히 종료한 뒤 다시 실행하세요.";
+            "앱을 완전히 종료한 뒤 다시 실행하세요. 복원 후 첫 로그인은 인터넷 연결을 통해 서버에서 권한을 다시 확인합니다.";
         return true;
     }
 
@@ -1036,6 +1036,10 @@ public sealed class BackupService
                     currentAttachmentsDirectory,
                     manifest);
             }
+
+            // A backup is evidence of past data, not current authorization.
+            // Sanitize only the staged copy, before touching the live generation.
+            InvalidateRestoredOfflineAuthentication(stagedDatabasePath);
 
             if (!hadCurrentDatabase &&
                 hadCurrentAttachments &&
@@ -2391,6 +2395,27 @@ public sealed class BackupService
                     "기존 .db 백업은 첨부파일 레코드가 없는 경우에만 제한 복원할 수 있습니다.");
             }
         }
+    }
+
+    private static void InvalidateRestoredOfflineAuthentication(string databasePath)
+    {
+        using var connection = new SqliteConnection(BuildSqliteConnectionString(
+            databasePath, SqliteOpenMode.ReadWrite));
+        connection.Open();
+        using var transaction = connection.BeginTransaction();
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        // GLOB is case sensitive and treats '_' literally. Both namespaced and
+        // legacy records must go, otherwise the legacy fallback can revive access.
+        command.CommandText = "DELETE FROM Settings WHERE Key GLOB 'CachedSession.*' OR Key GLOB 'CachedSession_*';";
+        command.ExecuteNonQuery();
+        command.CommandText = "SELECT COUNT(*) FROM Settings WHERE Key GLOB 'CachedSession.*' OR Key GLOB 'CachedSession_*';";
+        if (Convert.ToInt64(command.ExecuteScalar()) != 0)
+            throw new InvalidDataException("복원 자료의 과거 로그인 권한을 무효화하지 못했습니다.");
+        transaction.Commit();
+        // Fold any WAL created by the backup database's journal mode into the
+        // staged database before the existing file replacement moves that file.
+        CheckpointSqliteDatabase(databasePath);
     }
 
     private static void ValidateTradePlanDatabaseOrThrow(

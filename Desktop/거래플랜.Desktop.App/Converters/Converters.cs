@@ -22,7 +22,7 @@ public sealed class DecimalToStringConverter : IValueConverter
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
         if (value is not decimal d)
-            return string.Empty;
+            return string.Equals(parameter as string, "hiddenWhenNull", StringComparison.Ordinal) ? "비공개" : string.Empty;
 
         if (string.Equals(parameter as string, "emptyWhenZero", StringComparison.OrdinalIgnoreCase) && d == 0m)
             return string.Empty;
@@ -31,7 +31,9 @@ public sealed class DecimalToStringConverter : IValueConverter
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
-        => decimal.TryParse(value?.ToString()?.Replace(",", ""), out var d) ? d : 0m;
+        => string.Equals(parameter as string, "hiddenWhenNull", StringComparison.Ordinal) && value?.ToString() == "비공개"
+            ? Binding.DoNothing
+            : decimal.TryParse(value?.ToString()?.Replace(",", ""), out var d) ? d : 0m;
 }
 
 [ValueConversion(typeof(DateOnly), typeof(DateTime?))]

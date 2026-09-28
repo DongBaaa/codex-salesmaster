@@ -387,7 +387,7 @@ public sealed class RecycleBinController : ControllerBase
                 Detail = JoinSegments(
                     string.IsNullOrWhiteSpace(profile.BusinessNumber) ? null : $"사업자번호 {profile.BusinessNumber}",
                     string.IsNullOrWhiteSpace(profile.BillingType) ? null : $"청구유형 {profile.BillingType}",
-                    profile.MonthlyAmount > 0m ? $"월기준금액 {profile.MonthlyAmount:N0}원" : null),
+                    _officeScopeService.CanViewSalesAmounts() && profile.MonthlyAmount > 0m ? $"월기준금액 {profile.MonthlyAmount:N0}원" : null),
                 DeletedAtUtc = profile.UpdatedAtUtc,
                 Revision = profile.Revision
             }));
@@ -416,7 +416,7 @@ public sealed class RecycleBinController : ControllerBase
                 Detail = JoinSegments(
                     string.IsNullOrWhiteSpace(asset.MachineNumber) ? null : $"기계번호 {asset.MachineNumber}",
                     string.IsNullOrWhiteSpace(asset.AssetStatus) ? null : $"상태 {asset.AssetStatus}",
-                    asset.MonthlyFee > 0m ? $"월요금 {asset.MonthlyFee:N0}원" : null),
+                    _officeScopeService.CanViewSalesAmounts() && asset.MonthlyFee > 0m ? $"월요금 {asset.MonthlyFee:N0}원" : null),
                 DeletedAtUtc = asset.UpdatedAtUtc,
                 Revision = asset.Revision
             }));
@@ -461,7 +461,7 @@ public sealed class RecycleBinController : ControllerBase
                         log.ScheduledDate.ToString("yyyy-MM-dd"),
                         string.IsNullOrWhiteSpace(log.Status) ? null : log.Status),
                     Detail = JoinSegments(
-                        log.BilledAmount > 0m ? $"청구금액 {log.BilledAmount:N0}원" : null,
+                        _officeScopeService.CanViewSalesAmounts() && log.BilledAmount > 0m ? $"청구금액 {log.BilledAmount:N0}원" : null,
                         string.IsNullOrWhiteSpace(log.Note) ? null : log.Note),
                     DeletedAtUtc = log.UpdatedAtUtc,
                 Revision = log.Revision

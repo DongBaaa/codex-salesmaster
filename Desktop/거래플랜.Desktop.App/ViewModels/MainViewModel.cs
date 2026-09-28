@@ -53,11 +53,18 @@ internal sealed class InvoiceLedgerScreenCache
     private readonly Dictionary<InvoiceLedgerCacheKey, IReadOnlyList<LocalTransaction>> _standaloneTransactionCache = new();
     private readonly Dictionary<Guid, CustomerFinancialSummary> _financialSummaryCache = new();
 
+    private readonly object _cacheGate = new();
+    private long _generation;
+
     public void Clear()
     {
-        _invoiceSummaryCache.Clear();
-        _standaloneTransactionCache.Clear();
-        _financialSummaryCache.Clear();
+        lock (_cacheGate)
+        {
+            _generation++;
+            _invoiceSummaryCache.Clear();
+            _standaloneTransactionCache.Clear();
+            _financialSummaryCache.Clear();
+        }
     }
 
     public async Task<(IReadOnlyList<LocalInvoiceListSummary> Value, bool CacheHit)> GetInvoiceSummariesAsync(
@@ -78,7 +85,7 @@ internal sealed class InvoiceLedgerScreenCache
         Func<Task<CustomerFinancialSummary>> loader)
         => await GetOrLoadAsync(_financialSummaryCache, customerId, forceReload, loader);
 
-    private static async Task<(TValue Value, bool CacheHit)> GetOrLoadAsync<TKey, TValue>(
+    private async Task<(TValue Value, bool CacheHit)> GetOrLoadAsync<TKey, TValue>(
         Dictionary<TKey, TValue> cache,
         TKey key,
         bool forceReload,
@@ -87,11 +94,19 @@ internal sealed class InvoiceLedgerScreenCache
     {
         ArgumentNullException.ThrowIfNull(loader);
 
-        if (!forceReload && cache.TryGetValue(key, out var cached))
-            return (cached, true);
-
+        long generation;
+        lock (_cacheGate)
+        {
+            generation = _generation;
+            if (!forceReload && cache.TryGetValue(key, out var cached))
+                return (cached, true);
+        }
         var value = await loader();
-        InvoiceLedgerCacheStore.Set(cache, key, value);
+        lock (_cacheGate)
+        {
+            if (generation == _generation)
+                InvoiceLedgerCacheStore.Set(cache, key, value);
+        }
         return (value, false);
     }
 }
@@ -208,13 +223,17 @@ public sealed partial class MainViewModel : ObservableObject
     [ObservableProperty] private int _selectedTabIndex;
 
     // Dashboard card metrics
-    [ObservableProperty] private decimal _dashboardMonthlySales;
-    [ObservableProperty] private decimal _dashboardReceivable;
-    [ObservableProperty] private decimal _dashboardPayable;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(DashboardMonthlySalesDisplay))] private decimal? _dashboardMonthlySales;
+    public string DashboardMonthlySalesDisplay => FinancialAmountVisibility.Format(DashboardMonthlySales, _session, purchase: false);
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(DashboardReceivableDisplay))] private decimal? _dashboardReceivable;
+    public string DashboardReceivableDisplay => FinancialAmountVisibility.Format(DashboardReceivable, _session, purchase: false);
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(DashboardPayableDisplay))] private decimal? _dashboardPayable;
+    public string DashboardPayableDisplay => FinancialAmountVisibility.Format(DashboardPayable, _session, purchase: true);
     [ObservableProperty] private int _dashboardCustomerCount;
     [ObservableProperty] private int _dashboardSafetyStockAlerts;
     [ObservableProperty] private int _dashboardMonthlyInvoiceCount;
-    [ObservableProperty] private decimal _dashboardMonthlyAverageSales;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(DashboardMonthlyAverageSalesDisplay))] private decimal? _dashboardMonthlyAverageSales;
+    public string DashboardMonthlyAverageSalesDisplay => FinancialAmountVisibility.Format(DashboardMonthlyAverageSales, _session, purchase: false);
     [ObservableProperty] private int _dashboardRentalDueTodayCount;
     [ObservableProperty] private int _dashboardRentalUpcomingCount;
     [ObservableProperty] private int _dashboardRentalOverdueCount;
@@ -752,9 +771,18 @@ public sealed partial class MainViewModel : ObservableObject
 
     // 전표 목록 - Bottom panel (선택한 전표 라인 미리보기)
     public ObservableCollection<InvoiceLineEditModel> PreviewLines { get; } = new();
-    [ObservableProperty] private decimal _previewSupplyAmount;
-    [ObservableProperty] private decimal _previewVatAmount;
-    [ObservableProperty] private decimal _previewTotalAmount;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(PreviewSupplyAmountDisplay))] private decimal _previewSupplyAmount;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(PreviewVatAmountDisplay))] private decimal _previewVatAmount;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(PreviewTotalAmountDisplay))]
+    [NotifyPropertyChangedFor(nameof(PreviewSupplyAmountDisplay))]
+    [NotifyPropertyChangedFor(nameof(PreviewVatAmountDisplay))]
+    private bool _previewAmountsHidden;
+    public string PreviewTotalAmountDisplay => PreviewAmountsHidden ? "비공개" : PreviewTotalAmount.ToString("N0");
+    public string PreviewSupplyAmountDisplay => PreviewAmountsHidden ? "비공개" : PreviewSupplyAmount.ToString("N0");
+    public string PreviewVatAmountDisplay => PreviewAmountsHidden ? "비공개" : PreviewVatAmount.ToString("N0");
+
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(PreviewTotalAmountDisplay))] private decimal _previewTotalAmount;
 
     // 전표 목록 - Right panel (거래처 정보 미리보기)
     [ObservableProperty] private string _previewCustomerName = string.Empty;
@@ -854,11 +882,14 @@ public sealed partial class MainViewModel : ObservableObject
 
         _sync.SyncStatusChanged += HandleSyncStatusChanged;
         _session.BusinessDatabaseChanged += HandleBusinessDatabaseChanged;
+        _financialAccess = FinancialAmountVisibility.CaptureAccess(session);
+        _session.AccessChanged += FinancialAccessChanged;
         RefreshCurrentUserDisplay();
     }
 
     public void CancelPendingBackgroundWorkForShutdown()
     {
+        _session.AccessChanged -= FinancialAccessChanged;
         lock (_customerFinancialPreviewTaskGate)
             _shutdownBackgroundWorkCancellationRequested = true;
 
@@ -1310,6 +1341,33 @@ public sealed partial class MainViewModel : ObservableObject
     public async Task<bool> ShouldShowPostLoginSyncPopupAsync(CancellationToken ct = default)
         => await IsInitialServerDataLoadRequiredAsync(ct);
 
+    private sealed record InitialServerDataLoadReceipt(
+        SyncStatusCompositionIdentity Owner,
+        Uri Server,
+        LocalStateService.ServerMirrorRefreshRequestBoundary RefreshBoundary);
+
+    private InitialServerDataLoadReceipt? _initialServerDataLoadReceipt;
+
+    private InitialServerDataLoadReceipt CaptureInitialServerDataLoadBoundary()
+    {
+        using var scopeLease = _session.AcquireSyncScopeSnapshotLease();
+        return new(CaptureSyncStatusCompositionIdentity(), _api.GetBaseUri(),
+            _local.CaptureServerMirrorRefreshRequestBoundary());
+    }
+
+    private bool IsInitialServerDataLoadBoundaryCurrent(InitialServerDataLoadReceipt receipt)
+    {
+        using var scopeLease = _session.AcquireSyncScopeSnapshotLease();
+        return _session.IsLoggedIn && !_session.IsOfflineMode &&
+               receipt.Owner == CaptureSyncStatusCompositionIdentity() &&
+               receipt.Server == _api.GetBaseUri() &&
+               !_local.HasServerMirrorRefreshRequestSince(receipt.RefreshBoundary);
+    }
+
+    private bool HasConfirmedInitialServerDataLoad()
+        => _initialServerDataLoadReceipt is { } receipt &&
+           IsInitialServerDataLoadBoundaryCurrent(receipt);
+
     public async Task<bool> IsInitialServerDataLoadRequiredAsync(CancellationToken ct = default)
     {
         if (_session.IsOfflineMode)
@@ -1323,6 +1381,11 @@ public sealed partial class MainViewModel : ObservableObject
             await _local.MarkServerMirrorRefreshRequiredAsync(ct);
             return true;
         }
+
+        // A successful full pull can legitimately contain no customers or invoices.
+        // Never infer that result from another login's persisted global revision.
+        if (HasConfirmedInitialServerDataLoad())
+            return false;
 
         if (!await _local.HasVisiblePrimaryWorkCacheAsync(_session, ct))
             return true;
@@ -1389,17 +1452,27 @@ public sealed partial class MainViewModel : ObservableObject
                 if (initialDataLoadRequired && !hasVisiblePrimaryWorkCache)
                 {
                     SetAuthoritativeSyncStatus("초기 데이터 표시 확인 중입니다. 서버 기준으로 한 번 더 받습니다...");
+                    _initialServerDataLoadReceipt = null;
+                    var fullPullBoundary = CaptureInitialServerDataLoadBoundary();
                     var mirrorRefreshOk = await RunIsolatedSyncAsync(
-                        (sync, token) => sync.RefreshSharedMirrorFromServerAsync(token),
+                        async (sync, token) => SyncService.IsServerSyncEnabled &&
+                            await sync.RefreshSharedMirrorFromServerAsync(token),
                         ct);
                     ct.ThrowIfCancellationRequested();
                     await ReloadAfterPassiveSyncAsync(ct);
                     hasVisiblePrimaryWorkCache = await _local.HasVisiblePrimaryWorkCacheAsync(_session, ct);
-                    if (mirrorRefreshOk && hasVisiblePrimaryWorkCache)
+                    if (mirrorRefreshOk && IsInitialServerDataLoadBoundaryCurrent(fullPullBoundary) &&
+                        !await _local.IsServerMirrorRefreshRequiredAsync(ct))
+                        _initialServerDataLoadReceipt = fullPullBoundary;
+
+                    if (mirrorRefreshOk && HasConfirmedInitialServerDataLoad())
                     {
                         SetAuthoritativeSyncStatus($"초기 데이터 동기화 완료 {DateTime.Now:HH:mm:ss}");
                         return;
                     }
+
+                    SetAuthoritativeSyncStatus("초기 데이터 수신을 확인하지 못했습니다. 백그라운드에서 다시 확인합니다.");
+                    return;
                 }
 
                 SetAuthoritativeSyncStatus(shouldRefreshCurrentBusinessScope && !refreshOk
@@ -1479,10 +1552,10 @@ public sealed partial class MainViewModel : ObservableObject
             return false;
         }
 
-        if (!await HasPersistedSyncRevisionAsync(ct))
+        if (!HasConfirmedInitialServerDataLoad() && !await HasPersistedSyncRevisionAsync(ct))
             return false;
 
-        if (!await _local.HasVisiblePrimaryWorkCacheAsync(_session, ct))
+        if (!HasConfirmedInitialServerDataLoad() && !await _local.HasVisiblePrimaryWorkCacheAsync(_session, ct))
             return false;
 
         if (await HasServerRevisionAdvancedSinceLastSyncAsync(ct))
@@ -1842,6 +1915,7 @@ public sealed partial class MainViewModel : ObservableObject
             return;
 
         PreviewLines.Clear();
+        PreviewAmountsHidden = false;
         PreviewTotalAmount = 0;
         PreviewSupplyAmount = 0;
         PreviewVatAmount = 0;
@@ -1862,6 +1936,7 @@ public sealed partial class MainViewModel : ObservableObject
 
         if (row.IsTransactionRow)
         {
+            PreviewAmountsHidden = row.AmountsHidden;
             if (SelectedCustomerFilter is null)
             {
                 var transactionCustomer = _allCustomers.FirstOrDefault(c => c.Id == row.CustomerId)
@@ -1900,9 +1975,10 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
+        var expectedAccess = FinancialAmountVisibility.CaptureAccess(_session);
         var inv = await _local.GetLatestInvoiceVersionAsync(row.Id, _session, ct);
         ct.ThrowIfCancellationRequested();
-        if (!IsCurrentInvoicePreview(version))
+        if (!IsCurrentInvoicePreview(version) || expectedAccess != FinancialAmountVisibility.CaptureAccess(_session))
             return;
 
         if (inv is null)
@@ -1919,15 +1995,17 @@ public sealed partial class MainViewModel : ObservableObject
             return;
         }
 
+        var hidden = InvoiceListRow.From(inv, string.Empty, false, _session).AmountsHidden;
         foreach (var line in inv.Lines
                      .Where(l => !l.IsDeleted)
                      .OrderBy(l => l.OrderIndex > 0 ? l.OrderIndex : int.MaxValue)
                      .ThenBy(l => l.Id))
-            PreviewLines.Add(InvoiceLineEditModel.FromLocal(line));
+            PreviewLines.Add(InvoiceLineEditModel.FromLocal(line, hidden));
 
-        PreviewTotalAmount = inv.TotalAmount;
-        PreviewSupplyAmount = inv.SupplyAmount;
-        PreviewVatAmount = inv.VatAmount;
+        PreviewAmountsHidden = hidden;
+        PreviewTotalAmount = hidden ? 0m : inv.TotalAmount;
+        PreviewSupplyAmount = hidden ? 0m : inv.SupplyAmount;
+        PreviewVatAmount = hidden ? 0m : inv.VatAmount;
 
         // 좌측 거래처가 선택되지 않은 경우에만 우측 하단 고객 정보 업데이트
         if (SelectedCustomerFilter is null)
@@ -2143,9 +2221,9 @@ public sealed partial class MainViewModel : ObservableObject
                 var minAmount = ParseAmountFilter(hiddenTextFilters.MinAmountText);
                 var maxAmount = ParseAmountFilter(hiddenTextFilters.MaxAmountText);
                 if (minAmount.HasValue)
-                    filteredInvoices = filteredInvoices.Where(inv => inv.TotalAmount >= minAmount.Value);
+                    filteredInvoices = filteredInvoices.Where(inv => !inv.AmountsHidden && FinancialAmountVisibility.CanViewInvoice(_session, inv.VoucherType) && inv.TotalAmount >= minAmount.Value);
                 if (maxAmount.HasValue)
-                    filteredInvoices = filteredInvoices.Where(inv => inv.TotalAmount <= maxAmount.Value);
+                    filteredInvoices = filteredInvoices.Where(inv => !inv.AmountsHidden && FinancialAmountVisibility.CanViewInvoice(_session, inv.VoucherType) && inv.TotalAmount <= maxAmount.Value);
 
                 IEnumerable<LocalTransaction> filteredTransactions = standaloneTransactions
                     .Where(transaction => MatchesSelectedInvoiceOfficeCode(transaction.ResponsibleOfficeCode));
@@ -2167,9 +2245,9 @@ public sealed partial class MainViewModel : ObservableObject
                 }
 
                 if (minAmount.HasValue)
-                    filteredTransactions = filteredTransactions.Where(transaction => GetStandaloneTransactionLedgerAmount(transaction) >= minAmount.Value);
+                    filteredTransactions = filteredTransactions.Where(transaction => FinancialAmountVisibility.CanViewTransaction(_session, transaction, null) && GetStandaloneTransactionLedgerAmount(transaction) >= minAmount.Value);
                 if (maxAmount.HasValue)
-                    filteredTransactions = filteredTransactions.Where(transaction => GetStandaloneTransactionLedgerAmount(transaction) <= maxAmount.Value);
+                    filteredTransactions = filteredTransactions.Where(transaction => FinancialAmountVisibility.CanViewTransaction(_session, transaction, null) && GetStandaloneTransactionLedgerAmount(transaction) <= maxAmount.Value);
 
                 var finalInvoices = filteredInvoices
                     .OrderByDescending(i => i.InvoiceDate)
@@ -2182,12 +2260,12 @@ public sealed partial class MainViewModel : ObservableObject
                 var invoiceRows = finalInvoices.Select(inv =>
                 {
                     var custName = customerMap.TryGetValue(inv.CustomerId, out var n) ? n : "(미지정)";
-                    return InvoiceListRow.From(inv, custName, showCustomerName);
+                    return InvoiceListRow.From(inv, custName, showCustomerName, _session);
                 }).ToList();
                 var transactionRows = finalTransactions.Select(transaction =>
                 {
                     var custName = customerMap.TryGetValue(transaction.CustomerId, out var n) ? n : "(미지정)";
-                    return InvoiceListRow.From(transaction, custName, showCustomerName);
+                    return InvoiceListRow.From(transaction, custName, showCustomerName, _session);
                 });
                 rows = invoiceRows
                     .Concat(transactionRows)
@@ -2406,8 +2484,8 @@ public sealed partial class MainViewModel : ObservableObject
         return customerMap;
     }
 
-    private static decimal GetStandaloneTransactionLedgerAmount(LocalTransaction transaction)
-        => transaction.PaymentTotal > 0m && transaction.ReceiptTotal <= 0m
+    private static decimal? GetStandaloneTransactionLedgerAmount(LocalTransaction transaction)
+        => transaction.AmountsHidden ? null : transaction.PaymentTotal > 0m && transaction.ReceiptTotal <= 0m
             ? transaction.PaymentTotal
             : transaction.ReceiptTotal;
 
@@ -2419,6 +2497,7 @@ public sealed partial class MainViewModel : ObservableObject
         if (_dashboardMetricsLoaded && !forceReload)
             return;
 
+        var expectedAccess = FinancialAmountVisibility.CaptureAccess(_session);
         var sourceInvoices = invoices;
         if (sourceInvoices is null)
         {
@@ -2439,6 +2518,8 @@ public sealed partial class MainViewModel : ObservableObject
             sourceInvoices = cachedInvoices;
         }
 
+        ct.ThrowIfCancellationRequested();
+        if (expectedAccess != FinancialAmountVisibility.CaptureAccess(_session)) return;
         var now = DateOnly.FromDateTime(DateTime.Today);
 
         if (CanViewDashboardSalesCards)
@@ -2452,22 +2533,22 @@ public sealed partial class MainViewModel : ObservableObject
             var monthlyInvoiceCount = sourceInvoices.Count(i =>
                 i.InvoiceDate.Year == now.Year && i.InvoiceDate.Month == now.Month);
 
-            DashboardMonthlySales = monthlySales;
+            DashboardMonthlySales = sourceInvoices.Any(i => i.VoucherType == VoucherType.Sales && i.InvoiceDate.Year == now.Year && i.InvoiceDate.Month == now.Month && i.AmountsHidden) ? null : monthlySales;
             DashboardMonthlyInvoiceCount = monthlyInvoiceCount;
-            DashboardMonthlyAverageSales = monthlyInvoiceCount == 0
+            DashboardMonthlyAverageSales = DashboardMonthlySales is null ? null : monthlyInvoiceCount == 0
                 ? 0
                 : Math.Round(monthlySales / monthlyInvoiceCount, 0, MidpointRounding.AwayFromZero);
         }
         else
         {
-            DashboardMonthlySales = 0m;
+            DashboardMonthlySales = null;
             DashboardMonthlyInvoiceCount = 0;
-            DashboardMonthlyAverageSales = 0m;
+            DashboardMonthlyAverageSales = null;
         }
-        DashboardReceivable = sourceInvoices
+        DashboardReceivable = !FinancialAmountVisibility.CanViewInvoice(_session, VoucherType.Sales) || sourceInvoices.Any(i => i.VoucherType == VoucherType.Sales && i.AmountsHidden) ? null : sourceInvoices
             .Where(invoice => invoice.VoucherType == VoucherType.Sales)
             .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.SettledAmount));
-        DashboardPayable = sourceInvoices
+        DashboardPayable = !FinancialAmountVisibility.CanViewInvoice(_session, VoucherType.Purchase) || sourceInvoices.Any(i => i.VoucherType == VoucherType.Purchase && i.AmountsHidden) ? null : sourceInvoices
             .Where(invoice => invoice.VoucherType == VoucherType.Purchase)
             .Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.SettledAmount));
 
@@ -2484,7 +2565,8 @@ public sealed partial class MainViewModel : ObservableObject
 
         await RefreshContractDashboardAsync();
         await RefreshRecycleBinDashboardAsync();
-        _dashboardMetricsLoaded = true;
+        if (expectedAccess == FinancialAmountVisibility.CaptureAccess(_session))
+            _dashboardMetricsLoaded = true;
     }
 
     [RelayCommand]
@@ -2505,9 +2587,10 @@ public sealed partial class MainViewModel : ObservableObject
         string balanceKindText,
         string accentBrush)
     {
+        DashboardBalanceDetailViewModel? pendingViewModel = null;
         try
         {
-            var detailViewModel = new DashboardBalanceDetailViewModel(
+            var detailViewModel = pendingViewModel = new DashboardBalanceDetailViewModel(
                 _local,
                 _session,
                 voucherType,
@@ -2524,6 +2607,8 @@ public sealed partial class MainViewModel : ObservableObject
                 window.Owner = owner;
 
             WindowShowHelper.ShowModeless(window);
+            // The modeless window now owns the view model until its Closed event.
+            pendingViewModel = null;
         }
         catch (Exception ex)
         {
@@ -2533,6 +2618,10 @@ public sealed partial class MainViewModel : ObservableObject
                 title,
                 System.Windows.MessageBoxButton.OK,
                 System.Windows.MessageBoxImage.Warning);
+        }
+        finally
+        {
+            pendingViewModel?.Dispose();
         }
     }
 
@@ -2796,6 +2885,7 @@ public sealed partial class MainViewModel : ObservableObject
 
         try
         {
+            var expectedAccess = FinancialAmountVisibility.CaptureAccess(_session);
             var selectedId = SelectedFavoriteInvoice?.InvoiceId;
             var ids = await GetFavoriteInvoiceIdsAsync(ct);
             var allInvoices = sourceInvoices;
@@ -2821,6 +2911,8 @@ public sealed partial class MainViewModel : ObservableObject
             var invoiceMap = allInvoices.ToDictionary(i => i.Id);
             var customerMap = await BuildInvoiceCustomerNameMapAsync(allInvoices, ct);
 
+            ct.ThrowIfCancellationRequested();
+            if (expectedAccess != FinancialAmountVisibility.CaptureAccess(_session)) return;
             var favoriteItems = new List<FavoriteInvoiceQuickItem>();
             foreach (var id in ids)
             {
@@ -2828,7 +2920,9 @@ public sealed partial class MainViewModel : ObservableObject
                     continue;
 
                 var customerName = customerMap.TryGetValue(invoice.CustomerId, out var n) ? n : "(미지정)";
-                var display = $"{invoice.InvoiceDate:yyyy/MM/dd}  {customerName}  {invoice.TotalAmount:N0}원";
+                var displayRow = InvoiceListRow.From(invoice, customerName, true, _session);
+                var amountDisplay = displayRow.AmountsHidden ? "비공개" : displayRow.TotalAmountDisplay + "원";
+                var display = $"{invoice.InvoiceDate:yyyy/MM/dd}  {customerName}  {amountDisplay}";
 
                 favoriteItems.Add(new FavoriteInvoiceQuickItem
                 {
@@ -3193,7 +3287,7 @@ public sealed partial class MainViewModel : ObservableObject
         var customerName = _customerNameById.TryGetValue(invoice.CustomerId, out var name)
             ? name
             : "(미지정)";
-        return InvoiceListRow.From(invoice, customerName, SelectedCustomerFilter is null);
+        return InvoiceListRow.From(invoice, customerName, SelectedCustomerFilter is null, _session);
     }
 
     // Statement Print (F9)

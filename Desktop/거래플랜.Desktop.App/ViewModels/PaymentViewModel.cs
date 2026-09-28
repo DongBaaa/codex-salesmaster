@@ -11,7 +11,7 @@ using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.ViewModels;
 
-public sealed partial class PaymentViewModel : ObservableObject
+public sealed partial class PaymentViewModel : ObservableObject, IDisposable
 {
     public sealed record TransactionKindOption(string Value, string Label);
 
@@ -24,6 +24,66 @@ public sealed partial class PaymentViewModel : ObservableObject
 
     private readonly LocalStateService _local;
     private readonly SessionState _session;
+    private FinancialAmountVisibility.AccessKey _financialAccess;
+    private bool _disposed;
+    private int _historyEditVersion;
+    private bool _historyEditInvalidated;
+
+    private void FinancialAccessChanged(object? sender, EventArgs e)
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+            _ = dispatcher.InvokeAsync(InvalidateFinancialAccess);
+        else
+            InvalidateFinancialAccess();
+    }
+
+    private void InvalidateFinancialAccess()
+    {
+        if (_disposed) return;
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
+        if (access == _financialAccess) return;
+        _financialAccess = access;
+        Interlocked.Increment(ref _historyEditVersion);
+        Interlocked.Increment(ref _historyLoadVersion);
+        _historyEditInvalidated = true;
+        History.Clear();
+        SelectedHistory = null;
+        ClearHistoryEditor();
+        OnPropertyChanged(nameof(CanEditPayments));
+        StatusMessage = "권한이 변경되어 이전 금액 입력을 지웠습니다. 새 입력 또는 거래처 재선택으로 최신 내역을 확인하세요.";
+        Interlocked.Increment(ref _contextRefreshVersion);
+        Interlocked.Increment(ref _settlementSuggestionVersion);
+        AdvanceBalance = null;
+        TransactionContextSummary = "금액 비공개";
+        TransactionSummary = "잔액 비공개";
+        OnPropertyChanged(nameof(AdvanceBalanceDisplay));
+    }
+
+    private void ClearHistoryEditor()
+    {
+        _editingTransactionId = null;
+        _editingTransactionRevision = 0;
+        IsEditingHistory = false;
+        _suppressTransactionKindChange = true;
+        try
+        {
+            CashReceipt = CardReceipt = BankReceipt = DiscountApplied = ReceiptTotal = 0m;
+            CashPayment = CardPayment = BankPayment = DiscountReceived = PaymentTotal = 0m;
+            SettlementAmount = 0m;
+        }
+        finally { _suppressTransactionKindChange = false; }
+        SaveCommand.NotifyCanExecuteChanged();
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _session.AccessChanged -= FinancialAccessChanged;
+        InvalidateAsyncUiRequests();
+    }
+
     private List<LocalCustomer> _allCustomers = new();
     private LocalInvoice? _contextInvoice;
     private LocalRentalBillingProfile? _contextRentalProfile;
@@ -50,7 +110,8 @@ public sealed partial class PaymentViewModel : ObservableObject
     [ObservableProperty] private string _customerCategory = "-";
     [ObservableProperty] private string _customerDepartment = "-";
     [ObservableProperty] private string _customerContactPerson = "-";
-    [ObservableProperty] private decimal _advanceBalance;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(AdvanceBalanceDisplay))] private decimal? _advanceBalance;
+    public string AdvanceBalanceDisplay => FinancialAmountVisibility.Format(AdvanceBalance, _session, purchase: UsesPrepaidReserve(), currency: false);
     [ObservableProperty] private decimal _settlementAmount;
     [ObservableProperty] private string _transactionContextSummary = "거래처를 선택하면 거래 맥락이 표시됩니다.";
     [ObservableProperty] private string _transactionSummary = "수금/지급 요약이 없습니다.";
@@ -95,7 +156,7 @@ public sealed partial class PaymentViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(CanAddAttachment))]
     [NotifyPropertyChangedFor(nameof(CanEditHistory))]
     [NotifyPropertyChangedFor(nameof(CanDeleteHistory))]
-    private LocalTransaction? _selectedHistory;
+    private PaymentHistoryRow? _selectedHistory;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanPreviewAttachment))]
@@ -108,7 +169,7 @@ public sealed partial class PaymentViewModel : ObservableObject
     [ObservableProperty] private string _attachmentDescription = string.Empty;
 
     public ObservableCollection<TransactionKindOption> TransactionKinds { get; } = new();
-    public ObservableCollection<LocalTransaction> History { get; } = new();
+    public ObservableCollection<PaymentHistoryRow> History { get; } = new();
     public ObservableCollection<LocalTransactionAttachment> Attachments { get; } = new();
 
     public IReadOnlyList<string> AttachmentTypes { get; } =
@@ -137,7 +198,7 @@ public sealed partial class PaymentViewModel : ObservableObject
 
     public bool CanEditPayments => _session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.PaymentEdit);
     public bool CanAddAttachment => CanEditPayments && SelectedHistory is not null;
-    public bool CanEditHistory => CanEditPayments && SelectedHistory is not null && !IsSaving;
+    public bool CanEditHistory => CanEditPayments && SelectedHistory is { AmountsHidden: false } && !IsSaving;
     public bool CanDeleteHistory => CanEditPayments && SelectedHistory is not null && !IsSaving;
     public bool CanCancelHistoryEdit => IsEditingHistory && !IsSaving;
     public bool CanPreviewAttachment => SelectedAttachment is not null && File.Exists(SelectedAttachment.StoredPath);
@@ -156,6 +217,8 @@ public sealed partial class PaymentViewModel : ObservableObject
     {
         _local = local;
         _session = session;
+        _financialAccess = FinancialAmountVisibility.CaptureAccess(session);
+        _session.AccessChanged += FinancialAccessChanged;
         RebuildTransactionKinds();
     }
 
@@ -214,8 +277,8 @@ public sealed partial class PaymentViewModel : ObservableObject
         }
 
         await LoadHistoryAsync(transaction.CustomerId, Interlocked.Increment(ref _historyLoadVersion));
-        SelectedHistory = History.FirstOrDefault(current => current.Id == transaction.Id) ?? transaction;
-        await LoadHistoryIntoEditorAsync(transaction);
+        SelectedHistory = History.FirstOrDefault(current => current.Id == transaction.Id);
+        await LoadHistoryIntoEditorAsync(transaction.Id);
     }
 
     public async Task ReloadCustomersAsync()
@@ -320,6 +383,9 @@ public sealed partial class PaymentViewModel : ObservableObject
 
     public void NewEntry()
     {
+        Interlocked.Increment(ref _historyEditVersion);
+        _historyEditInvalidated = false;
+        SaveCommand.NotifyCanExecuteChanged();
         _editingTransactionId = null;
         _editingTransactionRevision = 0;
         IsEditingHistory = false;
@@ -403,7 +469,7 @@ public sealed partial class PaymentViewModel : ObservableObject
         InvalidateSettlementSuggestionForManualInput();
     }
 
-    partial void OnSelectedHistoryChanged(LocalTransaction? value)
+    partial void OnSelectedHistoryChanged(PaymentHistoryRow? value)
     {
         RequestLoadAttachments(value?.Id ?? Guid.Empty);
         OnPropertyChanged(nameof(CanAddAttachment));
@@ -579,14 +645,13 @@ public sealed partial class PaymentViewModel : ObservableObject
     private async Task LoadHistoryAsync(Guid customerId, int version)
     {
         var currentSelectedId = SelectedHistory?.Id;
-        var list = await _local.GetTransactionsAsync(customerId, _session);
-        if (!IsCurrentHistoryLoad(version))
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
+        var list = await _local.GetPaymentHistoryAsync(customerId, _session);
+        if (!IsCurrentHistoryLoad(version) || access != FinancialAmountVisibility.CaptureAccess(_session) || _disposed)
             return;
 
         History.Clear();
-        foreach (var transaction in list
-                     .OrderByDescending(current => current.TransactionDate)
-                     .ThenByDescending(current => current.UpdatedAtUtc))
+        foreach (var transaction in list)
         {
             History.Add(transaction);
         }
@@ -797,9 +862,21 @@ public sealed partial class PaymentViewModel : ObservableObject
         if (!IsCurrentSettlementSuggestion(version))
             return;
 
-        var suggested = summary.RemainingAmount;
+        if (!summary.RemainingAmount.HasValue)
+        {
+            StatusMessage = "전표 잔액이 비공개여서 처리금액을 자동 계산할 수 없습니다.";
+            return;
+        }
+        var suggested = summary.RemainingAmount.Value;
         if (advanceOnly)
-            suggested = Math.Min(suggested, AdvanceBalance);
+        {
+            if (!AdvanceBalance.HasValue || !_session.HasPermission(UsesPrepaidReserve() ? AppPermissionNames.AmountViewPurchase : AppPermissionNames.AmountViewSales))
+            {
+                StatusMessage = "잔액이 비공개이므로 차감 금액을 자동 계산할 수 없습니다.";
+                return;
+            }
+            suggested = Math.Min(suggested, AdvanceBalance.Value);
+        }
 
         ApplySuggestedAmountChanges(() =>
         {
@@ -824,6 +901,11 @@ public sealed partial class PaymentViewModel : ObservableObject
         if (!IsCurrentSettlementSuggestion(version))
             return;
 
+        if (!summary.OutstandingAmount.HasValue)
+        {
+            StatusMessage = "렌탈 미수금이 비공개여서 처리금액을 자동 계산할 수 없습니다.";
+            return;
+        }
         ApplySuggestedAmountChanges(() =>
         {
             if (forceResetAmounts)
@@ -834,7 +916,7 @@ public sealed partial class PaymentViewModel : ObservableObject
                 CashPayment = CardPayment = BankPayment = DiscountReceived = PaymentTotal = 0m;
             }
 
-            SettlementAmount = Math.Max(0m, summary.OutstandingAmount);
+            SettlementAmount = Math.Max(0m, summary.OutstandingAmount.Value);
         });
     }
 
@@ -878,6 +960,7 @@ public sealed partial class PaymentViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(PaymentActionLabel));
         OnPropertyChanged(nameof(ReserveBalanceLabelText));
+        OnPropertyChanged(nameof(AdvanceBalanceDisplay));
         OnPropertyChanged(nameof(IsSettlementAmountEnabled));
         OnPropertyChanged(nameof(ShowSettlementGuide));
         OnPropertyChanged(nameof(SettlementGuideText));
@@ -899,10 +982,11 @@ public sealed partial class PaymentViewModel : ObservableObject
 
     private async Task RefreshContextCoreAsync(int version)
     {
+        var expectedAccess = FinancialAmountVisibility.CaptureAccess(_session);
         var kind = PaymentFlowConstants.NormalizeTransactionKind(SelectedTransactionKind);
         if (SelectedCustomer is null)
         {
-            if (!IsCurrentContextRefresh(version))
+            if (!IsCurrentContextRefresh(version) || expectedAccess != FinancialAmountVisibility.CaptureAccess(_session))
                 return;
 
             AdvanceBalance = 0m;
@@ -913,7 +997,7 @@ public sealed partial class PaymentViewModel : ObservableObject
         }
 
         var financialSummary = await _local.GetCustomerFinancialSummaryAsync(SelectedCustomer.Id, _session);
-        if (!IsCurrentContextRefresh(version))
+        if (!IsCurrentContextRefresh(version) || expectedAccess != FinancialAmountVisibility.CaptureAccess(_session))
             return;
 
         AdvanceBalance = UsesPrepaidReserve(kind)
@@ -923,23 +1007,23 @@ public sealed partial class PaymentViewModel : ObservableObject
         if (_linkedInvoice is not null)
         {
             var invoice = await _local.GetInvoiceAsync(_linkedInvoice.Id, _session) ?? _linkedInvoice;
-            if (!IsCurrentContextRefresh(version))
+            if (!IsCurrentContextRefresh(version) || expectedAccess != FinancialAmountVisibility.CaptureAccess(_session))
                 return;
             _linkedInvoice = invoice;
             var summary = await GetInvoiceSettlementSummaryAsync(invoice.Id);
-            if (!IsCurrentContextRefresh(version))
+            if (!IsCurrentContextRefresh(version) || expectedAccess != FinancialAmountVisibility.CaptureAccess(_session))
                 return;
             var displayNumber = string.IsNullOrWhiteSpace(invoice.InvoiceNumber)
                 ? invoice.LocalTempNumber
                 : invoice.InvoiceNumber;
-            TransactionContextSummary = $"{displayNumber} · {invoice.InvoiceDate:yyyy-MM-dd} · 전표금액 {summary.InvoiceTotal:N0}";
+            TransactionContextSummary = $"{displayNumber} · {invoice.InvoiceDate:yyyy-MM-dd} · 전표금액 {FinancialAmountVisibility.Format(summary.InvoiceTotal, _session, purchase: UsesPrepaidReserve(kind), currency: false)}";
             if (kind == PaymentFlowConstants.TransactionKindAdvanceApply)
             {
-                TransactionSummary = $"{GetReserveLabel(kind)} 잔액 {AdvanceBalance:N0} / 차감가능 {Math.Min(AdvanceBalance, summary.RemainingAmount):N0} / 전표잔액 {summary.RemainingAmount:N0}";
+                TransactionSummary = $"{GetReserveLabel(kind)} 잔액 {AdvanceBalanceDisplay} / 차감가능 {FinancialAmountVisibility.Format(AdvanceBalance.HasValue && summary.RemainingAmount.HasValue ? Math.Min(AdvanceBalance.Value, summary.RemainingAmount.Value) : null, _session, purchase: UsesPrepaidReserve(kind), currency: false)} / 전표잔액 {FinancialAmountVisibility.Format(summary.RemainingAmount, _session, purchase: UsesPrepaidReserve(kind), currency: false)}";
             }
             else
             {
-                TransactionSummary = $"{GetSettlementDirectionLabel(kind)}누계 {summary.SettledAmount:N0} / 잔액 {summary.RemainingAmount:N0}";
+                TransactionSummary = $"{GetSettlementDirectionLabel(kind)}누계 {FinancialAmountVisibility.Format(summary.SettledAmount, _session, purchase: UsesPrepaidReserve(kind), currency: false)} / 잔액 {FinancialAmountVisibility.Format(summary.RemainingAmount, _session, purchase: UsesPrepaidReserve(kind), currency: false)}";
             }
         }
         else if (_linkedRentalProfile is not null)
@@ -949,24 +1033,24 @@ public sealed partial class PaymentViewModel : ObservableObject
                 _linkedRentalBillingRunId,
                 _linkedRentalBilledAmount > 0m ? _linkedRentalBilledAmount : null,
                 _session);
-            if (!IsCurrentContextRefresh(version))
+            if (!IsCurrentContextRefresh(version) || expectedAccess != FinancialAmountVisibility.CaptureAccess(_session))
                 return;
             var customerName = string.IsNullOrWhiteSpace(_linkedRentalProfile.CustomerName)
                 ? SelectedCustomer.NameOriginal
                 : _linkedRentalProfile.CustomerName;
             var periodLabel = string.IsNullOrWhiteSpace(_linkedRentalPeriodLabel) ? "현재 회차" : _linkedRentalPeriodLabel;
-            TransactionContextSummary = $"{customerName} · 렌탈청구 {summary.BilledAmount:N0} · {periodLabel}";
-            TransactionSummary = $"수금누계 {summary.SettledAmount:N0} / 미수 {summary.OutstandingAmount:N0} · {summary.BillingStatus} / {summary.SettlementStatus}";
+            TransactionContextSummary = $"{customerName} · 렌탈청구 {FinancialAmountVisibility.Format(summary.BilledAmount, _session, purchase: UsesPrepaidReserve(kind), currency: false)} · {periodLabel}";
+            TransactionSummary = $"수금누계 {FinancialAmountVisibility.Format(summary.SettledAmount, _session, purchase: UsesPrepaidReserve(kind), currency: false)} / 미수 {FinancialAmountVisibility.Format(summary.OutstandingAmount, _session, purchase: UsesPrepaidReserve(kind), currency: false)} · {summary.BillingStatus} / {summary.SettlementStatus}";
         }
         else if (PaymentFlowConstants.IsAdvanceKind(kind))
         {
             TransactionContextSummary = $"{SelectedCustomer.NameOriginal} · {PaymentActionLabel}";
-            TransactionSummary = $"{GetReserveLabel(kind)} 잔액 {AdvanceBalance:N0}";
+            TransactionSummary = $"{GetReserveLabel(kind)} 잔액 {AdvanceBalanceDisplay}";
         }
         else
         {
             TransactionContextSummary = $"{SelectedCustomer.NameOriginal} · 일반 {GetSettlementDirectionLabel(kind)}";
-            TransactionSummary = $"{GetReserveLabel(kind)} 잔액 {AdvanceBalance:N0}";
+            TransactionSummary = $"{GetReserveLabel(kind)} 잔액 {AdvanceBalanceDisplay}";
         }
 
         NotifySettlementUiStateChanged();
@@ -1013,71 +1097,13 @@ public sealed partial class PaymentViewModel : ObservableObject
     private bool IsCurrentContextRefresh(int version) => version == Volatile.Read(ref _contextRefreshVersion);
     private bool IsCurrentSettlementSuggestion(int version) => version == Volatile.Read(ref _settlementSuggestionVersion);
 
-    private async Task<InvoiceSettlementSummary> GetInvoiceSettlementSummaryAsync(Guid invoiceId)
-    {
-        var invoice = await _local.GetInvoiceAsync(invoiceId, _session) ?? _linkedInvoice;
-        if (invoice is null)
-            return new InvoiceSettlementSummary();
+    private Task<InvoiceSettlementSummary> GetInvoiceSettlementSummaryAsync(Guid invoiceId)
+        => _local.GetInvoiceSettlementSummaryAsync(invoiceId, _session);
 
-        try
-        {
-            return await _local.GetInvoiceSettlementSummaryAsync(invoiceId, _session);
-        }
-        catch (NotSupportedException)
-        {
-            var settledAmount = invoice.Payments.Where(payment => !payment.IsDeleted).Sum(payment => payment.Amount);
-            return new InvoiceSettlementSummary
-            {
-                InvoiceTotal = invoice.TotalAmount,
-                SettledAmount = settledAmount,
-                RemainingAmount = Math.Max(0m, invoice.TotalAmount - settledAmount)
-            };
-        }
-    }
+    private Task<RentalSettlementSummary> GetRentalSettlementSummaryAsync(Guid billingProfileId, Guid? billingRunId, decimal billedAmount)
+        => _local.GetRentalSettlementSummaryAsync(billingProfileId, billingRunId, billedAmount > 0m ? billedAmount : null, _session);
 
-    private async Task<RentalSettlementSummary> GetRentalSettlementSummaryAsync(Guid billingProfileId, Guid? billingRunId, decimal billedAmount)
-    {
-        try
-        {
-            return await _local.GetRentalSettlementSummaryAsync(
-                billingProfileId,
-                billingRunId,
-                billedAmount > 0m ? billedAmount : null,
-                _session);
-        }
-        catch (NotSupportedException)
-        {
-            var profile = _linkedRentalProfile;
-            if (profile is null)
-                return new RentalSettlementSummary();
-
-            var transactions = await _local.GetTransactionsAsync(SelectedCustomer?.Id ?? Guid.Empty, _session);
-            var settledAmount = transactions
-                .Where(transaction =>
-                    !transaction.IsDeleted &&
-                    transaction.LinkedRentalBillingProfileId == billingProfileId &&
-                    (!billingRunId.HasValue || transaction.LinkedRentalBillingRunId == billingRunId.Value))
-                .Sum(transaction => transaction.SettlementAmount);
-            var effectiveBilledAmount = billedAmount > 0m ? billedAmount : profile.MonthlyAmount;
-            return new RentalSettlementSummary
-            {
-                BilledAmount = effectiveBilledAmount,
-                SettledAmount = settledAmount,
-                OutstandingAmount = Math.Max(0m, effectiveBilledAmount - settledAmount),
-                BillingStatus = string.IsNullOrWhiteSpace(profile.BillingStatus)
-                    ? PaymentFlowConstants.BillingStatusInProgress
-                    : profile.BillingStatus,
-                SettlementStatus = string.IsNullOrWhiteSpace(profile.SettlementStatus)
-                    ? (settledAmount <= 0m ? PaymentFlowConstants.SettlementStatusUnpaid : PaymentFlowConstants.SettlementStatusPartial)
-                    : profile.SettlementStatus,
-                CompletionStatus = Math.Max(0m, effectiveBilledAmount - settledAmount) <= 0m
-                    ? PaymentFlowConstants.CompletionDone
-                    : PaymentFlowConstants.CompletionPending
-            };
-        }
-    }
-
-    private bool CanSave() => CanEditPayments && !IsSaving;
+    private bool CanSave() => CanEditPayments && !IsSaving && !_historyEditInvalidated;
 
     [RelayCommand]
     private async Task ApplyFullSettlementAmountAsync()
@@ -1119,6 +1145,11 @@ public sealed partial class PaymentViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanSave))]
     private async Task SaveAsync()
     {
+        if (_historyEditInvalidated)
+        {
+            StatusMessage = "권한 변경 전 입력은 저장할 수 없습니다. 새 입력을 시작하세요.";
+            return;
+        }
         if (IsSaving)
             return;
 
@@ -1348,8 +1379,13 @@ public sealed partial class PaymentViewModel : ObservableObject
                 (PaymentFlowConstants.IsInvoiceSettlementKind(kind) || PaymentFlowConstants.IsGeneralSettlementKind(kind)))
             {
                 var invoiceSummary = await GetInvoiceSettlementSummaryAsync(_linkedInvoice.Id);
+                if (!invoiceSummary.RemainingAmount.HasValue)
+                {
+                    StatusMessage = "연결 전표 잔액이 비공개여서 정산할 수 없습니다. 금액 조회 권한으로 최신 내역을 확인해 주세요.";
+                    return;
+                }
                 var editableSettlement = GetEditingSettlementAmountForLinkedContext(linkedInvoiceId: _linkedInvoice.Id);
-                var availableSettlement = Math.Max(0m, invoiceSummary.RemainingAmount + editableSettlement);
+                var availableSettlement = Math.Max(0m, invoiceSummary.RemainingAmount.Value + editableSettlement);
                 var enteredAmount = PaymentFlowConstants.IsPaymentKind(kind) ? PaymentTotal : ReceiptTotal;
                 if (enteredAmount > availableSettlement)
                 {
@@ -1371,10 +1407,15 @@ public sealed partial class PaymentViewModel : ObservableObject
             if (_linkedRentalProfile is not null && kind == PaymentFlowConstants.TransactionKindRentalReceipt)
             {
                 var rentalSummary = await GetRentalSettlementSummaryAsync(_linkedRentalProfile.Id, _linkedRentalBillingRunId, _linkedRentalBilledAmount);
+                if (!rentalSummary.OutstandingAmount.HasValue)
+                {
+                    StatusMessage = "렌탈 미수금이 비공개여서 정산할 수 없습니다. 금액 조회 권한으로 최신 내역을 확인해 주세요.";
+                    return;
+                }
                 var editableSettlement = GetEditingSettlementAmountForLinkedContext(
                     linkedRentalProfileId: _linkedRentalProfile.Id,
                     linkedRentalRunId: _linkedRentalBillingRunId);
-                var availableSettlement = Math.Max(0m, rentalSummary.OutstandingAmount + editableSettlement);
+                var availableSettlement = Math.Max(0m, rentalSummary.OutstandingAmount.Value + editableSettlement);
                 if (ReceiptTotal > availableSettlement)
                 {
                     var overAmount = ReceiptTotal - availableSettlement;
@@ -1441,7 +1482,7 @@ public sealed partial class PaymentViewModel : ObservableObject
             return;
         }
 
-        await LoadHistoryIntoEditorAsync(SelectedHistory);
+        await LoadHistoryIntoEditorAsync(SelectedHistory.Id);
     }
 
     [RelayCommand(CanExecute = nameof(CanDeleteHistory))]
@@ -1688,10 +1729,18 @@ public sealed partial class PaymentViewModel : ObservableObject
         }
     }
 
-    private async Task LoadHistoryIntoEditorAsync(LocalTransaction history)
+    private async Task LoadHistoryIntoEditorAsync(Guid transactionId)
     {
+        _historyEditInvalidated = true;
+        ClearHistoryEditor();
+        var version = Interlocked.Increment(ref _historyEditVersion);
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
+        var history = await _local.GetTransactionForPaymentEditingAsync(transactionId, _session);
         if (history is null)
+        {
+            StatusMessage = "금액이 비공개이거나 수정 권한이 없어 이 처리내역을 수정할 수 없습니다.";
             return;
+        }
 
         var customer = _allCustomers.FirstOrDefault(current => current.Id == history.CustomerId)
             ?? await _local.GetCustomerForOperationalSelectionAsync(history.CustomerId, _session);
@@ -1723,9 +1772,13 @@ public sealed partial class PaymentViewModel : ObservableObject
             }
         }
 
+        if (_disposed || version != Volatile.Read(ref _historyEditVersion) ||
+            access != FinancialAmountVisibility.CaptureAccess(_session)) return;
         if (SelectedCustomer?.Id != customer.Id)
             SetCustomer(customer);
 
+        _historyEditInvalidated = false;
+        SaveCommand.NotifyCanExecuteChanged();
         _editingTransactionId = history.Id;
         _editingTransactionRevision = history.Revision;
         _linkedInvoice = editInvoice;
@@ -1767,7 +1820,8 @@ public sealed partial class PaymentViewModel : ObservableObject
         ResetAttachmentEditor();
         NotifySettlementUiStateChanged();
         await RefreshContextCoreAsync(Interlocked.Increment(ref _contextRefreshVersion));
-        StatusMessage = "최근 처리내역 수정 모드입니다.";
+        if (!_disposed && version == Volatile.Read(ref _historyEditVersion) && access == FinancialAmountVisibility.CaptureAccess(_session))
+            StatusMessage = "최근 처리내역 수정 모드입니다.";
     }
 
     private decimal GetEditingSettlementAmountForLinkedContext(
@@ -1779,17 +1833,17 @@ public sealed partial class PaymentViewModel : ObservableObject
             return 0m;
 
         var current = SelectedHistory;
-        if (current is null || current.IsDeleted)
+        if (current is null || !current.SettlementAmount.HasValue)
             return 0m;
 
         if (linkedInvoiceId.HasValue && current.LinkedInvoiceId == linkedInvoiceId.Value)
-            return Math.Max(0m, current.SettlementAmount);
+            return Math.Max(0m, current.SettlementAmount.Value);
 
         if (linkedRentalProfileId.HasValue &&
             current.LinkedRentalBillingProfileId == linkedRentalProfileId.Value &&
             (!linkedRentalRunId.HasValue || current.LinkedRentalBillingRunId == linkedRentalRunId.Value))
         {
-            return Math.Max(0m, current.SettlementAmount);
+            return Math.Max(0m, current.SettlementAmount.Value);
         }
 
         return 0m;

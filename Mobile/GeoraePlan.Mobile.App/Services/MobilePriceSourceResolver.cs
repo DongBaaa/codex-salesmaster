@@ -30,8 +30,9 @@ public static class MobilePriceSourceResolver
         return PriceSourceSales;
     }
 
-    public static decimal ResolveSalesUnitPrice(ItemDto item, string? customerPriceGrade, IReadOnlyDictionary<string, string> priceGradeSourceMap)
+    public static decimal? ResolveSalesUnitPrice(ItemDto item, string? customerPriceGrade, IReadOnlyDictionary<string, string> priceGradeSourceMap)
     {
+        if (item.SalesAmountsHidden) return null;
         var grade = (customerPriceGrade ?? string.Empty).Trim();
         var priceSource = !string.IsNullOrWhiteSpace(grade) && priceGradeSourceMap.TryGetValue(grade, out var configuredSource)
             ? configuredSource

@@ -1,4 +1,4 @@
-﻿using System.Windows;
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -13,6 +13,7 @@ public partial class PeriodLedgerWindow : Window
     {
         InitializeComponent();
         DataContext = vm;
+        Closed += (_, _) => vm.Dispose();
         PreviewKeyDown += PeriodLedgerWindow_PreviewKeyDown;
     }
 

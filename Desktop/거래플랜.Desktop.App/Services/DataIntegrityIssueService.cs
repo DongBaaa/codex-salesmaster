@@ -1,4 +1,4 @@
-using System.Data;
+﻿using System.Data;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
@@ -29,6 +29,7 @@ public enum DataIntegrityDirectActionKind
 
 public static class DataIntegrityIssueCodes
 {
+    public const string AmountVerificationDeferred = "amount_verification_deferred";
     public const string RentalBillingTemplateInvalid = "rental_billing_template_invalid";
     public const string RentalProfileTemplateEmpty = "rental_profile_template_empty";
     public const string RentalProfileMonthlyAmountMismatch = "rental_profile_monthly_amount_mismatch";
@@ -109,7 +110,7 @@ public sealed class DataIntegrityIssueSummary
     public string SeverityDisplay => DataIntegritySeverityFormatter.ToDisplayText(Severity);
 }
 
-public sealed class DataIntegrityIssueDetail
+public sealed partial class DataIntegrityIssueDetail
 {
     public string Id { get; init; } = Guid.NewGuid().ToString("N");
     public string Code { get; init; } = string.Empty;
@@ -124,13 +125,13 @@ public sealed class DataIntegrityIssueDetail
     public string ItemName { get; init; } = string.Empty;
     public string AssetDisplayName { get; init; } = string.Empty;
     public string OfficeCode { get; init; } = string.Empty;
-    public string CurrentValue { get; init; } = string.Empty;
-    public string ExpectedValue { get; init; } = string.Empty;
-    public string Message { get; init; } = string.Empty;
+    public string CurrentValue { get => Render(_currentText); init => _currentText = value; }
+    public string ExpectedValue { get => Render(_expectedText); init => _expectedText = value; }
+    public string Message { get => Render(_messageText); init => _messageText = value; }
     public string SuggestedAction { get; init; } = string.Empty;
     public DataIntegrityDirectActionKind DirectActionKind { get; init; }
     public IReadOnlyList<Guid> RelatedEntityIds { get; init; } = Array.Empty<Guid>();
-    public string ReviewInfo { get; init; } = string.Empty;
+    public string ReviewInfo { get => Render(_reviewText); init => _reviewText = value; }
     public DataIntegrityItemDuplicateComparison? ItemDuplicateComparison { get; init; }
 
     public bool HasDirectAction => DirectActionKind != DataIntegrityDirectActionKind.None;
@@ -201,7 +202,7 @@ public sealed class DataIntegrityIssueDetail
     }
 }
 
-public sealed class DataIntegrityItemDuplicateComparison
+public sealed partial class DataIntegrityItemDuplicateComparison
 {
     public IReadOnlyList<DataIntegrityItemDuplicateCandidate> Candidates { get; init; } = Array.Empty<DataIntegrityItemDuplicateCandidate>();
     public string SnapshotToken { get; init; } = string.Empty;
@@ -235,7 +236,7 @@ public sealed class DataIntegrityItemDuplicateReviewPreparation
     }
 }
 
-public sealed class DataIntegrityItemDuplicateCandidate
+public sealed partial class DataIntegrityItemDuplicateCandidate : CommunityToolkit.Mvvm.ComponentModel.ObservableObject
 {
     public Guid ItemId { get; init; }
     public string ItemIdText => ItemId.ToString("N")[..8];
@@ -256,12 +257,18 @@ public sealed class DataIntegrityItemDuplicateCandidate
     public decimal CurrentStock { get; init; }
     public decimal WarehouseStock { get; init; }
     public decimal SafetyStock { get; init; }
-    public decimal PurchasePrice { get; init; }
-    public decimal SalePrice { get; init; }
-    public decimal RetailPrice { get; init; }
-    public decimal PriceGradeA { get; init; }
-    public decimal PriceGradeB { get; init; }
-    public decimal PriceGradeC { get; init; }
+    internal decimal RawPurchasePrice { get; init; }
+    public decimal? PurchasePrice => CanShowAmount(true) ? RawPurchasePrice : null;
+    internal decimal RawSalePrice { get; init; }
+    public decimal? SalePrice => CanShowAmount(false) ? RawSalePrice : null;
+    internal decimal RawRetailPrice { get; init; }
+    public decimal? RetailPrice => CanShowAmount(false) ? RawRetailPrice : null;
+    internal decimal RawPriceGradeA { get; init; }
+    public decimal? PriceGradeA => CanShowAmount(false) ? RawPriceGradeA : null;
+    internal decimal RawPriceGradeB { get; init; }
+    public decimal? PriceGradeB => CanShowAmount(false) ? RawPriceGradeB : null;
+    internal decimal RawPriceGradeC { get; init; }
+    public decimal? PriceGradeC => CanShowAmount(false) ? RawPriceGradeC : null;
     public DateOnly? LastPurchaseDate { get; init; }
     public DateOnly? LastSaleDate { get; init; }
     public bool CatalogExtensionSyncPending { get; init; }
@@ -294,7 +301,7 @@ public sealed class DataIntegrityItemDuplicateCandidate
     public string ReferenceSummary =>
         $"전표 {InvoiceLineCount:N0}, 시리얼 {InvoiceLineSerialCount:N0}, 자산 {RentalAssetCount:N0}, 청구템플릿 {RentalBillingTemplateCount:N0}, 이동 {InventoryTransferLineCount:N0}, 재고원장 {InventoryMovementCount:N0}, 재고층 {StockLayerCount:N0}, 시리얼원장 {SerialLedgerCount:N0}, 창고재고 {ItemWarehouseStockRowCount:N0}, 사용자등급가 {ItemPriceGradeCount:N0}";
     public string MasterDataSummary =>
-        $"분류 {Display(CategoryName)} / 종류 {Display(ItemKind)} / 추적 {Display(TrackingType)} / 단위 {Display(Unit)} / 보관 {Display(StorageLocation)} / 매입 {PurchasePrice:N0} / 매출 {SalePrice:N0} / 소매 {RetailPrice:N0}";
+        $"분류 {Display(CategoryName)} / 종류 {Display(ItemKind)} / 추적 {Display(TrackingType)} / 단위 {Display(Unit)} / 보관 {Display(StorageLocation)} / 매입 {DisplayAmount(PurchasePrice)} / 매출 {DisplayAmount(SalePrice)} / 소매 {DisplayAmount(RetailPrice)}";
     public string AssetDataSummary =>
         $"대여 {IsRental} / 판매 {IsSale} / 시리얼 {Display(SerialNumber)} / 자재 {Display(MaterialNumber)} / 설치 {Display(InstallLocation)} / 대여기간 {Display(RentalStartDate)}~{Display(RentalEndDate)} / 메모 {Display(Notes)}";
     public string SyncStateText => $"rev {Revision:N0} / {UpdatedAtUtc:yyyy-MM-dd HH:mm:ss}Z / dirty {(IsDirty ? "Y" : "N")} / outbox {UnresolvedOutboxCount:N0}";
@@ -355,6 +362,7 @@ internal static class DataIntegritySeverityFormatter
 
 public sealed class DataIntegrityScanResult
 {
+    internal FinancialAmountVisibility.AccessKey? AmountAccess { get; init; }
     public DataIntegrityScanResult(DateTime scannedAtLocal, IReadOnlyList<DataIntegrityIssueSummary> summaries, IReadOnlyList<DataIntegrityIssueDetail> issues)
     {
         ScannedAtLocal = scannedAtLocal;
@@ -405,6 +413,13 @@ public sealed class DataIntegrityIssueService
 
     private static readonly IReadOnlyDictionary<string, DataIntegrityIssueDefinition> Definitions = new Dictionary<string, DataIntegrityIssueDefinition>(StringComparer.OrdinalIgnoreCase)
     {
+        [DataIntegrityIssueCodes.AmountVerificationDeferred] = new(
+            DataIntegrityIssueCodes.AmountVerificationDeferred,
+            "비공개 금액 검사 보류",
+            "Info",
+            "회계경리",
+            "비공개 금액이 포함되어 현재 로컬 자료만으로 금액 일치 여부를 판단할 수 없습니다.",
+            "금액 조회 권한이 있는 계정에서 서버 최신 자료를 확인하세요. 비공개 값을 0원으로 수정하지 마세요."),
         [DataIntegrityIssueCodes.RentalBillingTemplateInvalid] = new(
             DataIntegrityIssueCodes.RentalBillingTemplateInvalid,
             "청구 품목 데이터 손상",
@@ -751,6 +766,7 @@ public sealed class DataIntegrityIssueService
 
     private async Task<DataIntegrityScanResult> ScanCoreAsync(SessionState session, CancellationToken ct)
     {
+        var amountAccess = FinancialAmountVisibility.CaptureAccess(session);
         var totalStopwatch = Stopwatch.StartNew();
         var stepStopwatch = Stopwatch.StartNew();
         var activeProfiles = await SelectIntegrityRentalProfileProjection(ApplyOperationalAlertRentalProfileScopePrefilter(
@@ -810,6 +826,7 @@ public sealed class DataIntegrityIssueService
                 InvoiceNumber = invoice.InvoiceNumber,
                 VoucherType = invoice.VoucherType,
                 InvoiceDate = invoice.InvoiceDate,
+                AmountsHidden = invoice.AmountsHidden,
                 TotalAmount = invoice.TotalAmount,
                 SupplyAmount = invoice.SupplyAmount,
                 VatAmount = invoice.VatAmount,
@@ -1229,8 +1246,9 @@ public sealed class DataIntegrityIssueService
                     directActionKind: DataIntegrityDirectActionKind.OpenRentalBillingProfile);
             }
 
-            var templateMonthly = templateItems.Sum(ResolveTemplateMonthlyAmount);
-            if (templateItems.Count > 0 && AmountDiffers(profile.MonthlyAmount, templateMonthly))
+            decimal? templateMonthly = profile.AmountsHidden || templateItems.Any(item => item.AmountsHidden)
+                ? null : templateItems.Sum(item => DisclosedAmount.Require(ResolveTemplateMonthlyAmount(item)));
+            if (templateItems.Count > 0 && templateMonthly.HasValue && AmountDiffers(profile.MonthlyAmount, templateMonthly.Value))
             {
                 AddIssue(details, DataIntegrityIssueCodes.RentalProfileMonthlyAmountMismatch, profile, null,
                     entityType: "청구 프로필",
@@ -1311,9 +1329,11 @@ public sealed class DataIntegrityIssueService
                     }
                 }
 
-                var assetMonthlySum = existingItemAssets.Sum(asset => Math.Max(0m, asset.MonthlyFee));
+                decimal? assetMonthlySum = existingItemAssets.Any(asset => asset.SalesAmountsHidden)
+                    ? null : existingItemAssets.Sum(asset => Math.Max(0m, asset.MonthlyFee));
                 var itemMonthly = ResolveTemplateMonthlyAmount(item);
-                if (existingItemAssets.Count > 0 && assetMonthlySum > 0m && AmountDiffers(assetMonthlySum, itemMonthly))
+                if (existingItemAssets.Count > 0 && assetMonthlySum.HasValue &&
+                    itemMonthly.HasValue && assetMonthlySum.Value > 0m && AmountDiffers(assetMonthlySum.Value, itemMonthly.Value))
                 {
                     AddIssue(details, DataIntegrityIssueCodes.RentalAssetTemplateMonthlyMismatch, profile, existingItemAssets.FirstOrDefault(),
                         entityType: "청구 품목",
@@ -1437,7 +1457,11 @@ public sealed class DataIntegrityIssueService
             var billingReviewInfo = BuildAssetBillingReviewInfo(
                 asset,
                 assetTemplateRefs.GetValueOrDefault(asset.Id) ?? []);
-            if (billingEligibility == RentalAssetBillingEligibility.Billable && asset.MonthlyFee <= 0m)
+            if (billingEligibility == RentalAssetBillingEligibility.Billable && asset.SalesAmountsHidden)
+            {
+                AddAmountVerificationDeferred(details, "렌탈 자산", asset.Id, asset.OfficeCode);
+            }
+            else if (billingEligibility == RentalAssetBillingEligibility.Billable && asset.MonthlyFee <= 0m)
             {
                 AddIssue(details, DataIntegrityIssueCodes.RentalBillableAssetWithoutMonthlyFee, null, asset,
                     entityType: "렌탈 자산",
@@ -1491,7 +1515,13 @@ public sealed class DataIntegrityIssueService
             .ThenBy(summary => summary.Title, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
 
-        var result = new DataIntegrityScanResult(DateTime.Now, summaries, details);
+        foreach (var detail in details)
+        {
+            detail.ProtectAmounts(session, amountAccess);
+            detail.ItemDuplicateComparison?.ProtectAmounts(session, amountAccess);
+        }
+
+        var result = new DataIntegrityScanResult(DateTime.Now, summaries, details) { AmountAccess = amountAccess };
         OperationTiming.LogIfSlow(
             "INTEGRITY",
             "Integrity scan total",
@@ -2185,6 +2215,7 @@ public sealed class DataIntegrityIssueService
         SessionState session,
         CancellationToken ct)
     {
+        var amountAccess = FinancialAmountVisibility.CaptureAccess(session);
         var fallbackComparison = issue.ItemDuplicateComparison ?? new DataIntegrityItemDuplicateComparison();
         DataIntegrityItemDuplicateReviewPreparation Block(string reason, DataIntegrityItemDuplicateComparison? comparison = null)
             => new()
@@ -2228,6 +2259,7 @@ public sealed class DataIntegrityIssueService
         var usageById = await LoadItemDuplicateUsagesAsync(currentIds, ct);
         var outboxCountById = await LoadItemUnresolvedOutboxCountsAsync(currentIds, ct);
         var comparison = BuildItemDuplicateComparison(currentGroup, usageById, outboxCountById);
+        comparison.ProtectAmounts(session, amountAccess);
         if (!currentIds.SequenceEqual(expectedIds))
             return Block("중복 후보 구성이 변경되었습니다. 최신 후보를 확인하도록 운영점검을 새로고침하세요.", comparison);
 
@@ -3276,6 +3308,7 @@ public sealed class DataIntegrityIssueService
         => query.Select(profile => new LocalRentalBillingProfile
         {
             Id = profile.Id,
+            AmountsHidden = profile.AmountsHidden,
             TenantCode = profile.TenantCode,
             OfficeCode = profile.OfficeCode,
             CustomerId = profile.CustomerId,
@@ -3301,6 +3334,7 @@ public sealed class DataIntegrityIssueService
         => query.Select(asset => new LocalRentalAsset
         {
             Id = asset.Id,
+            SalesAmountsHidden = asset.SalesAmountsHidden,
             TenantCode = asset.TenantCode,
             OfficeCode = asset.OfficeCode,
             CustomerId = asset.CustomerId,
@@ -3370,6 +3404,8 @@ public sealed class DataIntegrityIssueService
             CurrentStock = item.CurrentStock,
             SafetyStock = item.SafetyStock,
             PurchasePrice = item.PurchasePrice,
+            PurchaseAmountsHidden = item.PurchaseAmountsHidden,
+            SalesAmountsHidden = item.SalesAmountsHidden,
             SalePrice = item.SalePrice,
             RetailPrice = item.RetailPrice,
             PriceGradeA = item.PriceGradeA,
@@ -3677,6 +3713,7 @@ public sealed class DataIntegrityIssueService
                     line.ItemId,
                     line.ItemNameOriginal,
                     line.LineAmount,
+                    line.AmountsHidden,
                     line.OrderIndex,
                     line.IsDeleted
                 })
@@ -3869,7 +3906,7 @@ public sealed class DataIntegrityIssueService
                 entityId: line.Id,
                 itemName: line.ItemNameOriginal,
                 officeCode: issueOfficeCode,
-                currentValue: $"InvoiceId {line.InvoiceId:D} / 금액 {line.LineAmount:N0} / 삭제상태 {deletionState}",
+                currentValue: Text($"InvoiceId {line.InvoiceId:D} / 금액 {Money(line.AmountsHidden ? null : line.LineAmount):N0} / 삭제상태 {deletionState}"),
                 expectedValue: "참조 전표 행 존재",
                 message: $"{NormalizeDisplay(line.ItemNameOriginal, "전표 세부내역")} 행 {line.Id:N}의 전표 참조가 현재 로컬 DB에 없습니다.",
                 directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics,
@@ -3900,6 +3937,7 @@ public sealed class DataIntegrityIssueService
                     payment.InvoiceId,
                     payment.PaymentDate,
                     payment.Amount,
+                    payment.AmountsHidden,
                     payment.IsDeleted,
                     TransactionId = transaction == null ? null : (Guid?)transaction.Id,
                     TransactionTenantCode = transaction == null ? null : transaction.TenantCode,
@@ -3983,12 +4021,12 @@ public sealed class DataIntegrityIssueService
                 entityId: payment.PaymentId,
                 customerName: customer?.NameOriginal,
                 officeCode: issueOfficeCode,
-                currentValue: $"InvoiceId {payment.InvoiceId:D} / 금액 {payment.Amount:N0} / 삭제상태 {deletionState}",
+                currentValue: Text($"InvoiceId {payment.InvoiceId:D} / 금액 {Money(payment.AmountsHidden ? null : payment.Amount):N0} / 삭제상태 {deletionState}"),
                 expectedValue: "참조 전표 행 존재",
                 message: $"{payment.PaymentDate:yyyy-MM-dd} 수금/지급 {payment.PaymentId:N}의 전표 참조가 현재 로컬 DB에 없습니다.",
                 directActionKind: DataIntegrityDirectActionKind.OpenSyncDiagnostics,
                 relatedEntityIds: relatedIds,
-                reviewInfo: string.Join(" / ", new[]
+                reviewInfo: DiagnosticText.Join(" / ", new DiagnosticText[]
                 {
                     payment.TransactionId.HasValue ? $"TransactionId {payment.TransactionId.Value:D}" : "TransactionId 없음",
                     payment.TransactionCustomerId.HasValue ? $"CustomerId {payment.TransactionCustomerId.Value:D}" : "CustomerId 없음",
@@ -4010,7 +4048,7 @@ public sealed class DataIntegrityIssueService
                         !transaction.IsDeleted &&
                         transaction.LinkedInvoiceId.HasValue &&
                         transaction.LinkedInvoiceId.Value != Guid.Empty &&
-                        transaction.SettlementAmount > 0m)
+                        (transaction.AmountsHidden || transaction.SettlementAmount > 0m))
                 join invoice in ApplyOperationalAlertInvoiceScopePrefilter(
                         _db.Invoices.IgnoreQueryFilters().AsNoTracking().Where(invoice => !invoice.IsDeleted),
                         session)
@@ -4018,30 +4056,34 @@ public sealed class DataIntegrityIssueService
                 join payment in _db.Payments.IgnoreQueryFilters().AsNoTracking()
                     on transaction.Id equals payment.Id into paymentGroup
                 from payment in paymentGroup.DefaultIfEmpty()
-                where payment == null ||
-                      payment.IsDeleted ||
-                      payment.InvoiceId != invoice.Id ||
-                      payment.Amount - transaction.SettlementAmount >= 1m ||
-                      transaction.SettlementAmount - payment.Amount >= 1m
+                where transaction.AmountsHidden || (payment != null && payment.AmountsHidden) ||
+                      (!transaction.AmountsHidden && (payment == null || payment.IsDeleted)) ||
+                      (payment != null && !payment.IsDeleted &&
+                       (payment.InvoiceId != invoice.Id ||
+                        (!transaction.AmountsHidden && !payment.AmountsHidden &&
+                         (payment.Amount - transaction.SettlementAmount >= 1m ||
+                          transaction.SettlementAmount - payment.Amount >= 1m))))
                 orderby transaction.TransactionDate, transaction.Id
                 select new
                 {
+                    Transaction = transaction,
                     TransactionId = transaction.Id,
                     TransactionTenantCode = transaction.TenantCode,
                     TransactionOfficeCode = transaction.ResponsibleOfficeCode,
                     transaction.TransactionDate,
                     transaction.TransactionKind,
                     transaction.LinkedInvoiceNumber,
-                    TransactionSettlementAmount = transaction.SettlementAmount,
+                    TransactionSettlementAmount = transaction.AmountsHidden ? (decimal?)null : transaction.SettlementAmount,
                     InvoiceId = invoice.Id,
                     invoice.InvoiceNumber,
                     invoice.LocalTempNumber,
                     invoice.InvoiceDate,
+                    invoice.VoucherType,
                     invoice.TotalAmount,
                     invoice.ResponsibleOfficeCode,
                     PaymentId = payment == null ? null : (Guid?)payment.Id,
                     PaymentInvoiceId = payment == null ? null : (Guid?)payment.InvoiceId,
-                    PaymentAmount = payment == null ? null : (decimal?)payment.Amount,
+                    PaymentAmount = payment == null || payment.AmountsHidden ? null : (decimal?)payment.Amount,
                     PaymentIsDeleted = payment == null ? null : (bool?)payment.IsDeleted
                 })
             .ToListAsync(ct);
@@ -4049,6 +4091,16 @@ public sealed class DataIntegrityIssueService
         var issues = new List<DataIntegrityIssueDetail>();
         foreach (var row in rows.Where(row => IsInSessionScope(row.TransactionTenantCode, row.TransactionOfficeCode, session)))
         {
+            if (!row.TransactionSettlementAmount.HasValue || (row.PaymentId.HasValue && !row.PaymentAmount.HasValue))
+                AddAmountVerificationDeferred(issues, "전표 연결 수금/거래", row.InvoiceId, row.ResponsibleOfficeCode);
+            var missingPositivePayment = row.TransactionSettlementAmount > 0m &&
+                (!row.PaymentId.HasValue || row.PaymentIsDeleted == true);
+            var activeMismatch = row.PaymentId.HasValue && row.PaymentIsDeleted != true &&
+                (row.PaymentInvoiceId != row.InvoiceId ||
+                 (row.PaymentAmount.HasValue && row.TransactionSettlementAmount.HasValue &&
+                  AmountDiffers(row.PaymentAmount.Value, row.TransactionSettlementAmount.Value)));
+            if (!missingPositivePayment && !activeMismatch)
+                continue;
             var invoiceNumber = NormalizeDisplay(
                 !string.IsNullOrWhiteSpace(row.InvoiceNumber) ? row.InvoiceNumber : row.LocalTempNumber,
                 row.InvoiceId.ToString("N"));
@@ -4069,19 +4121,19 @@ public sealed class DataIntegrityIssueService
                 entityType: "전표 연결 수금/거래",
                 entityId: row.InvoiceId,
                 officeCode: row.ResponsibleOfficeCode,
-                currentValue: $"전표 {invoiceNumber} / 거래 정산 {row.TransactionSettlementAmount:N0} / 수금·지급 {FormatOptionalAmount(row.PaymentAmount)} / {reason}",
+                currentValue: Text($"전표 {invoiceNumber} / 거래 정산 {FormatOptionalAmount(row.TransactionSettlementAmount, scope: DiagnosticText.ForTransaction(session, row.Transaction, row.VoucherType))} / 수금·지급 {FormatOptionalAmount(row.PaymentAmount, row.PaymentId.HasValue, scope: row.PaymentInvoiceId == row.InvoiceId ? DiagnosticText.ForInvoice(row.VoucherType) : DiagnosticAmountScope.Both)} / {reason}"),
                 expectedValue: "전표 연결 거래내역과 같은 ID의 활성 수금/지급 행 전표·금액 일치",
                 message: $"{row.TransactionDate:yyyy-MM-dd} 전표 {invoiceNumber}의 거래내역과 수금/지급 행이 서로 다릅니다.",
                 directActionKind: DataIntegrityDirectActionKind.OpenPaymentForInvoice,
                 relatedEntityIds: relatedIds,
-                reviewInfo: string.Join(" / ", new[]
+                reviewInfo: DiagnosticText.Join(" / ", new DiagnosticText[]
                 {
                     $"InvoiceId {row.InvoiceId:D}",
                     $"TransactionId {row.TransactionId:D}",
                     row.PaymentId.HasValue ? $"PaymentId {row.PaymentId.Value:D}" : "PaymentId 없음",
                     row.PaymentInvoiceId.HasValue ? $"PaymentInvoiceId {row.PaymentInvoiceId.Value:D}" : "PaymentInvoiceId 없음",
-                    $"TransactionSettlement {row.TransactionSettlementAmount:N0}",
-                    row.PaymentAmount.HasValue ? $"PaymentAmount {row.PaymentAmount.Value:N0}" : "PaymentAmount 없음",
+                    Text($"TransactionSettlement {FormatOptionalAmount(row.TransactionSettlementAmount, scope: DiagnosticText.ForTransaction(session, row.Transaction, row.VoucherType))}"),
+                    Text($"PaymentAmount {FormatOptionalAmount(row.PaymentAmount, row.PaymentId.HasValue, scope: row.PaymentInvoiceId == row.InvoiceId ? DiagnosticText.ForInvoice(row.VoucherType) : DiagnosticAmountScope.Both)}"),
                     row.PaymentIsDeleted.HasValue ? $"PaymentDeleted {row.PaymentIsDeleted.Value}" : "PaymentDeleted -",
                     string.IsNullOrWhiteSpace(row.TransactionKind) ? "TransactionKind -" : $"TransactionKind {row.TransactionKind}",
                     string.IsNullOrWhiteSpace(row.LinkedInvoiceNumber) ? "LinkedInvoiceNumber -" : $"LinkedInvoiceNumber {row.LinkedInvoiceNumber}"
@@ -4107,6 +4159,7 @@ public sealed class DataIntegrityIssueService
                 orderby transaction.TransactionDate, transaction.Id
                 select new
                 {
+                    Transaction = transaction,
                     TransactionId = transaction.Id,
                     TransactionTenantCode = transaction.TenantCode,
                     TransactionOfficeCode = transaction.OfficeCode,
@@ -4120,12 +4173,14 @@ public sealed class DataIntegrityIssueService
                     transaction.SettlementAmount,
                     transaction.ReceiptTotal,
                     transaction.PaymentTotal,
+                    transaction.AmountsHidden,
                     transaction.Note,
                     CustomerId = customer.Id,
                     CustomerName = customer.NameOriginal,
                     CustomerTenantCode = customer.TenantCode,
                     CustomerOfficeCode = customer.OfficeCode,
                     CustomerResponsibleOfficeCode = customer.ResponsibleOfficeCode,
+                    InvoiceVoucherType = invoice == null ? (VoucherType?)null : invoice.VoucherType,
                     InvoiceId = invoice == null ? null : (Guid?)invoice.Id,
                     InvoiceNumber = invoice == null ? null : invoice.InvoiceNumber,
                     InvoiceLocalTempNumber = invoice == null ? null : invoice.LocalTempNumber,
@@ -4186,7 +4241,7 @@ public sealed class DataIntegrityIssueService
                 row.LinkedRentalBillingProfileId.HasValue && row.LinkedRentalBillingProfileId.Value != Guid.Empty
                     ? row.LinkedRentalBillingProfileId.Value.ToString("N")
                     : "렌탈 미연결");
-            var amount = row.SettlementAmount > 0m
+            decimal? amount = row.AmountsHidden ? null : row.SettlementAmount > 0m
                 ? row.SettlementAmount
                 : Math.Max(Math.Max(row.ReceiptTotal, row.PaymentTotal), 0m);
             var officeCode = OfficeCodeCatalog.NormalizeOfficeCodeOrDefault(
@@ -4208,11 +4263,13 @@ public sealed class DataIntegrityIssueService
                 .Where(id => id != Guid.Empty)
                 .Distinct()
                 .ToArray();
-            var storedScopeDisplay =
-                $"저장 scope {NormalizeTenantForDisplay(row.TransactionTenantCode, row.TransactionOfficeCode, row.TransactionResponsibleOfficeCode)} / " +
-                $"{NormalizeOfficeScopeForDisplay(row.TransactionOfficeCode, row.TransactionResponsibleOfficeCode)} / " +
-                $"{NormalizeOfficeScopeForDisplay(row.TransactionResponsibleOfficeCode, customerResponsibleOfficeCode)} / " +
-                $"거래 {row.TransactionDate:yyyy-MM-dd} / {PaymentFlowConstants.GetTransactionKindDisplayName(row.TransactionKind)} / 금액 {amount:N0}";
+            var storedScopeDisplay = DiagnosticText.Join("", new DiagnosticText[]
+            {
+                $"저장 scope {NormalizeTenantForDisplay(row.TransactionTenantCode, row.TransactionOfficeCode, row.TransactionResponsibleOfficeCode)} / ",
+                $"{NormalizeOfficeScopeForDisplay(row.TransactionOfficeCode, row.TransactionResponsibleOfficeCode)} / ",
+                $"{NormalizeOfficeScopeForDisplay(row.TransactionResponsibleOfficeCode, customerResponsibleOfficeCode)} / ",
+                Text($"거래 {row.TransactionDate:yyyy-MM-dd} / {PaymentFlowConstants.GetTransactionKindDisplayName(row.TransactionKind)} / 금액 {FormatOptionalAmount(amount, scope: DiagnosticText.ForTransaction(session, row.Transaction, row.InvoiceVoucherType))}")
+            });
             var expectedScopeDisplay =
                 $"기대 scope {expectedTenantCode} / {expectedOwnerOfficeCode} / {expectedResponsibleOfficeCode} / " +
                 $"전표 {invoiceNumber} / 렌탈 {profileDisplay}";
@@ -4232,7 +4289,7 @@ public sealed class DataIntegrityIssueService
                 message: issueMessage,
                 directActionKind: directActionKind,
                 relatedEntityIds: relatedIds,
-                reviewInfo: string.Join(" / ", new[]
+                reviewInfo: DiagnosticText.Join(" / ", new DiagnosticText[]
                 {
                     $"TransactionId {row.TransactionId:D}",
                     $"CustomerId {row.CustomerId:D}",
@@ -4274,21 +4331,23 @@ public sealed class DataIntegrityIssueService
                 {
                     PaymentId = payment.Id,
                     payment.PaymentDate,
-                    PaymentAmount = payment.Amount,
+                    PaymentAmount = payment.AmountsHidden ? (decimal?)null : payment.Amount,
                     payment.Note,
                     InvoiceId = invoice.Id,
                     invoice.InvoiceNumber,
                     invoice.LocalTempNumber,
                     invoice.InvoiceDate,
+                    invoice.VoucherType,
                     invoice.TenantCode,
                     invoice.OfficeCode,
                     invoice.ResponsibleOfficeCode,
                     invoice.LinkedRentalBillingProfileId,
                     invoice.LinkedRentalBillingRunId,
+                    Transaction = transaction,
                     TransactionId = transaction == null ? (Guid?)null : transaction.Id,
                     TransactionIsDeleted = transaction == null ? (bool?)null : transaction.IsDeleted,
                     TransactionLinkedInvoiceId = transaction == null ? (Guid?)null : transaction.LinkedInvoiceId,
-                    TransactionSettlementAmount = transaction == null ? (decimal?)null : transaction.SettlementAmount,
+                    TransactionSettlementAmount = transaction == null || transaction.AmountsHidden ? (decimal?)null : transaction.SettlementAmount,
                     TransactionTenantCode = transaction == null ? null : transaction.TenantCode,
                     TransactionOfficeCode = transaction == null ? null : transaction.OfficeCode,
                     TransactionResponsibleOfficeCode = transaction == null ? null : transaction.ResponsibleOfficeCode
@@ -4324,12 +4383,12 @@ public sealed class DataIntegrityIssueService
                 entityType: "렌탈 전표/수금",
                 entityId: row.PaymentId,
                 officeCode: invoiceScope.OfficeCode,
-                currentValue: $"삭제 전표 {invoiceNumber} / 활성 수금 {row.PaymentAmount:N0} / 거래 {transactionState}",
+                currentValue: Text($"삭제 전표 {invoiceNumber} / 활성 수금 {FormatOptionalAmount(row.PaymentAmount, scope: DiagnosticText.ForInvoice(row.VoucherType))} / 거래 {transactionState}"),
                 expectedValue: "삭제 전표에 연결된 수금/지급도 삭제",
-                message: $"{row.InvoiceDate:yyyy-MM-dd} 삭제된 렌탈 전표 {invoiceNumber}에 활성 수금/지급 {row.PaymentAmount:N0}원이 남아 있습니다.",
+                message: Text($"{row.InvoiceDate:yyyy-MM-dd} 삭제된 렌탈 전표 {invoiceNumber}에 활성 수금/지급 {FormatOptionalAmount(row.PaymentAmount, scope: DiagnosticText.ForInvoice(row.VoucherType))} 금액의 기록이 남아 있습니다."),
                 directActionKind: DataIntegrityDirectActionKind.OpenPaymentForInvoice,
                 relatedEntityIds: new[] { row.InvoiceId, row.PaymentId, row.TransactionId ?? Guid.Empty },
-                reviewInfo: string.Join(" / ", new[]
+                reviewInfo: DiagnosticText.Join(" / ", new DiagnosticText[]
                 {
                     $"PaymentId {row.PaymentId:D}",
                     $"InvoiceId {row.InvoiceId:D}",
@@ -4341,7 +4400,7 @@ public sealed class DataIntegrityIssueService
                     row.TransactionId.HasValue ? $"TransactionScopeTenant {transactionScope.TenantCode}" : "TransactionScopeTenant 없음",
                     row.TransactionId.HasValue ? $"TransactionScopeOffice {transactionScope.OfficeCode}" : "TransactionScopeOffice 없음",
                     $"TransactionLinkedInvoiceId {transactionLinkText}",
-                    row.TransactionSettlementAmount.HasValue ? $"TransactionSettlementAmount {row.TransactionSettlementAmount.Value:N0}" : "TransactionSettlementAmount 없음",
+                    Text($"TransactionSettlementAmount {FormatOptionalAmount(row.TransactionSettlementAmount, row.TransactionId.HasValue, scope: row.Transaction == null ? DiagnosticAmountScope.None : DiagnosticText.ForTransaction(session, row.Transaction, row.VoucherType))}"),
                     string.IsNullOrWhiteSpace(row.Note) ? "Note -" : $"Note {row.Note}"
                 }));
         }
@@ -4366,7 +4425,7 @@ public sealed class DataIntegrityIssueService
                 where !transaction.LinkedInvoiceId.HasValue ||
                       transaction.LinkedInvoiceId.Value == Guid.Empty ||
                       transaction.LinkedInvoiceId.Value != invoice.Id ||
-                      transaction.SettlementAmount != payment.Amount ||
+                      (!transaction.AmountsHidden && !payment.AmountsHidden && transaction.SettlementAmount != payment.Amount) ||
                       transaction.LinkedRentalBillingProfileId != invoice.LinkedRentalBillingProfileId ||
                       transaction.LinkedRentalBillingRunId != invoice.LinkedRentalBillingRunId
                 orderby invoice.InvoiceDate, invoice.InvoiceNumber, payment.PaymentDate, payment.Id
@@ -4374,22 +4433,24 @@ public sealed class DataIntegrityIssueService
                 {
                     PaymentId = payment.Id,
                     payment.PaymentDate,
-                    PaymentAmount = payment.Amount,
+                    PaymentAmount = payment.AmountsHidden ? (decimal?)null : payment.Amount,
                     payment.Note,
                     InvoiceId = invoice.Id,
                     invoice.InvoiceNumber,
                     invoice.LocalTempNumber,
                     invoice.InvoiceDate,
+                    invoice.VoucherType,
                     invoice.TotalAmount,
                     invoice.TenantCode,
                     invoice.ResponsibleOfficeCode,
                     invoice.LinkedRentalBillingProfileId,
                     invoice.LinkedRentalBillingRunId,
+                    Transaction = transaction,
                     TransactionId = transaction.Id,
                     transaction.TransactionDate,
                     transaction.TransactionKind,
                     transaction.LinkedInvoiceId,
-                    transaction.SettlementAmount,
+                    SettlementAmount = transaction.AmountsHidden ? (decimal?)null : transaction.SettlementAmount,
                     TransactionTenantCode = transaction.TenantCode,
                     TransactionOfficeCode = transaction.ResponsibleOfficeCode,
                     TransactionRentalProfileId = transaction.LinkedRentalBillingProfileId,
@@ -4413,12 +4474,12 @@ public sealed class DataIntegrityIssueService
                 entityType: "렌탈 전표/수금",
                 entityId: row.PaymentId,
                 officeCode: row.ResponsibleOfficeCode,
-                currentValue: $"전표 {invoiceNumber} / 삭제 수금 {row.PaymentAmount:N0} / 거래 전표링크 {linkedInvoiceText} / 거래 정산 {row.SettlementAmount:N0}",
+                currentValue: Text($"전표 {invoiceNumber} / 삭제 수금 {FormatOptionalAmount(row.PaymentAmount, scope: DiagnosticText.ForInvoice(row.VoucherType))} / 거래 전표링크 {linkedInvoiceText} / 거래 정산 {FormatOptionalAmount(row.SettlementAmount, scope: DiagnosticText.ForTransaction(session, row.Transaction, row.VoucherType))}"),
                 expectedValue: "수금/지급 활성 및 거래내역 전표 링크·정산금액 일치",
                 message: $"{row.InvoiceDate:yyyy-MM-dd} 렌탈 전표 {invoiceNumber}에 삭제 상태 수금/지급과 전표 링크가 끊긴 활성 거래내역이 함께 남아 있습니다.",
                 directActionKind: DataIntegrityDirectActionKind.OpenPaymentForInvoice,
                 relatedEntityIds: new[] { row.InvoiceId, row.TransactionId },
-                reviewInfo: string.Join(" / ", new[]
+                reviewInfo: DiagnosticText.Join(" / ", new DiagnosticText[]
                 {
                     $"PaymentId {row.PaymentId:D}",
                     $"InvoiceId {row.InvoiceId:D}",
@@ -4450,7 +4511,8 @@ public sealed class DataIntegrityIssueService
                 transaction.Id,
                 ProfileId = transaction.LinkedRentalBillingProfileId!.Value,
                 RunId = transaction.LinkedRentalBillingRunId,
-                Amount = transaction.SettlementAmount
+                Amount = transaction.SettlementAmount,
+                transaction.AmountsHidden
             })
             .ToListAsync(ct);
 
@@ -4471,15 +4533,24 @@ public sealed class DataIntegrityIssueService
                     payment.Id,
                     ProfileId = invoice.LinkedRentalBillingProfileId!.Value,
                     RunId = invoice.LinkedRentalBillingRunId,
-                    Amount = payment.Amount
+                    Amount = payment.Amount,
+                    payment.AmountsHidden
                 })
             .ToListAsync(ct);
 
+        var undisclosedSettlementKeys = transactions
+            .Where(transaction => transaction.AmountsHidden)
+            .Select(transaction => (transaction.ProfileId, RunId: NormalizeRunId(transaction.RunId)))
+            .Concat(directPayments
+                .Where(payment => payment.AmountsHidden && !transactionKeys.Contains((payment.Id, payment.ProfileId)))
+                .Select(payment => (payment.ProfileId, RunId: NormalizeRunId(payment.RunId))))
+            .ToHashSet();
         var transactionSettledAmounts = transactions
+            .Where(transaction => !transaction.AmountsHidden)
             .GroupBy(transaction => (transaction.ProfileId, RunId: NormalizeRunId(transaction.RunId)))
             .ToDictionary(group => group.Key, group => group.Sum(transaction => transaction.Amount));
         var directPaymentSettledAmounts = directPayments
-            .Where(payment => !transactionKeys.Contains((payment.Id, payment.ProfileId)))
+            .Where(payment => !payment.AmountsHidden && !transactionKeys.Contains((payment.Id, payment.ProfileId)))
             .GroupBy(payment => (payment.ProfileId, RunId: NormalizeRunId(payment.RunId)))
             .ToDictionary(group => group.Key, group => group.Sum(payment => payment.Amount));
 
@@ -4495,10 +4566,15 @@ public sealed class DataIntegrityIssueService
 
                 var runId = NormalizeRunId(run.RunId);
                 var key = (profile.Id, RunId: runId);
+                if (profile.AmountsHidden || run.AmountsHidden || undisclosedSettlementKeys.Contains(key))
+                {
+                    AddAmountVerificationDeferred(issues, "렌탈 청구 run", profile.Id, ResolveProfileOfficeCode(profile), runId);
+                    continue;
+                }
                 transactionSettledAmounts.TryGetValue(key, out var transactionAmount);
                 directPaymentSettledAmounts.TryGetValue(key, out var directPaymentAmount);
                 var actualAmount = transactionAmount + directPaymentAmount;
-                if (!AmountDiffers(run.SettledAmount, actualAmount))
+                if (!AmountDiffers(DisclosedAmount.Require(run.SettledAmount), actualAmount))
                     continue;
 
                 var profileDisplay = BuildProfileDisplay(profile);
@@ -4509,20 +4585,20 @@ public sealed class DataIntegrityIssueService
                     entityId: profile.Id,
                     customerName: profile.CustomerName,
                     officeCode: ResolveProfileOfficeCode(profile),
-                    currentValue: $"Run {NormalizeDisplay(run.RunKey, runId.ToString("N"))} / 저장 정산 {run.SettledAmount:N0} / 실제 {actualAmount:N0} / 거래 {transactionAmount:N0} / 직접결제 {directPaymentAmount:N0}",
+                    currentValue: Text($"Run {NormalizeDisplay(run.RunKey, runId.ToString("N"))} / 저장 정산 {Money(run.SettledAmount, DiagnosticAmountScope.Sales):N0} / 실제 {Money(actualAmount, DiagnosticAmountScope.Sales):N0} / 거래 {Money(transactionAmount, DiagnosticAmountScope.Sales):N0} / 직접결제 {Money(directPaymentAmount, DiagnosticAmountScope.Sales):N0}"),
                     expectedValue: "저장 정산금액과 실제 활성 수금/거래내역 합계 일치",
                     message: $"{profileDisplay}의 {run.ScheduledDate:yyyy-MM-dd} 청구 run 정산금액이 실제 입금 근거와 다릅니다.",
                     directActionKind: DataIntegrityDirectActionKind.OpenRentalBillingProfile,
                     relatedEntityIds: new[] { runId },
-                    reviewInfo: string.Join(" / ", new[]
+                    reviewInfo: DiagnosticText.Join(" / ", new DiagnosticText[]
                     {
                         $"ProfileId {profile.Id:D}",
                         $"RunId {runId:D}",
-                        $"Billed {run.BilledAmount:N0}",
-                        $"Stored {run.SettledAmount:N0}",
-                        $"Actual {actualAmount:N0}",
-                        $"Transaction {transactionAmount:N0}",
-                        $"DirectPayment {directPaymentAmount:N0}",
+                        Text($"Billed {Money(run.BilledAmount, DiagnosticAmountScope.Sales):N0}"),
+                        Text($"Stored {Money(run.SettledAmount, DiagnosticAmountScope.Sales):N0}"),
+                        Text($"Actual {Money(actualAmount, DiagnosticAmountScope.Sales):N0}"),
+                        Text($"Transaction {Money(transactionAmount, DiagnosticAmountScope.Sales):N0}"),
+                        Text($"DirectPayment {Money(directPaymentAmount, DiagnosticAmountScope.Sales):N0}"),
                         string.IsNullOrWhiteSpace(run.Status) ? "Status -" : $"Status {run.Status}",
                         string.IsNullOrWhiteSpace(run.SettlementStatus) ? "SettlementStatus -" : $"SettlementStatus {run.SettlementStatus}"
                     }));
@@ -4553,19 +4629,19 @@ public sealed class DataIntegrityIssueService
                     asset: null,
                     entityType: "렌탈 청구 run",
                     entityId: profile.Id,
-                    currentValue: $"RunKey {NormalizeDisplay(run.RunKey, "없음")} / 청구일 {run.ScheduledDate:yyyy-MM-dd} / 청구액 {run.BilledAmount:N0} / 정산 {run.SettledAmount:N0}",
+                    currentValue: Text($"RunKey {NormalizeDisplay(run.RunKey, "없음")} / 청구일 {run.ScheduledDate:yyyy-MM-dd} / 청구액 {Money(run.BilledAmount, DiagnosticAmountScope.Sales):N0} / 정산 {Money(run.SettledAmount, DiagnosticAmountScope.Sales):N0}"),
                     expectedValue: "청구 run은 고유 RunId를 가져야 전표/수금/동기화 정산 비교 대상이 됩니다.",
                     message: $"{profileDisplay}의 청구 run에 RunId가 없어 자동 정산 비교 대상에서 제외됩니다.",
                     directActionKind: DataIntegrityDirectActionKind.OpenRentalBillingProfile,
-                    reviewInfo: string.Join(" / ", new[]
+                    reviewInfo: DiagnosticText.Join(" / ", new DiagnosticText[]
                     {
                         $"ProfileId {profile.Id:D}",
                         "RunId 없음",
                         $"RunKey {NormalizeDisplay(run.RunKey, "-")}",
                         $"Scheduled {run.ScheduledDate:yyyy-MM-dd}",
                         $"Period {run.PeriodStartDate:yyyy-MM-dd}~{run.PeriodEndDate:yyyy-MM-dd}",
-                        $"Billed {run.BilledAmount:N0}",
-                        $"Settled {run.SettledAmount:N0}",
+                        Text($"Billed {Money(run.BilledAmount, DiagnosticAmountScope.Sales):N0}"),
+                        Text($"Settled {Money(run.SettledAmount, DiagnosticAmountScope.Sales):N0}"),
                         string.IsNullOrWhiteSpace(run.Status) ? "Status -" : $"Status {run.Status}",
                         string.IsNullOrWhiteSpace(run.SettlementStatus) ? "SettlementStatus -" : $"SettlementStatus {run.SettlementStatus}"
                     }));
@@ -4692,7 +4768,8 @@ public sealed class DataIntegrityIssueService
                 transaction.Id,
                 ProfileId = transaction.LinkedRentalBillingProfileId!.Value,
                 RunId = transaction.LinkedRentalBillingRunId,
-                Amount = transaction.SettlementAmount
+                Amount = transaction.SettlementAmount,
+                transaction.AmountsHidden
             })
             .ToListAsync(ct);
 
@@ -4713,7 +4790,8 @@ public sealed class DataIntegrityIssueService
                     payment.Id,
                     ProfileId = invoice.LinkedRentalBillingProfileId!.Value,
                     RunId = invoice.LinkedRentalBillingRunId,
-                    Amount = payment.Amount
+                    Amount = payment.Amount,
+                    payment.AmountsHidden
                 })
             .ToListAsync(ct);
 
@@ -4730,11 +4808,19 @@ public sealed class DataIntegrityIssueService
             })
             .ToListAsync(ct);
 
+        var undisclosedSettlementKeys = transactions
+            .Where(transaction => transaction.AmountsHidden)
+            .Select(transaction => (transaction.ProfileId, RunId: NormalizeRunId(transaction.RunId)))
+            .Concat(directPayments
+                .Where(payment => payment.AmountsHidden && !transactionKeys.Contains((payment.Id, payment.ProfileId)))
+                .Select(payment => (payment.ProfileId, RunId: NormalizeRunId(payment.RunId))))
+            .ToHashSet();
         var transactionSettledAmounts = transactions
+            .Where(transaction => !transaction.AmountsHidden)
             .GroupBy(transaction => (transaction.ProfileId, RunId: NormalizeRunId(transaction.RunId)))
             .ToDictionary(group => group.Key, group => group.Sum(transaction => transaction.Amount));
         var directPaymentSettledAmounts = directPayments
-            .Where(payment => !transactionKeys.Contains((payment.Id, payment.ProfileId)))
+            .Where(payment => !payment.AmountsHidden && !transactionKeys.Contains((payment.Id, payment.ProfileId)))
             .GroupBy(payment => (payment.ProfileId, RunId: NormalizeRunId(payment.RunId)))
             .ToDictionary(group => group.Key, group => group.Sum(payment => payment.Amount));
         var invoicedRunKeys = invoices
@@ -4755,6 +4841,12 @@ public sealed class DataIntegrityIssueService
                 .ToList();
             if (activeRuns.Count == 0)
                 continue;
+            // Unknown receipts can also change which run is representative.
+            if (profile.AmountsHidden || activeRuns.Any(run => run.AmountsHidden) || undisclosedSettlementKeys.Any(key => key.ProfileId == profile.Id))
+            {
+                AddAmountVerificationDeferred(issues, "렌탈 청구 프로필", profile.Id, ResolveProfileOfficeCode(profile));
+                continue;
+            }
 
             var activeRunIds = new HashSet<Guid>(
                 transactionSettledAmounts
@@ -4772,7 +4864,7 @@ public sealed class DataIntegrityIssueService
             var key = (profile.Id, RunId: runId);
             transactionSettledAmounts.TryGetValue(key, out var transactionAmount);
             directPaymentSettledAmounts.TryGetValue(key, out var directPaymentAmount);
-            var expectedBilledAmount = Math.Max(0m, representativeRun.BilledAmount);
+            var expectedBilledAmount = Math.Max(0m, DisclosedAmount.Require(representativeRun.BilledAmount));
             var expectedSettledAmount = transactionAmount + directPaymentAmount;
             var expectedOutstandingAmount = Math.Max(0m, expectedBilledAmount - expectedSettledAmount);
             if (!AmountDiffers(profile.SettledAmount, expectedSettledAmount) &&
@@ -4789,23 +4881,23 @@ public sealed class DataIntegrityIssueService
                 entityId: profile.Id,
                 customerName: profile.CustomerName,
                 officeCode: ResolveProfileOfficeCode(profile),
-                currentValue: $"프로필 저장 정산 {profile.SettledAmount:N0} / 저장 미수 {profile.OutstandingAmount:N0}",
-                expectedValue: $"대표 run 실제 정산 {expectedSettledAmount:N0} / 실제 미수 {expectedOutstandingAmount:N0}",
+                currentValue: Text($"프로필 저장 정산 {Money(profile.SettledAmount, DiagnosticAmountScope.Sales):N0} / 저장 미수 {Money(profile.OutstandingAmount, DiagnosticAmountScope.Sales):N0}"),
+                expectedValue: Text($"대표 run 실제 정산 {Money(expectedSettledAmount, DiagnosticAmountScope.Sales):N0} / 실제 미수 {Money(expectedOutstandingAmount, DiagnosticAmountScope.Sales):N0}"),
                 message: $"{profileDisplay}의 프로필 요약 정산/미수금액이 대표 청구 run 실제 입금 근거와 다릅니다.",
                 directActionKind: DataIntegrityDirectActionKind.OpenRentalBillingProfile,
                 relatedEntityIds: new[] { runId },
-                reviewInfo: string.Join(" / ", new[]
+                reviewInfo: DiagnosticText.Join(" / ", new DiagnosticText[]
                 {
                     $"ProfileId {profile.Id:D}",
                     $"RunId {runId:D}",
                     $"RunKey {NormalizeDisplay(representativeRun.RunKey, "-")}",
-                    $"Billed {expectedBilledAmount:N0}",
-                    $"ProfileSettled {profile.SettledAmount:N0}",
-                    $"ExpectedSettled {expectedSettledAmount:N0}",
-                    $"ProfileOutstanding {profile.OutstandingAmount:N0}",
-                    $"ExpectedOutstanding {expectedOutstandingAmount:N0}",
-                    $"Transaction {transactionAmount:N0}",
-                    $"DirectPayment {directPaymentAmount:N0}",
+                    Text($"Billed {Money(expectedBilledAmount, DiagnosticAmountScope.Sales):N0}"),
+                    Text($"ProfileSettled {Money(profile.SettledAmount, DiagnosticAmountScope.Sales):N0}"),
+                    Text($"ExpectedSettled {Money(expectedSettledAmount, DiagnosticAmountScope.Sales):N0}"),
+                    Text($"ProfileOutstanding {Money(profile.OutstandingAmount, DiagnosticAmountScope.Sales):N0}"),
+                    Text($"ExpectedOutstanding {Money(expectedOutstandingAmount, DiagnosticAmountScope.Sales):N0}"),
+                    Text($"Transaction {Money(transactionAmount, DiagnosticAmountScope.Sales):N0}"),
+                    Text($"DirectPayment {Money(directPaymentAmount, DiagnosticAmountScope.Sales):N0}"),
                     string.IsNullOrWhiteSpace(profile.BillingStatus) ? "ProfileBillingStatus -" : $"ProfileBillingStatus {profile.BillingStatus}",
                     string.IsNullOrWhiteSpace(profile.SettlementStatus) ? "ProfileSettlementStatus -" : $"ProfileSettlementStatus {profile.SettlementStatus}",
                     string.IsNullOrWhiteSpace(profile.CompletionStatus) ? "ProfileCompletionStatus -" : $"ProfileCompletionStatus {profile.CompletionStatus}",
@@ -5262,7 +5354,7 @@ public sealed class DataIntegrityIssueService
         return rows;
     }
 
-    private async Task<Dictionary<Guid, decimal>> LoadInvoiceLineTotalsForInvoicesAsync(
+    private async Task<Dictionary<Guid, decimal?>> LoadInvoiceLineTotalsForInvoicesAsync(
         IReadOnlyCollection<Guid> invoiceIds,
         CancellationToken ct)
     {
@@ -5273,7 +5365,7 @@ public sealed class DataIntegrityIssueService
         if (ids.Count == 0)
             return [];
 
-        var rows = new Dictionary<Guid, decimal>();
+        var rows = new Dictionary<Guid, decimal?>();
         foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
         {
             ct.ThrowIfCancellationRequested();
@@ -5285,18 +5377,19 @@ public sealed class DataIntegrityIssueService
                 .Select(group => new
                 {
                     InvoiceId = group.Key,
-                    TotalAmount = group.Sum(line => (double)line.LineAmount)
+                    TotalAmount = group.Sum(line => line.AmountsHidden ? 0d : (double)line.LineAmount),
+                    HasHiddenAmount = group.Any(line => line.AmountsHidden)
                 })
                 .ToListAsync(ct);
 
             foreach (var row in batchRows)
-                rows[row.InvoiceId] = (decimal)row.TotalAmount;
+                rows[row.InvoiceId] = row.HasHiddenAmount ? null : (decimal)row.TotalAmount;
         }
 
         return rows;
     }
 
-    private async Task<Dictionary<Guid, decimal>> LoadInvoicePaymentTotalsForInvoicesAsync(
+    private async Task<Dictionary<Guid, decimal?>> LoadInvoicePaymentTotalsForInvoicesAsync(
         IReadOnlyCollection<Guid> invoiceIds,
         CancellationToken ct)
     {
@@ -5307,7 +5400,7 @@ public sealed class DataIntegrityIssueService
         if (ids.Count == 0)
             return [];
 
-        var rows = new Dictionary<Guid, decimal>();
+        var rows = new Dictionary<Guid, decimal?>();
         foreach (var batchIds in ids.Chunk(LocalQueryContainsBatchSize))
         {
             ct.ThrowIfCancellationRequested();
@@ -5319,12 +5412,13 @@ public sealed class DataIntegrityIssueService
                 .Select(group => new
                 {
                     InvoiceId = group.Key,
-                    TotalAmount = group.Sum(payment => (double)payment.Amount)
+                    TotalAmount = group.Sum(payment => payment.AmountsHidden ? 0d : (double)payment.Amount),
+                    HasHiddenAmount = group.Any(payment => payment.AmountsHidden)
                 })
                 .ToListAsync(ct);
 
             foreach (var row in batchRows)
-                rows[row.InvoiceId] = (decimal)row.TotalAmount;
+                rows[row.InvoiceId] = row.HasHiddenAmount ? null : (decimal)row.TotalAmount;
         }
 
         return rows;
@@ -5869,12 +5963,14 @@ public sealed class DataIntegrityIssueService
                 CurrentStock = item.CurrentStock,
                 WarehouseStock = usage.ItemWarehouseStockQuantity,
                 SafetyStock = item.SafetyStock,
-                PurchasePrice = item.PurchasePrice,
-                SalePrice = item.SalePrice,
-                RetailPrice = item.RetailPrice,
-                PriceGradeA = item.PriceGradeA,
-                PriceGradeB = item.PriceGradeB,
-                PriceGradeC = item.PriceGradeC,
+                RawPurchasePrice = item.PurchasePrice,
+                PurchaseAmountsHidden = item.PurchaseAmountsHidden,
+                SalesAmountsHidden = item.SalesAmountsHidden,
+                RawSalePrice = item.SalePrice,
+                RawRetailPrice = item.RetailPrice,
+                RawPriceGradeA = item.PriceGradeA,
+                RawPriceGradeB = item.PriceGradeB,
+                RawPriceGradeC = item.PriceGradeC,
                 LastPurchaseDate = item.LastPurchaseDate,
                 LastSaleDate = item.LastSaleDate,
                 CatalogExtensionSyncPending = item.CatalogExtensionSyncPending,
@@ -5933,6 +6029,14 @@ public sealed class DataIntegrityIssueService
                 Block(field, $"{displayName} 값이 서로 다름");
         }
 
+        void BlockDifferentAmount(string field, string displayName, bool purchase, Func<DataIntegrityItemDuplicateCandidate, decimal> selector)
+        {
+            if (candidates.Any(candidate => purchase ? candidate.PurchaseAmountsHidden : candidate.SalesAmountsHidden))
+                Block(field, "비공개 가격이 있어 동일한 품목인지 확인할 수 없음. 가격 조회 권한으로 최신 품목을 다시 조회해야 함");
+            else
+                BlockDifferentNumber(field, displayName, selector);
+        }
+
         void BlockDifferentDate(string field, string displayName, Func<DataIntegrityItemDuplicateCandidate, DateOnly?> selector)
         {
             if (candidates.Select(selector).Where(value => value.HasValue).Distinct().Skip(1).Any())
@@ -5956,12 +6060,12 @@ public sealed class DataIntegrityIssueService
         BlockDifferentText(nameof(DataIntegrityItemDuplicateCandidate.Notes), "메모", candidate => candidate.Notes);
         BlockDifferentNumber(nameof(DataIntegrityItemDuplicateCandidate.BoxQuantity), "박스 수량", candidate => candidate.BoxQuantity);
         BlockDifferentNumber(nameof(DataIntegrityItemDuplicateCandidate.SafetyStock), "안전 재고", candidate => candidate.SafetyStock);
-        BlockDifferentNumber(nameof(DataIntegrityItemDuplicateCandidate.PurchasePrice), "매입가", candidate => candidate.PurchasePrice);
-        BlockDifferentNumber(nameof(DataIntegrityItemDuplicateCandidate.SalePrice), "매출가", candidate => candidate.SalePrice);
-        BlockDifferentNumber(nameof(DataIntegrityItemDuplicateCandidate.RetailPrice), "소매가", candidate => candidate.RetailPrice);
-        BlockDifferentNumber(nameof(DataIntegrityItemDuplicateCandidate.PriceGradeA), "A등급가", candidate => candidate.PriceGradeA);
-        BlockDifferentNumber(nameof(DataIntegrityItemDuplicateCandidate.PriceGradeB), "B등급가", candidate => candidate.PriceGradeB);
-        BlockDifferentNumber(nameof(DataIntegrityItemDuplicateCandidate.PriceGradeC), "C등급가", candidate => candidate.PriceGradeC);
+        BlockDifferentAmount(nameof(DataIntegrityItemDuplicateCandidate.PurchasePrice), "매입가", true, candidate => candidate.RawPurchasePrice);
+        BlockDifferentAmount(nameof(DataIntegrityItemDuplicateCandidate.SalePrice), "매출가", false, candidate => candidate.RawSalePrice);
+        BlockDifferentAmount(nameof(DataIntegrityItemDuplicateCandidate.RetailPrice), "소매가", false, candidate => candidate.RawRetailPrice);
+        BlockDifferentAmount(nameof(DataIntegrityItemDuplicateCandidate.PriceGradeA), "A등급가", false, candidate => candidate.RawPriceGradeA);
+        BlockDifferentAmount(nameof(DataIntegrityItemDuplicateCandidate.PriceGradeB), "B등급가", false, candidate => candidate.RawPriceGradeB);
+        BlockDifferentAmount(nameof(DataIntegrityItemDuplicateCandidate.PriceGradeC), "C등급가", false, candidate => candidate.RawPriceGradeC);
         BlockDifferentDate(nameof(DataIntegrityItemDuplicateCandidate.LastPurchaseDate), "최근 매입일", candidate => candidate.LastPurchaseDate);
         BlockDifferentDate(nameof(DataIntegrityItemDuplicateCandidate.LastSaleDate), "최근 매출일", candidate => candidate.LastSaleDate);
         BlockDifferentDate(nameof(DataIntegrityItemDuplicateCandidate.RentalStartDate), "대여 시작일", candidate => candidate.RentalStartDate);
@@ -6019,12 +6123,14 @@ public sealed class DataIntegrityIssueService
             candidate.CurrentStock,
             candidate.WarehouseStock,
             candidate.SafetyStock,
-            candidate.PurchasePrice,
-            candidate.SalePrice,
-            candidate.RetailPrice,
-            candidate.PriceGradeA,
-            candidate.PriceGradeB,
-            candidate.PriceGradeC,
+            candidate.PurchaseAmountsHidden,
+            candidate.SalesAmountsHidden,
+            PurchasePrice = candidate.PurchaseAmountsHidden ? (decimal?)null : candidate.RawPurchasePrice,
+            SalePrice = candidate.SalesAmountsHidden ? (decimal?)null : candidate.RawSalePrice,
+            RetailPrice = candidate.SalesAmountsHidden ? (decimal?)null : candidate.RawRetailPrice,
+            PriceGradeA = candidate.SalesAmountsHidden ? (decimal?)null : candidate.RawPriceGradeA,
+            PriceGradeB = candidate.SalesAmountsHidden ? (decimal?)null : candidate.RawPriceGradeB,
+            PriceGradeC = candidate.SalesAmountsHidden ? (decimal?)null : candidate.RawPriceGradeC,
             candidate.LastPurchaseDate,
             candidate.LastSaleDate,
             candidate.CatalogExtensionSyncPending,
@@ -6111,8 +6217,8 @@ public sealed class DataIntegrityIssueService
         IReadOnlyCollection<LocalWarehouse> warehouses,
         IReadOnlyCollection<LocalWarehouse> activeWarehouses,
         IReadOnlyCollection<IntegrityInvoiceSnapshot> invoices,
-        IReadOnlyDictionary<Guid, decimal> invoiceLineTotalsByInvoiceId,
-        IReadOnlyDictionary<Guid, decimal> invoicePaymentTotalsByInvoiceId,
+        IReadOnlyDictionary<Guid, decimal?> invoiceLineTotalsByInvoiceId,
+        IReadOnlyDictionary<Guid, decimal?> invoicePaymentTotalsByInvoiceId,
         IReadOnlyDictionary<Guid, CustomerDuplicateUsage> customerDuplicateUsages,
         IReadOnlyDictionary<Guid, ItemDuplicateUsage> itemDuplicateUsages,
         IReadOnlyDictionary<Guid, int> itemDuplicateOutboxCounts,
@@ -6144,7 +6250,7 @@ public sealed class DataIntegrityIssueService
                 message: $"거래처명 '{rows[0].NameOriginal}' 완전 동일 중복 후보 {rows.Count:N0}건이 있습니다.",
                 directActionKind: DataIntegrityDirectActionKind.OpenCustomer,
                 relatedEntityIds: relatedIds,
-                reviewInfo: string.Join(" / ", new[]
+                reviewInfo: DiagnosticText.Join(" / ", new DiagnosticText[]
                 {
                     BuildCustomerDuplicateReviewInfo(rows, customerDuplicateUsages),
                     BuildCustomerScopeReviewInfo(rows[0], customerScope)
@@ -6209,7 +6315,7 @@ public sealed class DataIntegrityIssueService
                 message: $"담당지점 {warehouseOfficeCode} 창고 중복 후보 {rows.Count:N0}건이 있습니다.",
                 directActionKind: DataIntegrityDirectActionKind.OpenEnvironmentSettings,
                 relatedEntityIds: relatedIds,
-                reviewInfo: string.Join(" / ", new[]
+                reviewInfo: DiagnosticText.Join(" / ", new DiagnosticText[]
                 {
                     BuildWarehouseDuplicateReviewInfo(rows, itemWarehouseStocks, inventoryMovements, session),
                     BuildWarehouseScopeReviewInfo(rows[0], warehouseOfficeCode)
@@ -6227,31 +6333,36 @@ public sealed class DataIntegrityIssueService
                 $"ScopeTenant {invoiceScope.TenantCode}",
                 $"ScopeOffice {invoiceScope.OfficeCode}"
             });
-            invoiceLineTotalsByInvoiceId.TryGetValue(invoice.Id, out var lineTotal);
-            var totals = InvoiceVatModes.CalculateTotals([lineTotal], invoice.VatMode);
-            if (AmountDiffers(invoice.TotalAmount, totals.TotalAmount) ||
+            // No rows is a known zero; an aggregate containing any hidden row is unknown.
+            var lineTotal = invoiceLineTotalsByInvoiceId.GetValueOrDefault(invoice.Id, 0m);
+            var settlementTotal = invoicePaymentTotalsByInvoiceId.GetValueOrDefault(invoice.Id, 0m);
+            if (invoice.AmountsHidden || !lineTotal.HasValue || !settlementTotal.HasValue)
+                AddAmountVerificationDeferred(issues, "전표", invoice.Id, invoiceScope.OfficeCode);
+            var totals = InvoiceVatModes.CalculateTotals([lineTotal ?? 0m], invoice.VatMode);
+            if (!invoice.AmountsHidden && lineTotal.HasValue &&
+                (AmountDiffers(invoice.TotalAmount, totals.TotalAmount) ||
                 AmountDiffers(invoice.SupplyAmount, totals.SupplyAmount) ||
-                AmountDiffers(invoice.VatAmount, totals.VatAmount))
+                AmountDiffers(invoice.VatAmount, totals.VatAmount)))
             {
                 AddGeneralIssue(issues, DataIntegrityIssueCodes.InvoiceAmountMismatch,
                     entityType: "전표",
                     entityId: invoice.Id,
                     officeCode: invoiceScope.OfficeCode,
-                    currentValue: $"공급 {invoice.SupplyAmount:N0} / 부가세 {invoice.VatAmount:N0} / 합계 {invoice.TotalAmount:N0}",
-                    expectedValue: $"공급 {totals.SupplyAmount:N0} / 부가세 {totals.VatAmount:N0} / 합계 {totals.TotalAmount:N0}",
+                    currentValue: Text($"공급 {Money(invoice.SupplyAmount, DiagnosticText.ForInvoice(invoice.VoucherType)):N0} / 부가세 {Money(invoice.VatAmount, DiagnosticText.ForInvoice(invoice.VoucherType)):N0} / 합계 {Money(invoice.TotalAmount, DiagnosticText.ForInvoice(invoice.VoucherType)):N0}"),
+                    expectedValue: Text($"공급 {Money(totals.SupplyAmount, DiagnosticText.ForInvoice(invoice.VoucherType)):N0} / 부가세 {Money(totals.VatAmount, DiagnosticText.ForInvoice(invoice.VoucherType)):N0} / 합계 {Money(totals.TotalAmount, DiagnosticText.ForInvoice(invoice.VoucherType)):N0}"),
                     message: $"{invoice.InvoiceDate:yyyy-MM-dd} {FormatVoucherType(invoice.VoucherType)} 전표 {NormalizeDisplay(invoice.InvoiceNumber, invoice.Id.ToString("N"))} 금액 계산이 품목 합계와 다릅니다.",
                     directActionKind: DataIntegrityDirectActionKind.OpenInvoice,
                     reviewInfo: invoiceScopeReviewInfo);
             }
 
-            invoicePaymentTotalsByInvoiceId.TryGetValue(invoice.Id, out var settlementTotal);
-            if (settlementTotal - invoice.TotalAmount >= 1m)
+            if (!invoice.AmountsHidden && settlementTotal.HasValue &&
+                settlementTotal.Value - invoice.TotalAmount >= 1m)
             {
                 AddGeneralIssue(issues, DataIntegrityIssueCodes.InvoiceOverSettled,
                     entityType: "전표",
                     entityId: invoice.Id,
                     officeCode: invoiceScope.OfficeCode,
-                    currentValue: $"전표 {invoice.TotalAmount:N0} / 수금·지급 {settlementTotal:N0}",
+                    currentValue: Text($"전표 {Money(invoice.TotalAmount, DiagnosticText.ForInvoice(invoice.VoucherType)):N0} / 수금·지급 {Money(settlementTotal, DiagnosticText.ForInvoice(invoice.VoucherType)):N0}"),
                     expectedValue: "수금·지급 합계가 전표 합계 이하",
                     message: $"{invoice.InvoiceDate:yyyy-MM-dd} {FormatVoucherType(invoice.VoucherType)} 전표 {NormalizeDisplay(invoice.InvoiceNumber, invoice.Id.ToString("N"))}의 수금/지급 합계가 전표 금액보다 큽니다.",
                     directActionKind: DataIntegrityDirectActionKind.OpenPaymentForInvoice,
@@ -6515,11 +6626,11 @@ public sealed class DataIntegrityIssueService
         string entityType,
         Guid? entityId,
         string? itemName = null,
-        string currentValue = "",
-        string expectedValue = "",
-        string message = "",
+        DiagnosticText currentValue = default,
+        DiagnosticText expectedValue = default,
+        DiagnosticText message = default,
         DataIntegrityDirectActionKind directActionKind = DataIntegrityDirectActionKind.None,
-        string reviewInfo = "")
+        DiagnosticText reviewInfo = default)
     {
         var definition = GetDefinition(code);
         issues.Add(new DataIntegrityIssueDetail
@@ -6536,12 +6647,12 @@ public sealed class DataIntegrityIssueService
             ItemName = NormalizeDisplay(itemName, profile?.ItemName ?? asset?.ItemName ?? string.Empty),
             AssetDisplayName = asset is null ? string.Empty : BuildAssetDisplay(asset),
             OfficeCode = profile is null ? (asset is null ? string.Empty : ResolveAssetOfficeCode(asset)) : ResolveProfileOfficeCode(profile),
-            CurrentValue = currentValue,
-            ExpectedValue = expectedValue,
-            Message = message,
+            CurrentText = currentValue,
+            ExpectedText = expectedValue,
+            MessageText = message,
             SuggestedAction = definition.SuggestedAction,
             DirectActionKind = directActionKind,
-            ReviewInfo = reviewInfo
+            ReviewText = reviewInfo
         });
     }
 
@@ -6551,9 +6662,9 @@ public sealed class DataIntegrityIssueService
         LocalRentalAssetAssignmentHistory history,
         LocalRentalAsset? asset,
         LocalRentalBillingProfile? profile,
-        string currentValue,
-        string expectedValue,
-        string message)
+        DiagnosticText currentValue,
+        DiagnosticText expectedValue,
+        DiagnosticText message)
     {
         var definition = GetDefinition(code);
         var directActionKind = asset is not null
@@ -6579,9 +6690,9 @@ public sealed class DataIntegrityIssueService
             ItemName = NormalizeDisplay(history.ItemName, asset?.ItemName ?? profile?.ItemName ?? string.Empty),
             AssetDisplayName = asset is null ? BuildHistoryDisplay(history) : BuildAssetDisplay(asset),
             OfficeCode = historyScope.OfficeCode,
-            CurrentValue = currentValue,
-            ExpectedValue = expectedValue,
-            Message = message,
+            CurrentText = currentValue,
+            ExpectedText = expectedValue,
+            MessageText = message,
             SuggestedAction = definition.SuggestedAction,
             DirectActionKind = directActionKind,
             ReviewInfo = string.Join(" / ", new[]
@@ -6596,6 +6707,15 @@ public sealed class DataIntegrityIssueService
         });
     }
 
+    private static void AddAmountVerificationDeferred(
+        ICollection<DataIntegrityIssueDetail> issues, string entityType, Guid entityId, string officeCode, Guid? runId = null)
+        => AddGeneralIssue(issues, DataIntegrityIssueCodes.AmountVerificationDeferred,
+            entityType, entityId, officeCode: officeCode,
+            currentValue: "비공개 금액 포함 · 금액 검사 보류",
+            expectedValue: "금액 근거를 모두 조회할 수 있을 때 일치 여부 확인",
+            message: "현재 자료로 금액을 검증할 수 없습니다. 연결 정보 등 비금액 검사는 계속 수행합니다.",
+            relatedEntityIds: runId.HasValue ? new[] { runId.Value } : null);
+
     private static void AddGeneralIssue(
         ICollection<DataIntegrityIssueDetail> issues,
         string code,
@@ -6605,12 +6725,12 @@ public sealed class DataIntegrityIssueService
         string? itemName = null,
         string? assetDisplayName = null,
         string? officeCode = null,
-        string currentValue = "",
-        string expectedValue = "",
-        string message = "",
+        DiagnosticText currentValue = default,
+        DiagnosticText expectedValue = default,
+        DiagnosticText message = default,
         DataIntegrityDirectActionKind directActionKind = DataIntegrityDirectActionKind.None,
         IReadOnlyCollection<Guid>? relatedEntityIds = null,
-        string reviewInfo = "",
+        DiagnosticText reviewInfo = default,
         DataIntegrityItemDuplicateComparison? itemDuplicateComparison = null)
     {
         var definition = GetDefinition(code);
@@ -6626,13 +6746,13 @@ public sealed class DataIntegrityIssueService
             ItemName = NormalizeDisplay(itemName, string.Empty),
             AssetDisplayName = NormalizeDisplay(assetDisplayName, string.Empty),
             OfficeCode = NormalizeDisplay(officeCode, string.Empty),
-            CurrentValue = currentValue,
-            ExpectedValue = expectedValue,
-            Message = message,
+            CurrentText = currentValue,
+            ExpectedText = expectedValue,
+            MessageText = message,
             SuggestedAction = definition.SuggestedAction,
             DirectActionKind = directActionKind,
             RelatedEntityIds = relatedEntityIds?.Where(id => id != Guid.Empty).Distinct().ToArray() ?? Array.Empty<Guid>(),
-            ReviewInfo = reviewInfo,
+            ReviewText = reviewInfo,
             ItemDuplicateComparison = itemDuplicateComparison
         });
     }
@@ -7413,8 +7533,8 @@ public sealed class DataIntegrityIssueService
                     BillingLineMode = item.BillingLineMode ?? string.Empty,
                     RepresentativeAssetId = item.RepresentativeAssetId,
                     Quantity = item.Quantity <= 0m ? 1m : item.Quantity,
-                    UnitPrice = Math.Max(0m, item.UnitPrice),
-                    Amount = Math.Max(0m, item.Amount),
+                    UnitPrice = profile.AmountsHidden || item.AmountsHidden ? null : Math.Max(0m, DisclosedAmount.Require(item.UnitPrice)),
+                    Amount = profile.AmountsHidden || item.AmountsHidden ? null : Math.Max(0m, DisclosedAmount.Require(item.Amount)),
                     Note = item.Note ?? string.Empty,
                     IncludedAssetIds = item.IncludedAssetIds?.Where(id => id != Guid.Empty).Distinct().ToList() ?? []
                 })
@@ -7438,7 +7558,7 @@ public sealed class DataIntegrityIssueService
         if (string.IsNullOrWhiteSpace(json))
             return true;
 
-        if (!RentalBillingRunTombstonePolicy.Validate(json).IsValid)
+        if (!RentalBillingRunTombstonePolicy.ValidateForAmountPrivacyRead(json).IsValid)
             return false;
 
         try
@@ -7693,39 +7813,36 @@ public sealed class DataIntegrityIssueService
         return RentalAssetBillingEligibility.NeedsReview;
     }
 
-    private static string BuildAssetBillingReviewInfo(
+    private static DiagnosticText BuildAssetBillingReviewInfo(
         LocalRentalAsset asset,
         IReadOnlyCollection<AssetTemplateReference> templateReferences)
     {
         var eligibility = NormalizeDisplay(asset.BillingEligibilityStatus, "공백");
         var profileId = asset.BillingProfileId.HasValue && asset.BillingProfileId.Value != Guid.Empty
-            ? asset.BillingProfileId.Value.ToString("D")
-            : "없음";
-        var templateReview = templateReferences.Count == 0
-            ? "템플릿 참조 없음"
-            : $"템플릿 참조 {templateReferences.Count:N0}건: " + string.Join(" | ", templateReferences.Select(reference =>
-                $"{NormalizeDisplay(reference.ProfileDisplayName, "프로필")} / {NormalizeDisplay(reference.ItemName, "품목")} / 월금액 {FormatMoney(reference.MonthlyAmount)} / 포함 자산 {reference.IncludedAssetCount:N0}개 / {(reference.IncludedAssetCount == 1 ? "개별금액 확인 가능" : "자동 배분 불가")}"));
-
-        return $"청구상태 {eligibility} / BillingProfileId {profileId} / {templateReview}";
+            ? asset.BillingProfileId.Value.ToString("D") : "없음";
+        DiagnosticText templateReview = templateReferences.Count == 0 ? "템플릿 참조 없음"
+            : Text($"템플릿 참조 {templateReferences.Count:N0}건: {DiagnosticText.Join(" | ", templateReferences.Select(reference => Text($"{NormalizeDisplay(reference.ProfileDisplayName, "프로필")} / {NormalizeDisplay(reference.ItemName, "품목")} / 월금액 {FormatMoney(reference.MonthlyAmount)} / 포함 자산 {reference.IncludedAssetCount:N0}개 / {(reference.IncludedAssetCount == 1 ? "개별금액 확인 가능" : "자동 배분 불가")}")))}");
+        return Text($"청구상태 {eligibility} / BillingProfileId {profileId} / {templateReview}");
     }
 
-    private static decimal ResolveTemplateMonthlyAmount(RentalBillingTemplateItemModel item)
+    private static decimal? ResolveTemplateMonthlyAmount(RentalBillingTemplateItemModel item)
     {
+        if (item.AmountsHidden) return null;
         var quantity = item.Quantity <= 0m ? 1m : item.Quantity;
-        var unitPrice = Math.Max(0m, item.UnitPrice);
+        var unitPrice = Math.Max(0m, DisclosedAmount.Require(item.UnitPrice));
         var calculated = quantity * unitPrice;
-        return calculated > 0m ? calculated : Math.Max(0m, item.Amount);
+        return calculated > 0m ? calculated : Math.Max(0m, DisclosedAmount.Require(item.Amount));
     }
 
     private static bool AmountDiffers(decimal left, decimal right)
         => Math.Abs(left - right) >= 1m;
 
-    private static string FormatOptionalAmount(decimal? value)
-        => value.HasValue ? value.Value.ToString("N0") : "행 없음";
+    private static DiagnosticMoney FormatOptionalAmount(decimal? value, bool rowExists = true, DiagnosticAmountScope scope = DiagnosticAmountScope.Both)
+        => new(value, scope, rowExists);
 
     private static string BuildInvoiceLinkedTransactionPaymentMismatchReason(
         Guid invoiceId,
-        decimal transactionSettlementAmount,
+        decimal? transactionSettlementAmount,
         Guid? paymentId,
         Guid? paymentInvoiceId,
         decimal? paymentAmount,
@@ -7737,7 +7854,8 @@ public sealed class DataIntegrityIssueService
             return "수금·지급 삭제상태";
         if (paymentInvoiceId != invoiceId)
             return "수금·지급 전표 링크 불일치";
-        if (!paymentAmount.HasValue || AmountDiffers(paymentAmount.Value, transactionSettlementAmount))
+        if (paymentAmount.HasValue && transactionSettlementAmount.HasValue &&
+            AmountDiffers(paymentAmount.Value, transactionSettlementAmount.Value))
             return "수금·지급 금액 불일치";
 
         return "전표 연결 거래내역/수금·지급 불일치";
@@ -7949,8 +8067,10 @@ public sealed class DataIntegrityIssueService
         return !string.IsNullOrWhiteSpace(trimmed) && File.Exists(trimmed);
     }
 
-    private static string FormatMoney(decimal value)
-        => $"{value:N0}원";
+    private static DiagnosticText FormatMoney(decimal? value)
+        => Text($"{new DiagnosticMoney(value, DiagnosticAmountScope.Sales, Currency: true):N0}");
+    private static DiagnosticText Text(FormattableString text) => DiagnosticText.Text(text);
+    private static DiagnosticMoney Money(decimal? value, DiagnosticAmountScope scope = DiagnosticAmountScope.Both) => new(value, scope);
 
     private enum RentalAssetBillingEligibility
     {
@@ -7965,7 +8085,7 @@ public sealed class DataIntegrityIssueService
         Guid ProfileId,
         string ProfileDisplayName,
         string ItemName,
-        decimal MonthlyAmount,
+        decimal? MonthlyAmount,
         int IncludedAssetCount);
 
     private sealed class CustomerDuplicateUsage
@@ -8043,6 +8163,7 @@ public sealed class DataIntegrityIssueService
         public string InvoiceNumber { get; init; } = string.Empty;
         public VoucherType VoucherType { get; init; }
         public DateOnly InvoiceDate { get; init; }
+        public bool AmountsHidden { get; init; }
         public decimal TotalAmount { get; init; }
         public decimal SupplyAmount { get; init; }
         public decimal VatAmount { get; init; }

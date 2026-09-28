@@ -1,4 +1,4 @@
-using System.Net.Http;
+﻿using System.Net.Http;
 using System.Reflection;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -135,6 +135,51 @@ public sealed class InvoicePullConcurrencyStampTests
         Assert.Equal("pending local draft", stored.Memo);
         Assert.Equal("editor-stamp", stored.ConcurrencyStamp);
         Assert.True(stored.IsDirty);
+    }
+
+    [Theory]
+    [InlineData("USENET", false)]
+    [InlineData("USENET", true)]
+    [InlineData("YEONSU", false)]
+    [InlineData("YEONSU", true)]
+    [InlineData("ITWORLD", false)]
+    [InlineData("ITWORLD", true)]
+    public async Task ServerAuthorSurvivesPull_WhileNewRevisionStillInvalidatesEditor(string office, bool newRevision)
+    {
+        await using var f = await Fixture.CreateAsync(office);
+        var dto = LocalMappings.ToDto(await f.InvoiceAsync());
+        Assert.Null(dto.Author); // Local claims never become an outbound identity assertion.
+        if (newRevision) dto.Revision++;
+        dto.Author = new InvoiceAuthorDto
+        {
+            CreatedByUsername = "verified-original", LastSavedByUsername = "verified-other-editor",
+            LastSavedAtUtc = new DateTime(2026, 9, 25, 1, 2, 3, DateTimeKind.Utc)
+        };
+        await f.PullAsync(dto);
+        var stored = await f.InvoiceAsync();
+        Assert.Equal("verified-original", stored.CreatedByUsername);
+        Assert.Equal("verified-other-editor", stored.LastSavedByUsername);
+        Assert.Equal(dto.Author.LastSavedAtUtc, stored.LastSavedAtUtc);
+        Assert.Equal(!newRevision, stored.ConcurrencyStamp == "editor-stamp");
+        Assert.False(stored.IsDirty);
+        await f.PullAsync(dto);
+        Assert.Equal("verified-other-editor", (await f.InvoiceAsync()).LastSavedByUsername);
+    }
+
+    [Fact]
+    public async Task ServerUnknownAuthorClearsUnsupportedLocalAttribution_WithoutLosingDirtyDraft()
+    {
+        await using var f = await Fixture.CreateAsync("USENET");
+        var invoice = await f.InvoiceAsync();
+        var dto = LocalMappings.ToDto(invoice); dto.Author = new InvoiceAuthorDto();
+        invoice.IsDirty = true; invoice.Memo = "not uploaded"; await f.Db.SaveChangesAsync();
+        await f.PullAsync(dto);
+        Assert.Equal("admin", (await f.InvoiceAsync()).LastSavedByUsername);
+        invoice = await f.InvoiceAsync(); invoice.IsDirty = false; invoice.Memo = dto.Memo; await f.Db.SaveChangesAsync();
+        await f.PullAsync(dto);
+        var stored = await f.InvoiceAsync();
+        Assert.Equal("", stored.CreatedByUsername); Assert.Equal("", stored.LastSavedByUsername);
+        Assert.Equal(dto.UpdatedAtUtc, stored.LastSavedAtUtc);
     }
 
     private sealed class Fixture : IAsyncDisposable

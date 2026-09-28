@@ -96,6 +96,7 @@ internal static class DesktopCompatibilityPolicy
         if (verifiedIdentity &&
             TryNormalizeVerifiedRequirement(
                 required,
+                runtime,
                 out var minimumVersion,
                 out var minimumBuild,
                 out var minimumProtocol,
@@ -281,6 +282,7 @@ internal static class DesktopCompatibilityPolicy
 
     private static bool TryNormalizeVerifiedRequirement(
         ClientCompatibilityPolicyDto required,
+        DesktopClientRuntimeIdentity runtime,
         out string minimumVersion,
         out int minimumBuild,
         out int minimumProtocol,
@@ -292,6 +294,24 @@ internal static class DesktopCompatibilityPolicy
         minimumProtocol = 0;
         latestVersion = string.Empty;
         latestBuild = 0;
+
+        // The amount-schema boundary reports a protocol requirement without an
+        // invented package version. Retain that requirement, anchoring absent
+        // version/build bounds to the exactly echoed runtime. This prevents an
+        // unrelated version-only update from clearing a known protocol block.
+        if (required.PolicyVersion > 0 && required.RequiresUserAction &&
+            required.MinimumProtocolVersion is > 0 &&
+            string.IsNullOrWhiteSpace(required.MinimumVersion) &&
+            string.IsNullOrWhiteSpace(required.LatestVersion) &&
+            required.MinimumBuild is null && required.LatestBuild is null &&
+            TryPositiveVersion(runtime.Version, out var observedVersion) &&
+            runtime.Build > 0 && runtime.ProtocolVersion > 0)
+        {
+            minimumVersion = latestVersion = observedVersion.ToString();
+            minimumBuild = latestBuild = runtime.Build;
+            minimumProtocol = required.MinimumProtocolVersion.Value;
+            return true;
+        }
 
         if (required.PolicyVersion < 1 ||
             !required.RequiresUserAction ||

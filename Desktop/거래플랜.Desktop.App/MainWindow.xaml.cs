@@ -2343,12 +2343,20 @@ public partial class MainWindow : Window
             new PeriodLedgerAggregationService(_local),
             new PeriodLedgerExcelExportService(),
             _session);
-        var win = new PeriodLedgerWindow(vm) { Owner = this };
-        ShowModelessWithDeferredLoad(
-            win,
-            () => vm.InitializeAsync(),
-            "기간별 집계",
-            "기간별 집계 데이터를 불러오지 못했습니다.");
+        try
+        {
+            var win = new PeriodLedgerWindow(vm) { Owner = this };
+            ShowModelessWithDeferredLoad(
+                win,
+                () => vm.InitializeAsync(),
+                "기간별 집계",
+                "기간별 집계 데이터를 불러오지 못했습니다.");
+        }
+        catch
+        {
+            vm.Dispose();
+            throw;
+        }
     }
 
     private void YeonsuDeliveryButton_Click(object sender, RoutedEventArgs e)
@@ -3060,7 +3068,10 @@ public partial class MainWindow : Window
         var vm = new RentalBillingViewModel(_rental, _local, _session, _api);
         var win = new RentalBillingWindow(
             vm,
-            (invoiceId, owner) => OpenInvoiceWindowAsync(invoiceId, owner),
+            (invoiceId, owner) => OpenInvoiceWindowAsync(
+                invoiceId,
+                owner,
+                () => vm.ReloadCommand.ExecuteAsync(null)),
             (assetId, owner) => OpenRentalAssetWindowAsync(
                 assetId,
                 owner,

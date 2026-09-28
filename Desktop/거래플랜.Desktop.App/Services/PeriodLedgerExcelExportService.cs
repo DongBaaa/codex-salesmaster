@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.IO;
 using ClosedXML.Excel;
 using 거래플랜.Desktop.App.Infrastructure;
@@ -27,6 +27,8 @@ public sealed class PeriodLedgerExcelExportService
         IProgress<string>? progress = null,
         CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+        if (!data.IsAccessCurrent) throw new OperationCanceledException("조회 이후 접근 권한이 변경되었습니다.");
         progress?.Report("엑셀 작성 중...");
 
         using var workbook = new XLWorkbook();
@@ -50,17 +52,27 @@ public sealed class PeriodLedgerExcelExportService
         progress?.Report("저장 중...");
 
         var directory = ResolveExportDirectory(exportDirectory);
-        Directory.CreateDirectory(directory);
-
         var filePath = Path.Combine(directory, BuildFileName(data));
+        using var buffer = new MemoryStream();
+        await Task.Run(() => workbook.SaveAs(buffer), ct);
+        // Do not leave a workbook behind if access changed while ClosedXML was serializing it.
+        using (data.AccessSession?.AcquireSyncScopeSnapshotLease())
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!data.IsAccessCurrent) throw new OperationCanceledException("조회 이후 접근 권한이 변경되었습니다.");
+            Directory.CreateDirectory(directory);
+            buffer.Position = 0;
+            using var output = new FileStream(filePath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            buffer.CopyTo(output);
+        }
 
-        await Task.Run(() => workbook.SaveAs(filePath), ct);
-
-        TryOpenExportedFile(filePath);
+        if (data.IsAccessCurrent && !ct.IsCancellationRequested) TryOpenExportedFile(filePath);
         progress?.Report($"완료: {Path.GetFileName(filePath)}");
 
         return filePath;
     }
+
+    private static XLCellValue MoneyCell(decimal? value) => value.HasValue ? (XLCellValue)value.Value : "비공개";
 
     private static void FillBlockLedgerSheet(IXLWorksheet ws, PeriodLedgerBuildResult data)
     {
@@ -98,9 +110,9 @@ public sealed class PeriodLedgerExcelExportService
                 {
                     ws.Cell(row, 3).Value = "(소계)";
                     ws.Cell(row, 5).Value = entry.SubTotalQuantity;
-                    ws.Cell(row, 7).Value = (entry.SubTotalAmount ?? 0m) - (entry.SubTotalVat ?? 0m);
-                    ws.Cell(row, 8).Value = entry.SubTotalVat;
-                    ws.Cell(row, 9).Value = entry.SubTotalAmount;
+                    ws.Cell(row, 7).Value = MoneyCell(entry.SubTotalAmount - entry.SubTotalVat);
+                    ws.Cell(row, 8).Value = MoneyCell(entry.SubTotalVat);
+                    ws.Cell(row, 9).Value = MoneyCell(entry.SubTotalAmount);
                     ws.Range(row, 1, row, BlockLedgerColumnCount).Style.Font.Bold = true;
                     ws.Range(row, 1, row, BlockLedgerColumnCount).Style.Fill.BackgroundColor = XLColor.FromHtml("#F8F8F8");
                     ApplyRowBorder(ws, row, includeProfit, endColumnOverride: BlockLedgerColumnCount);
@@ -112,13 +124,13 @@ public sealed class PeriodLedgerExcelExportService
                 ws.Cell(row, 1).Value = entry.Date.ToString("yyyy-MM-dd");
                 ws.Cell(row, 2).Value = entry.Division;
                 ws.Cell(row, 3).Value = entry.Summary;
-                ws.Cell(row, 4).Value = entry.TradeAmount;
-                ws.Cell(row, 5).Value = entry.ReceiptAmount;
-                ws.Cell(row, 6).Value = entry.PaymentAmount;
-                ws.Cell(row, 7).Value = entry.RunningBalance;
-                ws.Cell(row, 8).Value = entry.ReceivableBalance;
+                ws.Cell(row, 4).Value = MoneyCell(entry.TradeAmount);
+                ws.Cell(row, 5).Value = MoneyCell(entry.ReceiptAmount);
+                ws.Cell(row, 6).Value = MoneyCell(entry.PaymentAmount);
+                ws.Cell(row, 7).Value = MoneyCell(entry.RunningBalance);
+                ws.Cell(row, 8).Value = MoneyCell(entry.ReceivableBalance);
                 if (includeProfit)
-                    ws.Cell(row, 9).Value = entry.ProfitAmount;
+                    ws.Cell(row, 9).Value = entry.ProfitAmount.HasValue ? MoneyCell(entry.ProfitAmount) : data.ProfitAmountsHidden ? (XLCellValue)"비공개" : Blank.Value;
                 ws.Cell(row, includeProfit ? 10 : 9).Value = entry.Note;
 
                 ApplyRowBorder(ws, row, includeProfit, endColumnOverride: BlockLedgerColumnCount);
@@ -147,10 +159,10 @@ public sealed class PeriodLedgerExcelExportService
                         ws.Cell(row, 3).Value = item.ItemName;
                         ws.Cell(row, 4).Value = item.Specification;
                         ws.Cell(row, 5).Value = item.Quantity;
-                        ws.Cell(row, 6).Value = item.UnitPrice;
-                        ws.Cell(row, 7).Value = item.SupplyAmount;
-                        ws.Cell(row, 8).Value = item.VatAmount;
-                        ws.Cell(row, 9).Value = item.LineAmount;
+                        ws.Cell(row, 6).Value = MoneyCell(item.UnitPrice);
+                        ws.Cell(row, 7).Value = MoneyCell(item.SupplyAmount);
+                        ws.Cell(row, 8).Value = MoneyCell(item.VatAmount);
+                        ws.Cell(row, 9).Value = MoneyCell(item.LineAmount);
                         ws.Cell(row, 10).Value = item.ItemNote;
                         ApplyRowBorder(ws, row, includeProfit, endColumnOverride: BlockLedgerColumnCount);
                         ws.Range(row, 5, row, 9).Style.NumberFormat.Format = "#,##0";
@@ -162,13 +174,13 @@ public sealed class PeriodLedgerExcelExportService
         }
 
         ws.Cell(row, 1).Value = "기간내 총 합계";
-        ws.Cell(row, 4).Value = data.Totals.TradeAmount;
-        ws.Cell(row, 5).Value = data.Totals.ReceiptAmount;
-        ws.Cell(row, 6).Value = data.Totals.PaymentAmount;
-        ws.Cell(row, 7).Value = data.Totals.RunningBalance;
-        ws.Cell(row, 8).Value = data.Totals.ReceivableBalance;
+        ws.Cell(row, 4).Value = MoneyCell(data.Totals.TradeAmount);
+        ws.Cell(row, 5).Value = MoneyCell(data.Totals.ReceiptAmount);
+        ws.Cell(row, 6).Value = MoneyCell(data.Totals.PaymentAmount);
+        ws.Cell(row, 7).Value = MoneyCell(data.Totals.RunningBalance);
+        ws.Cell(row, 8).Value = MoneyCell(data.Totals.ReceivableBalance);
         if (includeProfit)
-            ws.Cell(row, 9).Value = data.Totals.ProfitAmount;
+            ws.Cell(row, 9).Value = data.Totals.ProfitAmount.HasValue ? MoneyCell(data.Totals.ProfitAmount) : data.ProfitAmountsHidden ? (XLCellValue)"비공개" : Blank.Value;
 
         ws.Range(row, 1, row, BlockLedgerColumnCount).Style.Font.Bold = true;
         ws.Range(row, 1, row, BlockLedgerColumnCount).Style.Fill.BackgroundColor = XLColor.FromHtml("#EFEFEF");
@@ -211,11 +223,11 @@ public sealed class PeriodLedgerExcelExportService
             ws.Cell(row, 2).Value = entry.Date.ToString("yyyy-MM-dd");
             ws.Cell(row, 3).Value = entry.Division;
             ws.Cell(row, 4).Value = entry.Summary;
-            ws.Cell(row, 5).Value = entry.TradeAmount;
-            ws.Cell(row, 6).Value = entry.ReceiptAmount;
-            ws.Cell(row, 7).Value = entry.PaymentAmount;
-            ws.Cell(row, 8).Value = entry.RunningBalance;
-            ws.Cell(row, 9).Value = entry.ReceivableBalance;
+            ws.Cell(row, 5).Value = MoneyCell(entry.TradeAmount);
+            ws.Cell(row, 6).Value = MoneyCell(entry.ReceiptAmount);
+            ws.Cell(row, 7).Value = MoneyCell(entry.PaymentAmount);
+            ws.Cell(row, 8).Value = MoneyCell(entry.RunningBalance);
+            ws.Cell(row, 9).Value = MoneyCell(entry.ReceivableBalance);
             ws.Cell(row, 10).Value = entry.CustomerName;
             ws.Cell(row, 11).Value = entry.Note;
 
@@ -226,11 +238,11 @@ public sealed class PeriodLedgerExcelExportService
         }
 
         ws.Cell(row, 1).Value = "기간내 총 합계";
-        ws.Cell(row, 5).Value = data.Totals.TradeAmount;
-        ws.Cell(row, 6).Value = data.Totals.ReceiptAmount;
-        ws.Cell(row, 7).Value = data.Totals.PaymentAmount;
-        ws.Cell(row, 8).Value = data.Totals.RunningBalance;
-        ws.Cell(row, 9).Value = data.Totals.ReceivableBalance;
+        ws.Cell(row, 5).Value = MoneyCell(data.Totals.TradeAmount);
+        ws.Cell(row, 6).Value = MoneyCell(data.Totals.ReceiptAmount);
+        ws.Cell(row, 7).Value = MoneyCell(data.Totals.PaymentAmount);
+        ws.Cell(row, 8).Value = MoneyCell(data.Totals.RunningBalance);
+        ws.Cell(row, 9).Value = MoneyCell(data.Totals.ReceivableBalance);
 
         ws.Range(row, 1, row, 11).Style.Font.Bold = true;
         ws.Range(row, 1, row, 11).Style.Fill.BackgroundColor = XLColor.FromHtml("#EFEFEF");
@@ -276,7 +288,7 @@ public sealed class PeriodLedgerExcelExportService
             ws.Cell(row, 2).Value = entry.DeliveryDate.ToString("yyyy-MM-dd");
             ws.Cell(row, 3).Value = entry.CustomerName;
             ws.Cell(row, 4).Value = entry.ItemSummary;
-            ws.Cell(row, 5).Value = entry.TotalAmount;
+            ws.Cell(row, 5).Value = MoneyCell(entry.TotalAmount);
             ws.Cell(row, 6).Value = entry.WarehouseName;
             ws.Cell(row, 7).Value = entry.Note;
             ws.Cell(row, 8).Value = entry.LastSavedBy;
@@ -291,7 +303,7 @@ public sealed class PeriodLedgerExcelExportService
         }
 
         ws.Cell(row, 1).Value = "기간내 총 합계";
-        ws.Cell(row, 5).Value = data.Totals.TradeAmount;
+        ws.Cell(row, 5).Value = MoneyCell(data.Totals.TradeAmount);
         ws.Range(row, 1, row, 9).Style.Font.Bold = true;
         ws.Range(row, 1, row, 9).Style.Fill.BackgroundColor = XLColor.FromHtml("#EFEFEF");
         ApplyRowBorder(ws, row, includeProfit: false, endColumnOverride: 9);

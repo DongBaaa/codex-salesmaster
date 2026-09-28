@@ -1689,20 +1689,22 @@ public sealed class OfficeScopeAndPagingTests : IDisposable
         foreach (var invoice in new[] { detail, Assert.Single(list), Assert.Single(customer.RecentInvoices) })
         {
             Assert.Equal(invoiceId, invoice.Id);
-            Assert.Equal(11000m, invoice.TotalAmount);
+            Assert.Null(invoice.TotalAmount); // Shared access does not grant amount permission.
             if (sharePayments)
             {
                 var payment = Assert.Single(invoice.Payments);
                 Assert.Equal(paymentId, payment.Id);
-                Assert.Equal(5000m, payment.Amount);
+                Assert.Null(payment.Amount);
                 Assert.Equal("Private receipt", payment.Note);
                 Assert.Equal(attachmentId, Assert.Single(payment.Attachments).Id);
             }
             else Assert.Empty(invoice.Payments);
         }
         Assert.Equal(sharePayments ? 1 : 0, customer.RecentPayments.Count);
+        Assert.All(customer.RecentPayments, payment => Assert.Null(payment.Amount));
         Assert.False(db.ChangeTracker.HasChanges());
         await using var verify = CreateDbContext(CreateAdminUser());
+        Assert.Equal(11000m, (await verify.Invoices.SingleAsync(invoice => invoice.Id == invoiceId)).TotalAmount);
         Assert.Equal(5000m, (await verify.Payments.SingleAsync(payment => payment.Id == paymentId)).Amount);
         Assert.Equal("receipt.pdf", (await verify.PaymentAttachments.SingleAsync(row => row.Id == attachmentId)).FileName);
     }
@@ -1710,6 +1712,64 @@ public sealed class OfficeScopeAndPagingTests : IDisposable
     public void Dispose()
     {
         _connection.Dispose();
+    }
+
+    [Theory]
+    [InlineData("ITWORLD", "ITWORLD", "TenantAll")]
+    [InlineData("USENET", "USENET_GROUP", "TenantAll")]
+    [InlineData("YEONSU", "USENET_GROUP", "OfficeOnly")]
+    [InlineData("USENET", "USENET_GROUP", "Admin")]
+    public async Task ItemScope_PreservesCallerSoftDeleteFilter_AndExplicitSyncTombstones(
+        string office, string tenant, string scopeType)
+    {
+        var user = new TestCurrentUserContext
+        {
+            Username = "soft-delete-scope",
+            TenantCode = tenant,
+            OfficeCode = office,
+            ScopeType = scopeType,
+            IsAdmin = scopeType == "Admin"
+        };
+        await using var db = CreateDbContext(user);
+        var active = new Item
+        {
+            Id = Guid.NewGuid(), TenantCode = tenant, OfficeCode = office,
+            NameOriginal = "active scope item", NameMatchKey = "ACTIVE_SCOPE_ITEM"
+        };
+        var deleted = new Item
+        {
+            Id = Guid.NewGuid(), TenantCode = tenant, OfficeCode = office,
+            NameOriginal = "deleted scope item", NameMatchKey = "DELETED_SCOPE_ITEM", IsDeleted = true
+        };
+        db.Items.AddRange(active, deleted);
+        var warehouse = OfficeCodeCatalog.GetMainWarehouseCode(office);
+        db.ItemWarehouseStocks.AddRange(
+            new ItemWarehouseStock { ItemId = active.Id, WarehouseCode = warehouse, Quantity = 1m },
+            new ItemWarehouseStock { ItemId = deleted.Id, WarehouseCode = warehouse, Quantity = 2m });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var scope = new OfficeScopeService(user, db);
+        var controller = new ItemsController(db, scope);
+
+        var visible = await scope.ApplyItemScope(db.Items.AsNoTracking()).Select(item => item.Id).ToListAsync();
+        Assert.Equal(active.Id, Assert.Single(visible));
+        Assert.IsType<NotFoundResult>((await controller.GetById(deleted.Id, CancellationToken.None)).Result);
+        Assert.IsType<NotFoundResult>((await controller.GetDetail(deleted.Id, CancellationToken.None)).Result);
+        var list = Assert.IsType<List<ItemDto>>(Assert.IsType<OkObjectResult>(
+            (await controller.GetAll(null, null, null, null, CancellationToken.None)).Result).Value);
+        Assert.Equal(active.Id, Assert.Single(list).Id);
+        var stocks = await scope.ApplyItemWarehouseStockScope(db.ItemWarehouseStocks.AsNoTracking()).ToListAsync();
+        Assert.Equal(active.Id, Assert.Single(stocks).ItemId);
+        Assert.DoesNotContain(deleted.Id, await scope.GetReadableItemIdsAsync([active.Id, deleted.Id], CancellationToken.None));
+
+        // Sync/recycle callers deliberately include tombstones; the scope helper
+        // must preserve that caller choice instead of always hiding deleted rows.
+        var syncIds = await scope.ApplySyncItemScope(db.Items.IgnoreQueryFilters().AsNoTracking())
+            .Select(item => item.Id).ToListAsync();
+        Assert.Contains(active.Id, syncIds);
+        Assert.Contains(deleted.Id, syncIds);
+        Assert.True(await db.Items.IgnoreQueryFilters().Where(item => item.Id == deleted.Id)
+            .Select(item => item.IsDeleted).SingleAsync());
     }
 
     private AppDbContext CreateDbContext(TestCurrentUserContext currentUser)

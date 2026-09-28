@@ -13,6 +13,7 @@ namespace GeoraePlan.Mobile.App.Pages;
 public sealed class InvoiceDraftPage : ContentPage
 {
     private readonly InvoiceDraftViewModel _viewModel;
+    private readonly SessionStore _sessionStore;
     private readonly Guid? _preferredCustomerId;
     private readonly string _preferredCustomerName;
     private readonly InvoiceDto? _editingInvoice;
@@ -46,6 +47,7 @@ public sealed class InvoiceDraftPage : ContentPage
         GeoraePlanTheme.ApplyPage(this, "전표 작성");
 
         _viewModel = ServiceHelper.GetRequiredService<InvoiceDraftViewModel>();
+        _sessionStore = ServiceHelper.GetRequiredService<SessionStore>();
         _viewModel.ConfigureVoucherType(voucherType);
         _viewModel.SavedSuccessfully += HandleSavedSuccessfullyAsync;
         _viewModel.PropertyChanged += HandleViewModelPropertyChanged;
@@ -338,11 +340,11 @@ public sealed class InvoiceDraftPage : ContentPage
 
                 var qtyPriceLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 qtyPriceLabel.LineHeight = 1.0;
-                qtyPriceLabel.SetBinding(Label.TextProperty, new Binding(path: ".", converter: new InvoiceLineSummaryConverter()));
+                qtyPriceLabel.SetBinding(Label.TextProperty, nameof(InvoiceLineDraftItem.PriceSummary));
 
                 var summaryLabel = GeoraePlanTheme.CreateBodyText(string.Empty, false, 11);
                 summaryLabel.LineHeight = 1.0;
-                summaryLabel.SetBinding(Label.TextProperty, new Binding(nameof(InvoiceLineDraftItem.LineAmount), stringFormat: "합계 {0:N0}원"));
+                summaryLabel.SetBinding(Label.TextProperty, nameof(InvoiceLineDraftItem.AmountSummary));
 
                 var editButton = GeoraePlanTheme.CreateCompactButton("수정", GeoraePlanTheme.SecondaryButton);
                 editButton.Clicked += (sender, _) =>
@@ -587,6 +589,7 @@ public sealed class InvoiceDraftPage : ContentPage
         var unitPriceEntry = GeoraePlanTheme.CreateCompactEntry("단가");
         unitPriceEntry.Keyboard = Keyboard.Numeric;
         unitPriceEntry.SetBinding(Entry.TextProperty, nameof(InvoiceDraftViewModel.LineUnitPriceText));
+        unitPriceEntry.SetBinding(Entry.IsReadOnlyProperty, nameof(InvoiceDraftViewModel.IsLinePriceReadOnly));
 
         var memoSheetLabel = GeoraePlanTheme.CreateFieldLabel("메모");
         var remarkEntry = GeoraePlanTheme.CreateCompactEntry("메모");
@@ -693,6 +696,17 @@ public sealed class InvoiceDraftPage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
+        _sessionStore.SessionChanged -= HandleSessionChanged;
+        _sessionStore.SessionChanged += HandleSessionChanged;
+        _viewModel.SavedSuccessfully -= HandleSavedSuccessfullyAsync;
+        _viewModel.SavedSuccessfully += HandleSavedSuccessfullyAsync;
+        _viewModel.PropertyChanged -= HandleViewModelPropertyChanged;
+        _viewModel.PropertyChanged += HandleViewModelPropertyChanged;
+        _viewModel.ItemCategories.CollectionChanged -= HandleCategoryCollectionChanged;
+        _viewModel.ItemCategories.CollectionChanged += HandleCategoryCollectionChanged;
+        _viewModel.VisibleRecentItems.CollectionChanged -= HandleRecentCollectionChanged;
+        _viewModel.VisibleRecentItems.CollectionChanged += HandleRecentCollectionChanged;
+        _viewModel.RefreshAmountAccess();
 
         await MobileErrorHandler.RunGuardedAsync(
             async () =>
@@ -752,12 +766,16 @@ try
 
     protected override void OnDisappearing()
     {
+        _sessionStore.SessionChanged -= HandleSessionChanged;
         _viewModel.SavedSuccessfully -= HandleSavedSuccessfullyAsync;
         _viewModel.PropertyChanged -= HandleViewModelPropertyChanged;
         _viewModel.ItemCategories.CollectionChanged -= HandleCategoryCollectionChanged;
         _viewModel.VisibleRecentItems.CollectionChanged -= HandleRecentCollectionChanged;
         base.OnDisappearing();
     }
+
+    private void HandleSessionChanged(object? sender, EventArgs e)
+        => MainThread.BeginInvokeOnMainThread(_viewModel.RefreshAmountAccess);
 
     private async Task HandleSavedSuccessfullyAsync()
     {
@@ -906,20 +924,6 @@ try
     {
         public object Convert(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
             => WarehouseDisplayNameResolver.Resolve(value?.ToString());
-
-        public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
-            => throw new NotSupportedException();
-    }
-
-    private sealed class InvoiceLineSummaryConverter : IValueConverter
-    {
-        public object Convert(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
-        {
-            if (value is not InvoiceLineDraftItem line)
-                return string.Empty;
-
-            return $"수량 {line.Quantity:N0} / 단가 {line.UnitPrice:N0}원";
-        }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)
             => throw new NotSupportedException();

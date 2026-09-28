@@ -1,4 +1,4 @@
-using System.Collections.Specialized;
+﻿using System.Collections.Specialized;
 using System.ComponentModel;
 using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
@@ -203,9 +203,10 @@ public sealed partial class RentalBillingViewModel
 
     private void ScheduleAutoSave()
     {
+        if (_isDisposed) return;
         _autoSaveCts?.Cancel();
         _autoSaveCts?.Dispose();
-        _autoSaveCts = new CancellationTokenSource();
+        _autoSaveCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
         _ = RunAutoSaveAsync(_autoSaveCts.Token);
     }
 
@@ -228,13 +229,13 @@ public sealed partial class RentalBillingViewModel
 
     private async Task<bool> PersistAutoSaveDraftAsync(CancellationToken ct)
     {
-        if (IsAutoSaveSuppressed)
+        if (_isDisposed || IsAutoSaveSuppressed)
             return false;
 
         await _autoSaveGate.WaitAsync(ct);
         try
         {
-            if (IsAutoSaveSuppressed)
+            if (_isDisposed || IsAutoSaveSuppressed)
                 return false;
 
             if (!LegacyDraftRecovery.IsPristineEditor && HasMeaningfulDraftState() &&
@@ -414,8 +415,8 @@ public sealed partial class RentalBillingViewModel
                 MaterialNumber = item.MaterialNumber,
                 RepresentativeAssetId = item.RepresentativeAssetId,
                 Quantity = item.Quantity,
-                UnitPrice = item.UnitPrice,
-                Amount = item.Amount,
+                UnitPrice = item.AmountsHidden ? null : item.UnitPrice,
+                Amount = item.AmountsHidden ? null : item.Amount,
                 Note = item.Note
             };
 

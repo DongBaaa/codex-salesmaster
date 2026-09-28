@@ -87,7 +87,77 @@ function Invoke-JsonRequest {
         return $null
     }
 
-    return ($content | ConvertFrom-Json)
+    # Windows PowerShell preserves root arrays; newer PowerShell enumerates them
+    # unless NoEnumerate is explicit. Keep [] and [one row] intact on both.
+    $convertArgs = @{ InputObject = $content }
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('NoEnumerate')) {
+        $convertArgs.NoEnumerate = $true
+    }
+    return ,(ConvertFrom-Json @convertArgs)
+}
+
+function Get-ReturnedScopeCheck {
+    param(
+        [Parameter(Mandatory = $true)][object]$ScopeMatrix,
+        [Parameter(Mandatory = $true)][ValidateSet('customers', 'items')][string]$AreaCode,
+        [AllowNull()][object]$Rows
+    )
+
+    $tenant = [string]$ScopeMatrix.tenantCode
+    if ([string]::IsNullOrWhiteSpace($tenant) -or
+        [string]::IsNullOrWhiteSpace([string]$ScopeMatrix.officeCode) -or
+        $ScopeMatrix.hasGlobalDataScope -isnot [bool]) {
+        throw '권한 범위 응답의 업체/지점/전역 범위 형식이 불완전합니다.'
+    }
+    $area = @($ScopeMatrix.areas | Where-Object { $_.areaCode -ceq $AreaCode })
+    if ($area.Count -ne 1) { throw "$AreaCode 권한 영역이 없거나 중복입니다." }
+    $readable = @($area[0].readableOfficeCodes)
+    if ($readable.Count -eq 0 -or @($readable | Where-Object {
+        $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_)
+    }).Count -gt 0) { throw "$AreaCode 조회 가능 지점 목록이 불완전합니다." }
+    if ($null -eq $Rows) { throw "$AreaCode 조회 결과가 null입니다." }
+
+    $warnings = @()
+    $rowsArray = @($Rows)
+    if ($rowsArray.Count -eq 0) { $warnings += "$AreaCode 데이터가 없어 실제 행 범위를 검증하지 못했습니다." }
+    if ($ScopeMatrix.hasGlobalDataScope) {
+        $warnings += "$AreaCode 전역 계정 조회이므로 제한 계정의 차단 검증을 대신하지 않습니다."
+    }
+    $violations = 0
+    $unverifiedShared = 0
+    foreach ($row in $rowsArray) {
+        if ($null -eq $row -or [string]::IsNullOrWhiteSpace([string]$row.tenantCode)) {
+            $violations++
+            continue
+        }
+        if ($ScopeMatrix.hasGlobalDataScope) { continue }
+        if (-not [string]::Equals([string]$row.tenantCode, $tenant, [StringComparison]::Ordinal)) {
+            $violations++
+            continue
+        }
+        $office = [string]$row.officeCode
+        if ($AreaCode -ceq 'items') {
+            if ($office -cne 'ALL' -and $readable -cnotcontains $office) { $violations++ }
+            continue
+        }
+        $responsible = [string]$row.responsibleOfficeCode
+        if ($readable -ccontains $responsible) { continue }
+        if ($responsible -ceq 'ALL') {
+            # The customer API permits shared ownership within the tenant even when
+            # that owner's office is not readable. This DTO does not carry tenant
+            # membership, so do not invent it or label that unresolved case PASS.
+            if ($office -cne 'ALL' -and $office -cne '') { $unverifiedShared++ }
+        }
+        elseif ($responsible -ceq '' -and $readable -ccontains $office) {
+            continue
+        }
+        else { $violations++ }
+    }
+    if ($violations -gt 0) { throw "$AreaCode 반환 데이터 중 범위 이탈 또는 소속 누락 $violations 건입니다." }
+    if ($unverifiedShared -gt 0) {
+        $warnings += "$AreaCode 공용 거래처 $unverifiedShared 건은 소유 지점의 업체 소속을 별도로 확인해야 합니다."
+    }
+    return [pscustomobject]@{ CheckedRowCount = $rowsArray.Count; Warnings = $warnings }
 }
 
 function Get-AccountResult {
@@ -124,8 +194,14 @@ function Get-AccountResult {
 
         $headers = @{ Authorization = "Bearer $token" }
         $scopeMatrix = Invoke-JsonRequest -Uri ($BaseUrl + "/runtime/scope-matrix") -Method Get -Headers $headers
+        if (-not [string]::Equals([string]$scopeMatrix.officeCode, $Alias, [StringComparison]::OrdinalIgnoreCase)) {
+            throw '로그인 계정의 지점이 요청한 점검 지점과 다릅니다.'
+        }
         $customers = Invoke-JsonRequest -Uri ($BaseUrl + "/customers") -Method Get -Headers $headers
         $items = Invoke-JsonRequest -Uri ($BaseUrl + "/items") -Method Get -Headers $headers
+
+        $customerCheck = Get-ReturnedScopeCheck -ScopeMatrix $scopeMatrix -AreaCode customers -Rows $customers
+        $itemCheck = Get-ReturnedScopeCheck -ScopeMatrix $scopeMatrix -AreaCode items -Rows $items
 
         $areas = @($scopeMatrix.areas)
         $missingCurrentOfficeAreas = @()
@@ -149,6 +225,7 @@ function Get-AccountResult {
             ItemCount = @($items).Count
             MissingCurrentOfficeAreas = $missingCurrentOfficeAreas
             Areas = $areas
+            ScopeWarnings = @($customerCheck.Warnings) + @($itemCheck.Warnings)
         }
     }
     catch {
@@ -178,7 +255,7 @@ $results = foreach ($account in $accountSpecs) {
 }
 
 $failed = @($results | Where-Object { -not $_.Success })
-$warnings = @($results | Where-Object { $_.Success -and ($_.AreaCount -eq 0 -or $_.MissingCurrentOfficeAreas.Count -gt 0) })
+$warnings = @($results | Where-Object { $_.Success -and ($_.AreaCount -eq 0 -or $_.MissingCurrentOfficeAreas.Count -gt 0 -or $_.ScopeWarnings.Count -gt 0) })
 $overallStatus = if ($failed.Count -gt 0) { "FAIL" } elseif ($warnings.Count -gt 0) { "WARN" } else { "PASS" }
 
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
@@ -199,6 +276,7 @@ $lines.Add("") | Out-Null
 $lines.Add("- 실행시각: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')") | Out-Null
 $lines.Add("- 결과: **$overallStatus**") | Out-Null
 $lines.Add("- BaseUrl: $resolvedBaseUrl") | Out-Null
+$lines.Add("- 검증 범위: 거래처·품목 반환 행과 서버 조회 범위의 일치. 권한 설정 자체의 타당성, 자산·청구·저장·동기화·실제 화면은 별도 검증이 필요합니다.") | Out-Null
 $lines.Add("") | Out-Null
 $lines.Add("| 계정 | 결과 | 테넌트 | 지점 | 범위 | 거래처 수 | 품목 수 | 비고 |") | Out-Null
 $lines.Add("| --- | --- | --- | --- | --- | ---: | ---: | --- |") | Out-Null
@@ -216,7 +294,12 @@ foreach ($result in $results) {
         "OK"
     }
 
-    $lines.Add("| $($result.Alias) | OK | $($result.TenantCode) | $($result.OfficeCode) | $($result.ScopeType) | $($result.CustomerCount) | $($result.ItemCount) | $note |") | Out-Null
+    $rowStatus = "OK"
+    if ($result.ScopeWarnings.Count -gt 0) {
+        $rowStatus = "WARN"
+        $note += "; " + (($result.ScopeWarnings -join "; ").Replace('|', '\|'))
+    }
+    $lines.Add("| $($result.Alias) | $rowStatus | $($result.TenantCode) | $($result.OfficeCode) | $($result.ScopeType) | $($result.CustomerCount) | $($result.ItemCount) | $note |") | Out-Null
 }
 
 foreach ($result in $results | Where-Object { $_.Success }) {

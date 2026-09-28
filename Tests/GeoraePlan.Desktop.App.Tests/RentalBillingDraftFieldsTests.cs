@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -152,6 +152,70 @@ public sealed class RentalBillingDraftFieldsTests
             Assert.NotNull(typeof(RentalBillingViewModel).GetField("_autoSaveCts",BindingFlags.NonPublic|BindingFlags.Instance)!.GetValue(vm));
         }
         finally {await vm.CancelAndDrainPendingBackgroundWorkAsync();}
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CloseDrainStopsQueuedAutoSaveAndWaitsForStartedPersistence(bool alreadySaving)
+    {
+        var probe = new DraftSaveProbe { Block = alreadySaving };
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = new LocalDbContext(new DbContextOptionsBuilder<LocalDbContext>()
+            .UseSqlite(connection).AddInterceptors(probe).Options);
+        await db.Database.EnsureCreatedAsync();
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto { UserId = Guid.NewGuid(), Username = "close-draft", Role = DomainConstants.RoleAdmin,
+            TenantCode = TenantScopeCatalog.UsenetGroup, OfficeCode = OfficeCodeCatalog.Usenet, ScopeType = TenantScopeCatalog.ScopeAdmin });
+        session.SetBusinessDatabase("georaeplan_usenet");
+        var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+        var rental = new RentalStateService(db, local);
+        var vm = new RentalBillingViewModel(rental, local, session);
+        Task? drain = null;
+        try
+        {
+            vm.EditCustomerName = "종료 중인 임시본";
+            if (alreadySaving) await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            drain = vm.CancelAndDrainPendingBackgroundWorkAsync();
+            if (alreadySaving)
+            {
+                Assert.False(drain.IsCompleted);
+                probe.Release.TrySetResult();
+            }
+            await drain.WaitAsync(TimeSpan.FromSeconds(10));
+            var attemptsAtClose = probe.Attempts;
+            vm.EditNotes = "종료 뒤 입력은 자동저장되지 않아야 함";
+            await Task.Delay(1000);
+            Assert.Equal(alreadySaving ? 1 : 0, attemptsAtClose);
+            Assert.Equal(attemptsAtClose, probe.Attempts);
+            Assert.Null(await rental.GetBillingEditorDraftAsync(session));
+        }
+        finally
+        {
+            probe.Release.TrySetResult();
+            if (drain is not null) await drain;
+            await vm.CancelAndDrainPendingBackgroundWorkAsync();
+        }
+    }
+
+    private sealed class DraftSaveProbe : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
+    {
+        public bool Block;
+        public int Attempts;
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override async ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> SavingChangesAsync(
+            Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData,
+            Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref Attempts);
+            Entered.TrySetResult();
+            if (Block) await Release.Task;
+            cancellationToken.ThrowIfCancellationRequested();
+            return result;
+        }
     }
 
     private static RentalBillingViewModel Create()

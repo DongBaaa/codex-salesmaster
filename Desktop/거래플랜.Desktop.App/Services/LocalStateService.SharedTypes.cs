@@ -82,7 +82,7 @@ public static class IntegrityIssueGuidance
 
         if (normalizedCode.StartsWith("out_of_scope_", StringComparison.Ordinal))
         {
-            return "현재 계정 범위와 다른 캐시가 남은 상태입니다. 미동기화 변경을 먼저 서버에 반영한 뒤 공유 캐시 재구성 또는 재로그인으로 중앙 서버 기준 데이터를 다시 받으세요.";
+            return "다른 계정에서 사용할 자료를 보존한 정보성 항목입니다. 현재 계정의 조회·수정 권한은 별도로 적용됩니다. 이 항목만으로 캐시를 삭제하거나 재구성하지 마세요. 미전송 변경은 해당 계정의 동기화 진단에서 별도로 확인하세요.";
         }
 
         if (normalizedCode.Contains("inventory_current_stock_snapshot_mismatch", StringComparison.Ordinal))
@@ -223,12 +223,15 @@ public sealed class LocalIntegrityReport
     public bool PendingServerMirrorRefresh { get; }
     public IReadOnlyList<LocalIntegrityIssue> Issues { get; }
     public bool HasIssues => PendingServerMirrorRefresh || Issues.Count > 0;
-    public bool RequiresFullMirrorRefresh => HasIssues;
+    public bool RequiresFullMirrorRefresh => PendingServerMirrorRefresh || Issues.Any(IsActionableIssue);
     public int RoutineRepairCandidateIssueTypeCount =>
         (PendingServerMirrorRefresh ? 1 : 0) +
-        Issues.Count(issue => IntegrityIssueReviewPolicy.IsRoutineRepairCandidateForLocal(issue.Code));
+        Issues.Count(issue => IsActionableIssue(issue) && IntegrityIssueReviewPolicy.IsRoutineRepairCandidateForLocal(issue.Code));
     public int ManualReviewIssueTypeCount =>
-        Issues.Count(issue => !IntegrityIssueReviewPolicy.IsRoutineRepairCandidateForLocal(issue.Code));
+        Issues.Count(issue => IsActionableIssue(issue) && !IntegrityIssueReviewPolicy.IsRoutineRepairCandidateForLocal(issue.Code));
+
+    private static bool IsActionableIssue(LocalIntegrityIssue issue)
+        => !string.Equals(issue.Severity, "Info", StringComparison.OrdinalIgnoreCase);
 
     public string BuildSummaryText(int maxIssues = 4)
     {
@@ -294,8 +297,15 @@ public sealed class LocalIntegrityReport
             builder.AppendLine("- 미동기화 변경이 남아 있으므로 먼저 동기화를 완료한 뒤 정리 작업을 진행하세요.");
         if (PendingServerMirrorRefresh)
             builder.AppendLine("- 버전 변경 후 중앙 서버 기준 전체 재동기화가 대기 중이면 공유 캐시 재구성 또는 재로그인으로 중앙 데이터를 먼저 다시 받으세요.");
-        builder.AppendLine("- 아래 표의 `수정 방법`을 기준으로 기준 데이터 복구 또는 재연결을 진행하세요.");
-        builder.AppendLine("- `상세 내역`에 대상 행이 표시되는 항목은 해당 키/장비/거래처명을 검색해 원본 화면에서 수정하세요.");
+        if (Issues.Any(IsActionableIssue))
+        {
+            builder.AppendLine("- 아래 표의 `수정 방법`을 기준으로 기준 데이터 복구 또는 재연결을 진행하세요.");
+            builder.AppendLine("- `상세 내역`에 대상 행이 표시되는 항목은 해당 키/장비/거래처명을 검색해 원본 화면에서 수정하세요.");
+        }
+        else
+        {
+            builder.AppendLine("- 아래 항목은 보존된 캐시에 대한 참고 정보이며, 이 항목들로 인한 복구 작업은 필요하지 않습니다.");
+        }
         builder.AppendLine();
 
         builder.AppendLine("## 점검 항목");
@@ -321,7 +331,9 @@ public sealed class LocalIntegrityReport
             .ToList();
         if (issuesWithDetails.Count == 0)
         {
-            builder.AppendLine("- 이 리포트에서 개별 대상 행을 수집하지 못한 항목입니다. 위 점검 항목의 코드와 내용을 기준으로 동기화 진단/원본 화면에서 확인하세요.");
+            builder.AppendLine(Issues.Any(IsActionableIssue)
+                ? "- 이 리포트에서 개별 대상 행을 수집하지 못한 항목입니다. 위 점검 항목의 코드와 내용을 기준으로 동기화 진단/원본 화면에서 확인하세요."
+                : "- 참고 정보만 있어 수정할 개별 대상 행은 없습니다.");
         }
         else
         {

@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using 거래플랜.Desktop.App.Services;
@@ -298,8 +298,8 @@ public sealed partial class RentalCustomerOnboardingViewModel
                 MaterialNumber = item.MaterialNumber,
                 RepresentativeAssetId = item.RepresentativeAssetId,
                 Quantity = item.Quantity,
-                UnitPrice = item.UnitPrice,
-                Amount = item.Amount,
+                UnitPrice = item.AmountsHidden ? null : item.UnitPrice,
+                Amount = item.AmountsHidden ? null : item.Amount,
                 Note = item.Note
             };
 

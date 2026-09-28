@@ -126,6 +126,10 @@ public sealed class SyncDiagnosticListItem
 
 public sealed class SyncDiagnosticsService
 {
+    private static readonly Regex LegacyPostLoginPendingPattern = new(
+        @"\A로그인 후 자동 동기화 확인 필요\. dirty=[1-9][0-9]*, backup=ok\.\z",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     private static readonly Regex EntityConflictPattern = new(
         @"(?<entity>[A-Za-z][A-Za-z0-9]+)\s+(?<entityId>[0-9a-fA-F\-]{36})\s+-\s+(?<reason>.+)$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -286,6 +290,11 @@ public sealed class SyncDiagnosticsService
         var resolvedCount = 0;
         if (succeeded)
         {
+            // Legacy post-login messages counted pending changes without recording
+            // their individual scopes. A clean current office alone cannot prove
+            // that older condition is gone: require the entire cache and outbox.
+            var wholeCacheHasNoPendingChanges = dirtySummary.TotalCount == 0 &&
+                !await db.SyncOutboxEntries.AnyAsync(current => current.Status != "Acknowledged", ct);
             // A clean successful exchange only confirms earlier transport and
             // pending-scope problems. Integrity, revision conflicts, repairs,
             // and issues created during this attempt need their own evidence.
@@ -303,7 +312,13 @@ public sealed class SyncDiagnosticsService
                      current.SyncPhase == "push" || current.SyncPhase == "pull");
                 var confirmedPendingScope = current.SyncPhase == "pending-scope" &&
                     (current.Subcategory == "missing_sync_credential" || current.Subcategory == "remaining_dirty");
-                if (!confirmedTransport && !confirmedPendingScope)
+                var confirmedLegacyPostLoginPending = wholeCacheHasNoPendingChanges &&
+                    current.SyncPhase == "post-login-sync" && current.Subcategory == "startup_recovery" &&
+                    current.Severity == "Warning" && string.IsNullOrEmpty(current.StackTrace) &&
+                    string.IsNullOrEmpty(current.EntityName) && string.IsNullOrEmpty(current.EntityId) &&
+                    string.IsNullOrEmpty(current.ReferenceEntityName) && string.IsNullOrEmpty(current.ReferenceEntityId) &&
+                    LegacyPostLoginPendingPattern.IsMatch(current.RawMessage);
+                if (!confirmedTransport && !confirmedPendingScope && !confirmedLegacyPostLoginPending)
                     continue;
                 current.Status = "Resolved";
                 current.ResolvedAtUtc = DateTime.UtcNow;

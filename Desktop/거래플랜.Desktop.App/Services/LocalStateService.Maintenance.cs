@@ -34,30 +34,15 @@ public sealed partial class LocalStateService
         if (string.IsNullOrWhiteSpace(key))
             return false;
 
-        var setting = await _db.Settings.FindAsync([key], ct);
-        if (setting is null)
-            return false;
-
-        _db.Settings.Remove(setting);
-        await _db.SaveChangesAsync(ct);
-        return true;
+        EnsureOrdinarySettings([key]);
+        return await DeleteSettingsIndependentAsync(key, byPrefix: false, ct) > 0;
     }
 
     public async Task<int> DeleteSettingsByPrefixAsync(string keyPrefix, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(keyPrefix))
             return 0;
-
-        var settings = await _db.Settings
-            .Where(setting => EF.Functions.Like(setting.Key, keyPrefix + "%"))
-            .ToListAsync(ct);
-
-        if (settings.Count == 0)
-            return 0;
-
-        _db.Settings.RemoveRange(settings);
-        await _db.SaveChangesAsync(ct);
-        return settings.Count;
+        return await DeleteSettingsIndependentAsync(keyPrefix, byPrefix: true, ct);
     }
 
     public async Task<int> NormalizeSharedOptionIdCasingAsync(CancellationToken ct = default)
@@ -233,7 +218,7 @@ public sealed partial class LocalStateService
                 keysToDetach.Add(key);
         }
 
-        await using var settingsDb = CreateIndependentAuthenticationDb();
+        await using var settingsDb = CreateIndependentBusinessSettingsDb();
         await using var transaction =
             await settingsDb.BeginRuntimeMutationTransactionAsync(ct);
         try
@@ -267,7 +252,8 @@ public sealed partial class LocalStateService
             foreach (var pair in values)
                 UpsertSetting(settingsDb, existing, pair.Key, pair.Value);
 
-            await ResumeLoginOutboxOwnershipAsync(settingsDb, session, ct);
+            // Login settings must not rewrite durable receipt provenance.
+            // SyncService validates the current dispatch owner when retrying.
             await settingsDb.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
         }
@@ -277,7 +263,7 @@ public sealed partial class LocalStateService
             throw;
         }
 
-        DetachAuthenticationSettings(keysToDetach);
+        DetachBusinessSettings(keysToDetach);
     }
 
     private static string BuildLoginScopeKey(string username, string tenantCode, string officeCode, string scopeType)

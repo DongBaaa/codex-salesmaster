@@ -46,9 +46,9 @@ public static partial class LocalDbInitializer
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_SyncOutboxEntries_Scope_Status_PreparedAtUtc\" ON \"SyncOutboxEntries\" (\"TenantCode\", \"OfficeCode\", \"ResponsibleOfficeCode\", \"Status\", \"PreparedAtUtc\");");
             await TryCreateIndexAsync(db, "CREATE INDEX IF NOT EXISTS \"IX_SyncOutboxEntries_SupersedeScope_Status_PreparedAtUtc\" ON \"SyncOutboxEntries\" (\"EntityName\", \"EntityId\", \"TenantCode\", \"OfficeCode\", \"ResponsibleOfficeCode\", \"BusinessDatabaseName\", \"DeviceId\", \"SessionId\", \"UserId\", \"Status\", \"PreparedAtUtc\");");
             await TryNormalizeDateTimeTextColumnAsync(db, "SyncOutboxEntries", "PreparedAtUtc");
-            await TryNormalizeDateTimeTextColumnAsync(db, "SyncOutboxEntries", "SentAtUtc");
-            await TryNormalizeDateTimeTextColumnAsync(db, "SyncOutboxEntries", "AcknowledgedAtUtc");
-            await TryNormalizeDateTimeTextColumnAsync(db, "SyncOutboxEntries", "AcceptedUpdatedAtUtc");
+            await TryNormalizeDateTimeTextColumnAsync(db, "SyncOutboxEntries", "SentAtUtc", allowNull: true);
+            await TryNormalizeDateTimeTextColumnAsync(db, "SyncOutboxEntries", "AcknowledgedAtUtc", allowNull: true);
+            await TryNormalizeDateTimeTextColumnAsync(db, "SyncOutboxEntries", "AcceptedUpdatedAtUtc", allowNull: true);
         }
         catch (Exception ex)
         {

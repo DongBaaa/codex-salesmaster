@@ -22,8 +22,8 @@ public sealed partial class RentalBillingTemplateEditorItem : ObservableObject
     [ObservableProperty] private string _materialNumber = string.Empty;
     [ObservableProperty] private Guid? _representativeAssetId;
     [ObservableProperty] private decimal _quantity = 1m;
-    [ObservableProperty] private decimal _unitPrice;
-    [ObservableProperty] private decimal _amount;
+    [ObservableProperty] private decimal? _unitPrice = 0m;
+    [ObservableProperty] private decimal? _amount = 0m;
     [ObservableProperty] private string _note = string.Empty;
     [ObservableProperty] private string _invoiceItemNamePreview = string.Empty;
     [ObservableProperty] private string _includedAssetSummary = string.Empty;
@@ -33,26 +33,56 @@ public sealed partial class RentalBillingTemplateEditorItem : ObservableObject
 
     public string IncludedAssetCountDisplay => $"{IncludedAssetIds.Count:N0}대";
 
-    public decimal EffectiveAmount => CalculateLineAmount(Quantity, UnitPrice);
+    public bool AmountsHidden => !UnitPrice.HasValue || !Amount.HasValue;
 
-    public static decimal CalculateLineAmount(decimal quantity, decimal unitPrice)
-        => Math.Max(0m, quantity <= 0m ? 1m : quantity) * Math.Max(0m, unitPrice);
+    public decimal? EffectiveAmount => AmountsHidden ? null : CalculateLineAmount(Quantity, UnitPrice);
+
+    public static decimal? CalculateLineAmount(decimal quantity, decimal? unitPrice)
+        => unitPrice.HasValue ? Math.Max(0m, quantity <= 0m ? 1m : quantity) * Math.Max(0m, unitPrice.Value) : null;
+
+    public static decimal? NormalizeAmount(decimal? value)
+        => value.HasValue ? Math.Max(0m, value.Value) : null;
+
+    public static decimal? OutstandingAmount(decimal? billed, decimal? settled)
+        => billed.HasValue && settled.HasValue ? Math.Max(0m, billed.Value - settled.Value) : null;
+
+    public static string FormatAmount(decimal? value)
+        => value.HasValue ? $"{value.Value:N0}원" : "비공개";
+
+    public static decimal? SumKnownAmounts(IEnumerable<RentalBillingTemplateEditorItem> items)
+    {
+        decimal total = 0m;
+        foreach (var item in items)
+        {
+            if (!item.EffectiveAmount.HasValue) return null;
+            total += item.EffectiveAmount.Value;
+        }
+        return total;
+    }
 
     partial void OnQuantityChanged(decimal value) => SyncCalculatedAmount();
 
-    partial void OnUnitPriceChanged(decimal value) => SyncCalculatedAmount();
+    partial void OnUnitPriceChanged(decimal? value)
+    {
+        SyncCalculatedAmount(reprice: true);
+        OnPropertyChanged(nameof(AmountsHidden));
+    }
 
-    partial void OnAmountChanged(decimal value) => OnPropertyChanged(nameof(EffectiveAmount));
+    partial void OnAmountChanged(decimal? value)
+    {
+        OnPropertyChanged(nameof(EffectiveAmount));
+        OnPropertyChanged(nameof(AmountsHidden));
+    }
 
     public void NormalizeCalculatedAmount()
         => SyncCalculatedAmount();
 
-    private void SyncCalculatedAmount()
+    private void SyncCalculatedAmount(bool reprice = false)
     {
         if (_suppressCalculatedAmountSync)
             return;
 
-        var calculatedAmount = CalculateLineAmount(Quantity, UnitPrice);
+        var calculatedAmount = !reprice && AmountsHidden ? null : CalculateLineAmount(Quantity, UnitPrice);
         if (Amount == calculatedAmount)
         {
             OnPropertyChanged(nameof(EffectiveAmount));
@@ -84,8 +114,8 @@ public sealed partial class RentalBillingAssetOption : ObservableObject
     [ObservableProperty] private string _manufacturer = string.Empty;
     [ObservableProperty] private string _machineNumber = string.Empty;
     [ObservableProperty] private string _purchaseVendor = string.Empty;
-    [ObservableProperty] private decimal _purchasePrice;
-    [ObservableProperty] private decimal _salePrice;
+    [ObservableProperty] private decimal? _purchasePrice = 0m;
+    [ObservableProperty] private decimal? _salePrice = 0m;
     [ObservableProperty] private string _currentCustomerName = string.Empty;
     [ObservableProperty] private string _targetCustomerName = string.Empty;
     [ObservableProperty] private string _installLocation = string.Empty;
@@ -99,7 +129,7 @@ public sealed partial class RentalBillingAssetOption : ObservableObject
     [ObservableProperty] private bool _isOutsideCurrentOffice;
     [ObservableProperty] private string _notes = string.Empty;
     [ObservableProperty] private string _depositText = string.Empty;
-    [ObservableProperty] private decimal _monthlyFee;
+    [ObservableProperty] private decimal? _monthlyFee = 0m;
     [ObservableProperty] private int _contractMonths;
     [ObservableProperty] private DateTime? _contractDate;
     [ObservableProperty] private DateTime? _contractStartDate;
@@ -114,6 +144,9 @@ public sealed partial class RentalBillingAssetOption : ObservableObject
     [ObservableProperty] private bool _isReferenceOnly;
     [ObservableProperty] private bool _isRepresentativeAsset;
     [ObservableProperty] private bool _isSelected;
+
+    [ObservableProperty] private bool _salesAmountsReadOnly;
+    [ObservableProperty] private bool _purchaseAmountsReadOnly;
 
     public bool CanEditInLinkDialog => IsSelected && !IsReferenceOnly;
     public string LinkModeDisplay => IsReferenceOnly

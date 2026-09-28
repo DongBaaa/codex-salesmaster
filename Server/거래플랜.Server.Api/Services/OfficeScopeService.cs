@@ -64,6 +64,12 @@ public sealed class OfficeScopeService
     public bool CanEditItems()
         => HasAdministrativeWriteAccess || _currentUserContext.HasPermission(Security.PermissionNames.ItemEdit);
 
+    public bool CanViewSalesAmounts()
+        => HasAdministrativeWriteAccess || _currentUserContext.HasPermission(Security.PermissionNames.AmountViewSales);
+
+    public bool CanViewPurchaseAmounts()
+        => HasAdministrativeWriteAccess || _currentUserContext.HasPermission(Security.PermissionNames.AmountViewPurchase);
+
     public bool CanEditInvoices()
         => HasAdministrativeWriteAccess || _currentUserContext.HasPermission(Security.PermissionNames.InvoiceEdit);
 
@@ -341,9 +347,12 @@ public sealed class OfficeScopeService
         var tenantOffices = TenantScopeCatalog.GetNormalizedOfficeCodesForTenant(tenant);
         // Receipt history grants use of this item, even after the received stock
         // sells out. It never changes the item's owner or master-write scope.
-        return (from transfer in _dbContext.InventoryTransfers.IgnoreQueryFilters()
-                join line in _dbContext.InventoryTransferLines.IgnoreQueryFilters() on transfer.Id equals line.TransferId
-                join item in _dbContext.Items.IgnoreQueryFilters() on line.ItemId equals (Guid?)item.Id
+        // IgnoreQueryFilters in a composed subquery also disables the outer
+        // query's filters. Leave that choice to the caller (e.g. sync tombstones)
+        // and keep the explicit active-receipt predicates below for either mode.
+        return (from transfer in _dbContext.InventoryTransfers
+                join line in _dbContext.InventoryTransferLines on transfer.Id equals line.TransferId
+                join item in _dbContext.Items on line.ItemId equals (Guid?)item.Id
                 where !transfer.IsDeleted && !line.IsDeleted && !item.IsDeleted &&
                     transfer.TenantCode == tenant && item.TenantCode == tenant &&
                     transfer.TargetOfficeCode == office && transfer.SourceOfficeCode != office &&

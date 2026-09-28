@@ -393,6 +393,39 @@ function Resolve-JavaHomeForApkSigner {
     return ''
 }
 
+function ConvertFrom-AndroidSigningCertificateOutput {
+    param([Parameter(Mandatory = $true)][string]$OutputText)
+
+    # This gate supports one current signer. A rotation lineage needs its own
+    # platform-aware migration verification; selecting signer #1 is not proof.
+    $digests = [regex]::Matches($OutputText, '(?m)^Signer\s+#(?<index>\d+)\s+certificate\s+SHA-256\s+digest:\s*(?<value>[^\r\n]*)\r?$')
+    $subjects = [regex]::Matches($OutputText, '(?m)^Signer\s+#(?<index>\d+)\s+certificate\s+DN:[ \t]*(?<value>[^\r\n]*)\r?$')
+    $counts = [regex]::Matches($OutputText, '(?m)^Number of signers:[ \t]*(?<value>[^\r\n]*)\r?$')
+    if ($digests.Count -ne 1 -or $subjects.Count -ne 1 -or
+        $digests[0].Groups['index'].Value -cne '1' -or
+        $subjects[0].Groups['index'].Value -cne '1' -or
+        $counts.Count -gt 1 -or
+        ($counts.Count -eq 1 -and $counts[0].Groups['value'].Value.Trim() -cne '1')) {
+        throw 'Android signing continuity requires exactly one current signer; multi-signer or incomplete output needs a separate migration review.'
+    }
+
+    $certificateDn = $subjects[0].Groups['value'].Value.Trim()
+    $certificateSha256 = $digests[0].Groups['value'].Value.Trim().ToLowerInvariant()
+    if ($certificateSha256 -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'Android signing certificate SHA-256 must contain exactly 64 hexadecimal characters.'
+    }
+    if ([string]::IsNullOrWhiteSpace($certificateDn)) {
+        throw 'Android signing certificate subject is missing.'
+    }
+    return [pscustomobject]@{
+        CertificateDn = $certificateDn
+        CertificateSha256 = $certificateSha256
+        IsDebugSigning = (
+            $certificateDn.IndexOf('CN=Android Debug', [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            $certificateDn.IndexOf('O=Android', [StringComparison]::OrdinalIgnoreCase) -ge 0)
+    }
+}
+
 function Get-ApkSigningCertificate {
     param(
         [Parameter(Mandatory = $true)][string]$ApkPath,
@@ -416,23 +449,7 @@ function Get-ApkSigningCertificate {
             throw "apksigner verify failed(exit=$apkSignerExitCode): $apkSignerText"
         }
 
-        $dnMatch = [regex]::Match($apkSignerText, 'Signer\s+#1\s+certificate\s+DN:\s*(?<value>.+)')
-        $shaMatch = [regex]::Match($apkSignerText, 'Signer\s+#1\s+certificate\s+SHA-256\s+digest:\s*(?<value>[0-9a-fA-F]+)')
-        if (-not $shaMatch.Success) {
-            throw "apksigner output did not include Signer #1 certificate SHA-256 digest: $apkSignerText"
-        }
-
-        $certificateDn = if ($dnMatch.Success) { $dnMatch.Groups['value'].Value.Trim() } else { '' }
-        $certificateSha256 = $shaMatch.Groups['value'].Value.Trim().ToLowerInvariant()
-        $isDebugSigning =
-            $certificateDn.IndexOf('CN=Android Debug', [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-            $certificateDn.IndexOf('O=Android', [System.StringComparison]::OrdinalIgnoreCase) -ge 0
-
-        return [pscustomobject]@{
-            CertificateDn = $certificateDn
-            CertificateSha256 = $certificateSha256
-            IsDebugSigning = $isDebugSigning
-        }
+        return ConvertFrom-AndroidSigningCertificateOutput -OutputText $apkSignerText
     }
     finally {
         $env:JAVA_HOME = $previousJavaHome

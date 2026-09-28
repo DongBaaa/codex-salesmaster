@@ -243,6 +243,9 @@ public sealed class ItemPriceGrade : TrackedEntity
 
 public sealed class Invoice : TrackedEntity
 {
+    public string CreatedByUsername { get; set; } = string.Empty;
+    public string LastSavedByUsername { get; set; } = string.Empty;
+    public DateTime? LastSavedAtUtc { get; set; }
     public Guid CustomerId { get; set; }
     public Customer? Customer { get; set; }
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;

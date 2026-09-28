@@ -375,6 +375,7 @@ public static partial class DbInitializer
         await EnsureInvoiceTaxInvoiceNumberColumnAsync(dbContext, cancellationToken);
         await EnsureInvoiceVatModeColumnAsync(dbContext, cancellationToken);
         await EnsureInvoicePurchaseReceivingColumnsAsync(dbContext, cancellationToken);
+        await EnsureInvoiceAuthorColumnsAsync(dbContext, cancellationToken);
         await EnsureInvoiceVersionSchemaColumnsAsync(dbContext, cancellationToken);
         await EnsureRecycleBinPurgeRecordsTableAsync(dbContext, cancellationToken);
         await EnsureCustomerContractStoragePathColumnAsync(dbContext, cancellationToken);
@@ -2751,6 +2752,15 @@ public static partial class DbInitializer
         {
             TraceIgnoredDbInitializerException(ignoredDbInitializerException);
         }
+    }
+
+    private static async Task EnsureInvoiceAuthorColumnsAsync(
+        AppDbContext dbContext, CancellationToken cancellationToken)
+    {
+        // Existing authors are unknown; never infer them from the upgrade account.
+        await EnsureColumnAsync(dbContext, "Invoices", "CreatedByUsername", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "Invoices", "LastSavedByUsername", "TEXT NOT NULL DEFAULT ''", "text NOT NULL DEFAULT ''", cancellationToken);
+        await EnsureColumnAsync(dbContext, "Invoices", "LastSavedAtUtc", "TEXT NULL", "timestamp with time zone NULL", cancellationToken);
     }
 
     private static async Task EnsureInvoicePurchaseReceivingColumnsAsync(

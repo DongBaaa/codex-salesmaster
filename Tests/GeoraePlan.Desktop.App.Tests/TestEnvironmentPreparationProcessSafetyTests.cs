@@ -11700,7 +11700,7 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
         Assert.Equal(1, CountOccurrences(source, autoLoginKey));
         Assert.Equal(1, CountOccurrences(source, usernameKey));
         Assert.Equal(1, CountOccurrences(source, passwordKey));
-        Assert.Equal(3, CountOccurrences(source, passwordVariable));
+        Assert.Equal(4, CountOccurrences(source, passwordVariable));
         Assert.Contains(
             "$runScopedAdminPassword = New-LocalTestPassword",
             source,
@@ -11710,9 +11710,12 @@ public sealed class TestEnvironmentPreparationProcessSafetyTests
             source,
             StringComparison.Ordinal);
         Assert.Contains(
-            "'GEORAEPLAN_TEST_AUTO_LOGIN_PASSWORD' = $runScopedAdminPassword",
+            "$testLoginPassword = $runScopedAdminPassword",
             source,
             StringComparison.Ordinal);
+        Assert.Contains("'GEORAEPLAN_TEST_AUTO_LOGIN_PASSWORD' = $testLoginPassword", source, StringComparison.Ordinal);
+        Assert.Contains("$testLoginUsername = 'admin'", source, StringComparison.Ordinal);
+        Assert.Contains("if ($testLoginProfile -ceq 'RestrictedInvoiceEditor')", source, StringComparison.Ordinal);
 
         var launchLogIndex = source.IndexOf(
             "Write-Log 'Launching test app.'",

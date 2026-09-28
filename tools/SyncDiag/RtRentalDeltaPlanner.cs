@@ -323,11 +323,13 @@ internal static class RtRentalDeltaPlanner
         out RtRentalScalarValues values)
     {
         values = new RtRentalScalarValues();
+        if (current.PurchaseAmountsHidden || current.SalesAmountsHidden)
+            return false;
         if (!TryParseDate(source.ContractStartDate, current.ContractStartDate, out var contractStartDate) ||
             !TryParseDate(source.RentalEndDate, current.RentalEndDate, out var rentalEndDate) ||
             !TryParseDate(source.DisposalDate, current.DisposalDate, out var disposalDate) ||
             !TryParseContractMonths(source.ContractMonthsText, current.ContractMonths, out var contractMonths) ||
-            !TryParseMonthlyFee(source.MonthlyFeeText, current.MonthlyFee, out var monthlyFee))
+            !TryParseMonthlyFee(source.MonthlyFeeText, DisclosedAmount.Require(current.MonthlyFee), out var monthlyFee))
         {
             return false;
         }
@@ -336,7 +338,7 @@ internal static class RtRentalDeltaPlanner
             current.BillingProfileId is Guid billingProfileId &&
             billingProfileId != Guid.Empty)
         {
-            monthlyFee = current.MonthlyFee;
+            monthlyFee = DisclosedAmount.Require(current.MonthlyFee);
             audit.BillingProfileFeePreservedCount++;
         }
 
@@ -350,10 +352,10 @@ internal static class RtRentalDeltaPlanner
             PurchaseVendor = current.PurchaseVendor,
             PurchaseDate = current.PurchaseDate,
             DisposalDate = disposalDate,
-            PurchasePrice = current.PurchasePrice,
-            SalePrice = current.SalePrice,
+            PurchasePrice = DisclosedAmount.Require(current.PurchasePrice),
+            SalePrice = DisclosedAmount.Require(current.SalePrice),
             InstallLocation = PreferSource(source.InstallLocation, current.InstallLocation),
-            DepositText = current.DepositText,
+            DepositText = current.DepositText ?? throw new InvalidDataException("비공개 보증금으로 정리안을 만들 수 없습니다."),
             MonthlyFee = monthlyFee,
             ContractMonths = contractMonths,
             ContractDate = current.ContractDate,

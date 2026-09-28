@@ -25,10 +25,12 @@ public partial class EnvironmentSettingsWindow : Window
         _viewModel = vm;
         DataContext = vm;
         Closing += EnvironmentSettingsWindow_Closing;
+        Closed += (_, _) => _viewModel.DetachRecycleBinAmountAccess();
         UpdateTabScrollViewer.SizeChanged += (_, _) => ApplyResponsiveUpdateLayout();
 
         Loaded += (_, _) =>
         {
+            _viewModel.AttachRecycleBinAmountAccess();
             SettingsTabs.SelectedItem = initialTab switch
             {
                 EnvironmentSettingsInitialTab.RecycleBin => RecycleBinTab,

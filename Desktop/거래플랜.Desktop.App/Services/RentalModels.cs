@@ -40,7 +40,7 @@ public sealed class RentalAlertItem
     public string ResponsibleOfficeName { get; set; } = string.Empty;
     public string CustomerName { get; set; } = string.Empty;
     public string ItemName { get; set; } = string.Empty;
-    public decimal MonthlyAmount { get; set; }
+    public decimal? MonthlyAmount { get; set; }
     public DateOnly NextBillingDate { get; set; }
     public DateOnly? DocumentIssueDate { get; set; }
     public DateOnly AlertDate { get; set; }
@@ -81,7 +81,7 @@ public sealed class RentalAssetAssignmentHistoryViewItem
     public string ItemName { get; init; } = string.Empty;
     public string MachineNumber { get; init; } = string.Empty;
     public string ManagementNumber { get; init; } = string.Empty;
-    public decimal MonthlyFee { get; init; }
+    public decimal? MonthlyFee { get; init; }
     public string ChangeReason { get; init; } = string.Empty;
 }
 
@@ -99,7 +99,8 @@ public sealed class RentalAssetAssignmentHistoryEditRequest
     public string ItemName { get; set; } = string.Empty;
     public string MachineNumber { get; set; } = string.Empty;
     public string ManagementNumber { get; set; } = string.Empty;
-    public decimal MonthlyFee { get; set; }
+    public decimal? MonthlyFee { get; set; }
+    public bool AmountsReadOnly { get; init; }
     public string ChangeReason { get; set; } = string.Empty;
 }
 
@@ -291,8 +292,12 @@ public sealed class RentalBillingTemplateItemModel
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Guid? RepresentativeAssetId { get; set; }
     public decimal Quantity { get; set; } = 1m;
-    public decimal UnitPrice { get; set; }
-    public decimal Amount { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? UnitPrice { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? Amount { get; set; } = 0m;
+    [JsonIgnore]
+    public bool AmountsHidden => UnitPrice is null || Amount is null;
     public string Note { get; set; } = string.Empty;
     public List<Guid> IncludedAssetIds { get; set; } = new();
 }
@@ -310,8 +315,12 @@ public sealed class RentalBillingRunModel
     public int CycleMonths { get; set; } = 1;
     public string PeriodLabel { get; set; } = string.Empty;
     public string Status { get; set; } = "예정";
-    public decimal BilledAmount { get; set; }
-    public decimal SettledAmount { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? BilledAmount { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? SettledAmount { get; set; } = 0m;
+    [JsonIgnore]
+    public bool AmountsHidden => BilledAmount is null || SettledAmount is null || Items is null || Items.Any(item => item is null || item.AmountsHidden);
     public string SettlementStatus { get; set; } = PaymentFlowConstants.SettlementStatusUnpaid;
     public DateOnly? SettledDate { get; set; }
     public string Note { get; set; } = string.Empty;
@@ -427,7 +436,7 @@ internal static class RentalBillingRunDiagnosticParser
         if (string.IsNullOrWhiteSpace(json))
             return false;
 
-        var validation = RentalBillingRunTombstonePolicy.Validate(json);
+        var validation = RentalBillingRunTombstonePolicy.ValidateForAmountPrivacyRead(json);
         if (validation.Status != RentalBillingRunLookupStatus.InvalidJson ||
             !validation.Error.Contains(IdentityGraphErrorFragment, StringComparison.Ordinal))
         {
@@ -442,7 +451,7 @@ internal static class RentalBillingRunDiagnosticParser
 
             foreach (var element in document.RootElement.EnumerateArray())
             {
-                var isolatedValidation = RentalBillingRunTombstonePolicy.Validate(
+                var isolatedValidation = RentalBillingRunTombstonePolicy.ValidateForAmountPrivacyRead(
                     $"[{element.GetRawText()}]");
                 if (!isolatedValidation.IsValid)
                     return false;
@@ -578,10 +587,14 @@ public sealed class RentalBillingEditorDraftModel
     public int BillingAnchorMonth { get; set; } = 3;
     public string DocumentIssueMode { get; set; } = RentalBillingScheduleRules.DocumentIssueModeSameAsDueDate;
     public int DocumentLeadDays { get; set; }
-    public decimal MonthlyAmount { get; set; }
-    public decimal DepositAmount { get; set; }
-    public decimal SettledAmount { get; set; }
-    public decimal OutstandingAmount { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? MonthlyAmount { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? DepositAmount { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? SettledAmount { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? OutstandingAmount { get; set; } = 0m;
     public bool RequiresFollowUp { get; set; }
     public string SubmissionDocuments { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
@@ -666,7 +679,8 @@ public sealed class RentalCustomerOnboardingDraftModel
     public string DocumentIssueMode { get; set; } = RentalBillingScheduleRules.DocumentIssueModeSameAsDueDate;
     public int DocumentLeadDays { get; set; }
     public DateTime? BillingStartDate { get; set; }
-    public decimal MonthlyAmount { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? MonthlyAmount { get; set; } = 0m;
     public string BillingMethod { get; set; } = string.Empty;
     public string SubmissionDocuments { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
@@ -682,9 +696,9 @@ public sealed class RentalBillingHistoryRow
     public string CustomerName { get; init; } = string.Empty;
     public string PeriodLabel { get; init; } = string.Empty;
     public DateOnly ScheduledDate { get; init; }
-    public decimal BilledAmount { get; init; }
-    public decimal SettledAmount { get; init; }
-    public decimal OutstandingAmount { get; init; }
+    public decimal? BilledAmount { get; init; } = 0m;
+    public decimal? SettledAmount { get; init; } = 0m;
+    public decimal? OutstandingAmount { get; init; } = 0m;
     public DateOnly? SettledDate { get; init; }
     public string BillingStatus { get; init; } = string.Empty;
     public string SettlementStatus { get; init; } = string.Empty;
@@ -692,10 +706,12 @@ public sealed class RentalBillingHistoryRow
     public Guid? InvoiceId { get; init; }
     public long? InvoiceRevision { get; init; }
     public bool IsPastUnresolved { get; init; }
-    public bool CanRegisterSettlement => BillingRunId != Guid.Empty && OutstandingAmount > 0m;
+    public bool IsPastAmountUnknown { get; init; }
+    public bool AmountsHidden => BilledAmount is null || SettledAmount is null || OutstandingAmount is null;
+    public bool CanRegisterSettlement => !AmountsHidden && BillingRunId != Guid.Empty && OutstandingAmount > 0m;
     public bool HasSettlement => SettledAmount > 0m;
     public bool CanDelete => BillingRunId != Guid.Empty;
-    public string ActionLabel => CanRegisterSettlement
+    public string ActionLabel => AmountsHidden ? "비공개" : CanRegisterSettlement
         ? SettledAmount > 0m ? "추가 입금" : "입금 등록"
         : "완료";
 }
@@ -747,8 +763,8 @@ public sealed class RentalBillingViewRow : INotifyPropertyChanged
     public string DisplayStatus { get; init; } = string.Empty;
     public string SettlementStatus { get; init; } = string.Empty;
     public string CompletionStatus { get; init; } = string.Empty;
-    public decimal SettledAmount { get; init; }
-    public decimal OutstandingAmount { get; init; }
+    public decimal? SettledAmount { get; init; } = 0m;
+    public decimal? OutstandingAmount { get; init; } = 0m;
     public bool RequiresFollowUp { get; init; }
     public DateOnly? LastSettledDate { get; init; }
     public int AssetCount { get; init; }
@@ -768,19 +784,20 @@ public sealed class RentalBillingViewRow : INotifyPropertyChanged
     public Guid? CurrentBillingRunId { get; init; }
     public string CurrentBillingPeriodLabel { get; init; } = string.Empty;
     public string CurrentBillingRunStatus { get; init; } = string.Empty;
-    public decimal CurrentBilledAmount { get; init; }
+    public decimal? CurrentBilledAmount { get; init; } = 0m;
+    public bool AmountsHidden => CurrentBilledAmount is null || SettledAmount is null || OutstandingAmount is null;
     public bool HasCurrentBillingConflict => string.Equals(CurrentBillingRunStatus, "확인 필요", StringComparison.Ordinal);
-    public string CurrentBilledAmountDisplay => HasCurrentBillingConflict ? "확인 필요" : CurrentBilledAmount.ToString("N0");
-    public string SettledAmountDisplay => HasCurrentBillingConflict ? "확인 필요" : SettledAmount.ToString("N0");
-    public string OutstandingAmountDisplay => HasCurrentBillingConflict ? "확인 필요" : OutstandingAmount.ToString("N0");
+    public string CurrentBilledAmountDisplay => HasCurrentBillingConflict ? "확인 필요" : RentalReadAmount.Format(CurrentBilledAmount);
+    public string SettledAmountDisplay => HasCurrentBillingConflict ? "확인 필요" : RentalReadAmount.Format(SettledAmount);
+    public string OutstandingAmountDisplay => HasCurrentBillingConflict ? "확인 필요" : RentalReadAmount.Format(OutstandingAmount);
     public List<RentalBillingHistoryRow> BillingHistoryRows { get; init; } = new();
     public int PastUnresolvedCount { get; init; }
-    public decimal PastUnresolvedAmount { get; init; }
+    public decimal? PastUnresolvedAmount { get; init; } = 0m;
     public DateOnly? OldestPastUnresolvedScheduledDate { get; init; }
     public string OldestPastUnresolvedPeriodLabel { get; init; } = string.Empty;
-    public bool HasPastUnresolved => PastUnresolvedCount > 0 || PastUnresolvedAmount > 0m;
-    public string PastUnresolvedSummary => HasPastUnresolved
-        ? $"이전 청구월 미처리 {PastUnresolvedCount:N0}건 / 미수 {PastUnresolvedAmount:N0}원"
+    public bool HasPastUnresolved => PastUnresolvedAmount is null || PastUnresolvedCount > 0 || PastUnresolvedAmount > 0m;
+    public string PastUnresolvedSummary => PastUnresolvedAmount is null ? "이전 청구월 금액 비공개 / 미수 확인 필요" : HasPastUnresolved
+        ? $"이전 청구월 미처리 {PastUnresolvedCount:N0}건 / 미수 {RentalReadAmount.Format(PastUnresolvedAmount, "원")}"
         : "이전 청구월 미처리 내역 없음";
     public bool HasDataIssue { get; init; }
     public string DataIssueSummary { get; init; } = string.Empty;
@@ -852,6 +869,7 @@ public sealed class RentalAssetViewRow : INotifyPropertyChanged
     private bool _isSelected;
 
     public LocalRentalAsset Source { get; init; } = new();
+    public decimal? MonthlyFee => Source.SalesAmountsHidden ? null : Source.MonthlyFee;
     public bool HasFullDetail { get; init; } = true;
     public string ResponsibleOfficeName { get; init; } = string.Empty;
     public int? DaysRemaining { get; init; }
@@ -950,3 +968,15 @@ public static class RentalContractDateRules
 public readonly record struct RentalContractDateResolution(
     DateOnly? ContractDate,
     DateOnly? ContractStartDate);
+
+internal static class RentalReadAmount
+{
+    public static decimal? Normalize(decimal? amount) => amount.HasValue ? Math.Max(0m, amount.Value) : null;
+    public static decimal? Sum(IEnumerable<decimal?> amounts)
+    {
+        decimal? total = 0m;
+        foreach (var amount in amounts) total += amount;
+        return total;
+    }
+    public static string Format(decimal? amount, string suffix = "") => amount.HasValue ? amount.Value.ToString("N0") + suffix : "비공개";
+}

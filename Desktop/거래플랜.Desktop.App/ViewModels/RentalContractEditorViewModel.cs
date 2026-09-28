@@ -41,7 +41,8 @@ public sealed partial class RentalContractEditorViewModel : ObservableObject
     [ObservableProperty] private string _itemName = string.Empty;
     [ObservableProperty] private string _machineNumber = string.Empty;
     [ObservableProperty] private string _depositText = string.Empty;
-    [ObservableProperty] private decimal _monthlyFee;
+    [ObservableProperty] private decimal? _monthlyFee;
+    public bool AreAmountsReadOnly { get; }
     [ObservableProperty] private string _installLocation = string.Empty;
     [ObservableProperty] private DateTime? _contractDate;
     [ObservableProperty] private DateTime? _contractStartDate;
@@ -72,6 +73,7 @@ public sealed partial class RentalContractEditorViewModel : ObservableObject
         ArgumentNullException.ThrowIfNull(documents);
 
         _documents = documents;
+        AreAmountsReadOnly = model.AmountsHidden || !model.MonthlyFee.HasValue;
         _printService = printService ?? new WpfInvoicePrintService();
         PrintDocumentAuthorization.Attach(_authorizationDocument, canReadDocument ?? (() => true));
         CanEditManagementOffice = canEditManagementOffice;
@@ -190,8 +192,9 @@ public sealed partial class RentalContractEditorViewModel : ObservableObject
             ManagementNumber = ManagementNumber?.Trim() ?? string.Empty,
             ItemName = ItemName?.Trim() ?? string.Empty,
             MachineNumber = MachineNumber?.Trim() ?? string.Empty,
-            DepositText = DepositText?.Trim() ?? string.Empty,
-            MonthlyFee = MonthlyFee,
+            DepositText = AreAmountsReadOnly ? "비공개" : DepositText?.Trim() ?? string.Empty,
+            MonthlyFee = AreAmountsReadOnly ? null : MonthlyFee,
+            AmountsHidden = AreAmountsReadOnly,
             InstallLocation = InstallLocation?.Trim() ?? string.Empty,
             ContractDate = ContractDate.HasValue ? DateOnly.FromDateTime(ContractDate.Value) : null,
             ContractStartDate = ContractStartDate.HasValue ? DateOnly.FromDateTime(ContractStartDate.Value) : null,
@@ -234,8 +237,8 @@ public sealed partial class RentalContractEditorViewModel : ObservableObject
         ManagementNumber = model.ManagementNumber;
         ItemName = model.ItemName;
         MachineNumber = model.MachineNumber;
-        DepositText = model.DepositText;
-        MonthlyFee = model.MonthlyFee;
+        DepositText = AreAmountsReadOnly ? "비공개" : model.DepositText;
+        MonthlyFee = AreAmountsReadOnly ? null : model.MonthlyFee;
         InstallLocation = model.InstallLocation;
         ContractDate = model.ContractDate?.ToDateTime(TimeOnly.MinValue);
         ContractStartDate = model.ContractStartDate?.ToDateTime(TimeOnly.MinValue);

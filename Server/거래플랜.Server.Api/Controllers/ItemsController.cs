@@ -134,7 +134,9 @@ public sealed class ItemsController : ControllerBase
         if (take is > 0)
             query = query.Take(Math.Min(take.Value, maxTake));
 
-        return Ok(await query.Select(x => x.ToDto()).ToListAsync(cancellationToken));
+        var response = await query.Select(x => x.ToDto()).ToListAsync(cancellationToken);
+        foreach (var item in response) ItemAmountReadPolicy.Apply(item, _officeScopeService);
+        return Ok(response);
     }
 
     [HttpGet("categories")]
@@ -205,7 +207,7 @@ public sealed class ItemsController : ControllerBase
     {
         var entity = await _officeScopeService.ApplyItemScope(_dbContext.Items.AsNoTracking())
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
-        return entity is null ? NotFound() : Ok(entity.ToDto());
+        return entity is null ? NotFound() : Ok(ItemAmountReadPolicy.Apply(entity.ToDto(), _officeScopeService));
     }
 
     [HttpGet("{id:guid}/detail")]
@@ -237,7 +239,7 @@ public sealed class ItemsController : ControllerBase
 
         return Ok(new ItemDetailDto
         {
-            Item = entity.ToDto(),
+            Item = ItemAmountReadPolicy.Apply(entity.ToDto(), _officeScopeService),
             BranchStocks = stocks
         });
     }
@@ -288,13 +290,13 @@ public sealed class ItemsController : ControllerBase
             return stockError;
         }
 
-        entity.Apply(dto);
+        ItemAmountWritePolicy.Apply(entity, dto, _officeScopeService);
         await RemoveWarehouseStocksIfNonInventoryAsync(entity, cancellationToken);
         _dbContext.Items.Add(entity);
         ProcessedSyncMutationRecorder.Record(_dbContext, mutationCheck, entity.Id);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        return Ok(entity.ToDto());
+        return Ok(ItemAmountReadPolicy.Apply(entity.ToDto(), _officeScopeService));
     }
 
     [HttpPut("{id:guid}")]
@@ -357,7 +359,7 @@ public sealed class ItemsController : ControllerBase
             return stockError;
         }
 
-        entity.Apply(dto);
+        ItemAmountWritePolicy.Apply(entity, dto, _officeScopeService);
         var inventorySupportChanged =
             previouslySupportedInventory != ItemOperationalPolicy.SupportsInventory(entity.TrackingType);
         await RemoveWarehouseStocksIfNonInventoryAsync(entity, cancellationToken);
@@ -367,7 +369,7 @@ public sealed class ItemsController : ControllerBase
         if (inventorySupportChanged)
             await new InventoryLedgerService(_dbContext).RebuildAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        return Ok(entity.ToDto());
+        return Ok(ItemAmountReadPolicy.Apply(entity.ToDto(), _officeScopeService));
     }
 
     private static bool TryEvaluateRequestedItemScope(
@@ -519,7 +521,7 @@ public sealed class ItemsController : ControllerBase
                     current => current.Id == entityId,
                     cancellationToken);
             if (entity is not null)
-                return Ok(entity.ToDto());
+                return Ok(ItemAmountReadPolicy.Apply(entity.ToDto(), _officeScopeService));
         }
 
         return Conflict(new DirectMutationConflictResponse

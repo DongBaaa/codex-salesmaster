@@ -1441,7 +1441,11 @@ namespace GeoraePlan.TestEnvironment
                 heldEntries.AddRange(
                     OpenHeldPrivateTreeEntriesFromRoot(
                         rootHandle,
-                        fullRoot));
+                        fullRoot,
+                        // Promotion cleanup visits metadata, not file contents.
+                        // Package/database size must not block retiring a runtime.
+                        // Entry count, held identities and link checks still bound it.
+                        requirePrivateChildAcls ? MaximumPrivateTreeBytes : long.MaxValue));
 
                 RunExactNameSwapTestHook(
                     "CHILD",
@@ -1516,7 +1520,8 @@ namespace GeoraePlan.TestEnvironment
         private static List<HeldPrivateTreeEntry>
             OpenHeldPrivateTreeEntriesFromRoot(
                 SafeFileHandle rootHandle,
-                string root)
+                string root,
+                long maximumBytes)
         {
             var result = new List<HeldPrivateTreeEntry>();
             var pending = new Queue<HeldPrivateTreeEntry>();
@@ -1533,6 +1538,7 @@ namespace GeoraePlan.TestEnvironment
                     root,
                     result,
                     pending,
+                    maximumBytes,
                     ref totalBytes);
 
                 while (pending.Count != 0)
@@ -1543,6 +1549,7 @@ namespace GeoraePlan.TestEnvironment
                         root,
                         result,
                         pending,
+                        maximumBytes,
                         ref totalBytes);
                 }
                 return result;
@@ -1560,6 +1567,7 @@ namespace GeoraePlan.TestEnvironment
             string root,
             List<HeldPrivateTreeEntry> result,
             Queue<HeldPrivateTreeEntry> pending,
+            long maximumBytes,
             ref long totalBytes)
         {
             HeldPrivateTreeEntry firstRetained = null;
@@ -1581,6 +1589,7 @@ namespace GeoraePlan.TestEnvironment
                     else
                         AccumulateHeldFileBytes(
                             entry,
+                            maximumBytes,
                             ref runningTotalBytes);
                     if (result.Count > MaximumPrivateTreeEntries)
                         throw new InvalidOperationException(
@@ -1591,6 +1600,7 @@ namespace GeoraePlan.TestEnvironment
 
         private static void AccumulateHeldFileBytes(
             HeldPrivateTreeEntry entry,
+            long maximumBytes,
             ref long totalBytes)
         {
             ByHandleFileInformation information =
@@ -1599,7 +1609,7 @@ namespace GeoraePlan.TestEnvironment
                 ((long)information.FileSizeHigh << 32) |
                 information.FileSizeLow;
             if (length < 0 ||
-                totalBytes > MaximumPrivateTreeBytes - length)
+                totalBytes > maximumBytes - length)
             {
                 throw new InvalidOperationException(
                     "The private tree byte limit was exceeded.");
@@ -4097,10 +4107,21 @@ function Get-TestCsprojPropertyValue {
 
     [xml]$project = Get-Content -LiteralPath $ProjectFile -Raw -Encoding UTF8
     $values = @(
+        # Preparation certifies the default APK, not opt-in build variants.
+        # The APK's actual identity is still checked independently below.
         $project.Project.PropertyGroup |
-            ForEach-Object { $_.$PropertyName } |
-            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
-            ForEach-Object { ([string]$_).Trim() } |
+            Where-Object {
+                [string]::IsNullOrWhiteSpace($_.GetAttribute('Condition'))
+            } |
+            ForEach-Object {
+                $_.ChildNodes | Where-Object {
+                    $_ -is [System.Xml.XmlElement] -and
+                    $_.LocalName -ceq $PropertyName -and
+                    [string]::IsNullOrWhiteSpace($_.GetAttribute('Condition'))
+                }
+            } |
+            ForEach-Object { $_.InnerText.Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
             Select-Object -Unique
     )
     if ($values.Count -ne 1) {
@@ -4434,9 +4455,13 @@ function Invoke-DotnetWithOutput {
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo
     [void]$process.Start()
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
+    # Drain both pipes before waiting: a verbose error must not fill stderr
+    # while the parent waits for stdout EOF and the child waits for pipe space.
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
     $process.WaitForExit()
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
     $exitCode = $process.ExitCode
 
     $output = @()
@@ -4546,15 +4571,22 @@ function Get-GitOutput {
     }
 
     Push-Location $ProjectRoot
+    $previousErrorActionPreference = $ErrorActionPreference
     try {
+        # Windows PowerShell reports native stderr as ErrorRecord objects.
+        # Inspect the exit code below instead of terminating before AllowFailure.
+        $ErrorActionPreference = 'Continue'
+        $PSNativeCommandUseErrorActionPreference = $false
         $output = & $git.Source @Arguments 2>&1
         $exitCode = $LASTEXITCODE
     }
     finally {
+        $ErrorActionPreference = $previousErrorActionPreference
         Pop-Location
     }
 
-    if ($exitCode -ne 0 -and -not $AllowFailure) {
+    if ($exitCode -ne 0) {
+        if ($AllowFailure) { return '' }
         throw "git 명령이 실패했습니다. args=$($Arguments -join ' ')"
     }
 
@@ -9681,7 +9713,12 @@ function Start-IsolatedServerProcess {
     try {
         Repair-ProcessPathEnvironmentForChildProcess
         $argumentList = ('"{0}" --environment Development' -f $ServerDll.Replace('"', '""'))
-        $process = Start-Process -FilePath $DotnetExe -ArgumentList $argumentList -WorkingDirectory $ServerWorkingDirectory -WindowStyle Hidden -PassThru
+        # A busy seed can fill an inherited console pipe and block the API's logging queue.
+        $seedLogId = [Guid]::NewGuid().ToString('N')
+        $seedStdoutLog = Join-Path $ServerWorkingDirectory ("isolated-seed-{0}.stdout.log" -f $seedLogId)
+        $seedStderrLog = Join-Path $ServerWorkingDirectory ("isolated-seed-{0}.stderr.log" -f $seedLogId)
+        $process = Start-Process -FilePath $DotnetExe -ArgumentList $argumentList -WorkingDirectory $ServerWorkingDirectory -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput $seedStdoutLog -RedirectStandardError $seedStderrLog
     }
     finally {
         foreach ($key in $serverEnv.Keys) {
@@ -9692,6 +9729,8 @@ function Start-IsolatedServerProcess {
     return [pscustomobject]@{
         Process = $process
         ServerUrl = $serverUrl
+        StdoutLogPath = $seedStdoutLog
+        StderrLogPath = $seedStderrLog
     }
 }
 
@@ -10078,6 +10117,33 @@ function Stop-IsolatedRuntimeProcesses {
             [Environment]::NewLine +
             (($terminationFailures | ForEach-Object { " - $_" }) -join [Environment]::NewLine)
         )
+    }
+}
+
+function Initialize-IsolatedRuntimeLogRoot {
+    param([Parameter(Mandatory = $true)][string]$OutputRoot)
+
+    $fullRoot = ConvertTo-NormalizedFullPath -Path $OutputRoot
+    if (-not [string]::Equals(
+            [IO.Path]::GetPathRoot($fullRoot), 'D:\',
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Runtime log root must remain on D:.'
+    }
+
+    # RuntimeLogs is intentionally not a promoted component: preserve old logs,
+    # but create the final directory before certifying a first-time runtime.
+    $rootLease = Enter-SourceAppRootIdentityLease -Path $fullRoot
+    $logLease = $null
+    try {
+        $logRoot = Join-Path $fullRoot 'RuntimeLogs'
+        [void][IO.Directory]::CreateDirectory($logRoot)
+        $logLease = Enter-SourceAppRootIdentityLease -Path $logRoot
+        Assert-SourceAppRootIdentityLease -Lease $rootLease
+        Assert-SourceAppRootIdentityLease -Lease $logLease
+    }
+    finally {
+        if ($null -ne $logLease) { $logLease.Dispose() }
+        $rootLease.Dispose()
     }
 }
 
@@ -10483,6 +10549,42 @@ namespace GeoraePlan.Runtime
             if (!assigned)
                 throw new IOException(
                     "Runtime child process is not in the expected job.");
+        }
+
+        public Process FindReplacementProcess(string executablePath, int exitedProcessId)
+        {
+            if (handle == IntPtr.Zero)
+                throw new ObjectDisposedException("ChildProcessJob");
+            string expectedPath = Path.GetFullPath(executablePath);
+            Process replacement = null;
+            foreach (Process candidate in Process.GetProcessesByName(
+                Path.GetFileNameWithoutExtension(expectedPath)))
+            {
+                bool keep = false;
+                try
+                {
+                    bool owned;
+                    if (candidate.Id == exitedProcessId || candidate.HasExited ||
+                        !IsProcessInJob(candidate.Handle, handle, out owned) || !owned ||
+                        !string.Equals(candidate.MainModule.FileName, expectedPath,
+                            StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (replacement != null)
+                    {
+                        replacement.Dispose();
+                        throw new IOException("Multiple replacement apps exist in the runtime job.");
+                    }
+                    replacement = candidate;
+                    keep = true;
+                }
+                catch (InvalidOperationException) { }
+                catch (Win32Exception) { }
+                finally
+                {
+                    if (!keep) candidate.Dispose();
+                }
+            }
+            return replacement;
         }
 
         public void Dispose()
@@ -11688,6 +11790,9 @@ __COMPONENT_LOCK_ONLY_PROBE_BLOCK__
         $certificationLease.Dispose()
         $certificationLease = $null
     }
+    $dotnetExe = '__DOTNET_EXE__'
+    $env:DOTNET_ROOT = Split-Path -Parent $dotnetExe
+    $env:DOTNET_ROOT_X64 = $env:DOTNET_ROOT
     if ($Mode -eq 'App') {
         $appRoot = Join-Path $PSScriptRoot 'AppData'
         $appDir = Join-Path $PSScriptRoot 'App'
@@ -11705,7 +11810,6 @@ __COMPONENT_LOCK_ONLY_PROBE_BLOCK__
         exit $LASTEXITCODE
     }
 
-    $dotnetExe = '__DOTNET_EXE__'
     $serverDir = Join-Path $PSScriptRoot 'Server'
     $serverDlls = @(
         Get-ChildItem -LiteralPath $serverDir -Filter '*.Server.Api.dll' -File
@@ -11787,6 +11891,115 @@ finally {
 param(__RUN_ALL_LOCK_PROBE_PARAMETER__)
 
 $ErrorActionPreference = 'Stop'
+
+function Get-IsolatedTestLoginProfile {
+    $key = 'GEORAEPLAN_TEST_LOGIN_PROFILE'
+    $profile = [Environment]::GetEnvironmentVariable($key, 'Process')
+    [Environment]::SetEnvironmentVariable($key, $null, 'Process')
+    if ([string]::IsNullOrWhiteSpace($profile)) { return 'Admin' }
+    if ($profile -cnotin @('Admin', 'RestrictedInvoiceEditor')) {
+        throw 'Unsupported isolated test login profile.'
+    }
+    return $profile
+}
+
+function Assert-RestrictedInvoiceTestUser {
+    param([Parameter(Mandatory = $true)]$User, [string]$Username, [switch]$RequireActive)
+    $permissions = @($User.permissions)
+    if (
+        [string]$User.username -cne $Username -or
+        [string]$User.role -ine 'User' -or
+        [string]$User.tenantCode -cne 'USENET_GROUP' -or
+        [string]$User.officeCode -cne 'USENET' -or
+        [string]$User.scopeType -cne 'OfficeOnly' -or
+        ($RequireActive -and -not [bool]$User.isActive) -or
+        $permissions.Count -ne 1 -or
+        [string]$permissions[0] -cne 'Invoice.Edit'
+    ) {
+        throw 'Restricted test account scope or permissions did not match.'
+    }
+}
+
+function New-RestrictedInvoiceTestLogin {
+    param(
+        [Parameter(Mandatory = $true)][uri]$ServerUri,
+        [Parameter(Mandatory = $true)][string]$AdminPassword
+    )
+    # Called only after certification, owned-server startup and readiness.
+    # Never send a bootstrap credential through a proxy, redirect or DNS name.
+    if (
+        -not $ServerUri.IsAbsoluteUri -or
+        $ServerUri.Scheme -cne 'http' -or
+        $ServerUri.Host -cne '127.0.0.1' -or
+        $ServerUri.Port -lt 1024 -or
+        $ServerUri.AbsolutePath -cne '/' -or
+        $ServerUri.Query -or $ServerUri.Fragment -or $ServerUri.UserInfo
+    ) { throw 'Restricted test provisioning requires the owned loopback endpoint.' }
+    Add-Type -AssemblyName System.Net.Http
+    $handler = [Net.Http.HttpClientHandler]::new()
+    $handler.AllowAutoRedirect = $false
+    $handler.UseProxy = $false
+    $client = [Net.Http.HttpClient]::new($handler)
+    $client.BaseAddress = $ServerUri
+    $client.Timeout = [TimeSpan]::FromSeconds(20)
+    $username = 'ui-noamount-' + [Guid]::NewGuid().ToString('N')
+    $password = 'restricted-' + [Guid]::NewGuid().ToString('N')
+    $adminLogin = $null
+    $staffLogin = $null
+    try {
+        function Invoke-TestProvisionPost {
+            param([string]$Path, $Body)
+            $content = [Net.Http.StringContent]::new(
+                ($Body | ConvertTo-Json -Depth 5 -Compress),
+                [Text.Encoding]::UTF8, 'application/json')
+            $response = $null
+            try {
+                $response = $client.PostAsync($Path, $content).GetAwaiter().GetResult()
+                if (-not $response.IsSuccessStatusCode) {
+                    throw 'Isolated test account request failed.'
+                }
+                return ($response.Content.ReadAsStringAsync().GetAwaiter().GetResult() |
+                    ConvertFrom-Json)
+            }
+            finally {
+                if ($null -ne $response) { $response.Dispose() }
+                $content.Dispose()
+            }
+        }
+        $adminLogin = Invoke-TestProvisionPost 'auth/login' @{
+            username = 'admin'; password = $AdminPassword
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$adminLogin.token)) {
+            throw 'Isolated administrator login failed.'
+        }
+        $client.DefaultRequestHeaders.Authorization =
+            [Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $adminLogin.token)
+        $created = Invoke-TestProvisionPost 'users' @{
+            username = $username; password = $password; role = 'user'
+            tenantCode = 'USENET_GROUP'; officeCode = 'USENET'
+            scopeType = 'OfficeOnly'; isActive = $true
+            permissions = @('Invoice.Edit')
+        }
+        Assert-RestrictedInvoiceTestUser -User $created -Username $username -RequireActive
+        $client.DefaultRequestHeaders.Authorization = $null
+        $staffLogin = Invoke-TestProvisionPost 'auth/login' @{
+            username = $username; password = $password
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$staffLogin.token)) {
+            throw 'Restricted test login failed.'
+        }
+        Assert-RestrictedInvoiceTestUser -User $staffLogin.user -Username $username
+        return @{ Username = $username; Password = $password }
+    }
+    catch {
+        # Never copy an HTTP response, token or password into launcher logs.
+        throw 'Restricted isolated test account provisioning failed.'
+    }
+    finally {
+        $adminLogin = $null; $staffLogin = $null; $password = $null
+        $client.Dispose()
+    }
+}
 
 function Get-FileHash {
     [CmdletBinding()]
@@ -12589,6 +12802,8 @@ function Invoke-IsolatedServerSqliteFinalizer {
 }
 
 $dotnetExe = '__DOTNET_EXE__'
+$env:DOTNET_ROOT = Split-Path -Parent $dotnetExe
+$env:DOTNET_ROOT_X64 = $env:DOTNET_ROOT
 $serverDir = Join-Path $PSScriptRoot 'Server'
 $appDir = Join-Path $PSScriptRoot 'App'
 $appRoot = Join-Path $PSScriptRoot 'AppData'
@@ -13530,6 +13745,7 @@ try {
         -LogRoot $runtimeLogRoot `
         -Path $errorLogPath
     Write-Log 'Run-All.ps1 started.'
+    $testLoginProfile = Get-IsolatedTestLoginProfile
     Write-Log 'Resolving app/server files.'
     $serverDlls = @(
         Get-ChildItem -LiteralPath $serverDir -Filter '*.Server.Api.dll' -File
@@ -13695,14 +13911,26 @@ try {
         $certificationLease.Dispose()
         $certificationLease = $null
     }
+    $testLoginUsername = 'admin'
+    $testLoginPassword = $runScopedAdminPassword
+    if ($testLoginProfile -ceq 'RestrictedInvoiceEditor') {
+        if ($serverProcess.HasExited) { throw 'Owned test server exited before account provisioning.' }
+        $restrictedLogin = New-RestrictedInvoiceTestLogin `
+            -ServerUri ([uri]($serverUrl + '/')) `
+            -AdminPassword $runScopedAdminPassword
+        $testLoginUsername = $restrictedLogin.Username
+        $testLoginPassword = $restrictedLogin.Password
+        $restrictedLogin.Clear()
+        Write-Log 'Restricted invoice editor verified: USENET / OfficeOnly / Invoice.Edit only.'
+    }
     Write-Log 'Launching test app.'
     [Environment]::SetEnvironmentVariable('GEORAEPLAN_APP_ROOT', $appRoot, 'Process')
     [Environment]::SetEnvironmentVariable('GEORAEPLAN_DISABLE_LEGACY_MERGE', '1', 'Process')
     [Environment]::SetEnvironmentVariable('GEORAEPLAN_TEST_MODE', '1', 'Process')
     $autoLoginEnvironment = @{
         'GEORAEPLAN_TEST_AUTO_LOGIN' = '1'
-        'GEORAEPLAN_TEST_AUTO_LOGIN_USERNAME' = 'admin'
-        'GEORAEPLAN_TEST_AUTO_LOGIN_PASSWORD' = $runScopedAdminPassword
+        'GEORAEPLAN_TEST_AUTO_LOGIN_USERNAME' = $testLoginUsername
+        'GEORAEPLAN_TEST_AUTO_LOGIN_PASSWORD' = $testLoginPassword
     }
     $previousAutoLoginEnvironment = @{}
     foreach ($key in $autoLoginEnvironment.Keys) {
@@ -13755,7 +13983,9 @@ try {
     $consecutiveHealthFailures = 0
     $healthDegraded = $false
     $nextHealthProbeUtc = [DateTime]::UtcNow
-    while (-not $appProcess.HasExited) {
+    # Exit detection must always reach the handoff branch below, including
+    # when an app exits between iterations or during a health probe.
+    while ($true) {
         try {
             Assert-RuntimeServerLogsWithinLimit `
                 -LogRoot $runtimeLogRoot `
@@ -13853,6 +14083,26 @@ try {
         }
 
         if ($appProcess.WaitForExit(250)) {
+            # Logout starts another instance inside this launcher's job. Keep
+            # the server alive only for that owned app, never an unrelated copy.
+            $appProcess.WaitForExit()
+            if ($appProcess.ExitCode -eq 0) {
+                $handoffDeadline = [DateTime]::UtcNow.AddSeconds(3)
+                $replacementApp = $null
+                do {
+                    $replacementApp = $childProcessJob.FindReplacementProcess(
+                        $appExe, $appProcess.Id)
+                    if ($null -ne $replacementApp) { break }
+                    Start-Sleep -Milliseconds 100
+                } while ([DateTime]::UtcNow -lt $handoffDeadline)
+                if ($null -ne $replacementApp) {
+                    Write-Log ("Following restarted test app. previousPid={0}; pid={1}" -f
+                        $appProcess.Id, $replacementApp.Id)
+                    $appProcess.Dispose()
+                    $appProcess = $replacementApp
+                    continue
+                }
+            }
             break
         }
     }
@@ -14337,6 +14587,8 @@ function Assert-LegacyInvoiceCanonicalizationReportProfile {
         'A3C4A81A9FCA783F40844DC04810A905C99619722A608D9C379CA4BB157A0654'
     $adminLoginOperationalApprovedSourceDatabaseSha256 =
         '0740B46F71C93CC613519796C240B734D7815153B2FD997FD7B4343DDA6FA70E'
+    $september21OperationalApprovedSourceDatabaseSha256 =
+        '974174CDE9C987BB1AE0EEFE3F76E28F532941A8967D3B752C925C7329D5BC0E'
     if ([string]::Equals(
             $ExpectedSourceDatabaseSha256,
             $originalApprovedSourceDatabaseSha256,
@@ -14439,6 +14691,19 @@ function Assert-LegacyInvoiceCanonicalizationReportProfile {
             'DEE66A13D48ACC63BFA1EB31D357BEA41BCE9C4BA0E3CC06A5681F47728FF26A'
         $expectedDependencyReferencesSha256 =
             '798161B849E966FFBDCA7D008D8581118BC791A815B1D5621EAA7A954301EFA4'
+    }
+    elseif ([string]::Equals(
+            $ExpectedSourceDatabaseSha256,
+            $september21OperationalApprovedSourceDatabaseSha256,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        $expectedBeforeMetadataSha256 =
+            '470D4118ACF242C3B4C1B7C5CCC6D0FC1CC7A1E9F9D2794F08EC470630153EBA'
+        $expectedAfterMetadataSha256 =
+            '49D925656056F81EBF84A23C0ED18433E205D7FB0F87699CE75A2965BD366BF9'
+        $expectedLatestInvoiceBusinessSha256 =
+            'DEE66A13D48ACC63BFA1EB31D357BEA41BCE9C4BA0E3CC06A5681F47728FF26A'
+        $expectedDependencyReferencesSha256 =
+            '90FCE5F59C050A12F09D2D1493D226FEDAF568D0633301D1B7E2AA99F4430A5C'
     }
     else {
         throw 'Canonicalization report source snapshot is not approved.'
@@ -16397,7 +16662,8 @@ if ($CanonicalizeLegacyInvoiceSeed) {
         '73D294E643379C1808AFF89842AA899EF5107C1B269F6B07ACCEE6E59E10B636',
         '1DE40C0FA21FE662EAECFA7ED3B654EA1271076FE1F69029919A3295525EBEC6',
         'A3C4A81A9FCA783F40844DC04810A905C99619722A608D9C379CA4BB157A0654',
-        '0740B46F71C93CC613519796C240B734D7815153B2FD997FD7B4343DDA6FA70E'
+        '0740B46F71C93CC613519796C240B734D7815153B2FD997FD7B4343DDA6FA70E',
+        '974174CDE9C987BB1AE0EEFE3F76E28F532941A8967D3B752C925C7329D5BC0E'
     )
     $requestedLegacyInvoiceSeedSourceDatabaseSha256 =
         $CanonicalizeLegacyInvoiceSeedExpectedSourceDatabaseSha256.Trim()
@@ -17010,6 +17276,8 @@ $prepareLog = @(
 Write-Utf8File -Path (Join-Path $sessionRoot '준비 로그.txt') -Content $prepareLog -WithBom
 
 if ($seedSucceeded) {
+    Initialize-IsolatedRuntimeLogRoot -OutputRoot $OutputRoot
+
     $certifiedAppExecutables = @(
         Get-ChildItem `
             -LiteralPath $appOutput `

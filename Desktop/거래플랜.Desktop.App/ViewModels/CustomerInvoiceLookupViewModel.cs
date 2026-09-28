@@ -35,6 +35,8 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject, I
     {
         _local = local;
         _session = session;
+        _financialAccess = FinancialAmountVisibility.CaptureAccess(session);
+        _session.AccessChanged += FinancialAccessChanged;
     }
 
     public ObservableCollection<LocalCustomer> FilteredCustomers { get; } = new ResettableObservableCollection<LocalCustomer>();
@@ -54,9 +56,18 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject, I
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private string _statusText = "거래처를 검색하거나 선택해 거래내역을 조회하세요.";
 
-    [ObservableProperty] private decimal _previewSupplyAmount;
-    [ObservableProperty] private decimal _previewVatAmount;
-    [ObservableProperty] private decimal _previewTotalAmount;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(PreviewSupplyAmountDisplay))] private decimal _previewSupplyAmount;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(PreviewVatAmountDisplay))] private decimal _previewVatAmount;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(PreviewTotalAmountDisplay))]
+    [NotifyPropertyChangedFor(nameof(PreviewSupplyAmountDisplay))]
+    [NotifyPropertyChangedFor(nameof(PreviewVatAmountDisplay))]
+    private bool _previewAmountsHidden;
+    public string PreviewTotalAmountDisplay => PreviewAmountsHidden ? "비공개" : PreviewTotalAmount.ToString("N0");
+    public string PreviewSupplyAmountDisplay => PreviewAmountsHidden ? "비공개" : PreviewSupplyAmount.ToString("N0");
+    public string PreviewVatAmountDisplay => PreviewAmountsHidden ? "비공개" : PreviewVatAmount.ToString("N0");
+
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(PreviewTotalAmountDisplay))] private decimal _previewTotalAmount;
 
     [ObservableProperty] private string _previewCustomerName = string.Empty;
     [ObservableProperty] private string _previewCustomerBizNumber = string.Empty;
@@ -64,14 +75,65 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject, I
     [ObservableProperty] private string _previewCustomerContactPerson = string.Empty;
     [ObservableProperty] private string _previewCustomerAddress = string.Empty;
     [ObservableProperty] private string _previewCustomerNotes = string.Empty;
-    [ObservableProperty] private decimal _previewCustomerAdvanceBalance;
-    [ObservableProperty] private decimal _previewCustomerReceivableBalance;
-    [ObservableProperty] private decimal _previewCustomerPayableBalance;
-    [ObservableProperty] private decimal _previewCustomerPrepaymentBalance;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(PreviewCustomerAdvanceBalanceDisplay))] private decimal? _previewCustomerAdvanceBalance;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(PreviewCustomerReceivableBalanceDisplay))] private decimal? _previewCustomerReceivableBalance;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(PreviewCustomerPayableBalanceDisplay))] private decimal? _previewCustomerPayableBalance;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(PreviewCustomerPrepaymentBalanceDisplay))] private decimal? _previewCustomerPrepaymentBalance;
     [ObservableProperty] private string _previewLatestRentalInvoiceDateText = "-";
     [ObservableProperty] private string _previewLatestRentalItemSummary = "최근 렌탈 청구가 없습니다.";
-    [ObservableProperty] private decimal _previewLatestRentalInvoiceAmount;
-    [ObservableProperty] private decimal _previewRentalOutstandingAmount;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(PreviewLatestRentalInvoiceAmountDisplay))] private decimal? _previewLatestRentalInvoiceAmount;
+    [ObservableProperty, NotifyPropertyChangedFor(nameof(PreviewRentalOutstandingAmountDisplay))] private decimal? _previewRentalOutstandingAmount;
+
+
+    private FinancialAmountVisibility.AccessKey _financialAccess;
+    public string PreviewCustomerAdvanceBalanceDisplay => FinancialAmountVisibility.Format(PreviewCustomerAdvanceBalance, _session, purchase: false);
+    public string PreviewCustomerReceivableBalanceDisplay => FinancialAmountVisibility.Format(PreviewCustomerReceivableBalance, _session, purchase: false);
+    public string PreviewCustomerPayableBalanceDisplay => FinancialAmountVisibility.Format(PreviewCustomerPayableBalance, _session, purchase: true);
+    public string PreviewCustomerPrepaymentBalanceDisplay => FinancialAmountVisibility.Format(PreviewCustomerPrepaymentBalance, _session, purchase: true);
+    public string PreviewLatestRentalInvoiceAmountDisplay => FinancialAmountVisibility.Format(PreviewLatestRentalInvoiceAmount, _session, purchase: false);
+    public string PreviewRentalOutstandingAmountDisplay => FinancialAmountVisibility.Format(PreviewRentalOutstandingAmount, _session, purchase: false);
+
+    private void FinancialAccessChanged(object? sender, EventArgs e)
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+            _ = dispatcher.InvokeAsync(InvalidateFinancialAccess);
+        else
+            InvalidateFinancialAccess();
+    }
+
+    private void InvalidateFinancialAccess()
+    {
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
+        if (access == _financialAccess) return;
+        _financialAccess = access;
+        Interlocked.Increment(ref _customerSummaryVersion);
+        _invoiceLoadCts?.Cancel();
+        Interlocked.Increment(ref _previewVersion);
+        // Clear the cached selection without starting a new preview during access invalidation.
+#pragma warning disable MVVMTK0034
+        _selectedInvoiceRow = null;
+#pragma warning restore MVVMTK0034
+        OnPropertyChanged(nameof(SelectedInvoiceRow));
+        InvoiceRows.Clear();
+        PreviewLines.Clear();
+        PreviewAmountsHidden = true;
+        PreviewTotalAmount = PreviewSupplyAmount = PreviewVatAmount = 0m;
+        _invoiceLedgerCache.Clear();
+        _invoiceRowCache.Clear();
+        PreviewCustomerAdvanceBalance = null;
+        OnPropertyChanged(nameof(PreviewCustomerAdvanceBalanceDisplay));
+        PreviewCustomerReceivableBalance = null;
+        OnPropertyChanged(nameof(PreviewCustomerReceivableBalanceDisplay));
+        PreviewCustomerPayableBalance = null;
+        OnPropertyChanged(nameof(PreviewCustomerPayableBalanceDisplay));
+        PreviewCustomerPrepaymentBalance = null;
+        OnPropertyChanged(nameof(PreviewCustomerPrepaymentBalanceDisplay));
+        PreviewLatestRentalInvoiceAmount = null;
+        OnPropertyChanged(nameof(PreviewLatestRentalInvoiceAmountDisplay));
+        PreviewRentalOutstandingAmount = null;
+        OnPropertyChanged(nameof(PreviewRentalOutstandingAmountDisplay));
+    }
 
     public bool HasSelectedCustomer => SelectedCustomer is not null;
     public string InvoicePrimaryColumnHeader => HasSelectedCustomer ? "거래내역" : "거래처";
@@ -299,12 +361,12 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject, I
                 var invoiceRows = invoiceList.Select(invoice =>
                 {
                     var customerName = customerMap.TryGetValue(invoice.CustomerId, out var name) ? name : "(미지정)";
-                    return InvoiceListRow.From(invoice, customerName, showCustomerName);
+                    return InvoiceListRow.From(invoice, customerName, showCustomerName, _session);
                 });
                 var transactionRows = transactions.Select(transaction =>
                 {
                     var customerName = customerMap.TryGetValue(transaction.CustomerId, out var name) ? name : "(미지정)";
-                    return InvoiceListRow.From(transaction, customerName, showCustomerName);
+                    return InvoiceListRow.From(transaction, customerName, showCustomerName, _session);
                 });
 
                 rows = invoiceRows
@@ -375,6 +437,8 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject, I
 
     private async Task DisposeCoreAsync()
     {
+        _session.AccessChanged -= FinancialAccessChanged;
+        Interlocked.Increment(ref _customerSummaryVersion);
         _invoiceLoadCts?.Cancel();
 
         await Task.WhenAll(
@@ -524,6 +588,7 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject, I
         PreviewLines.Clear();
         PreviewSupplyAmount = 0m;
         PreviewVatAmount = 0m;
+        PreviewAmountsHidden = false;
         PreviewTotalAmount = 0m;
 
         if (row is null)
@@ -540,8 +605,9 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject, I
             return;
         }
 
+        var expectedAccess = FinancialAmountVisibility.CaptureAccess(_session);
         var invoice = await _local.GetLatestInvoiceVersionAsync(row.Id, _session);
-        if (version != Volatile.Read(ref _previewVersion))
+        if (version != Volatile.Read(ref _previewVersion) || expectedAccess != FinancialAmountVisibility.CaptureAccess(_session))
             return;
 
         if (invoice is null)
@@ -551,16 +617,18 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject, I
             return;
         }
 
+        var hidden = InvoiceListRow.From(invoice, string.Empty, false, _session).AmountsHidden;
         var lines = invoice.Lines
             .Where(line => !line.IsDeleted)
             .OrderBy(line => line.OrderIndex > 0 ? line.OrderIndex : int.MaxValue)
             .ThenBy(line => line.Id)
-            .Select(InvoiceLineEditModel.FromLocal)
+            .Select(line => InvoiceLineEditModel.FromLocal(line, hidden))
             .ToList();
         PreviewLines.ReplaceWith(lines);
-        PreviewSupplyAmount = invoice.SupplyAmount;
-        PreviewVatAmount = invoice.VatAmount;
-        PreviewTotalAmount = invoice.TotalAmount;
+        PreviewSupplyAmount = hidden ? 0m : invoice.SupplyAmount;
+        PreviewVatAmount = hidden ? 0m : invoice.VatAmount;
+        PreviewAmountsHidden = hidden;
+        PreviewTotalAmount = hidden ? 0m : invoice.TotalAmount;
 
         if (SelectedCustomer is null)
             await LoadCustomerInfoFromRowAsync(row, version);
@@ -585,10 +653,11 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject, I
 
     private async Task RefreshCustomerSummaryAsync(LocalCustomer? customer)
     {
+        var expectedAccess = FinancialAmountVisibility.CaptureAccess(_session);
         var version = Interlocked.Increment(ref _customerSummaryVersion);
         if (customer is null)
         {
-            if (version != Volatile.Read(ref _customerSummaryVersion))
+            if (version != Volatile.Read(ref _customerSummaryVersion) || expectedAccess != FinancialAmountVisibility.CaptureAccess(_session))
                 return;
 
             PreviewCustomerName = string.Empty;
@@ -623,7 +692,7 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject, I
             $"{summaryKey.ToOperationDetail()}, summaryCache={FormatCacheState(summaryCacheHit)}, invoiceCache={FormatCacheState(invoiceCacheHit)}, invoices={invoices.Count:N0}",
             infoThreshold: DetailedInvoiceTimingInfoThreshold,
             warningThreshold: DetailedInvoiceTimingWarningThreshold);
-        if (version != Volatile.Read(ref _customerSummaryVersion))
+        if (version != Volatile.Read(ref _customerSummaryVersion) || expectedAccess != FinancialAmountVisibility.CaptureAccess(_session))
             return;
 
         PreviewCustomerName = customer.NameOriginal;
@@ -663,7 +732,7 @@ public sealed partial class CustomerInvoiceLookupViewModel : ObservableObject, I
         var latestInvoice = rentalInvoices[0];
         PreviewLatestRentalInvoiceDateText = latestInvoice.InvoiceDate.ToString("yyyy/MM/dd");
         PreviewLatestRentalItemSummary = latestInvoice.FirstItemSummary;
-        PreviewLatestRentalInvoiceAmount = latestInvoice.TotalAmount;
-        PreviewRentalOutstandingAmount = rentalInvoices.Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.SettledAmount));
+        PreviewLatestRentalInvoiceAmount = latestInvoice.AmountsHidden ? null : latestInvoice.TotalAmount;
+        PreviewRentalOutstandingAmount = rentalInvoices.Any(invoice => invoice.AmountsHidden) ? null : rentalInvoices.Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.SettledAmount));
     }
 }

@@ -7,6 +7,10 @@ param(
     [string]$CommitMessage,
     [string]$Remote = 'origin',
     [string[]]$IncludeUntrackedPaths = @(),
+    [string[]]$IncludeTrackedPaths = @(),
+    [ValidateRange(0, 2147483647)][int]$KeepReleaseCount = 0,
+    [ValidateRange(1, 3600)][int]$ReleaseHealthTimeoutSeconds = 900,
+    [ValidateRange(1, 3600)][int]$RollbackHealthTimeoutSeconds = 900,
     [switch]$SkipLinuxPc,
     [switch]$SkipGit,
     [switch]$SkipPush,
@@ -262,7 +266,7 @@ function Normalize-StatusPath {
 function Get-StatusEntries {
     param([Parameter(Mandatory = $true)][string]$ProjectRoot)
 
-    $result = Invoke-Git -ProjectRoot $ProjectRoot -Arguments @('-c', 'core.quotepath=false', 'status', '--porcelain=v1')
+    $result = Invoke-Git -ProjectRoot $ProjectRoot -Arguments @('-c', 'core.quotepath=false', 'status', '--porcelain=v1', '--untracked-files=all', '--no-renames')
     $entries = New-Object System.Collections.Generic.List[object]
 
     foreach ($line in ($result.Output | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
@@ -383,6 +387,94 @@ function Get-CurrentBranch {
     return (Invoke-Git -ProjectRoot $ProjectRoot -Arguments @('rev-parse', '--abbrev-ref', 'HEAD')).Text.Trim()
 }
 
+function Get-ReleaseGitPlan {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [string[]]$IncludeTrackedPaths = @(),
+        [string[]]$IncludeUntrackedPaths = @()
+    )
+
+    # Never consume or reset an index prepared by the user or another operation.
+    if (Test-HasStagedChanges -ProjectRoot $ProjectRoot) {
+        throw '기존 staged 변경이 있어 자동 Git 반영을 중단합니다. index를 보존하며, 별도 검토한 깨끗한 작업 사본에서 진행하세요.'
+    }
+    $entries = @(Get-StatusEntries -ProjectRoot $ProjectRoot)
+    $trackedIncludes = @(Resolve-IncludePaths -ProjectRoot $ProjectRoot -Paths $IncludeTrackedPaths)
+    $untrackedIncludes = @(Resolve-IncludePaths -ProjectRoot $ProjectRoot -Paths $IncludeUntrackedPaths)
+    $untracked = Get-UntrackedEntriesToStage -ProjectRoot $ProjectRoot -Entries $entries -ResolvedIncludePaths $untrackedIncludes
+    if ($untracked.Blocked.Count -gt 0) {
+        throw '명시되지 않은 untracked 파일이 있습니다. 검토 후 IncludeUntrackedPaths로 지정하세요.'
+    }
+    $paths = New-Object System.Collections.Generic.List[string]
+    $records = New-Object System.Collections.Generic.List[string]
+    foreach ($entry in ($entries | Sort-Object Path)) {
+        if ($entry.Path -match '[\x00-\x1f]' -or $entry.Path.Contains('"')) {
+            throw '자동 반영에서 지원하지 않는 파일명입니다. 별도 작업 사본에서 검토하세요.'
+        }
+        $fullPath = [IO.Path]::GetFullPath((Join-Path $ProjectRoot $entry.Path))
+        if (-not (Test-PathInsideRoot -CandidatePath $fullPath -RootPath $ProjectRoot)) {
+            throw 'Git 상태 경로가 저장소 경계를 벗어났습니다.'
+        }
+        if (-not $entry.IsUntracked) {
+            $approved = @($trackedIncludes | Where-Object {
+                [string]::Equals($_.FullPath, $fullPath, [StringComparison]::OrdinalIgnoreCase)
+            }).Count -gt 0
+            if (-not $approved) {
+                throw "tracked 파일을 개별 검토 후 IncludeTrackedPaths로 명시하세요: $($entry.Path)"
+            }
+        }
+        $hash = if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
+            Get-ReleaseFileSha256 -Path $fullPath
+        } elseif ($entry.Status -eq ' D') {
+            'deleted'
+        } else {
+            throw "일반 파일 또는 명시적인 삭제가 아닙니다: $($entry.Path)"
+        }
+        $paths.Add($entry.Path)
+        $records.Add($entry.Status + '|' + $entry.Path + '|' + $hash)
+    }
+    $records.Insert(0, (Get-CurrentCommit -ProjectRoot $ProjectRoot))
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $fingerprint = [BitConverter]::ToString($sha.ComputeHash(
+            [Text.Encoding]::UTF8.GetBytes(($records -join "`n")))).Replace('-', '')
+    } finally { $sha.Dispose() }
+    return [pscustomobject]@{ Paths = @($paths.ToArray()); Fingerprint = $fingerprint }
+}
+
+function Get-ReleaseFileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $stream = [IO.File]::OpenRead($Path)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
+    finally { $stream.Dispose(); $sha.Dispose() }
+}
+
+function Add-ReleaseGitPlan {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)]$Plan,
+        [string[]]$IncludeTrackedPaths = @(),
+        [string[]]$IncludeUntrackedPaths = @()
+    )
+    $current = Get-ReleaseGitPlan -ProjectRoot $ProjectRoot -IncludeTrackedPaths $IncludeTrackedPaths -IncludeUntrackedPaths $IncludeUntrackedPaths
+    if ($current.Fingerprint -cne $Plan.Fingerprint) {
+        throw '사전 점검 후 HEAD/파일/상태가 변경되어 Git 반영을 중단합니다. 다시 검토하세요.'
+    }
+    foreach ($path in $Plan.Paths) {
+        Invoke-Git -ProjectRoot $ProjectRoot -Arguments @('--literal-pathspecs', 'add', '--', $path) | Out-Null
+    }
+    $after = @(Get-StatusEntries -ProjectRoot $ProjectRoot)
+    foreach ($entry in $after) {
+        if ($entry.IsUntracked -or $entry.Status[1] -ne ' ' -or $Plan.Paths -cnotcontains $entry.Path) {
+            throw 'stage 중 예상하지 않은 변경이 생겼습니다. 커밋하지 않고 index를 보존합니다.'
+        }
+    }
+    if ($after.Count -ne $Plan.Paths.Count) {
+        throw '예상한 파일과 실제 staged 파일 수가 다릅니다. 커밋하지 않고 index를 보존합니다.'
+    }
+}
+
 function Get-CurrentCommit {
     param([Parameter(Mandatory = $true)][string]$ProjectRoot)
     return (Invoke-Git -ProjectRoot $ProjectRoot -Arguments @('rev-parse', 'HEAD')).Text.Trim()
@@ -464,6 +556,9 @@ $statusEntries = @(Get-StatusEntries -ProjectRoot $ProjectRoot)
 $trackedEntries = @($statusEntries | Where-Object { -not $_.IsUntracked })
 $resolvedIncludePaths = @(Resolve-IncludePaths -ProjectRoot $ProjectRoot -Paths $IncludeUntrackedPaths)
 $untrackedResolution = Get-UntrackedEntriesToStage -ProjectRoot $ProjectRoot -Entries $statusEntries -ResolvedIncludePaths $resolvedIncludePaths
+$releaseGitPlan = if (-not $SkipGit) {
+    Get-ReleaseGitPlan -ProjectRoot $ProjectRoot -IncludeTrackedPaths $IncludeTrackedPaths -IncludeUntrackedPaths $IncludeUntrackedPaths
+} else { $null }
 
 if (-not $SkipGit -and $untrackedResolution.Blocked.Count -gt 0) {
     $blockedPaths = ($untrackedResolution.Blocked | ForEach-Object { '- ' + $_.Path }) -join [Environment]::NewLine
@@ -580,15 +675,8 @@ if (-not $SkipGit) {
         }
     }
 
-    if ($trackedEntries.Count -gt 0) {
-        Write-Info 'tracked 변경 파일을 stage 합니다.'
-        Invoke-Git -ProjectRoot $ProjectRoot -Arguments @('add', '-u') | Out-Null
-    }
-
-    foreach ($includePath in $resolvedIncludePaths) {
-        Write-Info "untracked 경로를 stage 합니다: $($includePath.GitPath)"
-        Invoke-Git -ProjectRoot $ProjectRoot -Arguments @('add', '--', $includePath.GitPath) | Out-Null
-    }
+    Write-Info '검토한 파일 내용과 경로를 다시 확인한 뒤 개별 stage 합니다.'
+    Add-ReleaseGitPlan -ProjectRoot $ProjectRoot -Plan $releaseGitPlan -IncludeTrackedPaths $IncludeTrackedPaths -IncludeUntrackedPaths $IncludeUntrackedPaths
 
     if (Test-HasStagedChanges -ProjectRoot $ProjectRoot) {
         Write-Info 'Git 커밋을 생성합니다.'
@@ -609,6 +697,9 @@ if (-not $SkipLinuxPc) {
     Invoke-PowerShellFile -FilePath $buildInstallerScript -Arguments @('-ProjectRoot', $ProjectRoot)
 
     $linuxArgs = @('-ProjectRoot', $ProjectRoot, '-MirrorToLive')
+    $linuxArgs += @('-KeepReleaseCount', $KeepReleaseCount.ToString([Globalization.CultureInfo]::InvariantCulture))
+    $linuxArgs += @('-ReleaseHealthTimeoutSeconds', $ReleaseHealthTimeoutSeconds.ToString([Globalization.CultureInfo]::InvariantCulture))
+    $linuxArgs += @('-RollbackHealthTimeoutSeconds', $RollbackHealthTimeoutSeconds.ToString([Globalization.CultureInfo]::InvariantCulture))
     $linuxArgs +=
         New-LinuxPublisherCompatibilityArguments `
             -ExpectedClientCompatibilityMode `

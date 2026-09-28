@@ -34,6 +34,13 @@ internal sealed record MobileImmediatePaymentSaveResult(
             MobileImmediateMutationOutcome.Unknown or
             MobileImmediateMutationOutcome.Rejected;
 
+    public bool RequiresSaveAcknowledgement =>
+        CanInvokeSuccessCallback &&
+        (!PaymentAccepted ||
+         LinkedTransactionNeedsRecovery ||
+         State.PendingPaymentAttachmentCount > 0 ||
+         !string.IsNullOrWhiteSpace(State.LastError));
+
     public string BuildStatusMessage(
         string paymentActionText)
     {

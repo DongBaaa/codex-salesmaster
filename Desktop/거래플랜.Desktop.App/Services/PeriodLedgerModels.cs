@@ -1,4 +1,4 @@
-﻿using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Data;
 
 namespace 거래플랜.Desktop.App.Services;
 
@@ -25,7 +25,7 @@ public enum PeriodLedgerMemoSource
     Transaction = 3
 }
 
-public sealed class PeriodLedgerQuery
+public sealed record PeriodLedgerQuery
 {
     public DateOnly From { get; init; }
     public DateOnly To { get; init; }
@@ -37,7 +37,7 @@ public sealed class PeriodLedgerQuery
     public string SearchText { get; init; } = string.Empty;
 }
 
-public sealed class PeriodLedgerBuildResult
+public sealed record PeriodLedgerBuildResult
 {
     public required PeriodLedgerQuery Query { get; init; }
     public required string Title { get; init; }
@@ -47,34 +47,38 @@ public sealed class PeriodLedgerBuildResult
     public required IReadOnlyList<PeriodLedgerYeonsuDeliveryRow> YeonsuDeliveryRows { get; init; }
     public required IReadOnlyList<PeriodLedgerMonthlySalesChartPoint> MonthlySalesChartPoints { get; init; }
     public required PeriodLedgerTotals Totals { get; init; }
+    internal SessionState? AccessSession { get; init; }
+    internal FinancialAmountVisibility.AccessKey AccessKey { get; init; }
+    public bool ProfitAmountsHidden { get; init; }
+    internal bool IsAccessCurrent => AccessSession is null || AccessKey == FinancialAmountVisibility.CaptureAccess(AccessSession);
     public string? ProfitWarningMessage { get; init; }
 }
 
-public sealed class PeriodLedgerMonthlySalesChartPoint
+public sealed record PeriodLedgerMonthlySalesChartPoint
 {
     public required DateOnly Month { get; init; }
     public required string MonthLabel { get; init; }
-    public decimal SalesAmount { get; init; }
+    public decimal? SalesAmount { get; init; } = 0m;
     public required string SalesAmountText { get; init; }
     public double BarHeight { get; init; }
     public bool IsCurrentMonth { get; init; }
 }
 
-public sealed class PeriodLedgerYeonsuDeliveryRow
+public sealed record PeriodLedgerYeonsuDeliveryRow
 {
     public Guid InvoiceId { get; init; }
     public int No { get; init; }
     public required DateOnly DeliveryDate { get; init; }
     public required string CustomerName { get; init; }
     public required string ItemSummary { get; init; }
-    public decimal TotalAmount { get; init; }
+    public decimal? TotalAmount { get; init; } = 0m;
     public required string WarehouseName { get; init; }
     public required string Note { get; init; }
     public required string LastSavedBy { get; init; }
     public DateTime LastSavedAtUtc { get; init; }
 }
 
-public sealed class PeriodLedgerCustomerBlock
+public sealed record PeriodLedgerCustomerBlock
 {
     public required Guid CustomerId { get; init; }
     public required string CustomerName { get; init; }
@@ -83,16 +87,16 @@ public sealed class PeriodLedgerCustomerBlock
     public DateOnly? LatestDate { get; init; }
 }
 
-public sealed class PeriodLedgerRow
+public sealed record PeriodLedgerRow
 {
     public required DateOnly Date { get; init; }
     public required string Division { get; init; }
     public required string Summary { get; init; }
-    public decimal TradeAmount { get; init; }
-    public decimal ReceiptAmount { get; init; }
-    public decimal PaymentAmount { get; init; }
-    public decimal RunningBalance { get; init; }
-    public decimal ReceivableBalance { get; init; }
+    public decimal? TradeAmount { get; init; } = 0m;
+    public decimal? ReceiptAmount { get; init; } = 0m;
+    public decimal? PaymentAmount { get; init; } = 0m;
+    public decimal? RunningBalance { get; init; } = 0m;
+    public decimal? ReceivableBalance { get; init; } = 0m;
     public decimal? ProfitAmount { get; init; }
     public required string Note { get; init; }
     public bool IsInvoiceSummary { get; init; }
@@ -107,30 +111,31 @@ public sealed class PeriodLedgerRow
     public required IReadOnlyList<PeriodLedgerItemRow> Items { get; init; }
 }
 
-public sealed class PeriodLedgerItemRow
+public sealed record PeriodLedgerItemRow
 {
     public Guid LineId { get; init; }
     public required string ItemName { get; init; }
     public required string Specification { get; init; }
     public decimal Quantity { get; init; }
-    public decimal UnitPrice { get; init; }
-    public decimal SupplyAmount => LineAmount - VatAmount;
-    public decimal LineAmount { get; init; }
-    public decimal VatAmount { get; init; }
+    public decimal? UnitPrice { get; init; } = 0m;
+    public decimal? SupplyAmount => LineAmount - VatAmount;
+    public decimal? LineAmount { get; init; } = 0m;
+    public decimal? VatAmount { get; init; } = 0m;
     public required string ItemNote { get; init; }
 }
 
-public sealed class PeriodLedgerPaymentRow
+public sealed record PeriodLedgerPaymentRow
 {
+    public Guid CustomerId { get; init; }
     public int No { get; init; }
     public required DateOnly Date { get; init; }
     public required string Division { get; init; }
     public required string Summary { get; init; }
-    public decimal TradeAmount { get; init; }
-    public decimal ReceiptAmount { get; init; }
-    public decimal PaymentAmount { get; init; }
-    public decimal RunningBalance { get; init; }
-    public decimal ReceivableBalance { get; init; }
+    public decimal? TradeAmount { get; init; } = 0m;
+    public decimal? ReceiptAmount { get; init; } = 0m;
+    public decimal? PaymentAmount { get; init; } = 0m;
+    public decimal? RunningBalance { get; init; } = 0m;
+    public decimal? ReceivableBalance { get; init; } = 0m;
     public required string CustomerName { get; init; }
     public required string Note { get; init; }
     public Guid? InvoiceId { get; init; }
@@ -139,13 +144,13 @@ public sealed class PeriodLedgerPaymentRow
     public PeriodLedgerMemoSource MemoSource { get; init; } = PeriodLedgerMemoSource.None;
 }
 
-public sealed class PeriodLedgerTotals
+public sealed record PeriodLedgerTotals
 {
-    public decimal TradeAmount { get; init; }
-    public decimal ReceiptAmount { get; init; }
-    public decimal PaymentAmount { get; init; }
-    public decimal RunningBalance { get; init; }
-    public decimal ReceivableBalance { get; init; }
+    public decimal? TradeAmount { get; init; } = 0m;
+    public decimal? ReceiptAmount { get; init; } = 0m;
+    public decimal? PaymentAmount { get; init; } = 0m;
+    public decimal? RunningBalance { get; init; } = 0m;
+    public decimal? ReceivableBalance { get; init; } = 0m;
     public decimal? ProfitAmount { get; init; }
 }
 

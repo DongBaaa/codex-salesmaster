@@ -30,7 +30,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     private bool _refreshingWarehouseOptions;
     private readonly Dictionary<Guid, string> _categoryNameMap = new();
     private readonly Dictionary<string, string> _priceGradeSourceMap = new(StringComparer.CurrentCultureIgnoreCase);
-    private readonly Dictionary<Guid, Dictionary<string, decimal>> _itemPriceGradeByItemId = new();
+    private readonly Dictionary<Guid, Dictionary<string, decimal?>> _itemPriceGradeByItemId = new();
     private readonly Dictionary<string, (bool AllowsSales, bool AllowsPurchase)> _tradeTypeRuleMap = new(StringComparer.CurrentCultureIgnoreCase);
     private readonly Dictionary<Guid, decimal> _customerPurchasePriceByItem = new();
     private static readonly JsonSerializerOptions PrintModelJsonOptions = new(JsonSerializerDefaults.Web);
@@ -59,8 +59,8 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CustomerNoteDisplayText))]
     private string _customerNote = string.Empty;
-    [ObservableProperty] private decimal _customerBalance;   // 총미수금/미지불
-    [ObservableProperty] private decimal _customerAdvanceBalance;
+    [ObservableProperty] private decimal? _customerBalance;   // 총미수금/미지불
+    [ObservableProperty] private decimal? _customerAdvanceBalance;
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(TaxInvoiceNumberDisplay))]
     private bool _taxInvoiceIssued;
@@ -98,7 +98,11 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     public Guid EditSessionInvoiceId
     {
         get => _editSessionInvoiceId;
-        private set => SetProperty(ref _editSessionInvoiceId, value);
+        private set
+        {
+            if (SetProperty(ref _editSessionInvoiceId, value))
+                OnPropertyChanged(nameof(LastSavedSummary));
+        }
     }
     [ObservableProperty] private DateOnly _workDate = DateOnly.FromDateTime(DateTime.Today);
     [ObservableProperty] private string _invoiceMemo = string.Empty;
@@ -165,6 +169,12 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     [NotifyCanExecuteChangedFor(nameof(MoveLineDownCommand))]
     private InvoiceLineEditModel? _selectedLine;
 
+    private bool _loadedAmountsHidden;
+    public bool AmountsHidden => !CanViewInvoiceAmounts || _loadedAmountsHidden || Lines.Any(line => line.EffectiveAmountsHidden);
+    public string TotalAmountDisplay => AmountsHidden ? "비공개" : TotalAmount.ToString("N0");
+    public string SupplyAmountDisplay => AmountsHidden ? "비공개" : SupplyAmount.ToString("N0");
+    public string VatAmountDisplay => AmountsHidden ? "비공개" : VatAmount.ToString("N0");
+
     // 합계
     [ObservableProperty] private decimal _totalAmount;
     [ObservableProperty] private decimal _supplyAmount;
@@ -185,8 +195,17 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
     // 상태
     [ObservableProperty] private string _statusMessage = string.Empty;
-    [ObservableProperty] private string _lastSavedBy = string.Empty;
-    [ObservableProperty] private string _lastSavedAtDisplay = string.Empty;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(LastSavedSummary))]
+    private string _lastSavedBy = string.Empty;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(LastSavedSummary))]
+    private string _lastSavedAtDisplay = string.Empty;
+
+    public string LastSavedSummary =>
+        EditSessionInvoiceId == Guid.Empty && string.IsNullOrWhiteSpace(LastSavedBy) && string.IsNullOrWhiteSpace(LastSavedAtDisplay)
+            ? "아직 저장되지 않은 전표"
+            : $"저장자: {(string.IsNullOrWhiteSpace(LastSavedBy) ? "기록 없음" : LastSavedBy)} · 저장 시각: {(string.IsNullOrWhiteSpace(LastSavedAtDisplay) ? "기록 없음" : LastSavedAtDisplay)}";
     [ObservableProperty] private string _versionDisplay = "v1";
     [ObservableProperty] private string _currentConcurrencyStamp = string.Empty;
     [ObservableProperty] private string _paymentSummaryContextText = "전표를 저장하면 수금/지급 요약이 표시됩니다.";
@@ -304,6 +323,12 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         _print = print;
         _invoicePrintService = invoicePrintService;
         _session = session;
+        _editorSessionId = session.SessionId;
+        _editorUserId = session.User?.UserId;
+        _editorDatabase = session.SelectedBusinessDatabaseName;
+        _editorOffice = session.OfficeCode;
+        _financialAccess = FinancialAmountVisibility.CaptureAccess(session);
+        _session.AccessChanged += SessionAccessChanged;
         _newInvoiceVoucherType = newInvoiceVoucherType;
         VoucherType = newInvoiceVoucherType;
         Lines.CollectionChanged += Lines_CollectionChanged;
@@ -317,6 +342,10 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             return;
 
         _disposed = true;
+        Interlocked.Increment(ref _customerPurchasePriceLoadVersion);
+        _customerPurchasePriceByItem.Clear();
+        _customerPurchasePriceCustomerId = null;
+        _session.AccessChanged -= SessionAccessChanged;
         if (_local is not null)
             _local.InventoryStateChanged -= LocalInventoryStateChanged;
         Lines.CollectionChanged -= Lines_CollectionChanged;
@@ -384,8 +413,14 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         {
             var refreshedSelectedItem = FindItemById(selectedItemId.Value);
             if (refreshedSelectedItem is not null)
-                SelectedInputItem = refreshedSelectedItem;
+            {
+                SetInputItemWithoutRepricing(refreshedSelectedItem);
+            }
+            else if (_inputUsesCatalogPrice)
+                _inputAmountsHidden = true;
         }
+
+        RefreshInputCatalogAvailability();
 
         RefreshItemSearch();
     }
@@ -401,7 +436,10 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         if (e.NewItems is not null)
         {
             foreach (InvoiceLineEditModel line in e.NewItems)
+            {
+                line.SetAmountAccess(() => CanViewInvoiceAmounts && !_loadedAmountsHidden);
                 line.PropertyChanged += Line_PropertyChanged;
+            }
         }
 
         RenumberLines();
@@ -526,6 +564,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     public void NewInvoice()
     {
         EditSessionInvoiceId = Guid.Empty;
+        _loadedAmountsHidden = false;
         InvoiceId = Guid.NewGuid();
         SelectedCustomer = null;
         CustomerName = string.Empty;
@@ -613,8 +652,11 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
     private async Task RefreshCustomerPurchasePriceCacheAsync(Guid customerId, int version)
     {
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
+        if (_disposed || !IsEditorOwnerCurrent) return;
         var prices = await _local.GetLatestPurchasePriceByItemForCustomerAsync(customerId, _session);
-        if (version != Volatile.Read(ref _customerPurchasePriceLoadVersion))
+        if (_disposed || !IsEditorOwnerCurrent || access != FinancialAmountVisibility.CaptureAccess(_session)
+            || version != Volatile.Read(ref _customerPurchasePriceLoadVersion))
             return;
 
         _customerPurchasePriceByItem.Clear();
@@ -629,6 +671,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
     partial void OnVoucherTypeChanged(VoucherType value)
     {
+        RefreshAmountAccess();
         OnPropertyChanged(nameof(ShowPaymentAction));
         OnPropertyChanged(nameof(PaymentActionButtonText));
         OnPropertyChanged(nameof(PaymentSummaryTitleText));
@@ -742,10 +785,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
     public async Task ReloadItemsAsync()
     {
-        _allItems = await _local.GetItemsAsync(_session);
-        _itemWarehouseStocks = await _local.GetItemWarehouseStocksAsync();
-        await RefreshItemPriceGradeCacheAsync();
-        RefreshItemSearch();
+        await RefreshItemsAfterInventoryChangedAsync(Interlocked.Increment(ref _inventoryReloadVersion));
     }
 
     public Task RefreshPaymentSummaryAsync()
@@ -767,9 +807,10 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
     private async Task RefreshPaymentSummaryAsync(int version)
     {
+        var expectedAccess = FinancialAmountVisibility.CaptureAccess(_session);
         if (SelectedCustomer is null)
         {
-            if (!IsCurrentPaymentSummaryLoad(version))
+            if (!IsCurrentPaymentSummaryLoad(version) || expectedAccess != FinancialAmountVisibility.CaptureAccess(_session))
                 return;
 
             ResetPaymentSummary();
@@ -778,7 +819,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
         var selectedCustomer = SelectedCustomer;
         var financialSummary = await _local.GetCustomerFinancialSummaryAsync(selectedCustomer.Id, _session);
-        if (!IsCurrentPaymentSummaryLoad(version))
+        if (!IsCurrentPaymentSummaryLoad(version) || expectedAccess != FinancialAmountVisibility.CaptureAccess(_session))
             return;
 
         var reserveBalance = IsPurchaseDocument ? financialSummary.PrepaidAmount : financialSummary.AdvanceBalance;
@@ -786,10 +827,10 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         CustomerBalance = IsPurchaseDocument
             ? financialSummary.PayableAmount
             : financialSummary.ReceivableAmount;
-        PaymentSummaryAdvanceText = $"{CustomerReserveLabelText} 잔액 {reserveBalance:N0}";
+        PaymentSummaryAdvanceText = $"{CustomerReserveLabelText} 잔액 {CustomerAdvanceBalanceDisplay}";
 
         var invoice = await _local.GetInvoiceAsync(InvoiceId, _session);
-        if (!IsCurrentPaymentSummaryLoad(version))
+        if (!IsCurrentPaymentSummaryLoad(version) || expectedAccess != FinancialAmountVisibility.CaptureAccess(_session))
             return;
 
         if (invoice is null)
@@ -800,8 +841,15 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             return;
         }
 
+        if (AmountsHidden || invoice.AmountsHidden || invoice.Lines.Any(line => !line.IsDeleted && line.AmountsHidden)
+            || invoice.Payments.Any(payment => !payment.IsDeleted && payment.AmountsHidden))
+        {
+            PaymentSummaryContextText = "전표금액 비공개";
+            PaymentSummaryDetailText = "수금/지급 누계 및 잔액 비공개";
+            return;
+        }
         var summary = GetInvoiceSettlementSummary(invoice);
-        if (!IsCurrentPaymentSummaryLoad(version))
+        if (!IsCurrentPaymentSummaryLoad(version) || expectedAccess != FinancialAmountVisibility.CaptureAccess(_session))
             return;
 
         var displayNumber = string.IsNullOrWhiteSpace(invoice.InvoiceNumber)
@@ -889,8 +937,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         InputSpec = item.SpecificationOriginal;
         InputUnit = item.Unit;
         InputMaterialNo = item.MaterialNumber;
-        InputUnitPrice = ResolveUnitPrice(item);
-        RecalcInputAmount();
+        ApplyInputCatalogPrice(item);
     }
 
     private LocalItem? FindItemById(Guid? itemId)
@@ -1017,10 +1064,17 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
     // 라인 입력
     partial void OnInputQtyChanged(decimal value) => RecalcInputAmount();
-    partial void OnInputUnitPriceChanged(decimal value) => RecalcInputAmount();
+    partial void OnInputUnitPriceChanged(decimal value)
+    {
+        RecalcInputAmount();
+        OnPropertyChanged(nameof(EditableInputUnitPrice));
+    }
+    partial void OnInputLineAmountChanged(decimal value) => OnPropertyChanged(nameof(EditableInputLineAmount));
+    partial void OnCustomerBalanceChanged(decimal? value) => OnPropertyChanged(nameof(CustomerBalanceDisplay));
+    partial void OnCustomerAdvanceBalanceChanged(decimal? value) => OnPropertyChanged(nameof(CustomerAdvanceBalanceDisplay));
     private void RecalcInputAmount()
     {
-        if (_suppressInputAmountSync)
+        if (_suppressInputAmountSync || !CanEditInputAmounts)
             return;
 
         _suppressInputAmountSync = true;
@@ -1036,13 +1090,12 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
     partial void OnSelectedInputItemChanged(LocalItem? value)
     {
-        if (value is null) return;
+        if (value is null || _suppressInputItemSelection) return;
         InputItemName = value.NameOriginal;
         InputSpec = value.SpecificationOriginal;
         InputUnit = value.Unit;
         InputMaterialNo = value.MaterialNumber;
-        InputUnitPrice = ResolveUnitPrice(value);
-        RecalcInputAmount();
+        ApplyInputCatalogPrice(value);
     }
 
     partial void OnCustomerPriceGradeChanged(string value)
@@ -1050,11 +1103,10 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
     private void RepriceCurrentInputItemForCustomerGrade()
     {
-        if (IsPurchaseLikeDocument || SelectedInputItem is null)
+        if (IsPurchaseLikeDocument || SelectedInputItem is null || (SelectedLine is not null && !_inputUsesCatalogPrice))
             return;
 
-        InputUnitPrice = ResolveUnitPrice(SelectedInputItem);
-        RecalcInputAmount();
+        ApplyInputCatalogPrice(SelectedInputItem);
     }
 
     partial void OnSelectedResponsibleOfficeCodeChanged(string value)
@@ -1153,16 +1205,16 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
                 .GroupBy(row => (row.PriceGradeName ?? string.Empty).Trim(), StringComparer.CurrentCultureIgnoreCase)
                 .ToDictionary(
                     groupByName => groupByName.Key,
-                    groupByName => groupByName.Last().UnitPrice,
+                    groupByName => groupByName.Last().AmountsHidden ? (decimal?)null : groupByName.Last().UnitPrice,
                     StringComparer.CurrentCultureIgnoreCase);
         }
     }
 
-    private decimal ResolveUnitPrice(LocalItem item)
+    private decimal? ResolveUnitPrice(LocalItem item)
     {
         if (IsPurchaseLikeDocument)
         {
-            if (SelectedCustomer is not null &&
+            if (IsEditorOwnerCurrent && _session.HasPermission(AppPermissionNames.AmountViewPurchase) && SelectedCustomer is not null &&
                 _customerPurchasePriceCustomerId == SelectedCustomer.Id &&
                 _customerPurchasePriceByItem.TryGetValue(item.Id, out var vendorPrice) &&
                 vendorPrice > 0m)
@@ -1170,17 +1222,21 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
                 return vendorPrice;
             }
 
+            if (item.PurchaseAmountsHidden) return null;
             if (item.PurchasePrice > 0) return item.PurchasePrice;
+            // A purchase fallback must not reveal a protected sales price.
+            if (item.SalesAmountsHidden || !CanViewCatalogSalesAmounts) return null;
             if (item.SalePrice > 0) return item.SalePrice;
             if (item.RetailPrice > 0) return item.RetailPrice;
             return 0;
         }
 
+        if (item.SalesAmountsHidden) return null;
         var grade = (CustomerPriceGrade ?? string.Empty).Trim();
         if (!string.IsNullOrWhiteSpace(grade) &&
             _itemPriceGradeByItemId.TryGetValue(item.Id, out var itemGradePrices) &&
             itemGradePrices.TryGetValue(grade, out var customGradePrice) &&
-            customGradePrice > 0m)
+            (!customGradePrice.HasValue || customGradePrice > 0m))
         {
             return customGradePrice;
         }
@@ -1221,8 +1277,10 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     {
         if (string.IsNullOrWhiteSpace(InputItemName)) return;
         var resolvedItem = SelectedInputItem ?? TryResolveLinkedItemFromInput(InputItemName, InputSpec, InputMaterialNo, InputSerialNumber);
+        var amountsHidden = !CanEditInputAmounts || (resolvedItem is not null && !ResolveUnitPrice(resolvedItem).HasValue);
         var line = new InvoiceLineEditModel
         {
+            AmountsHidden = amountsHidden,
             ItemId = resolvedItem?.Id,
             ItemTrackingType = resolvedItem is null
                 ? ItemTrackingTypes.NonStock
@@ -1231,8 +1289,8 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             Specification = InputSpec,
             Unit = InputUnit,
             Quantity = InputQty,
-            UnitPrice = InputUnitPrice,
-            LineAmount = InputLineAmount,
+            UnitPrice = amountsHidden ? 0m : InputUnitPrice,
+            LineAmount = amountsHidden ? 0m : InputLineAmount,
             Remark = InputRemark,
             SerialNumber = InputSerialNumber,
             MaterialNumber = InputMaterialNo,
@@ -1257,6 +1315,11 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
             return;
         }
 
+        // Changing to a catalog item without a disclosed price cannot retain the
+        // old item's money. A known existing invoice line keeps its own price.
+        var itemChanged = SelectedLine.ItemId != resolvedItem?.Id && !keepExistingLink;
+        if (_inputAmountsHidden || (itemChanged && resolvedItem is not null && !ResolveUnitPrice(resolvedItem).HasValue))
+            SelectedLine.AmountsHidden = true;
         SelectedLine.ItemId = keepExistingLink
             ? SelectedLine.ItemId
             : resolvedItem?.Id;
@@ -1271,8 +1334,11 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         SelectedLine.Specification = InputSpec;
         SelectedLine.Unit = InputUnit;
         SelectedLine.Quantity = InputQty;
-        SelectedLine.UnitPrice = InputUnitPrice;
-        SelectedLine.LineAmount = InputLineAmount;
+        if (CanEditInputAmounts && SelectedLine.CanEditAmounts)
+        {
+            SelectedLine.UnitPrice = InputUnitPrice;
+            SelectedLine.LineAmount = InputLineAmount;
+        }
         SelectedLine.Remark = InputRemark;
         SelectedLine.SerialNumber = InputSerialNumber;
         SelectedLine.MaterialNumber = InputMaterialNo;
@@ -1326,6 +1392,11 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     partial void OnSelectedLineChanged(InvoiceLineEditModel? value)
     {
         if (value is null) return;
+        // Selecting a persisted line restores its own disclosed amount, not the
+        // current catalog price or a stale selection from another input row.
+        SetInputItemWithoutRepricing(FindItemById(value.ItemId));
+        _inputAmountsHidden = value.EffectiveAmountsHidden;
+        _inputUsesCatalogPrice = false;
         InputItemName = value.ItemName;
         InputSpec = value.Specification;
         InputUnit = value.Unit;
@@ -1335,6 +1406,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         InputRemark = value.Remark;
         InputSerialNumber = value.SerialNumber;
         InputMaterialNo = value.MaterialNumber;
+        NotifyInputAmountAccess();
     }
 
     private void ClearLineInput()
@@ -1343,14 +1415,27 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         InputQty = 1;
         InputUnitPrice = InputLineAmount = 0;
         SelectedInputItem = null;
+        _inputAmountsHidden = false;
+        _inputUsesCatalogPrice = false;
+        NotifyInputAmountAccess();
     }
 
     public void RecalcTotals()
     {
-        var totals = CalculateTotals(Lines.Select(l => l.LineAmount), IsVatNone);
+        var totals = AmountsHidden ? (SupplyAmount: 0m, VatAmount: 0m, TotalAmount: 0m)
+            : CalculateTotals(Lines.Select(l => l.LineAmount), IsVatNone);
         SupplyAmount = totals.SupplyAmount;
         VatAmount = totals.VatAmount;
         TotalAmount = totals.TotalAmount;
+        OnPropertyChanged(nameof(AmountsHidden));
+        OnPropertyChanged(nameof(CanEditInputAmounts));
+        OnPropertyChanged(nameof(EditableInputUnitPrice));
+        OnPropertyChanged(nameof(EditableInputLineAmount));
+        OnPropertyChanged(nameof(CustomerBalanceDisplay));
+        OnPropertyChanged(nameof(CustomerAdvanceBalanceDisplay));
+        OnPropertyChanged(nameof(TotalAmountDisplay));
+        OnPropertyChanged(nameof(SupplyAmountDisplay));
+        OnPropertyChanged(nameof(VatAmountDisplay));
     }
 
     private static (decimal SupplyAmount, decimal VatAmount, decimal TotalAmount) CalculateTotals(
@@ -1544,7 +1629,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         {
             foreach (var line in GetActiveLinesInOrder(invoice.Lines))
             {
-                Lines.Add(InvoiceLineEditModel.FromLocal(line));
+                Lines.Add(InvoiceLineEditModel.FromLocal(line, invoice.AmountsHidden));
             }
         }
 
@@ -1713,6 +1798,11 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         bool waitForServerWrite = true)
     {
         _lastSaveWasConcurrencyConflict = false;
+        if (!IsEditorOwnerCurrent)
+        {
+            StatusMessage = "로그인 계정 또는 업체/지점이 변경되었습니다. 전표창을 다시 열어 주세요.";
+            return false;
+        }
 
         if (SelectedCustomer is null)
         {
@@ -1739,6 +1829,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         var inv = new LocalInvoice
         {
             Id = InvoiceId,
+            AmountsHidden = AmountsHidden,
             CustomerId = SelectedCustomer.Id,
             InvoiceDate = WorkDate,
             VoucherType = VoucherType,
@@ -1801,6 +1892,11 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
         }
 
         _lastSaveWasConcurrencyConflict = false;
+        if (!IsEditorOwnerCurrent)
+        {
+            StatusMessage = "로그인 계정 또는 업체/지점이 변경되었습니다. 전표창을 다시 열어 주세요.";
+            return false;
+        }
         LastAutoSaveFailureMessage = string.Empty;
         var savedInvoice = await _local.GetInvoiceAsync(saveResult.SavedInvoiceId, _session);
         if (savedInvoice is not null)
@@ -1850,6 +1946,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
     public async Task LoadInvoiceAsync(LocalInvoice inv)
     {
         EditSessionInvoiceId = Guid.Empty;
+        _loadedAmountsHidden = inv.AmountsHidden || inv.Payments.Any(payment => !payment.IsDeleted && payment.AmountsHidden);
         InvoiceId = inv.Id;
         WorkDate = inv.InvoiceDate;
         VoucherType = inv.VoucherType;
@@ -1911,7 +2008,7 @@ public sealed partial class SalesViewModel : ObservableObject, IDisposable
 
         Lines.Clear();
         foreach (var line in GetActiveLinesInOrder(inv.Lines))
-            Lines.Add(InvoiceLineEditModel.FromLocal(line));
+            Lines.Add(InvoiceLineEditModel.FromLocal(line, _loadedAmountsHidden));
         RecalcTotals();
         await LoadInvoiceVersionsAsync(inv, Interlocked.Increment(ref _invoiceVersionLoadVersion));
         StatusMessage = VoucherType switch

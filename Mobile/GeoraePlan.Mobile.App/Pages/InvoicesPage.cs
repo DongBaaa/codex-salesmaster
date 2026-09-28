@@ -195,7 +195,7 @@ public sealed class InvoicesPage : ContentPage
 
                 var amountLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 amountLabel.LineHeight = 1.0;
-                amountLabel.SetBinding(Label.TextProperty, new Binding(nameof(PaymentDto.Amount), stringFormat: "{0:N0}원"));
+                amountLabel.SetBinding(Label.TextProperty, new Binding(nameof(PaymentDto.Amount), stringFormat: "{0:N0}원") { TargetNullValue = "비공개" });
 
                 var noteLabel = GeoraePlanTheme.CreateBodyText(string.Empty, true, 11);
                 noteLabel.LineHeight = 1.0;

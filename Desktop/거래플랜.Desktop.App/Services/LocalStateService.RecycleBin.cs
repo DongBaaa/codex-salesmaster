@@ -144,6 +144,7 @@ public sealed partial class LocalStateService
         SessionState session,
         CancellationToken ct = default)
     {
+        var amountAccess = FinancialAmountVisibility.CaptureAccess(session);
         var entries = new List<RecycleBinEntry>();
 
         var deletedCustomers = await ApplyCustomerScope(
@@ -199,7 +200,9 @@ public sealed partial class LocalStateService
                 item.Notes),
             DeletedAtUtc = item.UpdatedAtUtc,
             Revision = item.Revision
-        }));
+        }.ProtectAmounts(session, amountAccess, amountAccess.Sales && !item.SalesAmountsHidden,
+            hiddenDetail: JoinSegments(item.CurrentStock != 0m ? $"현재고 {item.CurrentStock:N0}" : null,
+                "매출단가 비공개", item.Notes))));
 
         if (CanManageSharedRecycleBin(session))
         {
@@ -347,7 +350,9 @@ public sealed partial class LocalStateService
                     string.IsNullOrWhiteSpace(invoice.Memo) ? null : invoice.Memo),
                 DeletedAtUtc = group.Max(current => current.UpdatedAtUtc),
                 Revision = invoice.Revision
-            });
+            }.ProtectAmounts(session, amountAccess,
+                !invoice.AmountsHidden && FinancialAmountVisibility.CanViewInvoice(session, invoice.VoucherType),
+                hiddenDetail: JoinSegments("금액 비공개", group.Count() > 1 ? $"버전 {group.Count():N0}건" : null, invoice.Memo)));
         }
 
         var deletedContractRows = await _db.CustomerContracts
@@ -454,7 +459,9 @@ public sealed partial class LocalStateService
                 Detail = string.IsNullOrWhiteSpace(payment.Note) ? "삭제된 수금/지급 기록" : payment.Note,
                 DeletedAtUtc = payment.UpdatedAtUtc,
             Revision = payment.Revision
-            });
+            }.ProtectAmounts(session, amountAccess,
+                !payment.AmountsHidden && !invoice.AmountsHidden && FinancialAmountVisibility.CanViewInvoice(session, invoice.VoucherType),
+                hiddenTitle: $"{customerName} · 금액 비공개"));
         }
 
         var deletedTransactions = await ApplyTransactionScope(
@@ -469,6 +476,12 @@ public sealed partial class LocalStateService
         var transactionCustomerNames = await GetCustomerNameMapAsync(
             deletedTransactions.Select(transaction => transaction.CustomerId),
             ct);
+
+        var transactionInvoiceTypes = new Dictionary<Guid, VoucherType>();
+        foreach (var ids in deletedTransactions.Select(x => x.LinkedInvoiceId).OfType<Guid>().Distinct().Chunk(500))
+            foreach (var row in await _db.Invoices.IgnoreQueryFilters().AsNoTracking()
+                         .Where(x => ids.Contains(x.Id)).Select(x => new { x.Id, x.VoucherType }).ToListAsync(ct))
+                transactionInvoiceTypes[row.Id] = row.VoucherType;
 
         entries.AddRange(deletedTransactions.Select(transaction =>
         {
@@ -495,7 +508,9 @@ public sealed partial class LocalStateService
                 Detail = JoinSegments(transaction.Note, transaction.Memo),
                 DeletedAtUtc = transaction.UpdatedAtUtc,
             Revision = transaction.Revision
-            };
+            }.ProtectAmounts(session, amountAccess, FinancialAmountVisibility.CanViewTransaction(session, transaction,
+                transaction.LinkedInvoiceId is Guid invoiceId && transactionInvoiceTypes.TryGetValue(invoiceId, out var type) ? type : null),
+                hiddenSubtitle: JoinSegments(transaction.TransactionDate.ToString("yyyy-MM-dd"), "금액 비공개"));
         }));
 
         var deletedTransfers = await _db.InventoryTransfers
@@ -577,10 +592,12 @@ public sealed partial class LocalStateService
                 Detail = JoinSegments(
                     string.IsNullOrWhiteSpace(profile.BusinessNumber) ? null : $"사업자번호 {profile.BusinessNumber}",
                     string.IsNullOrWhiteSpace(profile.BillingType) ? null : $"청구유형 {profile.BillingType}",
-                    profile.MonthlyAmount > 0m ? $"월기준금액 {profile.MonthlyAmount:N0}원" : null),
+                    $"월기준금액 {profile.MonthlyAmount:N0}원"),
                 DeletedAtUtc = profile.UpdatedAtUtc,
             Revision = profile.Revision
-            }));
+            }.ProtectAmounts(session, amountAccess, amountAccess.Sales && !profile.AmountsHidden,
+                hiddenDetail: JoinSegments(string.IsNullOrWhiteSpace(profile.BusinessNumber) ? null : $"사업자번호 {profile.BusinessNumber}",
+                    string.IsNullOrWhiteSpace(profile.BillingType) ? null : $"청구유형 {profile.BillingType}", "월기준금액 비공개"))));
 
         var deletedRentalAssets = await _db.RentalAssets
             .IgnoreQueryFilters()
@@ -616,10 +633,12 @@ public sealed partial class LocalStateService
                 Detail = JoinSegments(
                     string.IsNullOrWhiteSpace(asset.MachineNumber) ? null : $"기계번호 {asset.MachineNumber}",
                     string.IsNullOrWhiteSpace(asset.AssetStatus) ? null : $"상태 {asset.AssetStatus}",
-                    asset.MonthlyFee > 0m ? $"월요금 {asset.MonthlyFee:N0}원" : null),
+                    $"월요금 {asset.MonthlyFee:N0}원"),
                 DeletedAtUtc = asset.UpdatedAtUtc,
             Revision = asset.Revision
-            }));
+            }.ProtectAmounts(session, amountAccess, amountAccess.Sales && !asset.SalesAmountsHidden,
+                hiddenDetail: JoinSegments(string.IsNullOrWhiteSpace(asset.MachineNumber) ? null : $"기계번호 {asset.MachineNumber}",
+                    string.IsNullOrWhiteSpace(asset.AssetStatus) ? null : $"상태 {asset.AssetStatus}", "월요금 비공개"))));
 
         var deletedRentalLogs = await _db.RentalBillingLogs
             .IgnoreQueryFilters()
@@ -681,11 +700,12 @@ public sealed partial class LocalStateService
                         log.ScheduledDate.ToString("yyyy-MM-dd"),
                         string.IsNullOrWhiteSpace(log.Status) ? null : log.Status),
                     Detail = JoinSegments(
-                        log.BilledAmount > 0m ? $"청구금액 {log.BilledAmount:N0}원" : null,
+                        $"청구금액 {log.BilledAmount:N0}원",
                         string.IsNullOrWhiteSpace(log.Note) ? null : log.Note),
                     DeletedAtUtc = log.UpdatedAtUtc,
             Revision = log.Revision
-                };
+                }.ProtectAmounts(session, amountAccess, amountAccess.Sales && !log.AmountsHidden,
+                    hiddenDetail: JoinSegments("청구금액 비공개", log.Note));
             }));
 
         return entries
@@ -3957,6 +3977,11 @@ public sealed partial class LocalStateService
         if (!transaction.IsDeleted)
             return OfficeMutationResult.Ok(transactionId, "이미 활성 상태인 거래내역입니다.");
 
+        var linkedPayment = await _db.Payments.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(current => current.Id == transaction.Id, ct);
+        if (linkedPayment is not null && transaction.LinkedInvoiceId != linkedPayment.InvoiceId)
+            return OfficeMutationResult.Denied("연동 거래내역의 전표 연결이 수금/지급 기록과 일치하지 않아 복원할 수 없습니다.");
+
         var now = DateTime.UtcNow;
         var customer = await _db.Customers
             .IgnoreQueryFilters()
@@ -3991,15 +4016,22 @@ public sealed partial class LocalStateService
 
             if (linkedInvoice is not null && linkedInvoice.IsDeleted)
             {
+                var restoredInvoiceId = linkedInvoice.Id;
                 var invoiceGroupRestore = await RestoreInvoiceGroupCoreAsync(linkedInvoice, session, ct);
                 if (!invoiceGroupRestore.Success)
                     return OfficeMutationResult.Denied(invoiceGroupRestore.Message);
 
                 customerRestored = customerRestored || invoiceGroupRestore.CustomerRestored;
                 invoiceRestored = true;
+                // Rebuilding invoice inventory can clear the tracker. Continue with
+                // attached rows so the transaction/payment restoration is persisted.
+                transaction = await _db.Transactions.IgnoreQueryFilters()
+                    .SingleAsync(current => current.Id == transactionId, ct);
+                linkedPayment = await _db.Payments.IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(current => current.Id == transactionId, ct);
                 linkedInvoice = await _db.Invoices
                     .IgnoreQueryFilters()
-                    .FirstOrDefaultAsync(current => current.Id == transaction.LinkedInvoiceId.Value, ct);
+                    .FirstOrDefaultAsync(current => current.Id == restoredInvoiceId, ct);
             }
 
             if (linkedInvoice is not null)
@@ -4047,7 +4079,25 @@ public sealed partial class LocalStateService
         await _db.SaveChangesAsync(ct);
 
         if (linkedInvoice is not null && !linkedInvoice.IsDeleted)
-            await SyncInvoicePaymentFromTransactionAsync(transaction, linkedInvoice, ct);
+        {
+            if (transaction.AmountsHidden || linkedPayment?.AmountsHidden == true)
+            {
+                // Restore deletion metadata only. An undisclosed settlement is not a new
+                // zero payment, and only the authoritative pull may supply its amount.
+                if (linkedPayment is { IsDeleted: true })
+                {
+                    RestoreEntity(linkedPayment, now);
+                    AddRestoreAudit(nameof(LocalPayment), linkedPayment.Id, new
+                    {
+                        linkedPayment.InvoiceId,
+                        Reason = "TransactionRestoreUndisclosedAmount"
+                    }, session, now);
+                    await _db.SaveChangesAsync(ct);
+                }
+            }
+            else
+                await SyncInvoicePaymentFromTransactionAsync(transaction, linkedInvoice, ct);
+        }
 
         if (transaction.LinkedRentalBillingProfileId.HasValue && transaction.LinkedRentalBillingProfileId.Value != Guid.Empty)
             await RecalculateRentalSettlementAsync(transaction.LinkedRentalBillingProfileId.Value, transaction.LinkedRentalBillingRunId, ct);
@@ -4279,7 +4329,8 @@ public sealed partial class LocalStateService
                     transactionRelinked = true;
                 }
 
-                if (linkedTransaction.SettlementAmount != payment.Amount)
+                if (!payment.AmountsHidden && !linkedTransaction.AmountsHidden &&
+                    linkedTransaction.SettlementAmount != payment.Amount)
                 {
                     linkedTransaction.SettlementAmount = payment.Amount;
                     transactionRelinked = true;
@@ -4349,7 +4400,7 @@ public sealed partial class LocalStateService
             {
                 payment.InvoiceId,
                 payment.PaymentDate,
-                payment.Amount,
+                Amount = payment.AmountsHidden ? (decimal?)null : payment.Amount,
                 Reason = "InvoiceRestore"
             }, session, now);
             restoredOrRelinked = true;

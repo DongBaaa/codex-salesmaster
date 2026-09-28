@@ -118,8 +118,13 @@ public sealed class RentalBillingEditorNavigationTests
                     Assert.Equal("PEER-WINNER",vm.EditNotes);
                     vm.EditNotes="RESOLVED";
                     await vm.SaveCommand.ExecuteAsync(null);
-                    Assert.Equal("RESOLVED",(await db.RentalBillingProfiles.AsNoTracking().SingleAsync()).Notes);
-                    Assert.Null(await rental.GetBillingEditorDraftAsync(session));
+                    await local.OwnerScopeDataGate.WaitAsync();
+                    try
+                    {
+                        Assert.Equal("RESOLVED",(await db.RentalBillingProfiles.AsNoTracking().SingleAsync()).Notes);
+                        Assert.Null(await rental.GetBillingEditorDraftAsync(session));
+                    }
+                    finally { local.OwnerScopeDataGate.Release(); }
                 }
             }
             else
@@ -132,8 +137,13 @@ public sealed class RentalBillingEditorNavigationTests
                 Assert.Equal(0,draft.Revision);
                 Assert.Equal("PEER-WINNER",(await db.RentalBillingProfiles.AsNoTracking().SingleAsync()).Notes);
             }
-            Assert.Equal(0,await db.Invoices.CountAsync());
-            Assert.Equal(240000m,(await db.RentalAssets.AsNoTracking().SingleAsync()).MonthlyFee);
+            await local.OwnerScopeDataGate.WaitAsync();
+            try
+            {
+                Assert.Equal(0,await db.Invoices.CountAsync());
+                Assert.Equal(240000m,(await db.RentalAssets.AsNoTracking().SingleAsync()).MonthlyFee);
+            }
+            finally { local.OwnerScopeDataGate.Release(); }
         }
         finally {await vm.CancelAndDrainPendingBackgroundWorkAsync();}
     }

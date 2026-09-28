@@ -24,6 +24,7 @@ public sealed partial class InventoryTransferScopeGuardTests
         {
             var item = await seed.Items.SingleAsync(item => item.Id == itemId);
             item.OfficeCode = OfficeCodeCatalog.Usenet;
+            item.SalePrice = 100m;
             seed.Customers.Add(new Customer { Id = customerId, TenantCode = TenantScopeCatalog.UsenetGroup,
                 OfficeCode = OfficeCodeCatalog.Yeonsu, ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
                 NameOriginal = "destination customer", TradeType = "매출" });
@@ -48,6 +49,7 @@ public sealed partial class InventoryTransferScopeGuardTests
         var invoice = BuildInventoryInvoiceDto(Guid.NewGuid(), customerId, itemId, "source-owned sale", VoucherType.Sales, 1m, user.Username, DateTime.UtcNow);
         invoice.OfficeCode = invoice.ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu;
         invoice.SourceWarehouseCode = OfficeCodeCatalog.YeonsuMainWarehouse;
+        invoice.Lines[0].UnitPrice = invoice.Lines[0].LineAmount = 1m;
         var sale = await controller.Push(new SyncPushRequest { DeviceId = "receipt-and-sale", Invoices = [invoice] }, CancellationToken.None);
         var saleResult = Assert.IsType<SyncPushResult>(Assert.IsType<OkObjectResult>(sale.Result).Value);
         Assert.Equal(0, saleResult.ConflictCount);
@@ -55,6 +57,8 @@ public sealed partial class InventoryTransferScopeGuardTests
         db.ChangeTracker.Clear();
         var after = Assert.IsType<SyncPullResponse>(Assert.IsType<OkObjectResult>((await controller.Pull(0, CancellationToken.None)).Result).Value);
         Assert.Equal(itemId, Assert.Single(Assert.Single(after.Invoices, row => row.Id == invoice.Id).Lines).ItemId);
+        Assert.Null(Assert.Single(after.Invoices, row => row.Id == invoice.Id).TotalAmount);
+        Assert.Equal(100m, (await db.Invoices.AsNoTracking().SingleAsync(row => row.Id == invoice.Id)).TotalAmount);
         Assert.Contains(after.ItemWarehouseStocks, stock => stock.ItemId == itemId && stock.WarehouseCode == OfficeCodeCatalog.YeonsuMainWarehouse && stock.Quantity == 1m);
         Assert.DoesNotContain(after.ItemWarehouseStocks, stock => stock.WarehouseCode == OfficeCodeCatalog.UsenetMainWarehouse);
 
@@ -95,6 +99,7 @@ public sealed partial class InventoryTransferScopeGuardTests
     [InlineData("zero-received", false)]
     [InlineData("deleted-transfer", false)]
     [InlineData("deleted-line", false)]
+    [InlineData("deleted-item", false)]
     [InlineData("foreign-tenant", false)]
     [InlineData("wrong-warehouse", false)]
     public async Task ReceivedItemAccess_GrantsOnlyDestinationRead_AndPreservesSourceOwnership(string scenario, bool expected)
@@ -108,6 +113,7 @@ public sealed partial class InventoryTransferScopeGuardTests
             var item = await seed.Items.IgnoreQueryFilters().SingleAsync(item => item.Id == itemId);
             item.OfficeCode = OfficeCodeCatalog.Usenet;
             if (scenario == "foreign-tenant") item.TenantCode = TenantScopeCatalog.Itworld;
+            item.IsDeleted = scenario == "deleted-item";
             var unrelated = CreateStockItem(unrelatedItemId, "unrelated source-owned item", 5m);
             unrelated.OfficeCode = OfficeCodeCatalog.Usenet;
             seed.Items.Add(unrelated);

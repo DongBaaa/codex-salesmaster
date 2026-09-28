@@ -41,7 +41,7 @@ public sealed class RtRentalDeltaApplierTests
     {
         var asset = CreateAsset();
         var plan = CreatePlan(asset);
-        plan.Entries[0].Values.MonthlyFee = asset.MonthlyFee + 1;
+        plan.Entries[0].Values.MonthlyFee = DisclosedAmount.Require(asset.MonthlyFee) + 1;
 
         var exception = Assert.Throws<InvalidDataException>(() =>
             RtRentalDeltaApplier.PrepareMutations(
@@ -165,6 +165,22 @@ public sealed class RtRentalDeltaApplierTests
     }
 
     [Theory]
+    [InlineData("PurchasePrice")]
+    [InlineData("SalePrice")]
+    [InlineData("MonthlyFee")]
+    [InlineData("DepositText")]
+    public void BuildPlan_UnknownFinancialFieldsCannotProduceChanges(string field)
+    {
+        var asset = CreateItworldAsset();
+        var source = CreateSource(asset) with { ItemName = "changed model" };
+        typeof(RentalAssetDto).GetProperty(field)!.SetValue(asset, null);
+        var result = RtRentalDeltaPlanner.BuildPlan([source], [asset], "ITWORLD",
+            new string('1', 64), "isolated-hidden-rental", DateTime.UtcNow);
+        Assert.Empty(result.Plan.Entries);
+        Assert.Equal(0, result.Audit.PlannedChangeCount);
+    }
+
+    [Theory]
     [InlineData("다른 거래처", "렌탈", 1, 0)]
     [InlineData("기존 거래처", "계약종료", 0, 1)]
     public void BuildPlan_ExcludesProtectedCustomerOrUnsupportedStatus(
@@ -270,11 +286,11 @@ public sealed class RtRentalDeltaApplierTests
                         PurchaseVendor = asset.PurchaseVendor,
                         PurchaseDate = asset.PurchaseDate,
                         DisposalDate = asset.DisposalDate,
-                        PurchasePrice = asset.PurchasePrice,
-                        SalePrice = asset.SalePrice,
+                        PurchasePrice = DisclosedAmount.Require(asset.PurchasePrice),
+                        SalePrice = DisclosedAmount.Require(asset.SalePrice),
                         InstallLocation = asset.InstallLocation,
-                        DepositText = asset.DepositText,
-                        MonthlyFee = asset.MonthlyFee,
+                        DepositText = asset.DepositText ?? throw new InvalidOperationException("Fixture deposit is required."),
+                        MonthlyFee = DisclosedAmount.Require(asset.MonthlyFee),
                         ContractMonths = asset.ContractMonths,
                         ContractDate = asset.ContractDate,
                         InstallDate = asset.InstallDate,
@@ -339,7 +355,7 @@ public sealed class RtRentalDeltaApplierTests
             CustomerName: asset.CurrentCustomerName,
             InstallLocation: asset.InstallLocation,
             ManagementCompany: "아이티월드",
-            MonthlyFeeText: asset.MonthlyFee.ToString("0"),
+            MonthlyFeeText: DisclosedAmount.Require(asset.MonthlyFee).ToString("0"),
             ContractMonthsText: $"{asset.ContractMonths}개월",
             ContractStartDate: asset.ContractStartDate?.ToString("yyyy-MM-dd") ?? "-",
             RentalEndDate: asset.RentalEndDate?.ToString("yyyy-MM-dd") ?? "-",

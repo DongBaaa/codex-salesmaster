@@ -8,21 +8,22 @@ public static class DashboardBalanceDetailBuilder
     public static IReadOnlyList<DashboardBalanceDetailRow> BuildRows(
         IEnumerable<LocalInvoiceListSummary> invoices,
         IReadOnlyDictionary<Guid, string> customerNameById,
-        VoucherType voucherType)
+        VoucherType voucherType, SessionState? session = null)
     {
         var outstandingInvoices = invoices
             .Where(invoice => invoice.VoucherType == voucherType)
             .Select(invoice => new
             {
                 Invoice = invoice,
-                BalanceAmount = Math.Max(0m, invoice.TotalAmount - invoice.SettledAmount)
+                BalanceAmount = invoice.AmountsHidden || session is not null && !FinancialAmountVisibility.CanViewInvoice(session, invoice.VoucherType)
+                    ? (decimal?)null : Math.Max(0m, invoice.TotalAmount - invoice.SettledAmount)
             })
-            .Where(row => row.BalanceAmount > 0m)
+            .Where(row => !row.BalanceAmount.HasValue || row.BalanceAmount > 0m)
             .ToList();
 
         var customerBalanceMap = outstandingInvoices
             .GroupBy(row => row.Invoice.CustomerId)
-            .ToDictionary(group => group.Key, group => group.Sum(row => row.BalanceAmount));
+            .ToDictionary(group => group.Key, group => group.Any(row => !row.BalanceAmount.HasValue) ? (decimal?)null : group.Sum(row => row.BalanceAmount));
 
         return outstandingInvoices
             .Select(row =>
@@ -49,8 +50,8 @@ public static class DashboardBalanceDetailBuilder
                     FirstItemSummary = string.IsNullOrWhiteSpace(invoice.FirstItemSummary)
                         ? "(품목 없음)"
                         : invoice.FirstItemSummary.Trim(),
-                    TotalAmount = invoice.TotalAmount,
-                    SettledAmount = invoice.SettledAmount,
+                    TotalAmount = row.BalanceAmount.HasValue ? invoice.TotalAmount : null,
+                    SettledAmount = row.BalanceAmount.HasValue ? invoice.SettledAmount : null,
                     BalanceAmount = row.BalanceAmount,
                     ResponsibleOfficeCode = invoice.ResponsibleOfficeCode,
                     Revision = invoice.Revision

@@ -50,6 +50,12 @@ test -f "$COMPOSE"
 test -f "$ENV_FILE"
 test -x "$OPS/apply-release.sh"
 test -d "$RELEASE"
+if [[ "$MODE" == apply ]]; then
+  if [[ "$(/bin/bash "$OPS/apply-release.sh" --capabilities)" != georaeplan-release-health-deadlines-v1 ]]; then
+    echo 'apply_blocked=release_script_deadlines_unsupported' >&2
+    exit 35
+  fi
+fi
 docker inspect "$POSTGRES_CONTAINER" >/dev/null
 PGUSER="$(docker exec "$POSTGRES_CONTAINER" sh -lc 'printf %s "$POSTGRES_USER"')"
 test -n "$PGUSER"
@@ -145,7 +151,7 @@ PY
 
 [[ "$(grep -Fxc "$TARGET_LINE" "$COMPOSE")" == 1 ]]
 docker compose --env-file "$ENV_FILE" -p "$PROJECT" -f "$COMPOSE" config --quiet
-HEALTH_CHECK_RETRIES=900 /bin/bash "$OPS/apply-release.sh" "$RELEASE_ID"
+HEALTH_CHECK_TIMEOUT_SECONDS=900 ROLLBACK_HEALTH_TIMEOUT_SECONDS=900 /bin/bash "$OPS/apply-release.sh" "$RELEASE_ID"
 curl -fsS http://127.0.0.1:18082/healthz >/dev/null
 
 api_recovery_required=false

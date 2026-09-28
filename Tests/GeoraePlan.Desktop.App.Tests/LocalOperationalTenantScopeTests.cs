@@ -1,4 +1,4 @@
-using Microsoft.Data.Sqlite;
+﻿using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using 거래플랜.Desktop.App.Data;
@@ -137,7 +137,7 @@ public sealed class LocalOperationalTenantScopeTests
             Assert.Null(hiddenInvoice);
             Assert.Null(hiddenLatestInvoice);
             Assert.Empty(hiddenInvoiceVersions);
-            Assert.Equal(0m, hiddenSettlement.InvoiceTotal);
+            Assert.Null(hiddenSettlement.InvoiceTotal);
             Assert.Empty(hiddenAttachments);
             Assert.Contains(dirtyInvoices, invoice => invoice.Id == usenetInvoice.Id);
             Assert.DoesNotContain(dirtyInvoices, invoice => invoice.Id == itworldInvoice.Id);
@@ -206,7 +206,7 @@ public sealed class LocalOperationalTenantScopeTests
             var session = CreateOfficeSession(
                 TenantScopeCatalog.UsenetGroup,
                 OfficeCodeCatalog.Usenet,
-                AppPermissionNames.PaymentEdit);
+                AppPermissionNames.PaymentEdit, AppPermissionNames.AmountViewSales, AppPermissionNames.AmountViewPurchase);
             var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
 
             var advanceBalance = await service.GetAdvanceBalanceAsync(customerId, session);
@@ -306,7 +306,7 @@ public sealed class LocalOperationalTenantScopeTests
             var session = CreateOfficeSession(
                 TenantScopeCatalog.UsenetGroup,
                 OfficeCodeCatalog.Usenet,
-                AppPermissionNames.RentalViewAll);
+                AppPermissionNames.RentalViewAll, AppPermissionNames.AmountViewSales);
             var service = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
 
             var summary = await service.GetRentalSettlementSummaryAsync(
@@ -432,7 +432,7 @@ public sealed class LocalOperationalTenantScopeTests
             var session = CreateOfficeSession(
                 TenantScopeCatalog.UsenetGroup,
                 OfficeCodeCatalog.Usenet,
-                AppPermissionNames.RentalViewAll);
+                AppPermissionNames.RentalViewAll, AppPermissionNames.AmountViewSales);
             var service = new RentalStateService(db);
 
             var rows = await service.GetBillingRowsAsync(
@@ -646,7 +646,7 @@ public sealed class LocalOperationalTenantScopeTests
             Assert.NotNull(visibleUsenetProfile);
             Assert.NotNull(visibleYeonsuProfile);
             Assert.Null(hiddenItworldProfile);
-            Assert.Equal(0m, hiddenItworldSettlement.BilledAmount);
+            Assert.Null(hiddenItworldSettlement.BilledAmount);
             Assert.Contains(dirtyProfilesForEditAll, profile => profile.Id == usenetProfile.Id);
             Assert.Contains(dirtyProfilesForEditAll, profile => profile.Id == yeonsuProfile.Id);
             Assert.DoesNotContain(dirtyProfilesForEditAll, profile => profile.Id == itworldProfile.Id);

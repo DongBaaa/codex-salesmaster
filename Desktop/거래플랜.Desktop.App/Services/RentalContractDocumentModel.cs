@@ -17,7 +17,8 @@ public sealed class RentalContractDocumentModel
     public string ItemName { get; set; } = string.Empty;
     public string MachineNumber { get; set; } = string.Empty;
     public string DepositText { get; set; } = string.Empty;
-    public decimal MonthlyFee { get; set; }
+    public decimal? MonthlyFee { get; set; } = 0m;
+    public bool AmountsHidden { get; set; }
     public string InstallLocation { get; set; } = string.Empty;
     public DateOnly? ContractDate { get; set; }
     public DateOnly? ContractStartDate { get; set; }

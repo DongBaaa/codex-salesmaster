@@ -528,6 +528,8 @@ public sealed class SessionStore
 
 public sealed class SessionSnapshot
 {
+    public IReadOnlyList<string> Permissions { get; set; } = [];
+    public bool HasPermission(string permission) => Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase);
     public bool IsAuthenticated { get; set; } = true;
     public string Username { get; set; } = "cursor-test";
     public string Role { get; set; } = string.Empty;

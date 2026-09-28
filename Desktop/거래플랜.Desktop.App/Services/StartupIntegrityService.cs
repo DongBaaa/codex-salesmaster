@@ -97,7 +97,7 @@ public sealed class StartupIntegrityService
         }
 
         var refreshedReport = await _local.BuildIntegrityReportAsync(_session, ct);
-        if (refreshedReport.HasIssues)
+        if (refreshedReport.RequiresFullMirrorRefresh)
         {
             return new StartupIntegrityRunResult(
                 refreshedReport,

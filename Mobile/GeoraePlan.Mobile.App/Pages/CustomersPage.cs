@@ -494,6 +494,9 @@ public sealed class CustomersPage : ContentPage
     protected override async void OnAppearing()
     {
         base.OnAppearing();
+        _sessionStore.SessionChanged -= HandleSessionChanged;
+        _sessionStore.SessionChanged += HandleSessionChanged;
+        _viewModel.RefreshAccess();
 
         await MobileErrorHandler.RunGuardedAsync(
             async () =>
@@ -515,6 +518,15 @@ try
             },
             "거래처 화면 초기화");
     }
+
+    protected override void OnDisappearing()
+    {
+        _sessionStore.SessionChanged -= HandleSessionChanged;
+        base.OnDisappearing();
+    }
+
+    private void HandleSessionChanged(object? sender, EventArgs e)
+        => MainThread.BeginInvokeOnMainThread(_viewModel.RefreshAccess);
 
     private void HandleRealtimeRefreshRequested(object? sender, EventArgs e)
     {
@@ -1004,7 +1016,7 @@ try
             if (value is not InvoiceDto invoice)
                 return string.Empty;
 
-            return $"{invoice.InvoiceDate:yyyy-MM-dd} · {invoice.TotalAmount:N0}원";
+            return $"{invoice.InvoiceDate:yyyy-MM-dd} · {MobileRentalAmountAccess.Money(invoice.TotalAmount, !invoice.AmountsHidden)}";
         }
 
         public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture)

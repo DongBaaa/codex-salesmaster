@@ -516,6 +516,7 @@ public sealed class RentalAssetSaveDeleteConcurrencyTests
                     LinkedAtLocal = DateTime.Today.AddDays(-1),
                     UnlinkedAtLocal = DateTime.Today,
                     CustomerName = "동시성 이력 테스트",
+                    MonthlyFee = 0m,
                     InstallLocation = "동시성 이력 위치",
                     ItemName = asset.ItemName,
                     MachineNumber = asset.MachineNumber,
@@ -723,6 +724,7 @@ public sealed class RentalAssetSaveDeleteConcurrencyTests
             ItemName = asset.ItemName,
             MachineNumber = asset.MachineNumber,
             ManagementNumber = asset.ManagementNumber,
+            MonthlyFee = 0m,
             ChangeReason = "Concurrency serialization test"
         };
 

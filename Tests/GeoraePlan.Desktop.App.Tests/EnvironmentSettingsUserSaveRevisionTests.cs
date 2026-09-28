@@ -15,6 +15,131 @@ public sealed class EnvironmentSettingsUserSaveRevisionTests
 {
     private static readonly Guid UserId = Guid.Parse("11111111-2222-3333-4444-555555555555");
 
+    [Theory]
+    [InlineData("USENET", false, false)]
+    [InlineData("USENET", true, false)]
+    [InlineData("USENET", false, true)]
+    [InlineData("USENET", true, true)]
+    [InlineData("YEONSU", false, false)]
+    [InlineData("YEONSU", true, false)]
+    [InlineData("YEONSU", false, true)]
+    [InlineData("YEONSU", true, true)]
+    [InlineData("ITWORLD", false, false)]
+    [InlineData("ITWORLD", true, false)]
+    [InlineData("ITWORLD", false, true)]
+    [InlineData("ITWORLD", true, true)]
+    public async Task SaveUserCommand_PreservesExistingAmountPermissionsAcrossRepeatedSaves(
+        string office, bool sales, bool purchase)
+    {
+        var handler = new UserSaveHandler();
+        await using var fixture = await ViewModelFixture.CreateAsync(handler);
+        var permissions = new List<string>();
+        if (sales) permissions.Add(AppPermissionNames.AmountViewSales);
+        if (purchase) permissions.Add(AppPermissionNames.AmountViewPurchase);
+        var initial = await fixture.SelectExistingUserAsync(100, permissions, office);
+        fixture.ViewModel.EditingUsername = "renamed-user";
+
+        for (var save = 1; save <= 2; save++)
+        {
+            await fixture.ViewModel.SaveUserCommand.ExecuteAsync(null);
+            Assert.Equal(save, handler.UpdateCalls);
+            var request = Assert.IsType<UpdateUserRequest>(handler.LastUpdateRequest);
+            Assert.Equal(sales, request.Permissions.Contains(AppPermissionNames.AmountViewSales));
+            Assert.Equal(purchase, request.Permissions.Contains(AppPermissionNames.AmountViewPurchase));
+            Assert.Equal(initial.TenantCode, request.TenantCode);
+            Assert.Equal(office, request.OfficeCode);
+            Assert.Equal(initial.ScopeType, request.ScopeType);
+            Assert.Contains(AppPermissionNames.InvoiceEdit, request.Permissions);
+            Assert.Contains(AppPermissionNames.ItemEdit, request.Permissions);
+            Assert.Equal(sales, fixture.ViewModel.SelectedUser!.Permissions.Contains(AppPermissionNames.AmountViewSales));
+            Assert.Equal(purchase, fixture.ViewModel.SelectedUser.Permissions.Contains(AppPermissionNames.AmountViewPurchase));
+        }
+    }
+
+    [Fact]
+    public async Task SaveUserCommand_NewUserDoesNotInheritPreviouslySelectedRestrictions()
+    {
+        var handler = new UserSaveHandler();
+        await using var fixture = await ViewModelFixture.CreateAsync(handler);
+        await fixture.SelectExistingUserAsync(100, []);
+        PrepareNewUser(fixture.ViewModel, "new-user", "new-password");
+
+        await fixture.ViewModel.SaveUserCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, handler.CreateCalls);
+        Assert.Contains(AppPermissionNames.AmountViewSales, fixture.ViewModel.SelectedUser!.Permissions);
+        Assert.Contains(AppPermissionNames.AmountViewPurchase, fixture.ViewModel.SelectedUser.Permissions);
+    }
+
+    [Fact]
+    public async Task SaveUserCommand_ExplicitAdminPromotionRetainsAdministrativeBundle()
+    {
+        var handler = new UserSaveHandler();
+        await using var fixture = await ViewModelFixture.CreateAsync(handler);
+        await fixture.SelectExistingUserAsync(100, []);
+        fixture.ViewModel.EditingUserRole = "Admin";
+
+        await fixture.ViewModel.SaveUserCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, handler.UpdateCalls);
+        Assert.Equal("Admin", handler.LastUpdateRequest!.Role);
+        Assert.Contains(AppPermissionNames.AmountViewSales, handler.LastUpdateRequest.Permissions);
+        Assert.Contains(AppPermissionNames.AmountViewPurchase, handler.LastUpdateRequest.Permissions);
+    }
+
+    [Fact]
+    public async Task SaveUserCommand_MismatchedPermissionSnapshotDoesNotSendMutation()
+    {
+        var handler = new UserSaveHandler();
+        await using var fixture = await ViewModelFixture.CreateAsync(handler);
+        await fixture.SelectExistingUserAsync(100, []);
+        fixture.ViewModel.EditingUserId = Guid.NewGuid();
+
+        await fixture.ViewModel.SaveUserCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, handler.UpdateCalls);
+        Assert.Equal(0, handler.CreateCalls);
+        Assert.Contains("권한 정보를", fixture.ViewModel.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SaveUserCommand_MissingPermissionListDoesNotInferGrantsOrSendMutation()
+    {
+        var handler = new UserSaveHandler();
+        await using var fixture = await ViewModelFixture.CreateAsync(handler);
+        var initial = await fixture.SelectExistingUserAsync(100, []);
+        var unreadablePermissions = CloneUser(initial, 101);
+        unreadablePermissions.Permissions = null!;
+        fixture.ViewModel.SelectedUser = unreadablePermissions;
+        fixture.ViewModel.EditingUserCompanyProfileId = fixture.ProfileId.ToString("D");
+
+        await fixture.ViewModel.SaveUserCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, handler.UpdateCalls);
+        Assert.Contains("권한 정보를", fixture.ViewModel.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SaveUserCommand_RefreshedPermissionRevocationReplacesPreviousSnapshot()
+    {
+        var handler = new UserSaveHandler();
+        await using var fixture = await ViewModelFixture.CreateAsync(handler);
+        var initial = await fixture.SelectExistingUserAsync(100,
+            [AppPermissionNames.AmountViewSales, AppPermissionNames.AmountViewPurchase]);
+        var refreshed = CloneUser(initial, 101);
+        refreshed.Permissions = [];
+        handler.SeedUser(refreshed);
+        fixture.ViewModel.SelectedUser = refreshed;
+        fixture.ViewModel.EditingUserCompanyProfileId = fixture.ProfileId.ToString("D");
+
+        await fixture.ViewModel.SaveUserCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, handler.UpdateCalls);
+        Assert.Equal(101, handler.LastUpdateRequest!.ExpectedRevision);
+        Assert.DoesNotContain(AppPermissionNames.AmountViewSales, handler.LastUpdateRequest.Permissions);
+        Assert.DoesNotContain(AppPermissionNames.AmountViewPurchase, handler.LastUpdateRequest.Permissions);
+    }
+
     [Fact]
     public async Task UpdateAndPassword_UsesAuthoritativeUpdatedRevisionBeforeDownstreamState()
     {
@@ -936,34 +1061,41 @@ public sealed class EnvironmentSettingsUserSaveRevisionTests
             return new ViewModelFixture(connection, db, sync, httpClient, local, viewModel, profileId, handler);
         }
 
-        public async Task<UserAccountDto> SelectExistingUserAsync(long revision)
+        public async Task<UserAccountDto> SelectExistingUserAsync(
+            long revision, List<string>? permissions = null, string office = OfficeCodeCatalog.Usenet)
         {
             var user = CreateUpdatedUser(revision);
+            if (permissions is not null) user.Permissions = permissions;
+            user.OfficeCode = office;
+            user.TenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(null, office);
+            var selectedProfileId = office == OfficeCodeCatalog.Usenet
+                ? ProfileId
+                : await AddCompanyProfileAsync("office profile", office);
             Handler.SeedUser(user);
-            await Local.SetAssignedCompanyProfileAsync(user.Username, ProfileId);
+            await Local.SetAssignedCompanyProfileAsync(user.Username, selectedProfileId);
             ViewModel.Users.Add(user);
             ViewModel.SelectedUser = user;
             for (var attempt = 0;
                  attempt < 50 &&
                  !string.Equals(
                      ViewModel.EditingUserCompanyProfileId,
-                     ProfileId.ToString("D"),
+                     selectedProfileId.ToString("D"),
                      StringComparison.OrdinalIgnoreCase);
                  attempt++)
             {
                 await Task.Delay(10);
             }
-            Assert.Equal(ProfileId.ToString("D"), ViewModel.EditingUserCompanyProfileId);
+            Assert.Equal(selectedProfileId.ToString("D"), ViewModel.EditingUserCompanyProfileId);
             return user;
         }
 
-        public async Task<Guid> AddCompanyProfileAsync(string profileName)
+        public async Task<Guid> AddCompanyProfileAsync(string profileName, string office = OfficeCodeCatalog.Usenet)
         {
             var profile = new LocalCompanyProfile
             {
                 Id = Guid.NewGuid(),
                 ProfileName = profileName,
-                OfficeCode = OfficeCodeCatalog.Usenet,
+                OfficeCode = office,
                 IsDefaultForOffice = false
             };
             _db.CompanyProfiles.Add(profile);
@@ -1058,6 +1190,7 @@ public sealed class EnvironmentSettingsUserSaveRevisionTests
         public int UsersGetCalls { get; private set; }
         public int CreateCalls { get; private set; }
         public int UpdateCalls { get; private set; }
+        public UpdateUserRequest? LastUpdateRequest { get; private set; }
         public int PasswordCalls { get; private set; }
         public int DeleteCalls { get; private set; }
 
@@ -1110,6 +1243,7 @@ public sealed class EnvironmentSettingsUserSaveRevisionTests
                 UpdateCalls++;
                 var update = await request.Content!.ReadFromJsonAsync<UpdateUserRequest>(cancellationToken)
                     ?? throw new InvalidDataException("update request missing");
+                LastUpdateRequest = update;
                 _updatedUser = CreateCanonicalUser(UserId, update.ExpectedRevision + 1, update);
                 if (UpdateFailure is null || CommitUpdateBeforeFailure)
                     SeedUser(_updatedUser);

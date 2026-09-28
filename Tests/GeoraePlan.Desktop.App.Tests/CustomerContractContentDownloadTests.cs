@@ -153,6 +153,117 @@ public sealed class CustomerContractContentDownloadTests
         }
     }
 
+    [Theory]
+    [InlineData("clean")]
+    [InlineData("preexisting")]
+    [InlineData("during-download")]
+    public async Task EnsureContentAsync_PreservesPendingContractMetadata(string editTiming)
+    {
+        PrepareAppRoot("georaeplan-contract-content-cache");
+
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+
+            var session = CreateAdminSession();
+            var customerId = Guid.NewGuid();
+            var contractId = Guid.NewGuid();
+            var content = "%PDF-1.7\ncontract evidence"u8.ToArray();
+            var hash = Convert.ToHexString(SHA256.HashData(content));
+            var now = DateTime.UtcNow;
+
+            db.Customers.Add(new LocalCustomer
+            {
+                Id = customerId,
+                TenantCode = TenantScopeCatalog.UsenetGroup,
+                OfficeCode = OfficeCodeCatalog.Usenet,
+                ResponsibleOfficeCode = OfficeCodeCatalog.Usenet,
+                NameOriginal = "계약서 다운로드 거래처",
+                NameMatchKey = "계약서 다운로드 거래처",
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now,
+                Revision = 10,
+                IsDirty = false
+            });
+            db.CustomerContracts.Add(new LocalCustomerContract
+            {
+                Id = contractId,
+                CustomerId = customerId,
+                FileName = "contract.pdf",
+                MimeType = "application/pdf",
+                FileSize = content.LongLength,
+                FileHash = hash,
+                IsPrimary = true,
+                UploadedAtUtc = now,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now,
+                Revision = 20,
+                IsDirty = editTiming == "preexisting",
+                Description = "pending contract note",
+                FileContent = []
+            });
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            var handler = new FileContentHandler((request, _) =>
+            {
+                Assert.Equal($"/customers/contracts/{contractId:D}/content", request.RequestUri?.AbsolutePath);
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(content)
+                };
+            });
+            var api = new ErpApiClient(new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") }, session);
+            var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
+            var contract = await db.CustomerContracts.AsNoTracking().SingleAsync(current => current.Id == contractId);
+
+            Task<LocalCustomerContract> resolveTask;
+            await local.OwnerScopeDataGate.WaitAsync();
+            try
+            {
+                resolveTask = CustomerContractContentService.EnsureContentAsync(contract, local, session, api);
+                await handler.RequestReceived.WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.False(resolveTask.IsCompleted);
+                if (editTiming == "during-download")
+                {
+                    var edited = await db.CustomerContracts.SingleAsync(x => x.Id == contractId);
+                    edited.Description = "changed while downloading";
+                    edited.IsDirty = true;
+                    await db.SaveChangesAsync();
+                    db.ChangeTracker.Clear();
+                }
+            }
+            finally
+            {
+                local.OwnerScopeDataGate.Release();
+            }
+
+            var resolved = await resolveTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(content, resolved.FileContent);
+            db.ChangeTracker.Clear();
+            var stored = await db.CustomerContracts.AsNoTracking().SingleAsync(current => current.Id == contractId);
+            Assert.Equal(content, stored.FileContent);
+            Assert.Equal(editTiming != "clean", stored.IsDirty);
+            Assert.Equal(editTiming == "during-download" ? "changed while downloading" : "pending contract note", stored.Description);
+            // Pending payload changes advance the existing sync mutation clock.
+            // A read-only cache fill must not invent a dirty change for a clean row.
+            if (editTiming == "clean")
+                Assert.Equal(now, stored.UpdatedAtUtc);
+            else
+                Assert.True(stored.UpdatedAtUtc > now);
+            Assert.Equal(20, stored.Revision);
+            Assert.Single(handler.Requests);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     [Fact]
     public async Task SyncPullCustomerContractMetadata_PreservesCachedLocalPdfContent()
     {

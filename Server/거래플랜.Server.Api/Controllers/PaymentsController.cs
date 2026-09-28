@@ -61,7 +61,7 @@ public sealed class PaymentsController : ControllerBase
         if (!await CanReadInvoiceForPaymentApiAsync(invoiceId, cancellationToken))
             return Ok(new List<PaymentDto>());
 
-        return Ok(await _officeScopeService.ApplyPaymentScope(_dbContext.Payments
+        var response = await _officeScopeService.ApplyPaymentScope(_dbContext.Payments
                 .AsNoTracking()
                 .Include(x => x.Invoice)
                 .ThenInclude(invoice => invoice!.Customer)
@@ -69,7 +69,9 @@ public sealed class PaymentsController : ControllerBase
             .Where(x => x.InvoiceId == invoiceId)
             .OrderByDescending(x => x.PaymentDate)
             .Select(x => x.ToDto())
-            .ToListAsync(cancellationToken));
+            .ToListAsync(cancellationToken);
+        await InvoiceAmountReadPolicy.ApplyPaymentsAsync(response, _dbContext, _officeScopeService, cancellationToken);
+        return Ok(response);
     }
 
     [HttpGet("{paymentId:guid}/attachments")]
@@ -525,7 +527,7 @@ public sealed class PaymentsController : ControllerBase
             .Include(x => x.Attachments)
             .FirstAsync(x => x.Id == entity.Id, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        return Ok(saved.ToDto());
+        return Ok(await ToAmountScopedResponseAsync(saved, cancellationToken));
     }
 
     [HttpPut("{id:guid}")]
@@ -648,7 +650,7 @@ public sealed class PaymentsController : ControllerBase
         await _rentalSettlementRecalculationService.RecalculateRentalSettlementsAsync(linkedTransactionRentalTargets, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        return Ok(entity.ToDto());
+        return Ok(await ToAmountScopedResponseAsync(entity, cancellationToken));
     }
 
     [HttpDelete("{id:guid}")]
@@ -767,7 +769,14 @@ public sealed class PaymentsController : ControllerBase
             });
         }
 
-        return Ok(entity.ToDto());
+        return Ok(await ToAmountScopedResponseAsync(entity, cancellationToken));
+    }
+
+    private async Task<PaymentDto> ToAmountScopedResponseAsync(Payment payment, CancellationToken ct)
+    {
+        var dto = payment.ToDto();
+        await InvoiceAmountReadPolicy.ApplyPaymentsAsync([dto], _dbContext, _officeScopeService, ct);
+        return dto;
     }
 
     private async Task RecalculateRentalSettlementsForPaymentInvoicesAsync(
@@ -1003,7 +1012,7 @@ public sealed class PaymentsController : ControllerBase
         Guid? currentPaymentId,
         CancellationToken cancellationToken)
     {
-        if (dto.Amount <= 0m)
+        if (dto.Amount is null || dto.Amount <= 0m)
         {
             return BadRequest(new
             {
@@ -1043,12 +1052,15 @@ public sealed class PaymentsController : ControllerBase
         if (dto.Amount <= outstandingAmount)
             return null;
 
+        var mayViewAmount = InvoiceAmountReadPolicy.CanView(invoice.VoucherType, _officeScopeService);
         return Conflict(new
         {
             error = "payment_amount_exceeds_outstanding",
-            message = $"입력 금액이 현재 잔액보다 {dto.Amount - outstandingAmount:N0}원 많습니다. 최신 전표를 다시 조회한 뒤 금액을 확인하세요.",
+            message = mayViewAmount
+                ? $"입력 금액이 현재 잔액보다 {dto.Amount - outstandingAmount:N0}원 많습니다. 최신 전표를 다시 조회한 뒤 금액을 확인하세요."
+                : "입력 금액이 현재 잔액을 초과합니다. 금액 권한이 있는 담당자에게 확인해 주세요.",
             invoiceId = dto.InvoiceId,
-            outstandingAmount,
+            outstandingAmount = mayViewAmount ? (decimal?)outstandingAmount : null,
             enteredAmount = dto.Amount
         });
     }

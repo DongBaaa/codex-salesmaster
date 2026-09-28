@@ -105,7 +105,7 @@ public sealed class DesktopClientIdentityHeadersTests
         AssertSingleHeader(
             request,
             ClientCompatibilityHeaders.Protocol,
-            ClientCompatibilityHeaders.CurrentProtocolVersion.ToString(
+            DesktopClientIdentityProvider.CurrentProtocolVersion.ToString(
                 CultureInfo.InvariantCulture));
     }
 

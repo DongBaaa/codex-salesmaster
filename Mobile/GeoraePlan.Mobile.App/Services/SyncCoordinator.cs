@@ -333,6 +333,10 @@ public sealed class SyncCoordinator
             state.LastAttemptUtc = DateTime.UtcNow;
             state.Normalize();
             state.PendingPush.Invoices.RemoveAll(x => x.Id == invoice.Id);
+            state.PendingPush.Invoices.Add(invoice);
+            // Persist the exact mutation before a request can commit on the server.
+            // If this fails, do not start network I/O.
+            await _store.SaveAsync(owner, state, ct);
 
             try
             {
@@ -348,6 +352,7 @@ public sealed class SyncCoordinator
                         ct);
                 saved = EnsureEntityResult(saved, "전표 저장");
                 _sessionStore.ThrowIfOwnerChanged(owner);
+                state.PendingPush.Invoices.RemoveAll(x => x.Id == invoice.Id);
 
                 state.LastSuccessUtc = DateTime.UtcNow;
                 state.LastError = string.Empty;
@@ -365,6 +370,7 @@ public sealed class SyncCoordinator
             }
             catch (Exception ex) when (IsConcurrencyConflict(ex))
             {
+                state.PendingPush.Invoices.RemoveAll(x => x.Id == invoice.Id);
                 state = await MarkConcurrencyConflictAndRefreshAsync(
                     owner,
                     state,
@@ -373,11 +379,11 @@ public sealed class SyncCoordinator
             }
             catch (Exception ex) when (IsNonRetryableClientFailure(ex))
             {
+                state.PendingPush.Invoices.RemoveAll(x => x.Id == invoice.Id);
                 MarkFailure(state, ex);
             }
             catch (Exception ex)
             {
-                state.PendingPush.Invoices.Add(invoice);
                 MarkFailure(state, ex);
             }
 
@@ -868,6 +874,8 @@ public sealed class SyncCoordinator
     public async Task<MobileSyncState> QueueTransactionDraftAsync(TransactionDto transaction, CancellationToken ct = default)
         => await MutateStoredStateAsync(state =>
         {
+            if (transaction.AmountsHidden && !transaction.IsDeleted)
+                throw new InvalidOperationException("비공개 수금/지급 금액으로는 저장할 수 없습니다.");
             state.PendingPush.Transactions.RemoveAll(x => x.Id == transaction.Id);
             state.PendingPush.Transactions.Add(transaction);
         }, ct);
@@ -1128,6 +1136,15 @@ public sealed class SyncCoordinator
         {
             state.Normalize();
             NormalizeNonInventoryItemStocks(state);
+            if (MobileRentalPendingPrivacy.HasPending(state))
+            {
+                var privacyCandidate = CloneStateForPullApply(state);
+                if (MobileRentalPendingPrivacy.Apply(privacyCandidate, _sessionStore.GetSnapshot()))
+                {
+                    await _store.SaveAsync(owner, privacyCandidate, ct);
+                    state = privacyCandidate;
+                }
+            }
             var scopedPush = MobilePendingScopeFilter.CreateScopedPushRequest(_sessionStore.GetSnapshot(), state);
             if (HasPendingServerSyncPayload(scopedPush))
             {
@@ -1979,6 +1996,7 @@ public sealed class SyncCoordinator
             state.SyncedRentalAssets = MergeById(state.SyncedRentalAssets, response.RentalAssets);
             state.SyncedRentalAssetAssignmentHistories = MergeById(state.SyncedRentalAssetAssignmentHistories, response.RentalAssetAssignmentHistories);
             state.SyncedRentalBillingLogs = MergeById(state.SyncedRentalBillingLogs, response.RentalBillingLogs);
+            MobileRentalPendingPrivacy.Apply(state, _sessionStore.GetSnapshot());
             NormalizeNonInventoryItemStocks(state);
             await ApplyPurgeRecordsAsync(
                 owner,

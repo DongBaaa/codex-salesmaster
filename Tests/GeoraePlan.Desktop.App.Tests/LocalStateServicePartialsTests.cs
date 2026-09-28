@@ -759,7 +759,7 @@ public sealed class LocalStateServicePartialsTests
             var yeonsuSession = CreateUserSession(
                 TenantScopeCatalog.UsenetGroup,
                 OfficeCodeCatalog.Yeonsu,
-                TenantScopeCatalog.ScopeOfficeOnly);
+                TenantScopeCatalog.ScopeOfficeOnly, AppPermissionNames.AmountViewSales);
             var yeonsuLocal = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), yeonsuSession);
 
             var yeonsuInvoices = await yeonsuLocal.GetInvoicesAsync(invoiceDate, invoiceDate, null, yeonsuSession);
@@ -807,7 +807,7 @@ public sealed class LocalStateServicePartialsTests
             Assert.DoesNotContain(usenetInvoices, invoice => invoice.Id == invoiceId);
             Assert.DoesNotContain(usenetTransactions, transaction => transaction.Id == transactionId);
             Assert.Null(usenetInvoice);
-            Assert.Equal(0m, usenetSettlement.InvoiceTotal);
+            Assert.Null(usenetSettlement.InvoiceTotal);
             Assert.DoesNotContain(usenetAttachments, attachment => attachment.Id == attachmentId);
 
             var usenetSyncSession = CreateUserSession(
@@ -16544,8 +16544,8 @@ public sealed class LocalStateServicePartialsTests
                 Assert.Empty(await db.RentalBillingProfiles.IgnoreQueryFilters().ToListAsync());
 
                 var editSession = CreateUserSession(
-                    AppPermissionNames.RentalProfileEdit,
-                    AppPermissionNames.RentalAssetEdit);
+                    new[] { AppPermissionNames.RentalProfileEdit,
+                    AppPermissionNames.RentalAssetEdit, AppPermissionNames.AmountViewSales, AppPermissionNames.AmountViewPurchase });
                 var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), editSession);
                 rental = new RentalStateService(db, local);
                 viewModel = new RentalBillingViewModel(rental, local, editSession);
@@ -16866,8 +16866,8 @@ public sealed class LocalStateServicePartialsTests
                 """);
 
             var session = CreateUserSession(
-                AppPermissionNames.RentalProfileEdit,
-                AppPermissionNames.RentalAssetEdit);
+                new[] { AppPermissionNames.RentalProfileEdit,
+                AppPermissionNames.RentalAssetEdit, AppPermissionNames.AmountViewSales, AppPermissionNames.AmountViewPurchase });
             var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
             var rental = new RentalStateService(db, local);
             var stateChangedCount = 0;
@@ -17059,8 +17059,8 @@ public sealed class LocalStateServicePartialsTests
                 .SingleAsync(profile => profile.Id == profileId);
             candidate.Notes = "저장되면 안 되는 프로필 메모";
             var session = CreateUserSession(
-                AppPermissionNames.RentalProfileEdit,
-                AppPermissionNames.RentalAssetEdit);
+                new[] { AppPermissionNames.RentalProfileEdit,
+                AppPermissionNames.RentalAssetEdit, AppPermissionNames.AmountViewSales });
             var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
             rental = new RentalStateService(db, local);
             var stateChangedCount = 0;
@@ -17251,8 +17251,8 @@ public sealed class LocalStateServicePartialsTests
                 .SingleAsync(profile => profile.Id == currentProfileId);
             candidate.Notes = "저장되면 안 되는 현재 프로필 메모";
             var session = CreateUserSession(
-                AppPermissionNames.RentalProfileEdit,
-                AppPermissionNames.RentalAssetEdit);
+                new[] { AppPermissionNames.RentalProfileEdit,
+                AppPermissionNames.RentalAssetEdit, AppPermissionNames.AmountViewSales, AppPermissionNames.AmountViewPurchase });
             var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
             rental = new RentalStateService(db, local);
             var stateChangedCount = 0;
@@ -17505,8 +17505,8 @@ public sealed class LocalStateServicePartialsTests
                 .Options;
             await using var db = new LocalDbContext(options);
             var session = CreateUserSession(
-                AppPermissionNames.RentalProfileEdit,
-                AppPermissionNames.RentalAssetEdit);
+                new[] { AppPermissionNames.RentalProfileEdit,
+                AppPermissionNames.RentalAssetEdit, AppPermissionNames.AmountViewSales, AppPermissionNames.AmountViewPurchase });
             var local = new LocalStateService(db, new OfficeAccessService(), new SyncRequestDispatcher(), session);
             var rental = new RentalStateService(db, local);
             var stateChangedCount = 0;

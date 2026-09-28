@@ -13,7 +13,7 @@ using Xunit;
 
 namespace GeoraePlan.Server.Api.Tests;
 
-public sealed class InvoiceScopeAndQuantityIntegrityTests : IDisposable
+public sealed partial class InvoiceScopeAndQuantityIntegrityTests : IDisposable
 {
     private readonly SqliteConnection _connection;
 
@@ -3097,6 +3097,10 @@ public sealed class InvoiceScopeAndQuantityIntegrityTests : IDisposable
         Unit = "EA",
         ItemKind = ItemKinds.Product,
         TrackingType = trackingType,
+        // Quantity/scope tests use a registered price, as required for users
+        // without amount permission. Their supplied invoice price is also 100.
+        SalePrice = 100m,
+        PurchasePrice = 100m,
         CurrentStock = currentStock
     };
 

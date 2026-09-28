@@ -352,7 +352,7 @@
                             <DataGridTextColumn Header="시리얼번호" Binding="{Binding Source.MachineNumber}" Width="140"/>
                             <DataGridTextColumn Header="상태" Binding="{Binding Source.AssetStatus}" Width="90"/>
                             <DataGridTextColumn Header="청구상태" Binding="{Binding BillingEligibilityStatus}" Width="100"/>
-                            <DataGridTextColumn Header="월요금" Binding="{Binding Source.MonthlyFee, StringFormat=N0}" Width="100"/>
+                            <DataGridTextColumn Header="월요금" Binding="{Binding MonthlyFee, StringFormat=N0, TargetNullValue=비공개}" Width="100"/>
                             <DataGridTextColumn Header="만료일" Binding="{Binding Source.RentalEndDate}" Width="100"/>
                             <DataGridTextColumn Header="남은일수" Binding="{Binding DaysRemaining}" Width="76"/>
                             <DataGridCheckBoxColumn Header="이상" Binding="{Binding HasDataIssue}" Width="60" IsReadOnly="True"/>
@@ -397,10 +397,16 @@
                               HorizontalContentAlignment="Stretch"
                               PanningMode="VerticalOnly">
                     <Grid x:Name="RentalAssetDetailViewportContent"
-                          IsEnabled="{Binding CanEditAssetDetails}"
+                          IsEnabled="{Binding CanQueryAssets}"
                           MinWidth="0"
                           HorizontalAlignment="Left">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
                     <Grid x:Name="RentalAssetDetailContent"
+                          Grid.Row="0"
+                          IsEnabled="{Binding CanEditAssetDetails}"
                           MinWidth="0"
                           HorizontalAlignment="Stretch">
                         <Grid.Resources>
@@ -555,9 +561,9 @@
                         </Grid>
 
                         <TextBlock Grid.Row="11" Grid.Column="0" Text="월요금" VerticalAlignment="Center" Margin="0,0,4,8"/>
-                        <TextBox Grid.Row="11" Grid.Column="1" Text="{Binding EditMonthlyFee, Converter={StaticResource DecimalToString}, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                        <TextBox Grid.Row="11" Grid.Column="1" IsReadOnly="{Binding AreSalesAmountsReadOnly}" Text="{Binding EditMonthlyFee, Converter={StaticResource DecimalToString}, ConverterParameter=hiddenWhenNull, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
                         <TextBlock Grid.Row="11" Grid.Column="3" Text="보증금" VerticalAlignment="Center" Margin="0,0,4,8"/>
-                        <TextBox Grid.Row="11" Grid.Column="4" Text="{Binding EditDepositText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
+                        <TextBox Grid.Row="11" Grid.Column="4" IsReadOnly="{Binding AreSalesAmountsReadOnly}" Text="{Binding EditDepositText, TargetNullValue=비공개, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
 
                         <TextBlock Grid.Row="12" Grid.Column="0" Text="계약개월" VerticalAlignment="Center" Margin="0,0,4,8"/>
                         <TextBox Grid.Row="12" Grid.Column="1" Text="{Binding EditContractMonths, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"/>
@@ -633,14 +639,14 @@
                                     <TextBox Grid.Row="0" Grid.Column="4" Text="{Binding EditBlackIncludedPages, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6"/>
 
                                     <TextBlock Grid.Row="1" Grid.Column="0" Text="흑백 초과단가" VerticalAlignment="Center" Margin="0,0,4,6"/>
-                                    <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding EditBlackOverageUnitPrice, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6"/>
+                                    <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding EditBlackOverageUnitPrice, UpdateSourceTrigger=PropertyChanged}" IsReadOnly="{Binding AreSalesAmountsReadOnly}" Margin="0,0,0,6"/>
                                     <TextBlock Grid.Row="1" Grid.Column="3" Text="컬러 기본" VerticalAlignment="Center" Margin="0,0,4,6"/>
                                     <ComboBox Grid.Row="1" Grid.Column="4" ItemsSource="{Binding MeterPolicyModeOptions}" SelectedItem="{Binding EditColorIncludedMode}" Margin="0,0,0,6"/>
 
                                     <TextBlock Grid.Row="2" Grid.Column="0" Text="컬러 기본매수" VerticalAlignment="Center" Margin="0,0,4,6"/>
                                     <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding EditColorIncludedPages, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6"/>
                                     <TextBlock Grid.Row="2" Grid.Column="3" Text="컬러 초과단가" VerticalAlignment="Center" Margin="0,0,4,6"/>
-                                    <TextBox Grid.Row="2" Grid.Column="4" Text="{Binding EditColorOverageUnitPrice, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6"/>
+                                    <TextBox Grid.Row="2" Grid.Column="4" Text="{Binding EditColorOverageUnitPrice, UpdateSourceTrigger=PropertyChanged}" IsReadOnly="{Binding AreSalesAmountsReadOnly}" Margin="0,0,0,6"/>
 
                                     <TextBlock Grid.Row="3" Grid.Column="0" Text="검침 청구월" VerticalAlignment="Center" Margin="0,0,4,6"/>
                                     <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding EditMeterBillingYearMonth, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,6" ToolTip="yyyy-MM 형식"/>
@@ -688,7 +694,9 @@
                             </StackPanel>
                         </Border>
 
-                        <Border Grid.Row="17" Grid.ColumnSpan="5"
+                    </Grid>
+                        <!-- Reading history must remain scrollable without granting edit rights. -->
+                        <Border Grid.Row="1"
                                 Background="#20344B"
                                 BorderBrush="#38506D"
                                 BorderThickness="1"
@@ -718,14 +726,13 @@
                                         <DataGridTextColumn Header="거래처" Binding="{Binding CustomerName}" Width="160"/>
                                         <DataGridTextColumn Header="설치위치" Binding="{Binding InstallLocation}" Width="150"/>
                                         <DataGridTextColumn Header="청구연결" Binding="{Binding BillingProfileDisplay}" Width="180"/>
-                                        <DataGridTextColumn Header="월요금" Binding="{Binding MonthlyFee, StringFormat=N0}" Width="90"/>
+                                        <DataGridTextColumn Header="월요금" Binding="{Binding MonthlyFee, StringFormat=N0, TargetNullValue=비공개}" Width="90"/>
                                         <DataGridTextColumn Header="담당지점" Binding="{Binding ResponsibleOfficeName}" Width="100"/>
                                         <DataGridTextColumn Header="사유" Binding="{Binding ChangeReason}" Width="*"/>
                                     </DataGrid.Columns>
                                 </DataGrid>
                             </StackPanel>
                         </Border>
-                    </Grid>
                     </Grid>
                 </ScrollViewer>
             </Border>

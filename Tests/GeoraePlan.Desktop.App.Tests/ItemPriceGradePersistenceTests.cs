@@ -371,7 +371,7 @@ public sealed class ItemPriceGradePersistenceTests
             local: null!,
             print: null!,
             invoicePrintService: null!,
-            session: new SessionState(),
+            session: CreateAdminSession(),
             newInvoiceVoucherType: VoucherType.Sales);
         var applyCache = typeof(SalesViewModel).GetMethod(
             "ApplyItemPriceGradeCache",
@@ -417,7 +417,7 @@ public sealed class ItemPriceGradePersistenceTests
             local: null!,
             print: null!,
             invoicePrintService: null!,
-            session: new SessionState(),
+            session: CreateAdminSession(),
             newInvoiceVoucherType: VoucherType.Sales);
         var applyCache = typeof(SalesViewModel).GetMethod(
             "ApplyItemPriceGradeCache",

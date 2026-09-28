@@ -9,6 +9,13 @@ namespace GeoraePlan.Desktop.App.Tests;
 
 public sealed class InvoiceVatModeTests
 {
+    private static SessionState CreateAmountViewer()
+    {
+        var session = new SessionState();
+        session.SetOfflineSession(new UserSessionDto { UserId = Guid.NewGuid(), Username = "amount-fixture", Role = DomainConstants.RoleAdmin, OfficeCode = OfficeCodeCatalog.Usenet });
+        return session;
+    }
+
     [Fact]
     public void InvoiceVatModes_CalculateTotals_UsesIncludedVatByDefault()
     {
@@ -76,7 +83,7 @@ public sealed class InvoiceVatModeTests
             local: null!,
             print: null!,
             invoicePrintService: null!,
-            session: new SessionState(),
+            session: CreateAmountViewer(),
             newInvoiceVoucherType: VoucherType.Sales);
 
         viewModel.Lines.Add(new InvoiceLineEditModel
@@ -103,7 +110,7 @@ public sealed class InvoiceVatModeTests
             local: null!,
             print: null!,
             invoicePrintService: null!,
-            session: new SessionState(),
+            session: CreateAmountViewer(),
             newInvoiceVoucherType: VoucherType.Sales);
 
         viewModel.IsVatNone = false;

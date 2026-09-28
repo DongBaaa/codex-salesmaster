@@ -1,4 +1,4 @@
-﻿using 거래플랜.Desktop.App.Data;
+using 거래플랜.Desktop.App.Data;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Services;
@@ -21,6 +21,7 @@ public sealed class PeriodLedgerAggregationService
         if (query.To < query.From)
             throw new InvalidOperationException("조회 종료일은 시작일보다 빠를 수 없습니다.");
 
+        var access = FinancialAmountVisibility.CaptureAccess(session);
         progress?.Report("조회 중...");
 
         var effectiveCustomerId = query.Scope == PeriodLedgerScope.AllCustomers
@@ -28,7 +29,7 @@ public sealed class PeriodLedgerAggregationService
             : query.CustomerId;
 
         var invoices = await _local.GetInvoicesAsync(query.From, query.To, effectiveCustomerId, session, ct);
-        var transactions = await _local.GetTransactionsAsync(query.From, query.To, effectiveCustomerId, session, ct);
+        var transactions = await _local.GetPeriodLedgerTransactionsAsync(query.From, query.To, effectiveCustomerId, session, ct);
         var monthlySalesChartPoints = BuildMonthlySalesChartPoints(query, invoices);
         var customerIds = invoices.Select(invoice => invoice.CustomerId)
             .Concat(transactions.Select(transaction => transaction.CustomerId))
@@ -37,12 +38,18 @@ public sealed class PeriodLedgerAggregationService
             .ToList();
         var customerNameMap = await _local.GetCustomerNameMapAsync(customerIds, ct);
 
-        return query.LedgerType switch
+        var result = query.LedgerType switch
         {
             PeriodLedgerType.ReceiptPayment => BuildPaymentLedgerResult(query, invoices, transactions, customerNameMap, monthlySalesChartPoints),
-            PeriodLedgerType.YeonsuDelivery => await BuildYeonsuDeliveryResultAsync(query, session, monthlySalesChartPoints, ct),
+            PeriodLedgerType.YeonsuDelivery => await BuildYeonsuDeliveryResultAsync(query, session, monthlySalesChartPoints, invoices, ct),
             _ => BuildBlockLedgerResult(query, invoices, transactions, customerNameMap, monthlySalesChartPoints)
         };
+        ct.ThrowIfCancellationRequested();
+        if (access != FinancialAmountVisibility.CaptureAccess(session))
+            throw new OperationCanceledException("조회 중 접근 권한이 변경되었습니다.");
+        if (query.LedgerType != PeriodLedgerType.YeonsuDelivery)
+            result = PeriodLedgerAmountProjection.Apply(result, session, invoices, transactions);
+        return result with { AccessSession = session, AccessKey = access };
     }
 
     private static List<PeriodLedgerMonthlySalesChartPoint> BuildMonthlySalesChartPoints(
@@ -173,7 +180,7 @@ public sealed class PeriodLedgerAggregationService
                 Items = lineRows
             });
 
-            foreach (var payment in invoice.Payments.Where(p => !p.IsDeleted && p.Amount > 0))
+            foreach (var payment in invoice.Payments.Where(p => !p.IsDeleted && (p.Amount > 0 || p.AmountsHidden)))
             {
                 var isPurchaseInvoice = invoice.VoucherType == VoucherType.Purchase;
                 transactionById.TryGetValue(payment.Id, out var linkedTransaction);
@@ -578,7 +585,7 @@ public sealed class PeriodLedgerAggregationService
             .ToDictionary(group => group.Key, group => group.First());
         var directMirrorIds = invoices
             .SelectMany(invoice => invoice.Payments)
-            .Where(payment => !payment.IsDeleted && payment.Amount > 0m)
+            .Where(payment => !payment.IsDeleted && (payment.Amount > 0m || payment.AmountsHidden))
             .Select(payment => payment.Id)
             .ToHashSet();
 
@@ -591,7 +598,7 @@ public sealed class PeriodLedgerAggregationService
 
             var summary = BuildInvoiceSummary(invoice, invoice.Lines.Count(l => !l.IsDeleted));
             var activePayments = invoice.Payments
-                .Where(payment => !payment.IsDeleted && payment.Amount > 0m)
+                .Where(payment => !payment.IsDeleted && (payment.Amount > 0m || payment.AmountsHidden))
                 .ToList();
 
             foreach (var payment in activePayments)
@@ -653,7 +660,7 @@ public sealed class PeriodLedgerAggregationService
             if (invoice.VoucherType == VoucherType.Collection)
             {
                 var amount = Math.Abs(invoice.TotalAmount);
-                if (amount <= 0)
+                if (amount <= 0 && !invoice.AmountsHidden)
                     continue;
 
                 allEvents.Add(new PeriodPaymentEvent
@@ -687,7 +694,7 @@ public sealed class PeriodLedgerAggregationService
                 ? resolvedCustomerName.Trim()
                 : "(미지정 거래처)";
 
-            if (tx.ReceiptTotal > 0)
+            if (tx.ReceiptTotal > 0 || tx.AmountsHidden && tx.PaymentTotal <= 0)
             {
                 allEvents.Add(new PeriodPaymentEvent
                 {
@@ -761,6 +768,7 @@ public sealed class PeriodLedgerAggregationService
 
             rows.Add(new PeriodLedgerPaymentRow
             {
+                CustomerId = ev.CustomerId,
                 No = i + 1,
                 Date = ev.Date,
                 Division = ev.Division,
@@ -850,6 +858,7 @@ public sealed class PeriodLedgerAggregationService
         PeriodLedgerQuery query,
         SessionState session,
         IReadOnlyList<PeriodLedgerMonthlySalesChartPoint> monthlySalesChartPoints,
+        IReadOnlyList<LocalInvoice> chartInvoices,
         CancellationToken ct)
     {
         var customerId = query.Scope == PeriodLedgerScope.AllCustomers
@@ -917,7 +926,7 @@ public sealed class PeriodLedgerAggregationService
             })
             .ToList();
 
-        return new PeriodLedgerBuildResult
+        var result = new PeriodLedgerBuildResult
         {
             Query = query,
             Title = ResolveLedgerTitle(query.LedgerType),
@@ -937,6 +946,7 @@ public sealed class PeriodLedgerAggregationService
             },
             ProfitWarningMessage = null
         };
+        return PeriodLedgerAmountProjection.Apply(result, session, invoices, [], chartInvoices);
     }
 
     private static string ResolveWarehouseName(string? warehouseCode)

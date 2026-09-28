@@ -14,6 +14,7 @@ public partial class DashboardBalanceDetailsWindow : Window
     {
         InitializeComponent();
         DataContext = viewModel;
+        Closed += (_, _) => viewModel.Dispose();
     }
 
     private void Window_KeyDown(object sender, KeyEventArgs e)

@@ -134,7 +134,9 @@ internal static class DesktopUpgradeRequiredResponseParser
             Required = new ClientCompatibilityPolicyDto
             {
                 PolicyVersion =
-                    PositiveOrZero(required.PolicyVersion),
+                    HasValidOptionalVersionBounds(required)
+                        ? PositiveOrZero(required.PolicyVersion)
+                        : 0,
                 RequiresUserAction = true,
                 MinimumVersion =
                     SanitizeVersion(required.MinimumVersion),
@@ -231,6 +233,19 @@ internal static class DesktopUpgradeRequiredResponseParser
 
     private static int PositiveOrZero(int value)
         => value > 0 ? value : 0;
+
+    private static bool HasValidOptionalVersionBounds(ClientCompatibilityPolicyDto required)
+    {
+        // Sanitization must not turn malformed supplied bounds into an apparently
+        // valid protocol-only policy. Invalid bodies retain opaque fail-closed
+        // behavior; genuinely omitted package bounds remain supported.
+        static bool OptionalVersion(string? value)
+            => string.IsNullOrWhiteSpace(value) ||
+               (value.Trim().Length <= MaximumVersionLength &&
+                DesktopCompatibilityPolicy.TryPositiveVersion(value, out _));
+        return OptionalVersion(required.MinimumVersion) && OptionalVersion(required.LatestVersion) &&
+               (required.MinimumBuild is null or > 0) && (required.LatestBuild is null or > 0);
+    }
 
     private static int? PositiveOrNull(int? value)
         => value is > 0 ? value : null;

@@ -122,6 +122,10 @@ public sealed class CustomersController : ControllerBase
             })
             .ToListAsync(cancellationToken);
 
+        foreach (var payment in recentPayments)
+            if (!InvoiceAmountReadPolicy.CanView(payment.VoucherType, _officeScopeService))
+                payment.Amount = null;
+
         return Ok(new CustomerDetailDto
         {
             Customer = entity.ToDto(),

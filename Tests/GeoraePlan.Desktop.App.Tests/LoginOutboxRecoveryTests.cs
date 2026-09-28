@@ -19,7 +19,7 @@ public sealed class LoginOutboxRecoveryTests
     [InlineData("ITWORLD", "Prepared")]
     [InlineData("ITWORLD", "Sent")]
     [InlineData("ITWORLD", "Failed")]
-    public async Task Login_RecoversSameOwnerReceiptWithoutChangingRetryIdentity(string office, string status)
+    public async Task Login_PreservesSameOwnerReceiptIncludingOriginalSession(string office, string status)
     {
         await using var fixture = await Fixture.CreateAsync(office);
         var row = fixture.Row;
@@ -27,13 +27,12 @@ public sealed class LoginOutboxRecoveryTests
         await fixture.Db.SaveChangesAsync();
         var oldSession = row.SessionId;
         var expected = JsonSerializer.Deserialize<LocalSyncOutboxEntry>(JsonSerializer.Serialize(row))!;
-        expected.SessionId = fixture.Session.SessionId;
         fixture.Db.Settings.Add(new LocalSetting { Key = "Editor.Unsaved", Value = "keep" });
 
         await fixture.Local.RegisterLoginScopeAsync(fixture.Session);
         await using var reopened = fixture.OpenDb();
         var actual = await reopened.SyncOutboxEntries.SingleAsync();
-        Assert.NotEqual(oldSession, actual.SessionId);
+        Assert.Equal(oldSession, actual.SessionId);
         Assert.Equal(JsonSerializer.Serialize(expected), JsonSerializer.Serialize(actual));
         Assert.Null(await reopened.Settings.FindAsync("Editor.Unsaved"));
         Assert.Contains(fixture.Db.ChangeTracker.Entries<LocalSetting>(), x => x.State == EntityState.Added && x.Entity.Key == "Editor.Unsaved");
@@ -96,19 +95,19 @@ public sealed class LoginOutboxRecoveryTests
     }
 
     [Fact]
-    public async Task StoredOfficeLogin_RecoversReceiptsWithoutReplacingInteractiveLoginScope()
+    public async Task Login_DoesNotRequireWritingDurableReceipts()
     {
         await using var fixture = await Fixture.CreateAsync("YEONSU");
-        fixture.Db.Settings.Add(new LocalSetting { Key = "Login.LastScopeKey", Value = "other-user|ITWORLD|ITWORLD|OfficeOnly" });
-        await fixture.Db.SaveChangesAsync();
-        await fixture.Local.ResumeOutboxAfterOnlineLoginAsync(fixture.Session, CancellationToken.None);
+        await fixture.Db.Database.ExecuteSqlRawAsync("CREATE TRIGGER RejectReceiptRewrite BEFORE UPDATE ON SyncOutboxEntries BEGIN SELECT RAISE(ABORT, 'receipt provenance must stay immutable'); END;");
+        var original = JsonSerializer.Serialize(fixture.Row);
+        await fixture.Local.RegisterLoginScopeAsync(fixture.Session);
         await using var reopened = fixture.OpenDb();
-        Assert.Equal(fixture.Session.SessionId, (await reopened.SyncOutboxEntries.SingleAsync()).SessionId);
-        Assert.Equal("other-user|ITWORLD|ITWORLD|OfficeOnly", (await reopened.Settings.FindAsync("Login.LastScopeKey"))!.Value);
+        Assert.Equal(original, JsonSerializer.Serialize(await reopened.SyncOutboxEntries.SingleAsync()));
+        Assert.True(await reopened.Settings.AnyAsync(x => x.Key.StartsWith("Login.LastScope")));
     }
 
     [Fact]
-    public async Task GlobalAdminLogin_RecoversOwnOtherBusinessDatabaseReceipt()
+    public async Task GlobalAdminLogin_PreservesOwnOtherBusinessDatabaseReceipt()
     {
         await using var fixture = await Fixture.CreateAsync("ITWORLD");
         var user = fixture.Session.User!;
@@ -116,15 +115,15 @@ public sealed class LoginOutboxRecoveryTests
         await fixture.Local.RegisterLoginScopeAsync(fixture.Session);
         await using var reopened = fixture.OpenDb();
         var receipt = await reopened.SyncOutboxEntries.SingleAsync();
-        Assert.Equal(fixture.Session.SessionId, receipt.SessionId);
+        Assert.Equal(fixture.Row.SessionId, receipt.SessionId);
         Assert.Equal("ITWORLD", receipt.BusinessDatabaseName);
     }
 
     [Fact]
-    public async Task Login_RecoveryFailureRollsBackScopeSettingsAndReceiptTogether()
+    public async Task Login_SettingsFailureRollsBackWithoutChangingReceipt()
     {
         await using var fixture = await Fixture.CreateAsync("USENET");
-        await fixture.Db.Database.ExecuteSqlRawAsync("CREATE TRIGGER RejectLoginHandover BEFORE UPDATE OF SessionId ON SyncOutboxEntries BEGIN SELECT RAISE(ABORT, 'synthetic handover failure'); END;");
+        await fixture.Db.Database.ExecuteSqlRawAsync("CREATE TRIGGER RejectLoginSettings BEFORE INSERT ON Settings WHEN NEW.Key LIKE 'Login.LastScope%' BEGIN SELECT RAISE(ABORT, 'synthetic login settings failure'); END;");
         var original = JsonSerializer.Serialize(fixture.Row);
         await Assert.ThrowsAnyAsync<Exception>(() => fixture.Local.RegisterLoginScopeAsync(fixture.Session));
         await using var reopened = fixture.OpenDb();

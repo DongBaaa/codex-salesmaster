@@ -11,6 +11,7 @@ public partial class RentalDashboardWindow : Window
     {
         InitializeComponent();
         DataContext = viewModel;
+        Closed += (_, _) => viewModel.Dispose();
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e)

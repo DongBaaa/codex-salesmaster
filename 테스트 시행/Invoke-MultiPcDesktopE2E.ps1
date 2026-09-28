@@ -914,7 +914,11 @@ function Read-JsonFile {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "필수 JSON 증거가 없습니다: $Path"
     }
-    return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    $jsonText = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey("DateKind")) {
+        return $jsonText | ConvertFrom-Json -DateKind String
+    }
+    return $jsonText | ConvertFrom-Json
 }
 
 function Wait-MultiPcJsonFile {

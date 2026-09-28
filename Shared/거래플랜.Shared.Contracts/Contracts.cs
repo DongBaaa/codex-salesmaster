@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -313,12 +313,12 @@ public sealed class ItemDto : SyncEntityDto
     public string? StorageLocation { get; set; }
     public decimal CurrentStock { get; set; }
     public decimal SafetyStock { get; set; }
-    public decimal PurchasePrice { get; set; }
-    public decimal SalePrice { get; set; }
-    public decimal RetailPrice { get; set; }
-    public decimal PriceGradeA { get; set; }
-    public decimal PriceGradeB { get; set; }
-    public decimal PriceGradeC { get; set; }
+    public decimal? PurchasePrice { get; set; } = 0m;
+    public decimal? SalePrice { get; set; } = 0m;
+    public decimal? RetailPrice { get; set; } = 0m;
+    public decimal? PriceGradeA { get; set; } = 0m;
+    public decimal? PriceGradeB { get; set; } = 0m;
+    public decimal? PriceGradeC { get; set; } = 0m;
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateOnly? LastPurchaseDate { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -327,6 +327,10 @@ public sealed class ItemDto : SyncEntityDto
     public DateOnly? LastSaleDate { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? LastSaleDateSpecified { get; set; }
+    [JsonIgnore]
+    public bool PurchaseAmountsHidden => PurchasePrice is null;
+    [JsonIgnore]
+    public bool SalesAmountsHidden => SalePrice is null || RetailPrice is null || PriceGradeA is null || PriceGradeB is null || PriceGradeC is null;
     public string SimpleMemo { get; set; } = string.Empty;
     public bool IsRental { get; set; }
     public bool IsSale { get; set; }
@@ -400,12 +404,25 @@ public sealed class ItemPriceGradeDto : SyncEntityDto
     public Guid ItemId { get; set; }
     public Guid PriceGradeOptionId { get; set; }
     public string PriceGradeName { get; set; } = string.Empty;
-    public decimal UnitPrice { get; set; }
+    public decimal? UnitPrice { get; set; } = 0m;
+    [JsonIgnore]
+    public bool AmountsHidden => UnitPrice is null;
     public bool IsActive { get; set; } = true;
+}
+
+// Response metadata only. Write endpoints derive identity from the authenticated
+// account; clients cannot assign invoice authors. Null denotes an older server.
+public sealed class InvoiceAuthorDto
+{
+    public string CreatedByUsername { get; set; } = string.Empty;
+    public string LastSavedByUsername { get; set; } = string.Empty;
+    public DateTime? LastSavedAtUtc { get; set; }
 }
 
 public sealed class InvoiceDto : SyncEntityDto
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public InvoiceAuthorDto? Author { get; set; }
     public Guid CustomerId { get; set; }
     public string CustomerName { get; set; } = string.Empty;
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
@@ -423,9 +440,16 @@ public sealed class InvoiceDto : SyncEntityDto
     public VoucherType VoucherType { get; set; }
     public string SourceWarehouseCode { get; set; } = string.Empty;
     public DateOnly InvoiceDate { get; set; }
-    public decimal TotalAmount { get; set; }
-    public decimal SupplyAmount { get; set; }
-    public decimal VatAmount { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? TotalAmount { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? SupplyAmount { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? VatAmount { get; set; } = 0m;
+    [JsonIgnore]
+    public bool AmountsHidden => TotalAmount is null || SupplyAmount is null || VatAmount is null ||
+        (Lines?.Any(line => line.AmountsHidden) ?? false) ||
+        (Payments?.Any(payment => !payment.IsDeleted && payment.AmountsHidden) ?? false);
     public string VatMode { get; set; } = InvoiceVatModes.Included;
     public bool TaxInvoiceIssued { get; set; }
     public bool PurchaseReceivingRequired { get; set; }
@@ -449,8 +473,12 @@ public sealed class InvoiceLineDto
     public string SpecificationOriginal { get; set; } = string.Empty;
     public string Unit { get; set; } = string.Empty;
     public decimal Quantity { get; set; }
-    public decimal UnitPrice { get; set; }
-    public decimal LineAmount { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? UnitPrice { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? LineAmount { get; set; } = 0m;
+    [JsonIgnore]
+    public bool AmountsHidden => UnitPrice is null || LineAmount is null;
     public string Remark { get; set; } = string.Empty;
     public string SerialNumber { get; set; } = string.Empty;
     public string MaterialNumber { get; set; } = string.Empty;
@@ -466,7 +494,10 @@ public sealed class PaymentDto : SyncEntityDto
 {
     public Guid InvoiceId { get; set; }
     public DateOnly PaymentDate { get; set; }
-    public decimal Amount { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? Amount { get; set; } = 0m;
+    [JsonIgnore]
+    public bool AmountsHidden => Amount is null;
     public string Note { get; set; } = string.Empty;
     public List<PaymentAttachmentDto> Attachments { get; set; } = new();
 }
@@ -496,19 +527,47 @@ public sealed class TransactionDto : SyncEntityDto
     public string LinkedInvoiceNumber { get; set; } = string.Empty;
     public Guid? LinkedRentalBillingProfileId { get; set; }
     public Guid? LinkedRentalBillingRunId { get; set; }
-    public decimal SettlementAmount { get; set; }
-    public decimal AdvanceDelta { get; set; }
-    public decimal PrepaidDelta { get; set; }
-    public decimal CashReceipt { get; set; }
-    public decimal CardReceipt { get; set; }
-    public decimal BankReceipt { get; set; }
-    public decimal DiscountApplied { get; set; }
-    public decimal ReceiptTotal { get; set; }
-    public decimal CashPayment { get; set; }
-    public decimal CardPayment { get; set; }
-    public decimal BankPayment { get; set; }
-    public decimal DiscountReceived { get; set; }
-    public decimal PaymentTotal { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? SettlementAmount { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? AdvanceDelta { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? PrepaidDelta { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? CashReceipt { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? CardReceipt { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? BankReceipt { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? DiscountApplied { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? ReceiptTotal { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? CashPayment { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? CardPayment { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? BankPayment { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? DiscountReceived { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? PaymentTotal { get; set; } = 0m;
+    [JsonIgnore]
+    public bool AmountsHidden => SettlementAmount is null ||
+        AdvanceDelta is null ||
+        PrepaidDelta is null ||
+        CashReceipt is null ||
+        CardReceipt is null ||
+        BankReceipt is null ||
+        DiscountApplied is null ||
+        ReceiptTotal is null ||
+        CashPayment is null ||
+        CardPayment is null ||
+        BankPayment is null ||
+        DiscountReceived is null ||
+        PaymentTotal is null;
+
     public string Note { get; set; } = string.Empty;
     public string Memo { get; set; } = string.Empty;
 }
@@ -608,8 +667,10 @@ public sealed class RentalBillingProfileDto : SyncEntityDto
     public int BillingAnchorMonth { get; set; } = 3;
     public string DocumentIssueMode { get; set; } = RentalBillingScheduleRules.DocumentIssueModeSameAsDueDate;
     public int DocumentLeadDays { get; set; }
-    public decimal MonthlyAmount { get; set; }
-    public decimal DepositAmount { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? MonthlyAmount { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? DepositAmount { get; set; } = 0m;
     public string SubmissionDocuments { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
     public DateOnly? BillingAnchorDate { get; set; }
@@ -620,14 +681,18 @@ public sealed class RentalBillingProfileDto : SyncEntityDto
     public DateOnly? LastBilledDate { get; set; }
     public string SettlementStatus { get; set; } = string.Empty;
     public string CompletionStatus { get; set; } = string.Empty;
-    public decimal SettledAmount { get; set; }
-    public decimal OutstandingAmount { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? SettledAmount { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? OutstandingAmount { get; set; } = 0m;
     public bool RequiresFollowUp { get; set; }
     public DateOnly? LastSettledDate { get; set; }
     public string BillingTemplateJson { get; set; } = "[]";
     public string BillingRunsJson { get; set; } = "[]";
     public bool PoolMeterAllowance { get; set; }
     public bool IsActive { get; set; } = true;
+    [JsonIgnore]
+    public bool AmountsHidden => MonthlyAmount is null || DepositAmount is null || SettledAmount is null || OutstandingAmount is null;
 }
 
 public sealed class RentalAssetDto : SyncEntityDto
@@ -659,12 +724,16 @@ public sealed class RentalAssetDto : SyncEntityDto
     public string PurchaseVendor { get; set; } = string.Empty;
     public DateOnly? PurchaseDate { get; set; }
     public DateOnly? DisposalDate { get; set; }
-    public decimal PurchasePrice { get; set; }
-    public decimal SalePrice { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? PurchasePrice { get; set; } = 0m;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? SalePrice { get; set; } = 0m;
     public string CustomerName { get; set; } = string.Empty;
     public string InstallLocation { get; set; } = string.Empty;
-    public string DepositText { get; set; } = string.Empty;
-    public decimal MonthlyFee { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? DepositText { get; set; } = string.Empty;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? MonthlyFee { get; set; } = 0m;
     public int ContractMonths { get; set; }
     public DateOnly? ContractDate { get; set; }
     public DateOnly? InstallDate { get; set; }
@@ -685,6 +754,10 @@ public sealed class RentalAssetDto : SyncEntityDto
     public DateTime? MeterPolicySourceUpdatedAtUtc { get; set; }
     public string AssetStatus { get; set; } = string.Empty;
     public string Notes { get; set; } = string.Empty;
+    [JsonIgnore]
+    public bool PurchaseAmountsHidden => PurchasePrice is null;
+    [JsonIgnore]
+    public bool SalesAmountsHidden => SalePrice is null || MonthlyFee is null || DepositText is null;
 }
 
 public sealed class RentalBillingLogDto : SyncEntityDto
@@ -698,8 +771,11 @@ public sealed class RentalBillingLogDto : SyncEntityDto
     public DateOnly? ProcessedDate { get; set; }
     public string ProcessedByUsername { get; set; } = string.Empty;
     public string Status { get; set; } = "예정";
-    public decimal BilledAmount { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? BilledAmount { get; set; } = 0m;
     public string Note { get; set; } = string.Empty;
+    [JsonIgnore]
+    public bool AmountsHidden => BilledAmount is null;
 }
 
 public sealed class RentalAssetAssignmentHistoryDto : SyncEntityDto
@@ -716,13 +792,16 @@ public sealed class RentalAssetAssignmentHistoryDto : SyncEntityDto
     public string ItemName { get; set; } = string.Empty;
     public string MachineNumber { get; set; } = string.Empty;
     public string ManagementNumber { get; set; } = string.Empty;
-    public decimal MonthlyFee { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? MonthlyFee { get; set; } = 0m;
     public DateOnly? ContractStartDate { get; set; }
     public DateOnly? ContractEndDate { get; set; }
     public string ChangeReason { get; set; } = string.Empty;
     public bool IsCurrent { get; set; }
     public DateTime LinkedAtUtc { get; set; }
     public DateTime? UnlinkedAtUtc { get; set; }
+    [JsonIgnore]
+    public bool AmountsHidden => MonthlyFee is null;
 }
 
 public sealed class ItemWarehouseStockDto
@@ -761,7 +840,8 @@ public sealed class CustomerPaymentHistoryDto
     public string InvoiceNumber { get; set; } = string.Empty;
     public VoucherType VoucherType { get; set; } = VoucherType.Sales;
     public DateOnly PaymentDate { get; set; }
-    public decimal Amount { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public decimal? Amount { get; set; } = 0m;
     public string Note { get; set; } = string.Empty;
     public List<PaymentAttachmentDto> Attachments { get; set; } = new();
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
@@ -1249,7 +1329,12 @@ public static class ClientCompatibilityHeaders
     public const string Version = "X-GeoraePlan-Client-Version";
     public const string Build = "X-GeoraePlan-Client-Build";
     public const string Protocol = "X-GeoraePlan-Client-Protocol";
-    public const int CurrentProtocolVersion = 1;
+    public const int NullableInvoiceAmountsProtocolVersion = 2;
+    public const int NullableItemAmountsProtocolVersion = 3;
+    public const int NullableRentalProfileAmountsProtocolVersion = 4;
+    // Clients advertise rental support only after their remaining consumers and
+    // restricted-account workflows have been verified. Do not opt them in here.
+    public const int CurrentProtocolVersion = NullableItemAmountsProtocolVersion;
 }
 
 public sealed class ClientUpgradeRequiredResponse

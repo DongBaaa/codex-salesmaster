@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileCustomerAmountAccess.cs" Link="Production\MobileCustomerAmountAccess.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\ViewModels\CustomersViewModel.cs" Link="Production\CustomersViewModel.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Models\CustomerPaymentHistoryRow.cs" Link="Production\CustomerPaymentHistoryRow.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Models\MobileVoucherTypeRules.cs" Link="Production\MobileVoucherTypeRules.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileInvoiceAmountAccess.cs" Link="Production\MobileInvoiceAmountAccess.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileRetryableNetworkFailure.cs" Link="Production\MobileRetryableNetworkFailure.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileRentalAmountAccess.cs" Link="Production\MobileRentalAmountAccess.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\ViewModels\RentalsViewModel.cs" Link="Production\RentalsViewModel.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\ViewModels\ObservableObject.cs" Link="Production\ObservableObject.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\ViewModels\MobileOwnerOperationGate.cs" Link="Production\MobileOwnerOperationGate.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileSessionScopeFilter.cs" Link="Production\MobileSessionScopeFilter.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Models\MobileSyncState.cs" Link="Production\MobileSyncState.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Models\PendingPaymentAttachmentRecord.cs" Link="Production\PendingPaymentAttachmentRecord.cs" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" PrivateAssets="all" />
+    <ProjectReference Include="..\..\Shared\거래플랜.Shared.Contracts\거래플랜.Shared.Contracts.csproj" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\SessionStore.cs" Link="Production\SessionStore.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Models\SessionSnapshot.cs" Link="Production\SessionSnapshot.cs" />
+    <Compile Include="..\..\Mobile\GeoraePlan.Mobile.App\Services\MobileItemAmountAccess.cs" Link="Production\MobileItemAmountAccess.cs" />
+  </ItemGroup>
+</Project>

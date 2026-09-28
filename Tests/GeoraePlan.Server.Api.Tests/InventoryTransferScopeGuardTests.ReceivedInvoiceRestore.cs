@@ -20,7 +20,9 @@ public sealed partial class InventoryTransferScopeGuardTests
         await SeedPendingTransferAsync(itemId, transferId, Guid.NewGuid(), "received sale restore", 8m);
         await using (var seed = CreateDbContext(CreateAdminUser()))
         {
-            (await seed.Items.SingleAsync(row => row.Id == itemId)).OfficeCode = OfficeCodeCatalog.Usenet;
+            var item = await seed.Items.SingleAsync(row => row.Id == itemId);
+            item.OfficeCode = OfficeCodeCatalog.Usenet;
+            item.SalePrice = 100m;
             seed.Customers.Add(new Customer { Id = customerId, TenantCode = TenantScopeCatalog.UsenetGroup,
                 OfficeCode = OfficeCodeCatalog.Yeonsu, ResponsibleOfficeCode = OfficeCodeCatalog.Yeonsu,
                 NameOriginal = "received sale customer", TradeType = "매출" });

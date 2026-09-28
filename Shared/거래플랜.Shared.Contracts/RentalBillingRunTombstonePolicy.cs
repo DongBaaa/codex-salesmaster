@@ -109,6 +109,13 @@ public static class RentalBillingRunTombstonePolicy
             allowRepairableLegacyValuesForFinancialRecalculation: false,
             rejectDuplicateActiveRunIds: true);
 
+    // Privacy-filtered reads allow unknown money; mutations and financial
+    // recalculation deliberately retain their numeric requirements.
+    public static RentalBillingRunLookupResult ValidateForAmountPrivacyRead(string? billingRunsJson)
+        => LookupCore(billingRunsJson, Guid.Empty,
+            allowRepairableLegacyValuesForFinancialRecalculation: false,
+            rejectDuplicateActiveRunIds: false, allowUndisclosedAmounts: true);
+
     public static RentalBillingRunLookupResult ValidateForFinancialRecalculation(
         string? billingRunsJson)
         => LookupCore(
@@ -146,7 +153,8 @@ public static class RentalBillingRunTombstonePolicy
         string? billingRunsJson,
         Guid runId,
         bool allowRepairableLegacyValuesForFinancialRecalculation,
-        bool rejectDuplicateActiveRunIds)
+        bool rejectDuplicateActiveRunIds,
+        bool allowUndisclosedAmounts = false)
     {
         if (string.IsNullOrWhiteSpace(billingRunsJson))
         {
@@ -211,7 +219,7 @@ public static class RentalBillingRunTombstonePolicy
 
                     if (ValidateOptionalCoreProperties(
                             element,
-                            allowRepairableLegacyValuesForFinancialRecalculation) is { } corePropertyError)
+                            allowRepairableLegacyValuesForFinancialRecalculation, allowUndisclosedAmounts) is { } corePropertyError)
                         return corePropertyError;
                     continue;
                 }
@@ -233,14 +241,14 @@ public static class RentalBillingRunTombstonePolicy
 
                     if (ValidateOptionalCoreProperties(
                             element,
-                            allowRepairableLegacyValuesForFinancialRecalculation) is { } emptyRunIdCorePropertyError)
+                            allowRepairableLegacyValuesForFinancialRecalculation, allowUndisclosedAmounts) is { } emptyRunIdCorePropertyError)
                         return emptyRunIdCorePropertyError;
                     continue;
                 }
 
                 if (ValidateOptionalCoreProperties(
                         element,
-                        allowRepairableLegacyValuesForFinancialRecalculation) is { } optionalCorePropertyError)
+                        allowRepairableLegacyValuesForFinancialRecalculation, allowUndisclosedAmounts) is { } optionalCorePropertyError)
                     return optionalCorePropertyError;
 
                 var normalizedRunKey = ReadNormalizedRunKey(element);
@@ -374,7 +382,8 @@ public static class RentalBillingRunTombstonePolicy
 
     private static RentalBillingRunLookupResult? ValidateOptionalCoreProperties(
         JsonElement element,
-        bool allowRepairableLegacyValuesForFinancialRecalculation)
+        bool allowRepairableLegacyValuesForFinancialRecalculation,
+        bool allowUndisclosedAmounts)
     {
         var runKeyProperty = FindProperty(element, "RunKey");
         var itemsProperty = FindProperty(element, "Items");
@@ -469,6 +478,8 @@ public static class RentalBillingRunTombstonePolicy
         foreach (var propertyName in new[] { "BilledAmount", "SettledAmount" })
         {
             var property = FindProperty(element, propertyName);
+            if (allowUndisclosedAmounts && property.IsFound && property.Value.ValueKind == JsonValueKind.Null)
+                continue;
             if (property.IsFound &&
                 (property.Value.ValueKind != JsonValueKind.Number ||
                  !property.Value.TryGetDecimal(out var amount) ||

@@ -42,6 +42,7 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject, IDis
     private DataIntegrityScanResult? _lastScanResult;
     private List<DataIntegrityIssueDetail> _allIssues = new();
     private List<DataIntegrityIssueDetail> _filteredIssues = new();
+    private bool _disposed;
 
     public DataIntegrityIssueViewModel(
         DataIntegrityIssueService service,
@@ -53,6 +54,7 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject, IDis
         _session = session;
         _initialCode = initialCode;
         _initialScanResult = initialScanResult;
+        _session.AccessChanged += OnDiagnosticAccessChanged;
     }
 
     public ObservableCollection<DataIntegrityIssueSummary> Summaries { get; } = new();
@@ -88,6 +90,8 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject, IDis
 
     public void Dispose()
     {
+        _disposed = true;
+        _session.AccessChanged -= OnDiagnosticAccessChanged;
         _filterDebouncer.Dispose();
     }
 
@@ -132,6 +136,26 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject, IDis
         if (DialogWindowCloseHelper.ShowDialog(dialog) != true)
             return;
 
+        try
+        {
+            WriteExcel(workbook => workbook.SaveAs(dialog.FileName));
+            StatusMessage = $"운영 점검 내역 {_filteredIssues.Count:N0}건을 엑셀로 저장했습니다.";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"엑셀 저장에 실패했습니다. 현재 계정으로 점검을 새로고침하고 저장 위치를 확인하세요. {ex.Message}";
+        }
+    }
+
+    internal void SaveExcel(System.IO.Stream destination) => WriteExcel(workbook => workbook.SaveAs(destination));
+
+    private void WriteExcel(Action<XLWorkbook> save)
+    {
+        using var accessLease = _session.AcquireSyncScopeSnapshotLease();
+        if (!_session.IsLoggedIn || _lastScanResult?.AmountAccess != FinancialAmountVisibility.CaptureAccess(_session))
+            throw new InvalidOperationException("계정 또는 권한이 변경되었습니다. 운영점검을 새로고침하세요.");
+        var issuesToExport = _filteredIssues.ToList();
+        if (issuesToExport.Count == 0) throw new InvalidOperationException("저장할 점검 항목이 없습니다.");
         using var workbook = new XLWorkbook();
         var summarySheet = workbook.Worksheets.Add("요약");
         summarySheet.Cell(1, 1).Value = "점검 시각";
@@ -214,15 +238,28 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject, IDis
             worksheet.SheetView.FreezeRows(1);
         }
 
-        try
+        save(workbook);
+    }
+
+    private void OnDiagnosticAccessChanged(object? sender, EventArgs args)
+    {
+        void Clear()
         {
-            workbook.SaveAs(dialog.FileName);
-            StatusMessage = $"운영 점검 내역 {issuesToExport.Count:N0}건을 엑셀로 저장했습니다.";
+            if (_disposed) return;
+            _lastScanResult = null;
+            _allIssues.Clear();
+            _filteredIssues.Clear();
+            Issues.Clear();
+            Summaries.Clear();
+            IssueTypeOptions.Clear();
+            SelectedIssueType = null;
+            SelectedIssue = null;
+            ScanSummaryText = string.Empty;
+            StatusMessage = "계정 또는 권한이 변경되었습니다. 운영점검을 새로고침하세요.";
         }
-        catch (Exception ex)
-        {
-            StatusMessage = $"엑셀 저장에 실패했습니다. 파일이 열려 있거나 저장 권한이 없는지 확인하세요. {ex.Message}";
-        }
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess()) dispatcher.InvokeAsync(Clear);
+        else Clear();
     }
     partial void OnSearchTextChanged(string value) => RequestFilterApply();
     partial void OnSelectedIssueTypeChanged(DataIntegrityIssueFilterOption? value) => RequestFilterApply();
@@ -289,6 +326,11 @@ public sealed partial class DataIntegrityIssueViewModel : ObservableObject, IDis
 
     private void ApplyScanResult(DataIntegrityScanResult scanResult)
     {
+        if (scanResult.AmountAccess.HasValue && (!_session.IsLoggedIn || scanResult.AmountAccess != FinancialAmountVisibility.CaptureAccess(_session)))
+        {
+            OnDiagnosticAccessChanged(this, EventArgs.Empty);
+            return;
+        }
         _lastScanResult = scanResult;
         _allIssues = scanResult.Issues.ToList();
         var previousCode = SelectedIssueType?.Code ?? string.Empty;

@@ -11,6 +11,67 @@ namespace GeoraePlan.Desktop.App.Tests;
 
 public sealed class RentalIncludedBillingAssetsTests
 {
+    [Theory]
+    [InlineData("요금팀", "요금팀")]
+    [InlineData("요금팀(검침원실)", "요금팀(검침원실)")]
+    [InlineData("", "Site Preservation Customer")]
+    public async Task SaveBillingProfile_AddingAssetPreservesExistingInstallSite(
+        string existingSite, string expectedSite)
+    {
+        PrepareAppRoot("georaeplan-rental-preserve-existing-site");
+        try
+        {
+            await using var db = new LocalDbContext();
+            await db.Database.EnsureDeletedAsync();
+            await db.Database.EnsureCreatedAsync();
+            var profileId = Guid.NewGuid();
+            var existing = CreateRentalAsset("Site Preservation Customer", "SITE-OLD", profileId);
+            existing.InstallSiteName = existingSite;
+            existing.InstallLocation = "2층";
+            var added = CreateRentalAsset("Site Preservation Customer", "SITE-NEW", null);
+            var profile = CreateBillingProfileWithIncludedAsset(
+                profileId, existing.Id, "Site Preservation Customer");
+            db.RentalAssets.AddRange(existing, added);
+            db.RentalBillingProfiles.Add(profile);
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
+
+            var templates = JsonSerializer.Deserialize<List<RentalBillingTemplateItemModel>>(profile.BillingTemplateJson)!;
+            templates.Add(new RentalBillingTemplateItemModel
+            {
+                DisplayItemName = "Added Copier",
+                BillingLineMode = "개별",
+                Quantity = 1m,
+                UnitPrice = 100_000m,
+                Amount = 100_000m,
+                IncludedAssetIds = [added.Id]
+            });
+            profile.BillingTemplateJson = JsonSerializer.Serialize(templates);
+            profile.MonthlyAmount = 200_000m;
+            var service = new RentalStateService(db);
+            var result = await service.SaveBillingProfileAsync(profile, CreateAdminSession());
+            Assert.True(result.Success, result.Message);
+            db.ChangeTracker.Clear();
+
+            var stored = await db.RentalAssets.AsNoTracking().SingleAsync(x => x.Id == existing.Id);
+            Assert.Equal(expectedSite, stored.InstallSiteName);
+            Assert.Equal("2층", stored.InstallLocation);
+            Assert.Equal(100_000m, stored.MonthlyFee);
+            Assert.Equal(profileId, (await db.RentalAssets.AsNoTracking().SingleAsync(x => x.Id == added.Id)).BillingProfileId);
+
+            var savedProfile = await db.RentalBillingProfiles.AsNoTracking().SingleAsync(x => x.Id == profileId);
+            var repeated = await service.SaveBillingProfileAsync(savedProfile, CreateAdminSession());
+            Assert.True(repeated.Success, repeated.Message);
+            db.ChangeTracker.Clear();
+            Assert.Equal(expectedSite, (await db.RentalAssets.AsNoTracking().SingleAsync(x => x.Id == existing.Id)).InstallSiteName);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEORAEPLAN_APP_ROOT", null);
+            SqliteConnection.ClearAllPools();
+        }
+    }
+
     [Fact]
     public async Task GetIncludedBillingAssetsAsync_ExplicitIncludedAssetOutsideProfileSortWindowIsStillIncluded()
     {

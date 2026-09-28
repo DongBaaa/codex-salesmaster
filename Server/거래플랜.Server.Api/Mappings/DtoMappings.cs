@@ -432,12 +432,12 @@ public static class DtoMappings
             entity.StorageLocation = dto.StorageLocation;
         entity.CurrentStock = supportsInventory ? dto.CurrentStock : 0m;
         entity.SafetyStock = supportsInventory ? dto.SafetyStock : 0m;
-        entity.PurchasePrice = dto.PurchasePrice;
-        entity.SalePrice = dto.SalePrice;
-        entity.RetailPrice = dto.RetailPrice;
-        entity.PriceGradeA = dto.PriceGradeA;
-        entity.PriceGradeB = dto.PriceGradeB;
-        entity.PriceGradeC = dto.PriceGradeC;
+        if (dto.PurchasePrice is { } purchasePrice) entity.PurchasePrice = purchasePrice;
+        if (dto.SalePrice is { } salePrice) entity.SalePrice = salePrice;
+        if (dto.RetailPrice is { } retailPrice) entity.RetailPrice = retailPrice;
+        if (dto.PriceGradeA is { } priceGradeA) entity.PriceGradeA = priceGradeA;
+        if (dto.PriceGradeB is { } priceGradeB) entity.PriceGradeB = priceGradeB;
+        if (dto.PriceGradeC is { } priceGradeC) entity.PriceGradeC = priceGradeC;
         if (dto.LastPurchaseDateSpecified == true || dto.LastPurchaseDate.HasValue)
             entity.LastPurchaseDate = dto.LastPurchaseDate;
         if (dto.LastSaleDateSpecified == true || dto.LastSaleDate.HasValue)
@@ -479,7 +479,7 @@ public static class DtoMappings
         entity.ItemId = dto.ItemId;
         entity.PriceGradeOptionId = dto.PriceGradeOptionId;
         entity.PriceGradeName = dto.PriceGradeName?.Trim() ?? string.Empty;
-        entity.UnitPrice = Math.Max(0m, dto.UnitPrice);
+        if (dto.UnitPrice is { } unitPrice) entity.UnitPrice = Math.Max(0m, unitPrice);
         entity.IsActive = dto.IsActive;
         entity.IsDeleted = dto.IsDeleted;
     }
@@ -528,19 +528,19 @@ public static class DtoMappings
         entity.LinkedInvoiceNumber = dto.LinkedInvoiceNumber?.Trim() ?? string.Empty;
         entity.LinkedRentalBillingProfileId = dto.LinkedRentalBillingProfileId;
         entity.LinkedRentalBillingRunId = dto.LinkedRentalBillingRunId;
-        entity.SettlementAmount = dto.SettlementAmount;
-        entity.AdvanceDelta = dto.AdvanceDelta;
-        entity.PrepaidDelta = dto.PrepaidDelta;
-        entity.CashReceipt = dto.CashReceipt;
-        entity.CardReceipt = dto.CardReceipt;
-        entity.BankReceipt = dto.BankReceipt;
-        entity.DiscountApplied = dto.DiscountApplied;
-        entity.ReceiptTotal = dto.ReceiptTotal;
-        entity.CashPayment = dto.CashPayment;
-        entity.CardPayment = dto.CardPayment;
-        entity.BankPayment = dto.BankPayment;
-        entity.DiscountReceived = dto.DiscountReceived;
-        entity.PaymentTotal = dto.PaymentTotal;
+        entity.SettlementAmount = DisclosedAmount.Require(dto.SettlementAmount);
+        entity.AdvanceDelta = DisclosedAmount.Require(dto.AdvanceDelta);
+        entity.PrepaidDelta = DisclosedAmount.Require(dto.PrepaidDelta);
+        entity.CashReceipt = DisclosedAmount.Require(dto.CashReceipt);
+        entity.CardReceipt = DisclosedAmount.Require(dto.CardReceipt);
+        entity.BankReceipt = DisclosedAmount.Require(dto.BankReceipt);
+        entity.DiscountApplied = DisclosedAmount.Require(dto.DiscountApplied);
+        entity.ReceiptTotal = DisclosedAmount.Require(dto.ReceiptTotal);
+        entity.CashPayment = DisclosedAmount.Require(dto.CashPayment);
+        entity.CardPayment = DisclosedAmount.Require(dto.CardPayment);
+        entity.BankPayment = DisclosedAmount.Require(dto.BankPayment);
+        entity.DiscountReceived = DisclosedAmount.Require(dto.DiscountReceived);
+        entity.PaymentTotal = DisclosedAmount.Require(dto.PaymentTotal);
         entity.Note = dto.Note?.Trim() ?? string.Empty;
         entity.Memo = dto.Memo?.Trim() ?? string.Empty;
         entity.IsDeleted = dto.IsDeleted;
@@ -803,8 +803,8 @@ public static class DtoMappings
         entity.BillingAnchorMonth = dto.BillingAnchorMonth;
         entity.DocumentIssueMode = RentalBillingScheduleRules.NormalizeDocumentIssueMode(dto.DocumentIssueMode);
         entity.DocumentLeadDays = RentalBillingScheduleRules.NormalizeDocumentLeadDays(dto.DocumentLeadDays);
-        entity.MonthlyAmount = dto.MonthlyAmount;
-        entity.DepositAmount = dto.DepositAmount;
+        if (dto.MonthlyAmount is decimal monthlyAmount) entity.MonthlyAmount = monthlyAmount;
+        if (dto.DepositAmount is decimal depositAmount) entity.DepositAmount = depositAmount;
         entity.SubmissionDocuments = dto.SubmissionDocuments?.Trim() ?? string.Empty;
         entity.Notes = dto.Notes?.Trim() ?? string.Empty;
         entity.BillingAnchorDate = dto.BillingAnchorDate;
@@ -815,12 +815,12 @@ public static class DtoMappings
         entity.LastBilledDate = dto.LastBilledDate;
         entity.SettlementStatus = dto.SettlementStatus?.Trim() ?? string.Empty;
         entity.CompletionStatus = dto.CompletionStatus?.Trim() ?? string.Empty;
-        entity.SettledAmount = dto.SettledAmount;
-        entity.OutstandingAmount = dto.OutstandingAmount;
+        if (dto.SettledAmount is decimal settledAmount) entity.SettledAmount = settledAmount;
+        if (dto.OutstandingAmount is decimal outstandingAmount) entity.OutstandingAmount = outstandingAmount;
         entity.RequiresFollowUp = dto.RequiresFollowUp;
         entity.LastSettledDate = dto.LastSettledDate;
-        entity.BillingTemplateJson = dto.BillingTemplateJson ?? "[]";
-        entity.BillingRunsJson = dto.BillingRunsJson ?? "[]";
+        if (!dto.AmountsHidden) entity.BillingTemplateJson = dto.BillingTemplateJson ?? "[]";
+        if (!dto.AmountsHidden) entity.BillingRunsJson = dto.BillingRunsJson ?? "[]";
         entity.PoolMeterAllowance = dto.PoolMeterAllowance;
         entity.IsActive = dto.IsActive;
         entity.IsDeleted = dto.IsDeleted;
@@ -927,12 +927,12 @@ public static class DtoMappings
         entity.PurchaseVendor = dto.PurchaseVendor?.Trim() ?? string.Empty;
         entity.PurchaseDate = dto.PurchaseDate;
         entity.DisposalDate = dto.DisposalDate;
-        entity.PurchasePrice = dto.PurchasePrice;
-        entity.SalePrice = dto.SalePrice;
+        if (dto.PurchasePrice is decimal purchasePrice) entity.PurchasePrice = purchasePrice;
+        if (dto.SalePrice is decimal salePrice) entity.SalePrice = salePrice;
         entity.CustomerName = dto.CustomerName?.Trim() ?? string.Empty;
         entity.InstallLocation = dto.InstallLocation?.Trim() ?? string.Empty;
-        entity.DepositText = dto.DepositText?.Trim() ?? string.Empty;
-        entity.MonthlyFee = dto.MonthlyFee;
+        if (!dto.SalesAmountsHidden) entity.DepositText = dto.DepositText?.Trim() ?? string.Empty;
+        if (dto.MonthlyFee is decimal monthlyFee) entity.MonthlyFee = monthlyFee;
         entity.ContractMonths = dto.ContractMonths;
         entity.ContractDate = dto.ContractDate;
         entity.InstallDate = dto.InstallDate;
@@ -943,10 +943,10 @@ public static class DtoMappings
         entity.MeterBillingEnabled = dto.MeterBillingEnabled;
         entity.BlackIncludedMode = RentalMeterPolicyModes.Normalize(dto.BlackIncludedMode, dto.BlackIncludedPages);
         entity.BlackIncludedPages = dto.BlackIncludedPages is >= 0 ? dto.BlackIncludedPages : null;
-        entity.BlackOverageUnitPrice = dto.BlackOverageUnitPrice is >= 0m ? dto.BlackOverageUnitPrice : null;
+        if (!dto.SalesAmountsHidden) entity.BlackOverageUnitPrice = dto.BlackOverageUnitPrice is >= 0m ? dto.BlackOverageUnitPrice : null;
         entity.ColorIncludedMode = RentalMeterPolicyModes.Normalize(dto.ColorIncludedMode, dto.ColorIncludedPages);
         entity.ColorIncludedPages = dto.ColorIncludedPages is >= 0 ? dto.ColorIncludedPages : null;
-        entity.ColorOverageUnitPrice = dto.ColorOverageUnitPrice is >= 0m ? dto.ColorOverageUnitPrice : null;
+        if (!dto.SalesAmountsHidden) entity.ColorOverageUnitPrice = dto.ColorOverageUnitPrice is >= 0m ? dto.ColorOverageUnitPrice : null;
         entity.MeterReadingsJson = RentalMeterBillingRules.SerializeReadings(RentalMeterBillingRules.ParseReadings(dto.MeterReadingsJson));
         entity.MeterEvidenceJson = string.IsNullOrWhiteSpace(dto.MeterEvidenceJson) ? "[]" : dto.MeterEvidenceJson;
         entity.MeterPolicySource = dto.MeterPolicySource?.Trim() ?? string.Empty;
@@ -1029,7 +1029,7 @@ public static class DtoMappings
         entity.ItemName = dto.ItemName?.Trim() ?? string.Empty;
         entity.MachineNumber = dto.MachineNumber?.Trim() ?? string.Empty;
         entity.ManagementNumber = dto.ManagementNumber?.Trim() ?? string.Empty;
-        entity.MonthlyFee = dto.MonthlyFee;
+        if (dto.MonthlyFee is decimal monthlyFee) entity.MonthlyFee = monthlyFee;
         entity.ContractStartDate = dto.ContractStartDate;
         entity.ContractEndDate = dto.ContractEndDate;
         entity.ChangeReason = dto.ChangeReason?.Trim() ?? string.Empty;
@@ -1059,7 +1059,7 @@ public static class DtoMappings
         entity.ProcessedDate = dto.ProcessedDate;
         entity.ProcessedByUsername = dto.ProcessedByUsername?.Trim() ?? string.Empty;
         entity.Status = dto.Status?.Trim() ?? "예정";
-        entity.BilledAmount = dto.BilledAmount;
+        if (dto.BilledAmount is decimal billedAmount) entity.BilledAmount = billedAmount;
         entity.Note = dto.Note?.Trim() ?? string.Empty;
         entity.IsDeleted = dto.IsDeleted;
         entity.ResponsibleOfficeCode = NormalizeResponsibleOfficeCode(
@@ -1079,6 +1079,12 @@ public static class DtoMappings
     public static InvoiceDto ToDto(this Invoice entity) =>
         new()
         {
+            Author = new InvoiceAuthorDto
+            {
+                CreatedByUsername = entity.CreatedByUsername,
+                LastSavedByUsername = entity.LastSavedByUsername,
+                LastSavedAtUtc = entity.LastSavedAtUtc
+            },
             Id = entity.Id, IsDeleted = entity.IsDeleted,
             CreatedAtUtc = entity.CreatedAtUtc, UpdatedAtUtc = entity.UpdatedAtUtc, Revision = entity.Revision,
             CustomerId = entity.CustomerId,
@@ -1184,7 +1190,9 @@ public static class DtoMappings
     }
 
     private static decimal ResolveInvoiceLineAmount(InvoiceLineDto line)
-        => line.LineAmount == 0 ? line.Quantity * line.UnitPrice : line.LineAmount;
+        => DisclosedAmount.Require(line.LineAmount) == 0
+            ? line.Quantity * DisclosedAmount.Require(line.UnitPrice)
+            : DisclosedAmount.Require(line.LineAmount);
 
     private static string NormalizeResponsibleOfficeCode(string? responsibleOfficeCode, string? ownerOfficeCode = null, string? fallbackOfficeCode = null)
         => OfficeCodeCatalog.NormalizeOfficeCodeLoose(responsibleOfficeCode, ownerOfficeCode, fallbackOfficeCode ?? OfficeCodeCatalog.Usenet);
@@ -1260,7 +1268,9 @@ public static class DtoMappings
     public static void Apply(this Payment entity, PaymentDto dto)
     {
         entity.InvoiceId = dto.InvoiceId; entity.PaymentDate = dto.PaymentDate;
-        entity.Amount = dto.Amount; entity.Note = dto.Note; entity.IsDeleted = dto.IsDeleted;
+        if (!dto.IsDeleted)
+            entity.Amount = DisclosedAmount.Require(dto.Amount);
+        entity.Note = dto.Note; entity.IsDeleted = dto.IsDeleted;
     }
 
     public static PaymentAttachmentDto ToDto(this PaymentAttachment entity, bool includeContent = false) =>

@@ -60,6 +60,7 @@ public sealed class SyncService : IDisposable
         "MutationId",
         "MutationCreatedAtUtc",
         "FileContent",
+        "Author",
         "PreparedAtUtc",
         "SentAtUtc",
         "AcknowledgedAtUtc"
@@ -79,7 +80,8 @@ public sealed class SyncService : IDisposable
         // Push 준비 과정에서 로컬 고객명을 조회해 DTO에 보강하는 파생 표시값이다.
         "CustomerName",
         // 수금은 request.Payments에서 별도 mutation으로 동기화하며 Invoice upsert payload가 아니다.
-        "Payments"
+        "Payments",
+        "Author"
     };
     private static readonly HashSet<string> RentalBillingTemplateOnlyConflictIgnoredPropertyNames = new(
         EquivalentConflictIgnoredPropertyNames,
@@ -587,7 +589,7 @@ public sealed class SyncService : IDisposable
 
                 var officeSession = new SessionState();
                 officeSession.SetSession(login.Token, login.User, login.ExpiresAtUtc);
-                await _local.ResumeOutboxAfterOnlineLoginAsync(officeSession, ct);
+                // Durable receipts retain their original session; push validates this owner.
                 using var officeHttpClient =
                     CreateOfficeSessionHttpClient();
                 var officeApi = new ErpApiClient(officeHttpClient, officeSession);
@@ -2336,7 +2338,7 @@ public sealed class SyncService : IDisposable
                 var officeSession = new SessionState();
                 officeSession.SetSession(login.Token, login.User, login.ExpiresAtUtc);
 
-                await _local.ResumeOutboxAfterOnlineLoginAsync(officeSession, ct);
+                // Durable receipts retain their original session; push validates this owner.
                 var officeDirtyCount = await _local.CountDirtyAsync(officeSession, ct);
                 if (officeDirtyCount == 0)
                     continue;
@@ -2456,7 +2458,7 @@ public sealed class SyncService : IDisposable
 
                 var officeSession = new SessionState();
                 officeSession.SetSession(login.Token, login.User, login.ExpiresAtUtc);
-                await _local.ResumeOutboxAfterOnlineLoginAsync(officeSession, ct);
+                // Durable receipts retain their original session; push validates this owner.
                 candidates = await GetCandidatesAsync();
                 var officeSessionHasPendingOutbox =
                     HasPendingOutboxForSession(officeSession, candidates);
@@ -3298,13 +3300,14 @@ public sealed class SyncService : IDisposable
 
         var canSyncCompanyProfiles = includeSharedDirty && session.HasPermission(AppPermissionNames.CompanyProfileEdit);
         var canSyncSettings = includeSharedDirty && session.HasPermission(AppPermissionNames.SettingsEdit);
+        var canSyncPriceGradeOptions = canSyncSettings && session.HasPermission(AppPermissionNames.AmountViewSales);
         var canSyncCustomers =
             session.HasAdministrativePrivileges ||
             session.HasPermission(AppPermissionNames.CustomerEdit);
         var canSyncItems =
             session.HasAdministrativePrivileges ||
             session.HasPermission(AppPermissionNames.ItemEdit);
-        var canSyncItemPriceGrades = canSyncItems;
+        var canSyncItemPriceGrades = canSyncItems && session.HasPermission(AppPermissionNames.AmountViewSales);
         var canSyncItemWarehouseStocks = canSyncItems;
         var canSyncRentalProfiles =
             session.HasAdministrativePrivileges ||
@@ -3334,7 +3337,7 @@ public sealed class SyncService : IDisposable
                 .AsNoTracking()
                 .ToListAsync(ct)
             : [];
-        var dirtyPriceGradeOptions = canSyncSettings
+        var dirtyPriceGradeOptions = canSyncPriceGradeOptions
             ? await _db.PriceGradeOptions.IgnoreQueryFilters()
                 .Where(entity => entity.IsDirty)
                 .AsNoTracking()
@@ -3745,6 +3748,8 @@ public sealed class SyncService : IDisposable
         primaryDependencyOnlyKeys = SelectDependencyOnlyKeysForRequest(
             req,
             dependencyOnlyCandidateKeys);
+        StampDependencyOnlyMutations(
+            req, req.DeviceId, primaryBusinessDatabaseName, primaryDependencyOnlyKeys);
         await PushPreparedRequestAsync(
             apiClient,
             session,
@@ -3792,6 +3797,9 @@ public sealed class SyncService : IDisposable
                     new SyncEntityKey(
                         NormalizeSyncEntityName(nameof(LocalPriceGradeOption)),
                         option.Id)));
+            StampDependencyOnlyMutations(
+                supplementalRequest, supplementalRequest.DeviceId,
+                additionalRequest.BusinessDatabaseName, dependencyOnlyKeys);
             await PushPreparedRequestAsync(
                 apiClient,
                 session,
@@ -4009,6 +4017,12 @@ public sealed class SyncService : IDisposable
                 "동기화 전송 영수증이 현재 변경 전체와 정확히 일치하지 않아 서버 전송을 중단했습니다.");
         }
 
+        if (!IsSyncOperationOwnerCurrent(pushOperationOwner, session, businessDatabaseNameOverride))
+        {
+            throw new SyncPullBlockedException(
+                "전송 준비 중 로그인·업체 DB 범위가 변경되어 이전 범위의 전송을 중단했습니다.");
+        }
+
         try
         {
             SyncPushResult? result;
@@ -4032,6 +4046,12 @@ public sealed class SyncService : IDisposable
                     currentPushReceipts,
                     ct);
                 throw new HttpRequestException(message);
+            }
+
+            if (!IsSyncOperationOwnerCurrent(pushOperationOwner, session, businessDatabaseNameOverride))
+            {
+                throw new SyncPullBlockedException(
+                    "동기화 응답 대기 중 로그인·업체 DB 범위가 변경되어 이전 범위의 응답 반영을 중단했습니다.");
             }
 
             TestSeedSyncConflictDiagnostics.WriteAcceptedRevisionsIfEnabled(
@@ -5567,6 +5587,10 @@ public sealed class SyncService : IDisposable
         if (!result.Notices.Any(notice => string.Equals(notice.Code, code, StringComparison.Ordinal)))
             return;
 
+        // Rollback handling always blocks the normal conflict-processing path.
+        // Preserve its existing sanitized diagnostics when test seeding fails here.
+        TestSeedSyncConflictDiagnostics.WriteIfEnabled(result.Conflicts, Console.Out);
+
         // A whole-push rollback cannot carry any committed side effects, including
         // purge receipts. Validate it before any acknowledgement changes local state.
         var notice = result.Notices.Count == 1 ? result.Notices[0] : null;
@@ -5576,17 +5600,15 @@ public sealed class SyncService : IDisposable
             result.AssignedInvoiceNumbers.Count != 0 || result.AssignedTaxInvoiceNumbers.Count != 0 ||
             result.PurgeRecords.Count != 0 || result.ConflictCount <= 0 ||
             result.ConflictCount != result.Conflicts.Count ||
-            result.Conflicts.Any(conflict =>
-                !string.Equals(conflict.EntityName, "Invoice", StringComparison.OrdinalIgnoreCase) ||
-                !Guid.TryParse(conflict.EntityId, out var id) || id == Guid.Empty ||
-                request.Invoices.Count(invoice => invoice.Id == id) != 1))
+            !HasValidInvoiceRollbackConflictScope(request, result.Conflicts))
         {
             throw new SyncPullBlockedException(
                 "전표·재고 전체 취소 응답의 정합성을 확인하지 못해 미전송 데이터를 보존하고 동기화를 중단했습니다.");
         }
 
         var prepared = 0;
-        foreach (var conflict in result.Conflicts)
+        foreach (var conflict in result.Conflicts.Where(conflict =>
+                     string.Equals(conflict.EntityName, "Invoice", StringComparison.OrdinalIgnoreCase)))
         {
             if (!await ShouldPreserveConcurrentConflictAsync(conflict, preparedMutationSnapshots, ct) &&
                 await TryPrepareInvoiceRevisionRetryAsync(conflict, request.DeviceId, session, ct))
@@ -5600,6 +5622,41 @@ public sealed class SyncService : IDisposable
         var detail = $"서버가 전표·재고 저장 전체를 취소했습니다. 동일 내용 전표 {prepared}건의 리비전 재시도를 준비했고, 미전송 변경은 모두 보존했습니다.";
         await AppendConflictSummaryAsync(detail);
         throw new SyncPullBlockedException(detail);
+    }
+
+    private static bool HasValidInvoiceRollbackConflictScope(
+        SyncPushRequest request,
+        IReadOnlyCollection<ConflictLogDto> conflicts)
+    {
+        // The server preserves conflicts from earlier parts of the same push
+        // when an invoice forces the entire transaction to roll back.
+        var submitted = EnumerateAllOutgoingMutations(request)
+            .GroupBy(entry => new SyncEntityKey(
+                NormalizeSyncEntityName(entry.EntityName).ToUpperInvariant(), entry.Entity.Id))
+            .ToDictionary(group => group.Key, group => group.Count());
+        var stocks = TryBuildUniqueItemWarehouseStockLookup(request.ItemWarehouseStocks);
+        var hasInvoiceConflict = false;
+        foreach (var conflict in conflicts)
+        {
+            if (string.Equals(conflict.EntityName, "ItemWarehouseStock", StringComparison.OrdinalIgnoreCase))
+            {
+                if (stocks is null ||
+                    !TryParseItemWarehouseStockConflictId(conflict.EntityId, out var itemId, out var warehouse) ||
+                    !stocks.ContainsKey(BuildItemWarehouseStockKey(itemId, warehouse)))
+                    return false;
+                continue;
+            }
+
+            if (!Guid.TryParse(conflict.EntityId, out var id) || id == Guid.Empty ||
+                !submitted.TryGetValue(new SyncEntityKey(
+                    NormalizeSyncEntityName(conflict.EntityName).ToUpperInvariant(), id), out var count) ||
+                count != 1)
+                return false;
+
+            hasInvoiceConflict |= string.Equals(conflict.EntityName, "Invoice", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return hasInvoiceConflict;
     }
 
     private async Task<List<ConflictLogDto>> PrepareInvoiceRevisionRetriesAsync(
@@ -7105,8 +7162,9 @@ public sealed class SyncService : IDisposable
             asset.CurrentCustomerName = serverSnapshot.CurrentCustomerName.Trim();
         }
 
-        if (asset.SalePrice <= 0m && serverSnapshot.SalePrice > 0m)
-            asset.SalePrice = serverSnapshot.SalePrice;
+        if (!asset.SalesAmountsHidden && !serverSnapshot.SalesAmountsHidden &&
+            asset.SalePrice <= 0m && serverSnapshot.SalePrice is decimal disclosedSalePrice && disclosedSalePrice > 0m)
+            asset.SalePrice = disclosedSalePrice;
 
         if (string.IsNullOrWhiteSpace(asset.InstallLocation) &&
             !string.IsNullOrWhiteSpace(serverSnapshot.InstallLocation))
@@ -11999,6 +12057,13 @@ public sealed class SyncService : IDisposable
         SyncOperationOwnerBoundary? purgeOwner = null,
         bool forceInventoryCostRefresh = false)
     {
+        var collidingBusinessEntity = await SyncPullBusinessIdentityGuard.FindCollisionAsync(_db, pull, ct);
+        if (collidingBusinessEntity is not null)
+        {
+            throw new SyncPullBlockedException(
+                $"다른 업체의 {collidingBusinessEntity}와 식별자가 중복되어 기존 자료 보호를 위해 동기화를 중단했습니다. 업체별 캐시 점검이 필요합니다.");
+        }
+
         await ApplyItemCatalogExtensionCapabilityAsync(
             pull.ItemCatalogExtensionVersion,
             ct);
@@ -12908,6 +12973,16 @@ public sealed class SyncService : IDisposable
             {
                 if (!existing.IsDirty)
                     _db.Entry(existing).CurrentValues.SetValues(local);
+                else if (existing is LocalItemPriceGrade pendingGrade && local is LocalItemPriceGrade incomingGrade)
+                {
+                    // A pending edit keeps its value and revision, but cannot keep
+                    // disclosing a price that the server no longer supplies.
+                    pendingGrade.AmountsHidden |= incomingGrade.AmountsHidden;
+                }
+                else if (existing is LocalRentalBillingLog pendingLog && local is LocalRentalBillingLog incomingLog)
+                {
+                    pendingLog.AmountsHidden |= incomingLog.AmountsHidden;
+                }
             }
         }
         await _db.SaveChangesAsync(ct);
@@ -13050,7 +13125,15 @@ public sealed class SyncService : IDisposable
             if (payment.IsDirty)
                 continue;
 
+            // A hidden cache amount is unknown, never a zero-valued settlement.
+            // Tombstones still remove their mirror by identity without using money.
+            if (payment.AmountsHidden && !payment.IsDeleted)
+                continue;
+
             transactionsById.TryGetValue(payment.Id, out var transaction);
+            // Payment has no channel breakdown and cannot disclose a hidden Transaction.
+            if (transaction?.AmountsHidden == true && !payment.IsDeleted)
+                continue;
             if (transaction?.LinkedInvoiceId is Guid previousLinkedInvoiceId && previousLinkedInvoiceId != Guid.Empty)
                 invoiceIdsToRecalculate.Add(previousLinkedInvoiceId);
 
@@ -13220,6 +13303,12 @@ public sealed class SyncService : IDisposable
                 _db.Entry(existing).CurrentValues.SetValues(local);
                 appliedTransactionIds.Add(local.Id);
             }
+            else
+            {
+                // Preserve pending edits and their revision while closing access to
+                // amounts. A later visible response cannot reopen pending old values.
+                existing.AmountsHidden |= local.AmountsHidden;
+            }
         }
 
         await _db.SaveChangesAsync(ct);
@@ -13357,6 +13446,14 @@ public sealed class SyncService : IDisposable
                 }
 
                 _db.Entry(existing).CurrentValues.SetValues(local);
+            }
+            else
+            {
+                // Preserve the user's pending fields, prices and retry revision.
+                // Only close disclosure; a later visible response must not reopen
+                // the stale price while this row is still awaiting synchronization.
+                existing.PurchaseAmountsHidden |= local.PurchaseAmountsHidden;
+                existing.SalesAmountsHidden |= local.SalesAmountsHidden;
             }
         }
 
@@ -13731,6 +13828,13 @@ public sealed class SyncService : IDisposable
             {
                 _db.Entry(existing).CurrentValues.SetValues(local);
             }
+            else
+            {
+                // Privacy changes apply even while a draft awaits acknowledgement.
+                // Keep the draft, its revision and its stored prices for conflict recovery.
+                existing.PurchaseAmountsHidden |= local.PurchaseAmountsHidden;
+                existing.SalesAmountsHidden |= local.SalesAmountsHidden;
+            }
         }
 
         await _db.SaveChangesAsync(ct);
@@ -13783,6 +13887,8 @@ public sealed class SyncService : IDisposable
             // Preserve it until the matching push response or conflict handling.
             if (!existing.IsDirty)
                 _db.Entry(existing).CurrentValues.SetValues(local);
+            else
+                existing.AmountsHidden |= local.AmountsHidden;
         }
 
         await _db.SaveChangesAsync(ct);
@@ -14139,7 +14245,10 @@ public sealed class SyncService : IDisposable
 
             var existing = profiles.FirstOrDefault(profile => profile.Id == local.Id);
             if (existing is not null && existing.IsDirty)
+            {
+                existing.AmountsHidden |= local.AmountsHidden;
                 continue;
+            }
 
             var conflictingProfiles = FindConflictingLocalRentalBillingProfiles(profiles, local.ProfileKey, local.Id);
             if (conflictingProfiles.Count > 0)
@@ -16984,6 +17093,38 @@ public sealed class SyncService : IDisposable
         }
     }
 
+    private static void StampDependencyOnlyMutations(
+        SyncPushRequest request,
+        string deviceId,
+        string businessDatabaseName,
+        IReadOnlySet<SyncEntityKey> dependencyOnlyKeys)
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var database = TenantScopeCatalog.GetDatabaseName(businessDatabaseName);
+        foreach (var (entityName, entity) in EnumerateAllOutgoingMutations(request))
+        {
+            var normalizedEntityName = NormalizeSyncEntityName(entityName);
+            if (!dependencyOnlyKeys.Contains(new SyncEntityKey(normalizedEntityName, entity.Id)))
+                continue;
+
+            // A clean reference is a fresh projection, not a retry of the user's
+            // original edit. Its payload can change without a new row revision.
+            // Keep it separate from durable edits and bind retries to the entire
+            // wire payload, including its expected revision and timestamp.
+            var payload = JsonSerializer.SerializeToNode(entity, entity.GetType(), options)!.AsObject();
+            payload.Remove("mutationId");
+            var identity = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                deviceId,
+                businessDatabaseName = database,
+                entityName = normalizedEntityName,
+                payload
+            }, options);
+            entity.MutationId = "dependency-v1:" +
+                Convert.ToHexString(SHA256.HashData(identity)).ToLowerInvariant();
+        }
+    }
+
     private static IReadOnlySet<SyncEntityKey> SelectDependencyOnlyKeysForRequest(
         SyncPushRequest request,
         IReadOnlySet<SyncEntityKey> dependencyOnlyCandidateKeys)
@@ -17481,7 +17622,8 @@ public sealed class SyncService : IDisposable
                 row.SessionId,
                 row.UserId,
                 NormalizeMutationUtc(row.PreparedAtUtc),
-                IsDurable: true);
+                IsDurable: true,
+                DispatchSessionId: ownerSession.SessionId);
         }
 
         if (excludedKeys is not null && excludedKeys.Count > 0)
@@ -17553,7 +17695,8 @@ public sealed class SyncService : IDisposable
                         ownerSession.SessionId,
                         expectedUserId,
                         NormalizeMutationUtc(mutationPreparedAtUtc),
-                        IsDurable: false);
+                        IsDurable: false,
+                        DispatchSessionId: ownerSession.SessionId);
             }
         }
 
@@ -17999,7 +18142,10 @@ public sealed class SyncService : IDisposable
                row.DeviceId,
                requestDeviceId,
                StringComparison.OrdinalIgnoreCase) &&
-           row.SessionId == ownerSession.SessionId &&
+           // A durable receipt survives login sessions. Preserve its original
+           // session, while the current dispatch captures its own owner boundary.
+           row.SessionId != Guid.Empty &&
+           ownerSession.SessionId != Guid.Empty &&
            row.UserId == expectedUserId &&
            string.Equals(
                TenantScopeCatalog.GetDatabaseName(row.BusinessDatabaseName),
@@ -18254,7 +18400,7 @@ public sealed class SyncService : IDisposable
                            currentPushReceipt.DeviceId,
                            request.DeviceId,
                            StringComparison.OrdinalIgnoreCase) &&
-                       currentPushReceipt.SessionId == ownerSession.SessionId &&
+                       currentPushReceipt.DispatchSessionId == ownerSession.SessionId &&
                        currentPushReceipt.UserId == expectedUserId &&
                        string.Equals(
                            TenantScopeCatalog.GetDatabaseName(
@@ -18542,7 +18688,8 @@ public sealed class SyncService : IDisposable
         Guid SessionId,
         Guid UserId,
         DateTime PreparedAtUtc,
-        bool IsDurable);
+        bool IsDurable,
+        Guid DispatchSessionId);
     private sealed record ServerNewerConflictResolution(
         IReadOnlyList<ConflictLogDto> ResolvedConflicts,
         IReadOnlyList<ConflictLogDto> PreservedConflicts);
@@ -19338,15 +19485,18 @@ public sealed class SyncService : IDisposable
                 // until the inventory calculation runs. Never manufacture Settled here.
                 if (HasSameInvoiceCostInputs(existing, local))
                     local.CostStatus = existing.CostStatus;
-                // InvoiceDto has no local editor identity. A pull echo of an already
-                // acknowledged invoice must not manufacture a different editor/stamp.
-                // A new revision or different invoice payload still invalidates it.
+                // An acknowledged echo retains the local concurrency token. Server
+                // author metadata remains authoritative even for the same revision.
+                // Only older servers lacking Author use the exact-echo fallback.
                 if (IsAcknowledgedInvoiceEcho(existing, local))
                 {
                     local.ConcurrencyStamp = existing.ConcurrencyStamp;
-                    local.LastSavedByUsername = existing.LastSavedByUsername;
-                    local.LastSavedAtUtc = existing.LastSavedAtUtc;
-                    local.CreatedByUsername = existing.CreatedByUsername;
+                    if (dto.Author is null)
+                    {
+                        local.LastSavedByUsername = existing.LastSavedByUsername;
+                        local.LastSavedAtUtc = existing.LastSavedAtUtc;
+                        local.CreatedByUsername = existing.CreatedByUsername;
+                    }
                 }
                 _db.Entry(existing).CurrentValues.SetValues(local);
 
@@ -20146,6 +20296,8 @@ public sealed class SyncService : IDisposable
                 return false;
         }
     }
+
+    internal static bool IsServerSyncEnabled => !IsServerSyncDisabled();
 
     private static bool IsServerSyncDisabled()
     {

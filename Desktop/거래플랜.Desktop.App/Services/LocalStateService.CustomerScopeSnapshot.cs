@@ -23,6 +23,8 @@ public sealed partial class LocalStateService
     private IQueryable<LocalCustomer> ApplyServerCustomerExclusions(
         IQueryable<LocalCustomer> query, SessionState? session)
     {
+        if (session?.IsOfflineMode == true && (session.User is null || session.User.UserId == Guid.Empty))
+            return query.Where(_ => false);
         var prefix = GetCustomerScopeExclusionPrefix(session);
         if (prefix is null) return query;
         var deniedIds = _db.Settings.AsNoTracking()
@@ -33,6 +35,8 @@ public sealed partial class LocalStateService
 
     private bool IsServerCustomerExcluded(Guid customerId, SessionState? session)
     {
+        if (session?.IsOfflineMode == true && (session.User is null || session.User.UserId == Guid.Empty))
+            return true;
         var prefix = GetCustomerScopeExclusionPrefix(session);
         if (prefix is null) return false;
         var key = prefix + customerId.ToString("N");

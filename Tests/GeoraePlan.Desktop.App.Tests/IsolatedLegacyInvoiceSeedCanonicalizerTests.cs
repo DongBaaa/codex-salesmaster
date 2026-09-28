@@ -585,6 +585,23 @@ public sealed class IsolatedLegacyInvoiceSeedCanonicalizerTests
         Assert.Equal(
             latestOperational.DependencyReferencesSha256,
             adminLoginOperational.DependencyReferencesSha256);
+
+        var september21 = IsolatedLegacyInvoiceSeedCanonicalizer
+            .ApprovedProfileForSourceDatabaseSha256ForTests(
+                "974174CDE9C987BB1AE0EEFE3F76E28F532941A8967D3B752C925C7329D5BC0E");
+        Assert.Equal(38, september21.AuthorizedNonAcknowledgedOutboxCount);
+        Assert.Equal("45B157705214EF8D0DD34FAAF94F3BF1CAE96F0FAEFC9D21C63639986D593314", september21.AuthorizedNonAcknowledgedOutboxSha256);
+        Assert.Equal(5, september21.ChangedGroupCount);
+        Assert.Equal(5, september21.ChangedInvoiceCount);
+        Assert.Equal(2, september21.ExcludedDeletedInvoiceCount);
+        Assert.Equal(2, september21.DeletedPredecessorRerootGroupCount);
+        Assert.Equal(2, september21.DuplicateSiblingGroupCount);
+        Assert.Equal(1, september21.ResponsibleOfficeAlignmentGroupCount);
+        Assert.Equal(latestOperational.BeforeMetadataSha256, september21.BeforeMetadataSha256);
+        Assert.Equal(latestOperational.AfterMetadataSha256, september21.AfterMetadataSha256);
+        Assert.Equal(latestOperational.ActiveInvoiceIdsSha256, september21.ActiveInvoiceIdsSha256);
+        Assert.Equal(latestOperational.LatestInvoiceBusinessSha256, september21.LatestInvoiceBusinessSha256);
+        Assert.Equal("90FCE5F59C050A12F09D2D1493D226FEDAF568D0633301D1B7E2AA99F4430A5C", september21.DependencyReferencesSha256);
     }
 
     [Fact]

@@ -143,7 +143,7 @@
                 </Grid>
 
                 <TextBlock Grid.Row="8" Grid.Column="0" Text="월 렌탈료"/>
-                <TextBox Grid.Row="8" Grid.Column="1" Text="{Binding MonthlyFee, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                <TextBox Grid.Row="8" Grid.Column="1" Text="{Binding MonthlyFee, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged, TargetNullValue=비공개}" IsReadOnly="{Binding AmountsReadOnly}"/>
 
                 <TextBlock Grid.Row="9" Grid.Column="0" Text="사유/메모" VerticalAlignment="Top" Margin="0,8,0,0"/>
                 <TextBox Grid.Row="9" Grid.Column="1"

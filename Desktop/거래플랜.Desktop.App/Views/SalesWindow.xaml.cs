@@ -158,6 +158,11 @@ public partial class SalesWindow : Window
 
     private async Task OpenPaymentWindowAsync()
     {
+        if (_vm.AmountsHidden)
+        {
+            _vm.StatusMessage = "금액 조회 권한이 있어야 수금/지급 내역을 열 수 있습니다.";
+            return;
+        }
         if (_vm.SelectedCustomer is null)
         {
             MessageBox.Show("먼저 거래처를 선택하세요.", "알림", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -194,6 +199,9 @@ public partial class SalesWindow : Window
         var paymentVm = new PaymentViewModel(_vm.LocalStateService, _vm.SessionState);
         await paymentVm.LoadAsync(_vm.SelectedCustomer);
         await paymentVm.ConfigureForInvoiceAsync(savedInvoice);
+
+        if (_vm.AmountsHidden)
+            return;
 
         var paymentWindow = new PaymentWindow(paymentVm)
         {

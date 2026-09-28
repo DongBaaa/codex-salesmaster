@@ -13,6 +13,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     private readonly SyncCoordinator _syncCoordinator;
     private readonly MobileRefreshCoordinator _refreshCoordinator;
     private readonly SessionStore _sessionStore;
+    private readonly MobileSessionOwner _draftOwner;
     private readonly RecentItemSelectionStore _recentItemSelectionStore;
     private readonly MobileInvoicePdfExportService _pdfExportService;
     private readonly List<RecentItemSelectionRecord> _recentSelections = new();
@@ -63,6 +64,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         _syncCoordinator = syncCoordinator;
         _refreshCoordinator = refreshCoordinator;
         _sessionStore = sessionStore;
+        _draftOwner = sessionStore.CaptureOwner();
         _recentItemSelectionStore = recentItemSelectionStore;
         _pdfExportService = pdfExportService;
         LoadCommand = new AsyncCommand(LoadAsync);
@@ -118,7 +120,8 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             OnPropertyChanged(nameof(SelectedItemPriceSummary));
 
             if (SelectedItem is not null && !_editingLineId.HasValue)
-                LineUnitPriceText = ResolveDefaultUnitPrice(SelectedItem).ToString("0.##");
+                LineUnitPriceText = ResolveDefaultUnitPrice(SelectedItem)?.ToString("0.##") ?? "비공개";
+            RefreshAmountAccess();
         }
     }
 
@@ -164,6 +167,9 @@ public sealed class InvoiceDraftViewModel : ObservableObject
                 OnPropertyChanged(nameof(SelectedItemSheetSpecification));
                 OnPropertyChanged(nameof(SelectedItemIdentitySummary));
                 OnPropertyChanged(nameof(SelectedItemPriceSummary));
+                OnPropertyChanged(nameof(CanViewCurrentLineAmounts));
+                OnPropertyChanged(nameof(IsLinePriceReadOnly));
+                OnPropertyChanged(nameof(LineUnitPriceText));
                 OnPropertyChanged(nameof(SelectedItemMemo));
                 OnPropertyChanged(nameof(SelectedItemStockSummary));
             }
@@ -239,8 +245,36 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
     public string LineUnitPriceText
     {
-        get => _lineUnitPriceText;
-        set => SetProperty(ref _lineUnitPriceText, value);
+        get => CanViewCurrentLineAmounts ? _lineUnitPriceText : "비공개";
+        set { if (CanViewCurrentLineAmounts && value != "비공개") SetProperty(ref _lineUnitPriceText, value); }
+    }
+
+    public bool CanViewInvoiceAmounts
+    {
+        get
+        {
+            var snapshot = _sessionStore.GetSnapshot();
+            return _sessionStore.IsOwnerCurrent(_draftOwner) &&
+                MobileInvoiceAmountAccess.CanView(VoucherType, snapshot.IsAuthenticated, snapshot.Role, snapshot.Permissions);
+        }
+    }
+    public bool CanViewCurrentLineAmounts => CanViewInvoiceAmounts && _editingInvoice?.AmountsHidden != true &&
+        (SelectedItem is null || !(IsPurchaseLikeDocument ? SelectedItem.PurchaseAmountsHidden : SelectedItem.SalesAmountsHidden)) &&
+        (!_editingLineId.HasValue || LineItems.FirstOrDefault(x => x.Id == _editingLineId.Value)?.AmountsHidden != true);
+    public bool IsLinePriceReadOnly => !CanViewCurrentLineAmounts;
+
+    public void RefreshAmountAccess()
+    {
+        if (!CanViewInvoiceAmounts)
+            foreach (var line in LineItems) line.AmountsHidden = true;
+        OnPropertyChanged(nameof(CanCreateInvoices));
+        OnPropertyChanged(nameof(CanViewInvoiceAmounts));
+        OnPropertyChanged(nameof(CanViewCurrentLineAmounts));
+        OnPropertyChanged(nameof(IsLinePriceReadOnly));
+        OnPropertyChanged(nameof(LineUnitPriceText));
+        OnPropertyChanged(nameof(SelectedItemPriceSummary));
+        OnPropertyChanged(nameof(DraftSummary));
+        OnPropertyChanged(nameof(VatSummary));
     }
 
     public string LineRemark
@@ -267,7 +301,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         set => SetProperty(ref _isBusy, value);
     }
 
-    public bool CanCreateInvoices => _sessionStore.GetSnapshot().CanCreateInvoices;
+    public bool CanCreateInvoices => _sessionStore.IsOwnerCurrent(_draftOwner) && _sessionStore.GetSnapshot().CanCreateInvoices;
 
     public bool IsItemEntrySheetVisible
     {
@@ -393,9 +427,15 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     public string SelectedItemIdentitySummary => BuildItemIdentitySummary(SelectedItem);
     public string SelectedItemPriceSummary => SelectedItem is null
         ? "단가 정보 없음"
-        : IsPurchaseLikeDocument
-            ? $"매입 기준 {SelectedItem.PurchasePrice:N0}원 / 판매 {SelectedItem.SalePrice:N0}원 / 소매 {SelectedItem.RetailPrice:N0}원"
-            : $"판매 기준 {ResolveDefaultUnitPrice(SelectedItem):N0}원 / 매입 {SelectedItem.PurchasePrice:N0}원 / 소매 {SelectedItem.RetailPrice:N0}원";
+        : !CanViewCurrentLineAmounts ? "금액 비공개 · 저장 시 서버에서 계산합니다."
+        : $"적용 기준 {ResolveDefaultUnitPrice(SelectedItem):N0}원 / {CaptureItemAmountAccess().Summary(SelectedItem)}";
+
+    private MobileItemAmountAccess CaptureItemAmountAccess()
+    {
+        var snapshot = _sessionStore.GetSnapshot();
+        return MobileItemAmountAccess.Capture(_sessionStore.IsOwnerCurrent(_draftOwner) && snapshot.IsAuthenticated,
+            snapshot.Role, snapshot.Permissions, snapshot.CanEditItems);
+    }
     public string SelectedItemMemo => SelectedItem is null
         ? "전표 비고는 직접 입력하세요."
         : "품목 메모는 전표 비고에 자동 입력하지 않습니다.";
@@ -407,11 +447,13 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     public string LineActionText => _editingLineId.HasValue ? "품목 수정" : "품목 추가";
     public string DraftSummary => LineItems.Count == 0
         ? "추가된 품목이 없습니다."
+        : !CanViewInvoiceAmounts || LineItems.Any(line => line.AmountsHidden) ? $"총 {LineItems.Count:N0}건 / 금액 비공개"
         : $"총 {LineItems.Count:N0}건 / 합계 {LineItems.Sum(x => x.LineAmount):N0}원";
     public string VatSummary
     {
         get
         {
+            if (!CanViewInvoiceAmounts || LineItems.Any(line => line.AmountsHidden)) return "금액 비공개 · 서버에서 계산합니다.";
             var totals = CalculateTotals(LineItems.Select(line => line.LineAmount));
             var modeText = IsVatNone ? "부가세 없음" : "부가세 포함";
             return $"{modeText} / 공급가 {totals.SupplyAmount:N0}원 / 부가세 {totals.VatAmount:N0}원 / 합계 {totals.TotalAmount:N0}원";
@@ -435,6 +477,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             return;
 
         await LoadAsync();
+        _sessionStore.ThrowIfOwnerChanged(_draftOwner);
 
         if (!MobileSessionScopeFilter.CanAccessInvoice(_sessionStore.GetSnapshot(), invoice))
         {
@@ -452,6 +495,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         IsVatNone = string.Equals(InvoiceVatModes.Normalize(invoice.VatMode), InvoiceVatModes.None, StringComparison.OrdinalIgnoreCase);
 
         var customer = invoice.CustomerId == Guid.Empty ? null : await _api.GetCustomerByIdAsync(invoice.CustomerId);
+        _sessionStore.ThrowIfOwnerChanged(_draftOwner);
         SelectedCustomer = customer ?? new CustomerDto
         {
             Id = invoice.CustomerId,
@@ -470,7 +514,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
                      .Where(line => !line.IsDeleted)
                      .OrderBy(line => line.OrderIndex > 0 ? line.OrderIndex : int.MaxValue)
                      .ThenBy(line => line.Id))
-            LineItems.Add(InvoiceLineDraftItem.FromDto(line));
+            LineItems.Add(InvoiceLineDraftItem.FromDto(line, forceHideAmounts: invoice.AmountsHidden || !CanViewInvoiceAmounts));
 
         OnPropertyChanged(nameof(PageTitleText));
         OnPropertyChanged(nameof(DocumentSaveSectionTitle));
@@ -482,6 +526,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
     public async Task LoadAsync()
     {
+        _sessionStore.ThrowIfOwnerChanged(_draftOwner);
         if (IsBusy)
             return;
 
@@ -496,6 +541,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             IsBusy = true;
             InitializeOfficeOptions();
             var syncState = await _syncCoordinator.LoadAsync();
+            _sessionStore.ThrowIfOwnerChanged(_draftOwner);
             _ = RefreshSyncSnapshotInBackgroundAsync();
             RefreshPriceGradeSourceMap(syncState.SyncedPriceGradeOptions);
             await LoadRecentSelectionsAsync();
@@ -505,6 +551,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
             StatusMessage = $"{DocumentKindText} 전표 작성에 필요한 분류 정보를 불러오고 있습니다.";
             var categories = await _api.GetItemCategoriesAsync();
+            _sessionStore.ThrowIfOwnerChanged(_draftOwner);
             ItemCategories.Clear();
             foreach (var category in categories.OrderBy(x => x.Name))
                 ItemCategories.Add(category);
@@ -885,6 +932,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
     public async Task AddOrUpdateLineAsync()
     {
+        _sessionStore.ThrowIfOwnerChanged(_draftOwner);
         if (SelectedItem is null)
         {
             StatusMessage = "추가할 품목을 먼저 선택하세요.";
@@ -897,24 +945,26 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             return;
         }
 
-        if (!decimal.TryParse(LineUnitPriceText, out var unitPrice) || unitPrice < 0m)
+        decimal unitPrice = 0m;
+        var hidden = !CanViewCurrentLineAmounts;
+        if (!hidden && (!decimal.TryParse(LineUnitPriceText, out unitPrice) || unitPrice < 0m))
         {
             StatusMessage = "단가를 올바르게 입력하세요.";
             return;
         }
 
-        var draft = InvoiceLineDraftItem.FromItem(SelectedItem, quantity);
-        draft.UnitPrice = unitPrice;
-        draft.Remark = LineRemark.Trim();
-        draft.CategoryName = SelectedCategory?.Name ?? SelectedItem.CategoryName;
+        var existing = _editingLineId.HasValue
+            ? LineItems.FirstOrDefault(line => line.Id == _editingLineId.Value)
+            : null;
+        var draft = InvoiceLineDraftItem.FromEditor(SelectedItem, existing, quantity, unitPrice, LineRemark, hidden, IsPurchaseLikeDocument);
+        if (existing is null || draft.ItemId != existing.ItemId)
+            draft.CategoryName = SelectedCategory?.Name ?? SelectedItem.CategoryName;
 
         if (_editingLineId.HasValue)
         {
-            var existing = LineItems.FirstOrDefault(line => line.Id == _editingLineId.Value);
             if (existing is not null)
             {
                 var index = LineItems.IndexOf(existing);
-                draft.Id = existing.Id;
                 LineItems[index] = draft;
             }
 
@@ -934,6 +984,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
     public async Task EditLineAsync(InvoiceLineDraftItem line)
     {
+        _sessionStore.ThrowIfOwnerChanged(_draftOwner);
         if (!string.IsNullOrWhiteSpace(line.CategoryName))
         {
             var category = FindCategoryByName(line.CategoryName);
@@ -978,6 +1029,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         }
 
         _editingLineId = line.Id;
+        RefreshAmountAccess();
         await OpenItemEntrySheetAsync(item, recordRecent: false);
         LineQuantityText = line.Quantity.ToString("0.##");
         LineUnitPriceText = line.UnitPrice.ToString("0.##");
@@ -1003,7 +1055,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         if (IsBusy)
             return;
 
-        var owner = _sessionStore.CaptureOwner();
+        var owner = _draftOwner;
         if (!CanCreateInvoices)
         {
             StatusMessage = "권한이 없어 전표를 저장할 수 없습니다.";
@@ -1132,14 +1184,16 @@ public sealed class InvoiceDraftViewModel : ObservableObject
 
     private InvoiceDto BuildCurrentInvoiceDto(bool forSave)
     {
+        _sessionStore.ThrowIfOwnerChanged(_draftOwner);
         var now = DateTime.UtcNow;
         var invoiceId = _editingInvoice?.Id ?? Guid.NewGuid();
         var lines = LineItems.Select((line, index) =>
         {
             line.OrderIndex = index + 1;
-            return line.ToDto(invoiceId);
+            return line.ToDto(invoiceId, forceHideAmounts: !CanViewInvoiceAmounts || _editingInvoice?.AmountsHidden == true);
         }).ToList();
-        var totals = CalculateTotals(lines.Select(line => line.LineAmount));
+        var amountsHidden = !CanViewInvoiceAmounts || (_editingInvoice?.AmountsHidden ?? false) || lines.Any(line => line.AmountsHidden);
+        var totals = CalculateTotals(amountsHidden ? [] : lines.Select(line => DisclosedAmount.Require(line.LineAmount)));
 
         return new InvoiceDto
         {
@@ -1163,9 +1217,9 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             VoucherType = this.VoucherType,
             InvoiceDate = DateOnly.FromDateTime(InvoiceDate),
             SourceWarehouseCode = SelectedSourceWarehouseCode,
-            TotalAmount = totals.TotalAmount,
-            SupplyAmount = totals.SupplyAmount,
-            VatAmount = totals.VatAmount,
+            TotalAmount = amountsHidden ? null : totals.TotalAmount,
+            SupplyAmount = amountsHidden ? null : totals.SupplyAmount,
+            VatAmount = amountsHidden ? null : totals.VatAmount,
             VatMode = IsVatNone ? InvoiceVatModes.None : InvoiceVatModes.Included,
             TaxInvoiceIssued = _editingInvoice?.TaxInvoiceIssued ?? false,
             PurchaseReceivingRequired = IsPurchaseDocument,
@@ -1221,7 +1275,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         _editingLineId = recordRecent ? null : _editingLineId;
         OnPropertyChanged(nameof(LineActionText));
         LineQuantityText = "1";
-        LineUnitPriceText = ResolveDefaultUnitPrice(item).ToString("0.##");
+        LineUnitPriceText = ResolveDefaultUnitPrice(item)?.ToString("0.##") ?? "비공개";
         LineRemark = string.Empty;
         SelectedItemBranchStocks.Clear();
         var usedSyncedFallback = false;
@@ -1242,7 +1296,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
                 }
 
                 SelectedItem = detail.Item;
-                LineUnitPriceText = ResolveDefaultUnitPrice(detail.Item).ToString("0.##");
+                LineUnitPriceText = ResolveDefaultUnitPrice(detail.Item)?.ToString("0.##") ?? "비공개";
                 resolvedActiveItem = true;
             }
 
@@ -1323,7 +1377,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
             return false;
 
         SelectedItem = selected;
-        LineUnitPriceText = ResolveDefaultUnitPrice(selected).ToString("0.##");
+        LineUnitPriceText = ResolveDefaultUnitPrice(selected)?.ToString("0.##") ?? "비공개";
         SelectedItemBranchStocks.Clear();
         PopulateSelectedSourceWarehouseStocks(branchStocks, selected);
 
@@ -1376,6 +1430,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
     private void ResetItemSelection(bool clearCategory)
     {
         _editingLineId = null;
+        RefreshAmountAccess();
         SelectedItem = null;
         SelectedItemBranchStocks.Clear();
         IsItemEntrySheetVisible = false;
@@ -1867,7 +1922,7 @@ public sealed class InvoiceDraftViewModel : ObservableObject
         return (visibleRows * rowHeight) + Math.Max(0, visibleRows - 1) * 6;
     }
 
-    private decimal ResolveDefaultUnitPrice(ItemDto item)
+    private decimal? ResolveDefaultUnitPrice(ItemDto item)
         => IsPurchaseLikeDocument
             ? item.PurchasePrice
             : MobilePriceSourceResolver.ResolveSalesUnitPrice(item, SelectedCustomer?.PriceGrade, _priceGradeSourceMap);

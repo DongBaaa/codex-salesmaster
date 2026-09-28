@@ -31,7 +31,7 @@ public sealed partial class LocalStateService
 
     public async Task<List<LocalItemPriceGrade>> GetDirtyItemPriceGradesForSyncAsync(SessionState session, CancellationToken ct = default)
     {
-        if (!CanEditItems(session))
+        if (!CanEditItems(session) || !session.HasPermission(AppPermissionNames.AmountViewSales))
             return new List<LocalItemPriceGrade>();
 
         var rows = await _db.ItemPriceGrades
@@ -68,6 +68,7 @@ public sealed partial class LocalStateService
                 PriceGradeOptionId = row.PriceGradeOptionId,
                 PriceGradeName = (row.PriceGradeName ?? string.Empty).Trim(),
                 UnitPrice = row.UnitPrice,
+                AmountsHidden = row.AmountsHidden,
                 IsActive = row.IsActive,
                 Revision = row.Revision,
                 CreatedAtUtc = row.CreatedAtUtc,
@@ -122,6 +123,8 @@ public sealed partial class LocalStateService
 
             if (!existingByOption.TryGetValue(incoming.PriceGradeOptionId, out var existing))
             {
+                if (incoming.AmountsHidden)
+                    throw new InvalidOperationException("비공개 단가로 새 등급을 만들 수 없습니다. 가격을 다시 조회해 주세요.");
                 var rowId = incoming.Id;
                 if (rowId == Guid.Empty || occupiedRowIds.Contains(rowId) || !assignedNewRowIds.Add(rowId))
                 {
@@ -149,7 +152,8 @@ public sealed partial class LocalStateService
             }
 
             existing.PriceGradeName = priceGradeName;
-            existing.UnitPrice = incoming.UnitPrice;
+            if (!existing.AmountsHidden && !incoming.AmountsHidden)
+                existing.UnitPrice = incoming.UnitPrice;
             existing.IsActive = incoming.IsActive;
             existing.IsDeleted = false;
             existing.IsDirty = true;
@@ -158,7 +162,7 @@ public sealed partial class LocalStateService
 
         foreach (var stale in existingRows.Where(row => !incomingOptionIds.Contains(row.PriceGradeOptionId)))
         {
-            if (stale.IsDeleted)
+            if (stale.IsDeleted || stale.AmountsHidden)
                 continue;
 
             stale.IsDeleted = true;

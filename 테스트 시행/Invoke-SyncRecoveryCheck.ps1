@@ -68,6 +68,39 @@ function Get-TrxCounters {
     }
 }
 
+function Get-TrxFilterCoverage {
+    param([string]$Path, [string]$Filter)
+
+    $expected = @($Filter -split '\|' | ForEach-Object {
+        if ($_ -notmatch '^FullyQualifiedName~(.+)$') {
+            throw "Unsupported test filter for coverage validation: $_"
+        }
+        $Matches[1]
+    })
+    $passedMethods = @()
+    if (Test-Path -LiteralPath $Path) {
+        [xml]$xml = Get-Content -LiteralPath $Path -Raw
+        $passedIds = @{}
+        foreach ($result in $xml.TestRun.Results.UnitTestResult) {
+            if ($result.outcome -eq 'Passed') { $passedIds[[string]$result.testId] = $true }
+        }
+        $passedMethods = @($xml.TestRun.TestDefinitions.UnitTest | Where-Object {
+            $passedIds.ContainsKey([string]$_.id)
+        } | ForEach-Object { "$($_.TestMethod.className).$($_.TestMethod.name)" })
+    }
+    $missing = @($expected | Where-Object {
+        $selector = $_
+        -not @($passedMethods | Where-Object {
+            $_.IndexOf($selector, [System.StringComparison]::Ordinal) -ge 0
+        }).Count
+    })
+    return [pscustomobject]@{
+        Expected = $expected.Count
+        Matched = $expected.Count - $missing.Count
+        Missing = $missing
+    }
+}
+
 function Invoke-FilteredTestStep {
     param(
         [string]$Name,
@@ -100,7 +133,9 @@ function Invoke-FilteredTestStep {
     $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
     $trxPath = Join-Path $ReportDirectory $trxName
     $counters = Get-TrxCounters -Path $trxPath
-    $succeeded = ($exitCode -eq 0 -and $counters.Total -gt 0 -and $counters.Failed -eq 0)
+    $coverage = Get-TrxFilterCoverage -Path $trxPath -Filter $Filter
+    $succeeded = ($exitCode -eq 0 -and $counters.Total -gt 0 -and
+        $counters.Passed -eq $counters.Total -and $coverage.Missing.Count -eq 0)
 
     return [pscustomobject]@{
         Name = $Name
@@ -112,6 +147,9 @@ function Invoke-FilteredTestStep {
         Failed = $counters.Failed
         NotExecuted = $counters.NotExecuted
         Succeeded = $succeeded
+        ExpectedFilters = $coverage.Expected
+        MatchedFilters = $coverage.Matched
+        MissingFilters = @($coverage.Missing)
         TrxPath = $trxPath
         Output = Convert-OutputText $output
     }
@@ -156,7 +194,7 @@ $desktopFilter = @(
     'FullyQualifiedName~LocalStateServicePartialsTests.SyncService_PrepareRentalBillingProfileRevisionRetry_RebasesRevisionAndRequeuesOutbox',
     'FullyQualifiedName~LocalStateServicePartialsTests.SyncService_TryRepairRentalAssetRevisionConflictAsync_ResolvesWhenServerCanReplaceInvalidItemReference',
     'FullyQualifiedName~LocalStateServicePartialsTests.SyncService_TryRepairRentalAssetRevisionConflictAsync_PreparesRetryWhenLocalStateMovedWithinAllowedFields',
-    'FullyQualifiedName~LocalStateServicePartialsTests.SyncService_TryPrepareItemRevisionRetryAsync_RebasesNewerLocalItemAndRequeuesOutbox',
+    'FullyQualifiedName~LocalStateServicePartialsTests.SyncService_TryPrepareItemRevisionRetryAsync_RebasesItemCatalogExtensionWireShapeAndRequeuesOutbox',
     'FullyQualifiedName~LocalStateServicePartialsTests.SyncDiagnosticsSummary_UsesOnlyOpenIssuesForLastFailure',
     'FullyQualifiedName~LocalStateServicePartialsTests.DirtySyncQueries_RequireMatchingDomainEditPermission',
     'FullyQualifiedName~SyncScopePendingMessageTests.PendingSyncWaitingMessage_UsenetLogin_DoesNotReportItworldRentalDirty'
@@ -200,7 +238,8 @@ if ($failed.Count -gt 0) {
     $lines.Add('## Failed steps') | Out-Null
     foreach ($step in $failed) {
         $tail = (($step.Output -split "`r?`n") | Select-Object -Last 20) -join ' / '
-        $lines.Add("- $($step.Name): exit=$($step.ExitCode), tests=$($step.Total), failed=$($step.Failed), outputTail=$tail") | Out-Null
+        $missingText = @($step.MissingFilters) -join ', '
+        $lines.Add("- $($step.Name): exit=$($step.ExitCode), tests=$($step.Total), failed=$($step.Failed), missingFilters=$missingText, outputTail=$tail") | Out-Null
     }
 }
 $lines | Set-Content -LiteralPath $MarkdownOutputPath -Encoding UTF8

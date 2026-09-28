@@ -37,6 +37,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     private string _editOfficeCode = DomainConstants.OfficeUsenet;
     private string _editTenantCode = TenantScopeCatalog.UsenetGroup;
     private bool _isDisposed;
+    private FinancialAmountVisibility.AccessKey _vendorPriceAccess;
 
     public ObservableCollection<InventoryItemRow> FilteredItems { get; } = new();
     public ObservableCollection<InventoryMovementRow> SelectedItemMovements { get; } = new();
@@ -109,15 +110,17 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     public string ItworldTabText => $"ITWORLD 재고 ({ItworldTotalQuantity:N0})";
     public string YeonsuTabText => $"YEONSU 재고 ({YeonsuTotalQuantity:N0})";
     public bool CanDeleteSelectedItem =>
+        IsEditorOwnerCurrent &&
         SelectedItem is not null &&
         (_session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.ItemEdit)) &&
         _local.CanWriteItemScope(SelectedItem.Source, _session);
     public bool CanSaveItems => CanSaveItemScope(_editTenantCode, _editOfficeCode);
     private bool CanSaveItemScope(string tenantCode, string officeCode) =>
+        IsEditorOwnerCurrent &&
         (_session.HasAdministrativePrivileges || _session.HasPermission(AppPermissionNames.ItemEdit)) &&
         _local.CanWriteItemScope(new LocalItem { TenantCode = tenantCode, OfficeCode = officeCode }, _session);
     public decimal BoxCurrentStock => EditBoxQty > 0 ? Math.Floor(EditSelectedOfficeStock / EditBoxQty) : 0;
-    public decimal AssetValue => EditSelectedOfficeStock * EditPurchasePrice;
+    public decimal? AssetValue => CanViewPurchasePrices ? EditSelectedOfficeStock * EditPurchasePrice : null;
     public decimal ShortageStock => EditSelectedOfficeStock < EditSafetyStock ? EditSafetyStock - EditSelectedOfficeStock : 0;
     public bool IsInventoryTrackedItem => ItemOperationalPolicy.SupportsInventory(EditTrackingType);
     public bool HasPendingChanges => !string.Equals(_baselineStateSignature, BuildEditStateSignature(CaptureEditSnapshot()), StringComparison.Ordinal);
@@ -135,6 +138,16 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     {
         _local = local;
         _session = session;
+        _inventorySessionId = session.SessionId;
+        _inventoryUserId = session.User?.UserId;
+        _inventoryDatabase = session.SelectedBusinessDatabaseName;
+        _inventoryOffice = session.OfficeCode;
+        _inventoryTenant = session.TenantCode;
+        _inventoryScopeType = session.ScopeType;
+        _inventoryRole = session.User?.Role;
+        _inventoryGlobalScope = session.HasGlobalDataScope;
+        _vendorPriceAccess = FinancialAmountVisibility.CaptureAccess(session);
+        _session.AccessChanged += HandleVendorPriceAccessChanged;
         _selectedOfficeCode = ResolveDefaultOfficeCode(session);
         ApplyDraftScopeForNewItem();
         _local.InventoryStateChanged += HandleInventoryStateChanged;
@@ -164,12 +177,15 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             return false;
 
         _isDisposed = true;
+        RefreshInventoryAmountAccess();
         _backgroundWork.BeginShutdown();
         Interlocked.Increment(ref _selectedItemMovementLoadVersion);
         Interlocked.Increment(ref _selectedItemVendorPriceLoadVersion);
         _lifetimeCts.Cancel();
         _local.InventoryStateChanged -= HandleInventoryStateChanged;
         _local.ItemInvoiceHistoryChanged -= HandleItemInvoiceHistoryChanged;
+        _session.AccessChanged -= HandleVendorPriceAccessChanged;
+        SelectedItemVendorPurchasePrices.Clear();
         // 선택 품목 조회 작업은 창이 닫히는 순간에도 비동기 진입을 시작할 수 있습니다.
         // 여기서 CTS까지 즉시 Dispose하면 Token 접근과 경합해 ObjectDisposedException이
         // 발생할 수 있으므로 취소만 하고 ViewModel 수명과 함께 회수되도록 둡니다.
@@ -1048,6 +1064,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
     private void RefreshDerivedStockFieldsFromItem(InventoryItemRow row)
     {
+        ApplyRefreshedPriceAvailability(row);
         EditUsenetStock = row.UsenetQuantity;
         EditItworldStock = row.ItworldQuantity;
         EditYeonsuStock = row.YeonsuQuantity;
@@ -1064,6 +1081,8 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
         IsNew = false;
         _editRevision = item.Revision;
+        _editPurchaseAmountsHidden = item.PurchaseAmountsHidden;
+        _editSalesAmountsHidden = item.SalesAmountsHidden;
         _editOfficeCode = NormalizeOfficeCode(item.OfficeCode);
         _editTenantCode = TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(
             item.TenantCode,
@@ -1107,6 +1126,8 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         _preservedFilteredEditItemId = null;
         IsNew = true;
         _editRevision = 0;
+        _editPurchaseAmountsHidden = false;
+        _editSalesAmountsHidden = false;
         ApplyDraftScopeForNewItem();
         EditId = Guid.NewGuid();
         EditName = string.Empty;
@@ -1227,6 +1248,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
     private async Task LoadSelectedItemVendorPurchasePricesAsync(Guid itemId, int version)
     {
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
         var ct = _lifetimeCts.Token;
         ct.ThrowIfCancellationRequested();
         if (!IsCurrentSelectedItemVendorPriceLoad(version, itemId))
@@ -1238,7 +1260,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
         var invoiceDates = await _local.GetItemConfirmedInvoiceDatesAsync(itemId, _session, ct);
         ct.ThrowIfCancellationRequested();
-        if (!IsCurrentSelectedItemVendorPriceLoad(version, itemId))
+        if (!IsCurrentSelectedItemVendorPriceLoad(version, itemId) || access != FinancialAmountVisibility.CaptureAccess(_session))
             return;
 
         if (invoiceDates.LastPurchaseDate.HasValue)
@@ -1248,7 +1270,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
         var rows = await _local.GetItemVendorPurchasePricesAsync(itemId, _session, ct);
         ct.ThrowIfCancellationRequested();
-        if (!IsCurrentSelectedItemVendorPriceLoad(version, itemId))
+        if (!IsCurrentSelectedItemVendorPriceLoad(version, itemId) || access != FinancialAmountVisibility.CaptureAccess(_session))
             return;
 
         foreach (var row in rows)
@@ -1259,6 +1281,23 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         => !_isDisposed
            && version == Volatile.Read(ref _selectedItemVendorPriceLoadVersion)
            && SelectedItem?.Id == itemId;
+
+    private void HandleVendorPriceAccessChanged(object? sender, EventArgs e)
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            dispatcher.Invoke(() => HandleVendorPriceAccessChanged(sender, e));
+            return;
+        }
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
+        if (_isDisposed || access == _vendorPriceAccess) return;
+        _vendorPriceAccess = access;
+        RefreshInventoryAmountAccess();
+        if (!IsEditorOwnerCurrent) StatusMessage = "계정 또는 조회 범위가 변경되었습니다. 품목 창을 다시 열어 주세요.";
+        Interlocked.Increment(ref _selectedItemVendorPriceLoadVersion);
+        SelectedItemVendorPurchasePrices.Clear();
+    }
 
     private Task? TryStartBackgroundWork(
         Func<Task> operation,
@@ -1320,7 +1359,11 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
     }
 
     partial void OnEditBoxQtyChanged(decimal value) => OnPropertyChanged(nameof(BoxCurrentStock));
-    partial void OnEditPurchasePriceChanged(decimal value) => OnPropertyChanged(nameof(AssetValue));
+    partial void OnEditPurchasePriceChanged(decimal value)
+    {
+        OnPropertyChanged(nameof(AssetValue));
+        OnPropertyChanged(nameof(EditablePurchasePrice));
+    }
     partial void OnEditSelectedOfficeStockChanged(decimal value)
     {
         OnPropertyChanged(nameof(BoxCurrentStock));
@@ -1506,6 +1549,8 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
 
     private void ApplySnapshot(InventoryEditSnapshot snapshot, bool resetBaseline)
     {
+        _editPurchaseAmountsHidden = snapshot.PurchaseAmountsHidden;
+        _editSalesAmountsHidden = snapshot.SalesAmountsHidden;
         IsNew = snapshot.IsNew;
         EditId = snapshot.EditId;
         _editRevision = snapshot.EditRevision;
@@ -1542,7 +1587,8 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             row.PriceSource,
             row.SortOrder,
             row.UnitPrice,
-            row.IsActive)));
+            row.IsActive,
+            row.AmountsHidden)));
         EditLastPurchaseDate = snapshot.EditLastPurchaseDate;
         EditLastSaleDate = snapshot.EditLastSaleDate;
         EditSimpleMemo = snapshot.EditSimpleMemo;
@@ -1592,7 +1638,9 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             _editOfficeCode,
             _editTenantCode,
             SelectedOfficeCode,
-            IsNew);
+            IsNew,
+            _editPurchaseAmountsHidden,
+            _editSalesAmountsHidden);
 
     private static bool HasMeaningfulDraftContent(InventoryEditSnapshot snapshot)
         => !string.IsNullOrWhiteSpace(snapshot.EditName)
@@ -1634,7 +1682,8 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
                     source,
                     option.SortOrder,
                     existing?.UnitPrice ?? fallback,
-                    option.IsActive);
+                    option.IsActive,
+                    item?.SalesAmountsHidden == true || existing?.AmountsHidden == true);
             })
             .ToList();
     }
@@ -1647,10 +1696,12 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         PriceGradeRows.Clear();
         foreach (var row in rows)
         {
+            row.SetAmountAccess(() => CanViewSalesPrices, () => !IsSalesPriceReadOnly);
             row.PropertyChanged += PriceGradeRow_PropertyChanged;
             PriceGradeRows.Add(row);
         }
 
+        RefreshInventoryAmountAccess();
         OnPropertyChanged(nameof(HasPendingChanges));
         OnPropertyChanged(nameof(HasMeaningfulDraftContentForClose));
     }
@@ -1672,7 +1723,8 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
                 row.PriceSource,
                 row.SortOrder,
                 row.UnitPrice,
-                row.IsActive))
+                row.IsActive,
+                row.AmountsHidden))
             .ToList();
 
     private static decimal ResolveLegacyItemPrice(LocalItem item, string priceSource)
@@ -1692,12 +1744,12 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
                 SelectionOptionDefaults.NormalizePriceSource(row.PriceSource),
                 SelectionOptionDefaults.NormalizePriceSource(priceSource),
                 StringComparison.OrdinalIgnoreCase));
-        return matched is null ? fallback : matched.UnitPrice;
+        return matched is null || matched.AmountsHidden ? fallback : matched.UnitPrice;
     }
 
     private static IReadOnlyList<LocalItemPriceGrade> BuildItemPriceGrades(InventoryEditSnapshot snapshot)
         => snapshot.PriceGrades
-            .Where(row => row.PriceGradeOptionId != Guid.Empty)
+            .Where(row => row.PriceGradeOptionId != Guid.Empty && (!snapshot.IsNew || !row.AmountsHidden))
             .Select(row => new LocalItemPriceGrade
             {
                 Id = row.Id == Guid.Empty ? Guid.NewGuid() : row.Id,
@@ -1705,6 +1757,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
                 PriceGradeOptionId = row.PriceGradeOptionId,
                 PriceGradeName = row.PriceGradeName ?? string.Empty,
                 UnitPrice = row.UnitPrice,
+                AmountsHidden = row.AmountsHidden,
                 IsActive = row.IsActive,
                 IsDeleted = false
             })
@@ -1733,6 +1786,8 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
             CurrentStock = snapshot.EditTotalStock,
             SafetyStock = snapshot.EditSafetyStock,
             PurchasePrice = snapshot.EditPurchasePrice,
+            PurchaseAmountsHidden = snapshot.PurchaseAmountsHidden,
+            SalesAmountsHidden = snapshot.SalesAmountsHidden,
             SalePrice = snapshot.EditSalePrice,
             RetailPrice = snapshot.EditRetailPrice,
             PriceGradeA = ResolveSnapshotLegacyPrice(snapshot, SelectionOptionDefaults.PriceSourceA, snapshot.EditPriceA),
@@ -1796,7 +1851,8 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         string PriceSource,
         int SortOrder,
         decimal UnitPrice,
-        bool IsActive);
+        bool IsActive,
+        bool AmountsHidden);
 
     private sealed record InventoryEditSnapshot(
         Guid EditId,
@@ -1830,5 +1886,7 @@ public sealed partial class InventoryViewModel : ObservableObject, IDisposable
         string EditOfficeCode,
         string EditTenantCode,
         string PreferredOfficeCode,
-        bool IsNew);
+        bool IsNew,
+        bool PurchaseAmountsHidden,
+        bool SalesAmountsHidden);
 }

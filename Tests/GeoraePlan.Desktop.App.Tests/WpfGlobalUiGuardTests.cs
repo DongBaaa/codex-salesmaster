@@ -127,8 +127,8 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("public Task RefreshRowsAsync()", viewModel, StringComparison.Ordinal);
         Assert.Contains("public LocalCustomer? ResolveActionCustomer()", viewModel, StringComparison.Ordinal);
         Assert.Contains("SelectedInvoiceRow?.CustomerId", viewModel, StringComparison.Ordinal);
-        Assert.Contains("InvoiceListRow.From(invoice, customerName, showCustomerName)", viewModel, StringComparison.Ordinal);
-        Assert.Contains("InvoiceListRow.From(transaction, customerName, showCustomerName)", viewModel, StringComparison.Ordinal);
+        Assert.Contains("InvoiceListRow.From(invoice, customerName, showCustomerName, _session)", viewModel, StringComparison.Ordinal);
+        Assert.Contains("InvoiceListRow.From(transaction, customerName, showCustomerName, _session)", viewModel, StringComparison.Ordinal);
         Assert.DoesNotContain("SaveInvoiceAsync", viewModel, StringComparison.Ordinal);
         Assert.DoesNotContain("SaveTransactionAsync", viewModel, StringComparison.Ordinal);
         Assert.DoesNotContain("new LocalDbContext", viewModel, StringComparison.Ordinal);
@@ -436,7 +436,7 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("ShowDashboardExpandedSalesCards", xaml, StringComparison.Ordinal);
         Assert.Contains("CanViewDashboardSalesCards", xaml, StringComparison.Ordinal);
         Assert.Contains("public bool CanViewDashboardSalesCards => _session.HasAdministrativePrivileges;", viewModel, StringComparison.Ordinal);
-        Assert.Contains("DashboardMonthlySales = 0m;", viewModel, StringComparison.Ordinal);
+        Assert.Contains("DashboardMonthlySales = null;", viewModel, StringComparison.Ordinal);
         Assert.Contains("DashboardMonthlyInvoiceCount = 0;", viewModel, StringComparison.Ordinal);
         Assert.DoesNotContain("전월 대비", xaml, StringComparison.Ordinal);
         Assert.DoesNotContain("DashboardSalesTrendPercent", xaml, StringComparison.Ordinal);
@@ -692,7 +692,8 @@ public sealed class WpfGlobalUiGuardTests
         Assert.Contains("FormatCollectionRate", viewModel, StringComparison.Ordinal);
         Assert.Contains("MonthlySalesChartSummaryText", viewModel, StringComparison.Ordinal);
         Assert.Contains("ObservableCollection<PeriodLedgerMonthlySalesChartPoint>", viewModel, StringComparison.Ordinal);
-        Assert.Contains("totals.ReceiptAmount + Math.Max(0m, totals.ReceivableBalance)", viewModel, StringComparison.Ordinal);
+        Assert.Contains("totals.ReceiptAmount.Value + Math.Max(0m, totals.ReceivableBalance.Value)", viewModel, StringComparison.Ordinal);
+        Assert.Contains("!totals.ReceiptAmount.HasValue || !totals.ReceivableBalance.HasValue", viewModel, StringComparison.Ordinal);
         Assert.Contains("BuildMonthlySalesChartPoints", service, StringComparison.Ordinal);
         Assert.DoesNotContain("Take(", service, StringComparison.Ordinal);
     }

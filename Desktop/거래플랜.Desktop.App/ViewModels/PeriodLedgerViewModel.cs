@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Globalization;
 using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -9,12 +9,16 @@ using 거래플랜.Desktop.App.Services;
 
 namespace 거래플랜.Desktop.App.ViewModels;
 
-public sealed partial class PeriodLedgerViewModel : ObservableObject
+public sealed partial class PeriodLedgerViewModel : ObservableObject, IDisposable
 {
     private readonly LocalStateService _local;
     private readonly PeriodLedgerAggregationService _aggregation;
     private readonly PeriodLedgerExcelExportService _exporter;
     private readonly SessionState _session;
+    private FinancialAmountVisibility.AccessKey _access;
+    private bool _disposed;
+    private long _requestVersion;
+    private CancellationTokenSource? _aggregationCts;
     private List<LocalCustomer> _allCustomers = [];
     private PeriodLedgerBuildResult? _currentResult;
     private CancellationTokenSource? _ledgerSearchRefreshCts;
@@ -118,13 +122,18 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
         _aggregation = aggregation;
         _exporter = exporter;
         _session = session;
+        _access = FinancialAmountVisibility.CaptureAccess(session);
+        _session.AccessChanged += OnAccessChanged;
 
         ApplyCurrentMonth();
     }
 
     public async Task InitializeAsync()
     {
-        _allCustomers = await _local.GetCustomersAsync(_session);
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
+        var customers = await _local.GetCustomersAsync(_session);
+        if (_disposed || access != FinancialAmountVisibility.CaptureAccess(_session)) return;
+        _allCustomers = customers;
         RefreshCustomerList(_allCustomers);
         SelectedCustomer = Customers.FirstOrDefault();
     }
@@ -169,7 +178,7 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
     [RelayCommand]
     private async Task StartAggregationAsync()
     {
-        if (IsBusy)
+        if (_disposed || IsBusy)
             return;
 
         _ledgerSearchRefreshCts?.Cancel();
@@ -186,6 +195,10 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
             return;
         }
 
+        var version = ++_requestVersion;
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
+        using var cts = new CancellationTokenSource();
+        _aggregationCts = cts;
         IsBusy = true;
         StatusMessage = "조회 중...";
 
@@ -193,8 +206,9 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
         {
             var query = BuildCurrentQuery();
 
-            var progress = new Progress<string>(message => StatusMessage = message);
-            var result = await _aggregation.BuildAsync(query, _session, progress);
+            var progress = new Progress<string>(message => { if (IsCurrent(access, version)) StatusMessage = message; });
+            var result = await _aggregation.BuildAsync(query, _session, progress, cts.Token);
+            if (!IsCurrent(access, version)) return;
             ApplyResult(result);
 
             if (!string.IsNullOrWhiteSpace(result.ProfitWarningMessage))
@@ -202,18 +216,22 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
                 StatusMessage = result.ProfitWarningMessage;
             }
 
-            var filePath = await _exporter.ExportAsync(result, AppPaths.UserDownloadsDir, progress);
+            var filePath = await _exporter.ExportAsync(result, AppPaths.UserDownloadsDir, progress, cts.Token);
+            if (!IsCurrent(access, version)) return;
             LastExportPath = filePath;
             StatusMessage = $"완료: {Path.GetFileName(filePath)}";
         }
+        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
+            if (!IsCurrent(access, version)) return;
             AppLogger.Error("PeriodLedger", "기간별 집계 실패", ex);
             StatusMessage = $"오류: {ex.Message}";
             System.Windows.MessageBox.Show($"기간별 집계 중 오류가 발생했습니다.\n{ex.Message}", "오류", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
         }
         finally
         {
+            if (ReferenceEquals(_aggregationCts, cts)) _aggregationCts = null;
             IsBusy = false;
         }
     }
@@ -286,6 +304,7 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
 
     private void ApplyResult(PeriodLedgerBuildResult result)
     {
+        if (_disposed || !result.IsAccessCurrent) return;
         _currentResult = result;
         LedgerRows.Clear();
         SelectedLedgerItems.Clear();
@@ -356,11 +375,11 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
         SummaryRunningBalanceText = FormatAmount(result.Totals.RunningBalance);
         SummaryReceivableBalanceText = FormatAmount(result.Totals.ReceivableBalance);
         SummaryCollectionRateText = FormatCollectionRate(result.Totals);
-        SummaryProfitText = result.Totals.ProfitAmount.HasValue ? FormatAmount(result.Totals.ProfitAmount.Value) : "-";
+        SummaryProfitText = result.ProfitAmountsHidden && result.Query.IncludeProfit ? "비공개" : result.Totals.ProfitAmount.HasValue ? FormatAmount(result.Totals.ProfitAmount.Value) : "-";
         SummaryCountText = $"{rowCount:N0}건";
-        var chartTotal = result.MonthlySalesChartPoints.Sum(point => point.SalesAmount);
+        decimal? chartTotal = result.MonthlySalesChartPoints.Any(point => !point.SalesAmount.HasValue) ? null : result.MonthlySalesChartPoints.Sum(point => point.SalesAmount);
         MonthlySalesChartSummaryText =
-            $"{result.Query.From:yyyy-MM-dd} ~ {result.Query.To:yyyy-MM-dd} / 월 {result.MonthlySalesChartPoints.Count:N0}개 / 매출합계 {chartTotal:N0}원";
+            $"{result.Query.From:yyyy-MM-dd} ~ {result.Query.To:yyyy-MM-dd} / 월 {result.MonthlySalesChartPoints.Count:N0}개 / 매출합계 {FormatAmount(chartTotal)}";
     }
 
     private void RefreshCustomerList(IEnumerable<LocalCustomer> customers)
@@ -370,19 +389,20 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
             Customers.Add(c);
     }
 
-    private static string FormatAmount(decimal amount)
-        => amount.ToString("#,##0", CultureInfo.CurrentCulture);
+    private static string FormatAmount(decimal? amount)
+        => amount?.ToString("#,##0", CultureInfo.CurrentCulture) ?? "비공개";
 
     private static string FormatCollectionRate(PeriodLedgerTotals totals)
     {
+        if (!totals.ReceiptAmount.HasValue || !totals.ReceivableBalance.HasValue) return "비공개";
         if (totals.ReceiptAmount <= 0m && totals.ReceivableBalance <= 0m)
             return "-";
 
-        var baseAmount = totals.ReceiptAmount + Math.Max(0m, totals.ReceivableBalance);
+        var baseAmount = totals.ReceiptAmount.Value + Math.Max(0m, totals.ReceivableBalance.Value);
         if (baseAmount <= 0m)
             return "-";
 
-        var rate = Math.Round(totals.ReceiptAmount / baseAmount * 100m, 1, MidpointRounding.AwayFromZero);
+        var rate = Math.Round(totals.ReceiptAmount.Value / baseAmount * 100m, 1, MidpointRounding.AwayFromZero);
         return rate.ToString("0.0'%' ", CultureInfo.CurrentCulture).Trim();
     }
 
@@ -421,7 +441,7 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
 
     private void ScheduleLedgerSearchRefresh()
     {
-        if (IsBusy)
+        if (_disposed || IsBusy)
             return;
 
         _ledgerSearchRefreshCts?.Cancel();
@@ -433,6 +453,8 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
 
     private async Task RefreshLedgerSearchAsync(CancellationTokenSource cts)
     {
+        var access = FinancialAmountVisibility.CaptureAccess(_session);
+        var version = ++_requestVersion;
         try
         {
             await Task.Delay(250, cts.Token);
@@ -443,7 +465,7 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
             var query = BuildCurrentQuery();
             var result = await _aggregation.BuildAsync(query, _session, progress: null, cts.Token);
 
-            if (cts.IsCancellationRequested)
+            if (cts.IsCancellationRequested || !IsCurrent(access, version))
                 return;
 
             ApplyResult(result);
@@ -457,6 +479,7 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
         }
         catch (Exception ex)
         {
+            if (!IsCurrent(access, version)) return;
             AppLogger.Warn("PeriodLedger", $"실시간 검색 갱신 실패: {ex.Message}");
             StatusMessage = $"검색 갱신 오류: {ex.Message}";
         }
@@ -468,6 +491,45 @@ public sealed partial class PeriodLedgerViewModel : ObservableObject
             cts.Dispose();
         }
     }
+
+    private bool IsCurrent(FinancialAmountVisibility.AccessKey access, long version)
+        => !_disposed && version == _requestVersion && access == FinancialAmountVisibility.CaptureAccess(_session);
+
+    private void OnAccessChanged(object? sender, EventArgs e)
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess()) { dispatcher.Invoke(() => OnAccessChanged(sender, e)); return; }
+        var current = FinancialAmountVisibility.CaptureAccess(_session);
+        if (_disposed || current == _access) return;
+        _access = current;
+        ClearPrivateState();
+    }
+
+    private void ClearPrivateState()
+    {
+        ++_requestVersion;
+        _aggregationCts?.Cancel();
+        _ledgerSearchRefreshCts?.Cancel();
+        _currentResult = null;
+        LedgerRows.Clear(); SelectedLedgerRow = null;
+        SelectedLedgerItems.Clear(); SelectedLedgerItem = null;
+        MonthlySalesChartPoints.Clear(); HasMonthlySalesChartPoints = false; HasLedgerRows = false;
+        _allCustomers.Clear(); Customers.Clear(); SelectedCustomer = null;
+        SummaryTradeAmountText = SummaryReceiptAmountText = SummaryPaymentAmountText = "비공개";
+        SummaryRunningBalanceText = SummaryReceivableBalanceText = SummaryCollectionRateText = SummaryProfitText = "비공개";
+        SummaryCountText = "0건"; LastExportPath = "";
+        MonthlySalesChartSummaryText = "접근 권한이 변경되었습니다. 다시 조회하세요.";
+        StatusMessage = "접근 권한이 변경되었습니다. 다시 조회하세요.";
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _session.AccessChanged -= OnAccessChanged;
+        ClearPrivateState();
+    }
+
 }
 
 public sealed partial class PeriodLedgerDisplayRow : ObservableObject
@@ -482,11 +544,11 @@ public sealed partial class PeriodLedgerDisplayRow : ObservableObject
     public string CustomerName { get; init; } = string.Empty;
     public string Division { get; init; } = string.Empty;
     public string Summary { get; init; } = string.Empty;
-    public decimal TradeAmount { get; init; }
-    public decimal ReceiptAmount { get; init; }
-    public decimal PaymentAmount { get; init; }
-    public decimal RunningBalance { get; init; }
-    public decimal ReceivableBalance { get; init; }
+    public decimal? TradeAmount { get; init; }
+    public decimal? ReceiptAmount { get; init; }
+    public decimal? PaymentAmount { get; init; }
+    public decimal? RunningBalance { get; init; }
+    public decimal? ReceivableBalance { get; init; }
     public IReadOnlyList<PeriodLedgerDetailDisplayRow> Items { get; init; } = Array.Empty<PeriodLedgerDetailDisplayRow>();
 
     [ObservableProperty] private string _note = string.Empty;
@@ -620,10 +682,10 @@ public sealed partial class PeriodLedgerDetailDisplayRow : ObservableObject
     public string ItemName { get; init; } = string.Empty;
     public string Specification { get; init; } = string.Empty;
     public decimal Quantity { get; init; }
-    public decimal UnitPrice { get; init; }
-    public decimal SupplyAmount { get; init; }
-    public decimal VatAmount { get; init; }
-    public decimal LineAmount { get; init; }
+    public decimal? UnitPrice { get; init; }
+    public decimal? SupplyAmount { get; init; }
+    public decimal? VatAmount { get; init; }
+    public decimal? LineAmount { get; init; }
 
     [ObservableProperty] private string _itemNote = string.Empty;
 

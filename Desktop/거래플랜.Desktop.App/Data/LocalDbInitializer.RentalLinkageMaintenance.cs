@@ -508,7 +508,7 @@ public static partial class LocalDbInitializer
     {
         normalizedTemplateJson = profile.BillingTemplateJson ?? string.Empty;
         normalizedMonthlyAmount = Math.Max(0m, profile.MonthlyAmount);
-        if (linkedAssets.Count == 0)
+        if (linkedAssets.Count == 0 || profile.AmountsHidden || linkedAssets.Any(asset => asset.SalesAmountsHidden))
             return false;
 
         var linkedAssetMap = linkedAssets
@@ -526,7 +526,7 @@ public static partial class LocalDbInitializer
             (item.IncludedAssetIds ?? []).Any(id => id != Guid.Empty)) == true;
 
         var templateItems = rentalStateService.GetBillingTemplateItems(profile, linkedAssets);
-        if (templateItems.Count == 0)
+        if (templateItems.Count == 0 || templateItems.Any(item => item.AmountsHidden))
             return false;
 
         if (!hasExplicitIncludedAssetIds && templateItems.Count == 1)
@@ -612,9 +612,9 @@ public static partial class LocalDbInitializer
     private static decimal ResolveStartupTemplateMonthlyAmount(RentalBillingTemplateItemModel item)
     {
         var quantity = item.Quantity <= 0m ? 1m : item.Quantity;
-        var unitPrice = Math.Max(0m, item.UnitPrice);
+        var unitPrice = Math.Max(0m, DisclosedAmount.Require(item.UnitPrice));
         var calculated = CalculateStartupTemplateLineAmount(quantity, unitPrice);
-        return calculated > 0m ? calculated : Math.Max(0m, item.Amount);
+        return calculated > 0m ? calculated : Math.Max(0m, DisclosedAmount.Require(item.Amount));
     }
 
     private static decimal CalculateStartupTemplateLineAmount(decimal quantity, decimal unitPrice)

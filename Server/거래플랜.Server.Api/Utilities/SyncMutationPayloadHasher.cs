@@ -193,10 +193,15 @@ public static class SyncMutationPayloadHasher
         // The original hasher serialized the DTO exactly as received. At that
         // time the receipt key was trimmed separately, so the persisted hash
         // can legitimately include MutationId leading or trailing whitespace.
-        var payload = JsonSerializer.SerializeToUtf8Bytes(
-            dto,
-            dto.GetType(),
-            SerializerOptions);
+        byte[] payload;
+        if (dto is InvoiceDto { Author: not null })
+        {
+            var node = JsonSerializer.SerializeToNode(dto, dto.GetType(), SerializerOptions)!.AsObject();
+            node.Remove(GetSerializedPropertyName(nameof(InvoiceDto.Author)));
+            payload = JsonSerializer.SerializeToUtf8Bytes(node, SerializerOptions);
+        }
+        else
+            payload = JsonSerializer.SerializeToUtf8Bytes(dto, dto.GetType(), SerializerOptions);
         return Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant();
     }
 
@@ -212,6 +217,8 @@ public static class SyncMutationPayloadHasher
             canonicalizeUtcTimestamps ? CanonicalSerializerOptions : SerializerOptions);
         if (canonicalPayload is JsonObject payloadObject)
         {
+            if (dto is InvoiceDto)
+                payloadObject.Remove(GetSerializedPropertyName(nameof(InvoiceDto.Author)));
             if (canonicalizeSemanticPayload)
                 CanonicalizeSemanticPayload(dto, payloadObject);
 

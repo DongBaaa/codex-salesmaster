@@ -11,7 +11,7 @@ using Xunit;
 
 namespace GeoraePlan.Server.Api.Tests;
 
-public sealed class HostedAuthenticationPipelineTests
+public sealed partial class HostedAuthenticationPipelineTests
 {
     [Fact]
     public async Task HostedPipeline_EnforcesAuthenticationAndAdminAuthorization()
@@ -106,6 +106,15 @@ public sealed class HostedAuthenticationPipelineTests
                 "user",
                 userPassword);
 
+            using (var legacyRead = new HttpRequestMessage(HttpMethod.Get, "invoices"))
+            {
+                legacyRead.Headers.Authorization = new AuthenticationHeaderValue("Bearer", userToken);
+                using var upgrade = await client.SendAsync(legacyRead);
+                Assert.Equal(HttpStatusCode.UpgradeRequired, upgrade.StatusCode);
+                var required = await upgrade.Content.ReadFromJsonAsync<ClientUpgradeRequiredResponse>();
+                Assert.Equal(2, required!.Required.MinimumProtocolVersion);
+            }
+
             var deniedProfileId = Guid.NewGuid();
             var deniedMutationId =
                 "hosted-permission-denied-" +
@@ -127,6 +136,12 @@ public sealed class HostedAuthenticationPipelineTests
                     new AuthenticationHeaderValue(
                         "Bearer",
                         userToken);
+                userPushRequest.Headers.Add(ClientCompatibilityHeaders.AppId, "georaeplan-desktop");
+                userPushRequest.Headers.Add(ClientCompatibilityHeaders.Platform, "windows");
+                userPushRequest.Headers.Add(ClientCompatibilityHeaders.Version, "1.1.743");
+                userPushRequest.Headers.Add(ClientCompatibilityHeaders.Build, "743");
+                // Exercise authorization after the nullable rental schema gate.
+                userPushRequest.Headers.Add(ClientCompatibilityHeaders.Protocol, ClientCompatibilityHeaders.NullableRentalProfileAmountsProtocolVersion.ToString());
                 userPushRequest.Content = JsonContent.Create(
                     new SyncPushRequest
                     {

@@ -385,14 +385,14 @@
                                     Visibility="{Binding CanViewDashboardSalesCards, Converter={StaticResource BoolToVisibility}}">
                                 <StackPanel>
                                     <TextBlock Text="이번 달 매출" Style="{StaticResource DashboardMetricLabelTextStyle}"/>
-                                    <TextBlock Text="{Binding DashboardMonthlySales, StringFormat={}{0:N0}원}" Style="{StaticResource DashboardMetricValueTextStyle}"/>
+                                    <TextBlock Text="{Binding DashboardMonthlySalesDisplay}" Style="{StaticResource DashboardMetricValueTextStyle}"/>
                                 </StackPanel>
                             </Border>
                             <Border Style="{StaticResource DashboardMetricCardStyle}"
                                     Visibility="{Binding CanViewDashboardSalesCards, Converter={StaticResource BoolToVisibility}}">
                                 <StackPanel>
                                     <TextBlock Text="월 평균 전표" Style="{StaticResource DashboardMetricLabelTextStyle}"/>
-                                    <TextBlock Text="{Binding DashboardMonthlyAverageSales, StringFormat={}{0:N0}원}" Style="{StaticResource DashboardMetricValueTextStyle}"/>
+                                    <TextBlock Text="{Binding DashboardMonthlyAverageSalesDisplay}" Style="{StaticResource DashboardMetricValueTextStyle}"/>
                                 </StackPanel>
                             </Border>
                             <Border Style="{StaticResource DashboardMetricCardStyle}"
@@ -407,7 +407,7 @@
                                     ToolTip="거래처별 미수 잔액과 전표내역을 조회합니다.">
                                 <StackPanel>
                                     <TextBlock Text="미수 잔액" Style="{StaticResource DashboardMetricLabelTextStyle}"/>
-                                    <TextBlock Text="{Binding DashboardReceivable, StringFormat={}{0:N0}원}" Style="{StaticResource DashboardMetricValueTextStyle}"/>
+                                    <TextBlock Text="{Binding DashboardReceivableDisplay}" Style="{StaticResource DashboardMetricValueTextStyle}"/>
                                 </StackPanel>
                             </Button>
                             <Button Style="{StaticResource DashboardMetricButtonStyle}"
@@ -415,7 +415,7 @@
                                     ToolTip="거래처별 미지급 잔액과 전표내역을 조회합니다.">
                                 <StackPanel>
                                     <TextBlock Text="미지급 잔액" Style="{StaticResource DashboardMetricLabelTextStyle}"/>
-                                    <TextBlock Text="{Binding DashboardPayable, StringFormat={}{0:N0}원}" Style="{StaticResource DashboardMetricValueTextStyle}"/>
+                                    <TextBlock Text="{Binding DashboardPayableDisplay}" Style="{StaticResource DashboardMetricValueTextStyle}"/>
                                 </StackPanel>
                             </Button>
                             <Border Style="{StaticResource DashboardMetricCardStyle}">
@@ -566,14 +566,14 @@
                         Visibility="{Binding ShowDashboardExpandedSalesCards, Converter={StaticResource BoolToVisibility}}">
                     <StackPanel>
                         <TextBlock Text="이번 달 매출" Style="{StaticResource DashboardMetricLabelTextStyle}"/>
-                        <TextBlock Text="{Binding DashboardMonthlySales, StringFormat={}{0:N0}원}" Style="{StaticResource DashboardMetricValueTextStyle}" Foreground="#A5D6A7"/>
+                        <TextBlock Text="{Binding DashboardMonthlySalesDisplay}" Style="{StaticResource DashboardMetricValueTextStyle}" Foreground="#A5D6A7"/>
                     </StackPanel>
                 </Border>
                 <Border Style="{StaticResource DashboardMetricCardStyle}"
                         Visibility="{Binding ShowDashboardExpandedSalesCards, Converter={StaticResource BoolToVisibility}}">
                     <StackPanel>
                         <TextBlock Text="월 평균 전표" Style="{StaticResource DashboardMetricLabelTextStyle}"/>
-                        <TextBlock Text="{Binding DashboardMonthlyAverageSales, StringFormat={}{0:N0}원}" Style="{StaticResource DashboardMetricValueTextStyle}"/>
+                        <TextBlock Text="{Binding DashboardMonthlyAverageSalesDisplay}" Style="{StaticResource DashboardMetricValueTextStyle}"/>
                     </StackPanel>
                 </Border>
                 <Border Style="{StaticResource DashboardMetricCardStyle}"
@@ -588,7 +588,7 @@
                         ToolTip="클릭하면 거래처별 미수 잔액과 전표내역을 조회합니다.">
                     <StackPanel>
                         <TextBlock Text="미수 잔액" Style="{StaticResource DashboardMetricLabelTextStyle}"/>
-                        <TextBlock Text="{Binding DashboardReceivable, StringFormat={}{0:N0}원}" Style="{StaticResource DashboardMetricValueTextStyle}" Foreground="#FFCC80"/>
+                        <TextBlock Text="{Binding DashboardReceivableDisplay}" Style="{StaticResource DashboardMetricValueTextStyle}" Foreground="#FFCC80"/>
                         <TextBlock Text="클릭 상세" Foreground="#9FB3C8" FontSize="10" Margin="0,2,0,0"/>
                     </StackPanel>
                 </Button>
@@ -597,7 +597,7 @@
                         ToolTip="클릭하면 거래처별 미지급 잔액과 전표내역을 조회합니다.">
                     <StackPanel>
                         <TextBlock Text="미지급 잔액" Style="{StaticResource DashboardMetricLabelTextStyle}"/>
-                        <TextBlock Text="{Binding DashboardPayable, StringFormat={}{0:N0}원}" Style="{StaticResource DashboardMetricValueTextStyle}" Foreground="#CE93D8"/>
+                        <TextBlock Text="{Binding DashboardPayableDisplay}" Style="{StaticResource DashboardMetricValueTextStyle}" Foreground="#CE93D8"/>
                         <TextBlock Text="클릭 상세" Foreground="#9FB3C8" FontSize="10" Margin="0,2,0,0"/>
                     </StackPanel>
                 </Button>
@@ -930,13 +930,13 @@
                                     <Border DockPanel.Dock="Bottom" Padding="10,8" BorderBrush="#2E4060" BorderThickness="0,1,0,0">
                                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                                             <TextBlock Text="공급가" Foreground="#9FB3C8" Margin="0,0,6,0"/>
-                                            <TextBlock Text="{Binding PreviewSupplyAmount, StringFormat=N0}" Width="90" TextAlignment="Right"/>
+                                            <TextBlock Text="{Binding PreviewSupplyAmountDisplay}" Width="90" TextAlignment="Right"/>
                                             <TextBlock Text="원" Margin="2,0,16,0"/>
                                             <TextBlock Text="부가세" Foreground="#9FB3C8" Margin="0,0,6,0"/>
-                                            <TextBlock Text="{Binding PreviewVatAmount, StringFormat=N0}" Width="80" TextAlignment="Right"/>
+                                            <TextBlock Text="{Binding PreviewVatAmountDisplay}" Width="80" TextAlignment="Right"/>
                                             <TextBlock Text="원" Margin="2,0,16,0"/>
                                             <TextBlock Text="합계" Foreground="#4FC3F7" FontWeight="Bold" Margin="0,0,6,0"/>
-                                            <TextBlock Text="{Binding PreviewTotalAmount, StringFormat=N0}" Foreground="#4FC3F7" FontWeight="Bold" Width="100" TextAlignment="Right"/>
+                                            <TextBlock Text="{Binding PreviewTotalAmountDisplay}" Foreground="#4FC3F7" FontWeight="Bold" Width="100" TextAlignment="Right"/>
                                             <TextBlock Text="원" Foreground="#4FC3F7" Margin="2,0,0,0"/>
                                         </StackPanel>
                                     </Border>
@@ -946,8 +946,8 @@
                                             <DataGridTextColumn Header="규격" Binding="{Binding Specification}" Width="120"/>
                                             <DataGridTextColumn Header="단위" Binding="{Binding Unit}" Width="70"/>
                                             <DataGridTextColumn Header="수량" Binding="{Binding Quantity, StringFormat=N0}" Width="80"/>
-                                            <DataGridTextColumn Header="단가" Binding="{Binding UnitPrice, StringFormat=N0}" Width="100"/>
-                                            <DataGridTextColumn Header="금액" Binding="{Binding LineAmount, StringFormat=N0}" Width="100"/>
+                                            <DataGridTextColumn Header="단가" Binding="{Binding UnitPriceDisplay}" Width="100"/>
+                                            <DataGridTextColumn Header="금액" Binding="{Binding LineAmountDisplay}" Width="100"/>
                                             <DataGridTextColumn Header="비고" Binding="{Binding Remark}" Width="140"/>
                                         </DataGrid.Columns>
                                     </DataGrid>
@@ -1028,13 +1028,13 @@
                                                 </Grid.RowDefinitions>
 
                                                 <TextBlock Grid.Row="0" Grid.Column="0" Text="선수금" Foreground="#9FB3C8" Margin="0,0,12,0"/>
-                                                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding PreviewCustomerAdvanceBalance, StringFormat={}{0:N0}원}" HorizontalAlignment="Right" FontWeight="Bold"/>
+                                                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding PreviewCustomerAdvanceBalanceDisplay}" HorizontalAlignment="Right" FontWeight="Bold"/>
                                                 <TextBlock Grid.Row="1" Grid.Column="0" Text="미수금" Foreground="#9FB3C8" Margin="0,6,12,0"/>
-                                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding PreviewCustomerReceivableBalance, StringFormat={}{0:N0}원}" HorizontalAlignment="Right" FontWeight="Bold" Margin="0,6,0,0"/>
+                                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding PreviewCustomerReceivableBalanceDisplay}" HorizontalAlignment="Right" FontWeight="Bold" Margin="0,6,0,0"/>
                                                 <TextBlock Grid.Row="2" Grid.Column="0" Text="미지급금" Foreground="#9FB3C8" Margin="0,6,12,0"/>
-                                                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding PreviewCustomerPayableBalance, StringFormat={}{0:N0}원}" HorizontalAlignment="Right" FontWeight="Bold" Margin="0,6,0,0"/>
+                                                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding PreviewCustomerPayableBalanceDisplay}" HorizontalAlignment="Right" FontWeight="Bold" Margin="0,6,0,0"/>
                                                 <TextBlock Grid.Row="3" Grid.Column="0" Text="선지급금" Foreground="#9FB3C8" Margin="0,6,12,0"/>
-                                                <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding PreviewCustomerPrepaymentBalance, StringFormat={}{0:N0}원}" HorizontalAlignment="Right" FontWeight="Bold" Margin="0,6,0,0"/>
+                                                <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding PreviewCustomerPrepaymentBalanceDisplay}" HorizontalAlignment="Right" FontWeight="Bold" Margin="0,6,0,0"/>
                                             </Grid>
                                         </Border>
                                         <Border Margin="0,10,0,0"
@@ -1070,9 +1070,9 @@
                                                         <ColumnDefinition Width="Auto"/>
                                                         <ColumnDefinition Width="Auto"/>
                                                     </Grid.ColumnDefinitions>
-                                                    <TextBlock Grid.Column="0" Text="{Binding PreviewLatestRentalInvoiceAmount, StringFormat={}{0:N0}원}" FontWeight="Bold" TextAlignment="Right"/>
+                                                    <TextBlock Grid.Column="0" Text="{Binding PreviewLatestRentalInvoiceAmountDisplay}" FontWeight="Bold" TextAlignment="Right"/>
                                                     <TextBlock Grid.Column="1" Text=" / " Margin="4,0"/>
-                                                    <TextBlock Grid.Column="2" Text="{Binding PreviewRentalOutstandingAmount, StringFormat={}{0:N0}원}" FontWeight="Bold" Foreground="#FFB74D" TextAlignment="Right"/>
+                                                    <TextBlock Grid.Column="2" Text="{Binding PreviewRentalOutstandingAmountDisplay}" FontWeight="Bold" Foreground="#FFB74D" TextAlignment="Right"/>
                                                 </Grid>
                                             </Grid>
                                         </Border>

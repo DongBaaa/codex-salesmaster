@@ -72,6 +72,11 @@ public sealed partial class EnvironmentSettingsViewModel
         new() { Value = TenantScopeCatalog.StorageDedicatedDatabase, DisplayName = "별도 업무 DB" }
     ];
 
+    internal Task InitializeTenantConfigurationAsync()
+        => CanManageTenantConfiguration
+            ? ReloadTenantConfigurationAsync()
+            : ReloadCurrentScopeMatrixAsync();
+
     [RelayCommand]
     private Task ReloadTenantConfigurationAsync()
         => ReloadTenantConfigurationCoreAsync(includeInactive: false);

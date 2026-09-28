@@ -37,6 +37,9 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
     private bool _isDataIntegrityNavigationBusy;
     private long _editingUserExpectedRevision;
     private bool _editingUserRevisionRequiresReload;
+    private Guid _editingUserAmountPermissionSnapshotId;
+    private bool _editingUserCanViewSalesAmount;
+    private bool _editingUserCanViewPurchaseAmount;
 
     internal Func<string, Guid?, Task> AssignedUserCompanyProfileWriter { get; set; }
 
@@ -170,7 +173,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             await RunInitializationStepAsync(LoadLegacyMigrationSettingsAsync, "레거시 마이그레이션 설정", () => hadInitializationWarning = true);
             await RunInitializationStepAsync(ReloadOfficesAsync, "담당지점", () => hadInitializationWarning = true);
             await RunInitializationStepAsync(ReloadMasterOptionsAsync, "선택값", () => hadInitializationWarning = true);
-            await RunInitializationStepAsync(ReloadTenantConfigurationAsync, "업체/데이터 권한", () => hadInitializationWarning = true);
+            await RunInitializationStepAsync(InitializeTenantConfigurationAsync, "업체/데이터 권한", () => hadInitializationWarning = true);
             await RunInitializationStepAsync(ReloadUsersAsync, "사용자", () => hadInitializationWarning = true);
             await RunInitializationStepAsync(LoadCurrentUserCompanyProfileAsync, "현재 사용자 회사설정", () => hadInitializationWarning = true);
             await RunInitializationStepAsync(RefreshSyncStateAsync, "동기화", () => hadInitializationWarning = true);
@@ -652,6 +655,9 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         EditingPasswordConfirm = string.Empty;
         _editingUserExpectedRevision = 0;
         _editingUserRevisionRequiresReload = false;
+        _editingUserAmountPermissionSnapshotId = Guid.Empty;
+        _editingUserCanViewSalesAmount = false;
+        _editingUserCanViewPurchaseAmount = false;
         EditingUserScopeType = TenantScopeCatalog.ScopeOfficeOnly;
         SetDefaultEditingUserOfficeCode();
         EditingUserCompanyProfileId = ResolveDefaultCompanyProfileId(EditingUserOfficeCode);
@@ -717,6 +723,12 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         if (_editingUserRevisionRequiresReload)
         {
             StatusMessage = "이전 사용자 변경 결과를 확정하지 못했습니다. 사용자 목록을 다시 불러와 계정을 다시 선택하거나 새 사용자 입력을 다시 시작한 뒤 저장하세요.";
+            return;
+        }
+
+        if (EditingUserId != Guid.Empty && EditingUserId != _editingUserAmountPermissionSnapshotId)
+        {
+            StatusMessage = "사용자 권한 정보를 확인할 수 없습니다. 사용자 목록을 다시 불러와 계정을 선택한 뒤 저장하세요.";
             return;
         }
 
@@ -1064,6 +1076,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
 
     private void ApplyAuthoritativeUserToEditor(UserAccountDto user)
     {
+        CaptureUserAmountPermissions(user);
         _editingUserExpectedRevision = user.Revision;
         EditingUserId = user.Id;
         EditingUsername = user.Username;
@@ -1237,6 +1250,7 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         if (value is null)
             return;
 
+        CaptureUserAmountPermissions(value);
         EditingUserId = value.Id;
         _editingUserExpectedRevision = value.Revision;
         _editingUserRevisionRequiresReload = false;
@@ -1305,6 +1319,13 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
         return File.Exists(candidate) ? candidate : string.Empty;
     }
 
+    private void CaptureUserAmountPermissions(UserAccountDto user)
+    {
+        _editingUserAmountPermissionSnapshotId = user.Permissions is null ? Guid.Empty : user.Id;
+        _editingUserCanViewSalesAmount = user.Permissions?.Contains(AppPermissionNames.AmountViewSales) == true;
+        _editingUserCanViewPurchaseAmount = user.Permissions?.Contains(AppPermissionNames.AmountViewPurchase) == true;
+    }
+
     private List<string> BuildPermissionsForRole(string? role)
     {
         if (string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase))
@@ -1348,6 +1369,16 @@ public sealed partial class EnvironmentSettingsViewModel : ObservableObject
             AppPermissionNames.InventoryReset,
             AppPermissionNames.DeliveryEdit
         };
+
+        // These permissions are not edited by the general user form. Preserve
+        // the loaded values instead of granting them again on an unrelated edit.
+        if (EditingUserId != Guid.Empty)
+        {
+            if (!_editingUserCanViewSalesAmount)
+                permissions.Remove(AppPermissionNames.AmountViewSales);
+            if (!_editingUserCanViewPurchaseAmount)
+                permissions.Remove(AppPermissionNames.AmountViewPurchase);
+        }
 
         if (string.Equals(normalizedTenantCode, TenantScopeCatalog.Itworld, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(normalizedOfficeCode, OfficeCodeCatalog.Usenet, StringComparison.OrdinalIgnoreCase))

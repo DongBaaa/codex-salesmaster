@@ -109,19 +109,19 @@ public sealed class MobileInvoicePdfExportService
             content.Right(line.Quantity.ToString("N0", CultureInfo.CurrentCulture), 382, y, 9);
             content.Text(string.IsNullOrWhiteSpace(line.Unit) ? "EA" : line.Unit, 395, y, 9);
             if (options.PrintUnitPrice)
-                content.Right(line.UnitPrice.ToString("N0", CultureInfo.CurrentCulture), 482, y, 9);
-            content.Right(line.LineAmount.ToString("N0", CultureInfo.CurrentCulture), 538, y, 9);
+                content.Right(invoice.AmountsHidden ? "비공개" : line.UnitPrice?.ToString("N0", CultureInfo.CurrentCulture) ?? "비공개", 482, y, 9);
+            content.Right(invoice.AmountsHidden ? "비공개" : line.LineAmount?.ToString("N0", CultureInfo.CurrentCulture) ?? "비공개", 538, y, 9);
             y -= 20;
         }
 
         y = Math.Max(y, 154);
         content.Line(54, y, 540, y);
         y -= 22;
-        content.Right($"공급가 {invoice.SupplyAmount:N0}원", 540, y, 11);
+        content.Right(invoice.AmountsHidden ? "공급가 비공개" : $"공급가 {invoice.SupplyAmount:N0}원", 540, y, 11);
         y -= 20;
-        content.Right($"부가세 {invoice.VatAmount:N0}원", 540, y, 11);
+        content.Right(invoice.AmountsHidden ? "부가세 비공개" : $"부가세 {invoice.VatAmount:N0}원", 540, y, 11);
         y -= 22;
-        content.Right($"합계 {invoice.TotalAmount:N0}원", 540, y, 13);
+        content.Right(invoice.AmountsHidden ? "합계 비공개" : $"합계 {invoice.TotalAmount:N0}원", 540, y, 13);
 
         if (title == "대금청구서")
         {

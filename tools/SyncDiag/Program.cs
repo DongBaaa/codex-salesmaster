@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.ComponentModel;
 using System.Globalization;
 using System.Runtime.InteropServices;
@@ -634,6 +634,7 @@ try
                 $"rebased_invoices={retryPreparation.RebasedInvoices}");
             Console.WriteLine($"rebased_payments={retryPreparation.RebasedPayments}");
             Console.WriteLine($"rebased_transactions={retryPreparation.RebasedTransactions}");
+            Console.WriteLine($"rebased_rental_companies={retryPreparation.RebasedRentalCompanies}");
             Console.WriteLine(
                 $"unlinked_excluded_rental_assets={retryPreparation.UnlinkedExcludedRentalAssets}");
             Console.WriteLine(
@@ -647,6 +648,8 @@ try
                 $"removed_clean_outbox={retryPreparation.RemovedCleanOutbox}");
             return 0;
         case "preseed-sync":
+            isolatedServerTargetLease?.AssertStable();
+            await BootstrapTestSeedWarehousesAsync(db);
             isolatedServerTargetLease?.AssertStable();
             Console.WriteLine("sync_ok=True");
             return 0;
@@ -1139,6 +1142,8 @@ static async Task PrepareTestSeedAsync(LocalDbContext db)
 {
     Directory.CreateDirectory(Path.GetDirectoryName(거래플랜.Desktop.App.Infrastructure.AppPaths.LocalDbFile)!);
     await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
+    var preparedStocks = await IsolatedSeedWarehouseSnapshot.PrepareForFreshServerAsync(db);
+    Console.WriteLine($"prepared_warehouse_snapshots={preparedStocks}");
     await db.Database.ExecuteSqlRawAsync("PRAGMA wal_checkpoint(TRUNCATE);");
     Console.WriteLine("prepare_ok=True");
 }
@@ -1235,6 +1240,17 @@ static async Task<int> RunSyncAsync(LocalDbContext db)
     using var sync = new SyncService(db, local, rental, api, session, dispatcher, diagnostics);
 
     var ok = await sync.TrySyncAsync();
+    if (ok && IsTruthy(Environment.GetEnvironmentVariable("GEORAEPLAN_TEST_SEED_MODE")))
+    {
+        var snapshotPath = Path.Combine(Path.GetDirectoryName(AppPaths.LocalDbFile)!, ".georaeplan-seed-warehouse-snapshot.json");
+        if (File.Exists(snapshotPath))
+        {
+            var expected = JsonSerializer.Deserialize<List<ItemWarehouseStockDto>>(await File.ReadAllTextAsync(snapshotPath))
+                ?? throw new InvalidOperationException("Missing isolated warehouse seed snapshot.");
+            await IsolatedSeedWarehouseSnapshot.VerifyFinalAsync(db, expected);
+            await IsolatedSeedWarehouseSnapshot.VerifyServerFinalAsync(db, api, expected);
+        }
+    }
     Console.WriteLine($"sync_ok={ok}");
     Console.WriteLine($"dirty_count={await local.CountDirtyAsync(session)}");
     Console.WriteLine(
@@ -1253,6 +1269,22 @@ static async Task<int> RunSyncAsync(LocalDbContext db)
     return ok ? 0 : 1;
 }
 
+static async Task BootstrapTestSeedWarehousesAsync(LocalDbContext db)
+{
+    var baseUrl = Environment.GetEnvironmentVariable("GEORAEPLAN_SYNC_BASEURL")
+        ?? throw new InvalidOperationException("Isolated server URL missing.");
+    var session = new SessionState();
+    using var http = new HttpClient { BaseAddress=new Uri(baseUrl.TrimEnd('/')+"/"), Timeout=TimeSpan.FromSeconds(120) };
+    var api = new ErpApiClient(http,session);
+    var login = await api.LoginAsync(Environment.GetEnvironmentVariable("GEORAEPLAN_SYNC_USERNAME") ?? "",
+        Environment.GetEnvironmentVariable("GEORAEPLAN_SYNC_PASSWORD") ?? "")
+        ?? throw new InvalidOperationException("Isolated bootstrap login failed.");
+    session.SetSession(login.Token,login.User);
+    var expected=await IsolatedSeedWarehouseSnapshot.BootstrapAsync(db,api);
+    await File.WriteAllTextAsync(Path.Combine(Path.GetDirectoryName(AppPaths.LocalDbFile)!,".georaeplan-seed-warehouse-snapshot.json"),JsonSerializer.Serialize(expected));
+    Console.WriteLine($"bootstrapped_warehouse_snapshots={expected.Count}");
+}
+
 static async Task<int> MarkAllDirtyAsync(LocalDbContext db)
 {
     await using var transaction = await db.Database.BeginTransactionAsync();
@@ -1265,6 +1297,7 @@ static async Task<int> MarkAllDirtyAsync(LocalDbContext db)
     count += await MarkDirtyAsync(db.CustomerMasters.IgnoreQueryFilters());
     count += await MarkDirtyAsync(db.Customers.IgnoreQueryFilters());
     count += await MarkDirtyAsync(db.CustomerContracts.IgnoreQueryFilters());
+    count += await MarkDirtyAsync(db.ItemCategoryOptions.IgnoreQueryFilters());
     count += await MarkDirtyAsync(db.Items.IgnoreQueryFilters());
     count += await MarkDirtyAsync(db.Invoices.IgnoreQueryFilters());
     count += await MarkDirtyAsync(db.Payments.IgnoreQueryFilters());
@@ -1319,6 +1352,7 @@ static async Task<(
     int RebasedInvoices,
     int RebasedPayments,
     int RebasedTransactions,
+    int RebasedRentalCompanies,
     int UnlinkedExcludedRentalAssets,
     int ClosedRentalAssignmentHistories,
     int RemovedCollateralFailedAssignmentOutbox,
@@ -1337,6 +1371,8 @@ static async Task<(
         await IsolatedSeedRetryRentalAssetReconciler.ReconcileAsync(
             db,
             retryNowUtc);
+    var rentalCompanyReconciliation =
+        await IsolatedSeedRetryRentalCompanyReconciler.ReconcileAsync(db, serverDatabasePath);
     var invoiceVersionMetadataReconciliation =
         await IsolatedSeedRetryInvoiceVersionMetadataReconciler
             .ReconcileAsync(
@@ -1390,6 +1426,7 @@ static async Task<(
     }
 
     var removedStaleOutbox =
+        rentalCompanyReconciliation.RemovedStaleOutbox +
         rentalAssetReconciliation.RemovedStaleOutbox +
         invoiceVersionMetadataReconciliation.RemovedStaleOutbox;
     if (rebasedPaymentIds.Count > 0)
@@ -1471,6 +1508,7 @@ static async Task<(
         invoiceVersionMetadataReconciliation.RebasedInvoices,
         rebasedPaymentIds.Count,
         rebasedTransactionIds.Count,
+        rentalCompanyReconciliation.RebasedCompanies,
         rentalAssetReconciliation.UnlinkedAssets,
         rentalAssetReconciliation.ClosedAssignmentHistories,
         removedCollateralFailedAssignmentOutbox,

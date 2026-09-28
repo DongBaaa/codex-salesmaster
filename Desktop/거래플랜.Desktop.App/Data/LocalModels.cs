@@ -1,4 +1,4 @@
-﻿using 거래플랜.Desktop.App.Services;
+using 거래플랜.Desktop.App.Services;
 using 거래플랜.Shared.Contracts;
 
 namespace 거래플랜.Desktop.App.Data;
@@ -155,6 +155,8 @@ public sealed class LocalItem : LocalSyncEntity
     public string StorageLocation { get; set; } = string.Empty;
     public decimal CurrentStock { get; set; }
     public decimal SafetyStock { get; set; }
+    public bool PurchaseAmountsHidden { get; set; }
+    public bool SalesAmountsHidden { get; set; }
     public decimal PurchasePrice { get; set; }
     public decimal SalePrice { get; set; }
     public decimal RetailPrice { get; set; }
@@ -180,6 +182,7 @@ public sealed class LocalItemPriceGrade : LocalSyncEntity
     public Guid ItemId { get; set; }
     public Guid PriceGradeOptionId { get; set; }
     public string PriceGradeName { get; set; } = string.Empty;
+    public bool AmountsHidden { get; set; }
     public decimal UnitPrice { get; set; }
     public bool IsActive { get; set; } = true;
 }
@@ -194,6 +197,7 @@ public sealed class LocalInvoice : LocalSyncEntity
     public string TaxInvoiceNumber { get; set; } = string.Empty;
     public VoucherType VoucherType { get; set; }
     public DateOnly InvoiceDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+    public bool AmountsHidden { get; set; }
     public decimal TotalAmount { get; set; }
     public decimal SupplyAmount { get; set; }
     public decimal VatAmount { get; set; }
@@ -229,6 +233,7 @@ public sealed class LocalInvoice : LocalSyncEntity
 
 public sealed class LocalInvoiceLine
 {
+    public bool AmountsHidden { get; set; }
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid InvoiceId { get; set; }
     public LocalInvoice? Invoice { get; set; }
@@ -256,6 +261,7 @@ public sealed class LocalPayment : LocalSyncEntity
     public LocalInvoice? Invoice { get; set; }
     public DateOnly PaymentDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
     public decimal Amount { get; set; }
+    public bool AmountsHidden { get; set; }
     public string Note { get; set; } = string.Empty;
 }
 
@@ -499,6 +505,7 @@ public sealed class LocalTransaction : LocalSyncEntity
     public string LinkedInvoiceNumber { get; set; } = string.Empty;
     public Guid? LinkedRentalBillingProfileId { get; set; }
     public Guid? LinkedRentalBillingRunId { get; set; }
+    public bool AmountsHidden { get; set; }
     public decimal SettlementAmount { get; set; }
     public decimal AdvanceDelta { get; set; }
     public decimal PrepaidDelta { get; set; }
@@ -553,6 +560,8 @@ public sealed class LocalRentalManagementCompany : LocalSyncEntity
 
 public sealed class LocalRentalBillingProfile : LocalSyncEntity
 {
+    public bool AmountsHidden { get; set; }
+
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = string.Empty;
     public string ProfileKey { get; set; } = string.Empty;
@@ -598,6 +607,9 @@ public sealed class LocalRentalBillingProfile : LocalSyncEntity
 
 public sealed class LocalRentalAsset : LocalSyncEntity
 {
+    public bool PurchaseAmountsHidden { get; set; }
+    public bool SalesAmountsHidden { get; set; }
+
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = string.Empty;
     public string AssetKey { get; set; } = string.Empty;
@@ -655,6 +667,8 @@ public sealed class LocalRentalAsset : LocalSyncEntity
 
 public sealed class LocalRentalAssetAssignmentHistory : LocalSyncEntity
 {
+    public bool AmountsHidden { get; set; }
+
     public Guid AssetId { get; set; }
     public Guid? BillingProfileId { get; set; }
     public Guid? CustomerId { get; set; }
@@ -677,6 +691,8 @@ public sealed class LocalRentalAssetAssignmentHistory : LocalSyncEntity
 
 public sealed class LocalRentalBillingLog : LocalSyncEntity
 {
+    public bool AmountsHidden { get; set; }
+
     public Guid BillingProfileId { get; set; }
     public string TenantCode { get; set; } = TenantScopeCatalog.UsenetGroup;
     public string OfficeCode { get; set; } = string.Empty;

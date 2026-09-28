@@ -6219,7 +6219,7 @@ public sealed class ReleaseTempPathGuardTests
     }
 
     [Fact]
-    public void LinuxPcReleaseChecksDiskFreeSpaceAfterPruneBeforeUpload()
+    public void LinuxPcReleaseChecksSpaceBeforeUploadAndPrunesOnlyAfterOperationalGate()
     {
         var source = ReadRepositoryFile(
             "tools",
@@ -6236,10 +6236,15 @@ public sealed class ReleaseTempPathGuardTests
         Assert.Contains("Linux PC free disk space is below the required threshold", source, StringComparison.Ordinal);
         AssertInOrder(
             source,
-            "Invoke-LinuxPcRemotePrune -Config $linuxConfig -RelativePath 'app/backups'",
-            "Invoke-LinuxPcRemotePrune -Config $linuxConfig -RelativePath 'releases'",
             "Invoke-LinuxPcDiskPreflight -Config $linuxConfig -Path $linuxConfig.RemoteRoot -MinimumFreeBytes $MinimumLinuxFreeBytes -Label 'pre-upload'",
-            "Write-Host \"linux_pc_upload_start");
+            "Write-Host \"linux_pc_upload_start",
+            "Invoke-SshTarUpload -SourceDirectory $tempPublishRoot",
+            "-Phase 'post-deploy'",
+            "if (-not $SkipPostDeployOperationalGate.IsPresent -and $KeepReleaseCount -gt 0)",
+            "Invoke-LinuxPcRemotePrune -Config $linuxConfig -RelativePath 'releases'",
+            "Invoke-LinuxPcRemotePrune -Config $linuxConfig -RelativePath 'app/backups'");
+        var preUpload = source.IndexOf("Write-Host \"linux_pc_upload_start", StringComparison.Ordinal);
+        Assert.DoesNotContain("Invoke-LinuxPcRemotePrune -Config $linuxConfig", source[..preUpload], StringComparison.Ordinal);
     }
 
     [Fact]

@@ -83,6 +83,7 @@ public sealed class InvoicesViewModel : ObservableObject
     public string SelectedInvoiceDateDisplay => SelectedInvoice is null ? "작성일자 정보 없음" : $"작성일자 {SelectedInvoice.InvoiceDate:yyyy-MM-dd}";
     public string SelectedInvoiceAmountSummary => SelectedInvoice is null
         ? "금액 정보 없음"
+        : SelectedInvoice.AmountsHidden ? "금액 비공개"
         : $"공급가 {SelectedInvoice.SupplyAmount:N0}원 · 부가세 {SelectedInvoice.VatAmount:N0}원 · 합계 {SelectedInvoice.TotalAmount:N0}원";
     public string SelectedInvoiceMemo => string.IsNullOrWhiteSpace(SelectedInvoice?.Memo) ? "메모 없음" : SelectedInvoice!.Memo;
     public string SelectedInvoicePaymentSummary
@@ -91,17 +92,20 @@ public sealed class InvoicesViewModel : ObservableObject
         {
             if (SelectedInvoice is null)
                 return "정산 정보 없음";
+            if (SelectedInvoice.AmountsHidden)
+                return "금액 비공개";
 
-            var paid = SelectedInvoice.Payments.Sum(payment => payment.Amount);
+            var paid = SelectedInvoice.Payments.Where(payment => !payment.IsDeleted)
+                .Sum(payment => DisclosedAmount.Require(payment.Amount));
             var isPurchase = MobileVoucherTypeRules.IsPaymentVoucher(SelectedInvoice.VoucherType);
             if (SelectedInvoice.Payments.Count == 0)
             {
                 var missingLabel = isPurchase ? "미지급금" : "미수금";
                 var settlementLabel = isPurchase ? "지급 없음" : "수금 없음";
-                return $"{settlementLabel} · {missingLabel} {Math.Max(0m, SelectedInvoice.TotalAmount):N0}원";
+                return $"{settlementLabel} · {missingLabel} {Math.Max(0m, DisclosedAmount.Require(SelectedInvoice.TotalAmount)):N0}원";
             }
 
-            var outstanding = Math.Max(0m, SelectedInvoice.TotalAmount - paid);
+            var outstanding = Math.Max(0m, DisclosedAmount.Require(SelectedInvoice.TotalAmount) - paid);
             var summaryLabel = isPurchase ? "지급" : "수금";
             var outstandingLabel = isPurchase ? "미지급금" : "미수금";
             return $"{summaryLabel} {SelectedInvoice.Payments.Count:N0}건 · 누적 {paid:N0}원 · {outstandingLabel} {outstanding:N0}원";

@@ -49,6 +49,23 @@ internal static class WindowShowHelper
             if (blockWindowDuringLoad)
                 window.IsEnabled = wasEnabled;
             window.Cursor = previousCursor;
+
+            // Disabling an active window clears keyboard focus. Re-enabling it
+            // leaves only logical focus, so shortcuts have no routed-event target.
+            // Do not reclaim focus if the user moved to another window while loading.
+            if (blockWindowDuringLoad && wasEnabled && window.IsLoaded &&
+                window.IsVisible && window.IsActive && !window.IsKeyboardFocusWithin)
+            {
+                if (FocusManager.GetFocusedElement(window) is DependencyObject focused &&
+                    Window.GetWindow(focused) == window && focused is IInputElement input &&
+                    input.Focusable && input.IsEnabled)
+                {
+                    Keyboard.Focus(input);
+                }
+
+                if (!window.IsKeyboardFocusWithin)
+                    window.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+            }
         }
 
         async Task StartLoadAsync()

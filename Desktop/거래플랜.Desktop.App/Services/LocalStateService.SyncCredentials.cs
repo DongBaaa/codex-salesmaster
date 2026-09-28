@@ -70,15 +70,20 @@ public sealed partial class LocalStateService
         if (string.IsNullOrWhiteSpace(normalizedOfficeCode))
             return;
 
-        await SetSettingAsync(GetSyncCredentialSettingKey(normalizedOfficeCode, SyncOfficeCredentialUsernameSuffix), string.Empty, ct);
-        await SetSettingAsync(GetSyncCredentialSettingKey(normalizedOfficeCode, SyncOfficeCredentialTenantSuffix), string.Empty, ct);
-        await SetSettingAsync(GetSyncCredentialSettingKey(normalizedOfficeCode, SyncOfficeCredentialPasswordSuffix), string.Empty, ct);
-        await SetSettingAsync(GetSyncCredentialSettingKey(normalizedOfficeCode, SyncOfficeCredentialSavedAtSuffix), string.Empty, ct);
+        await SaveSettingsIndependentAsync(new Dictionary<string, string>
+        {
+            [GetSyncCredentialSettingKey(normalizedOfficeCode, SyncOfficeCredentialUsernameSuffix)] = string.Empty,
+            [GetSyncCredentialSettingKey(normalizedOfficeCode, SyncOfficeCredentialTenantSuffix)] = string.Empty,
+            [GetSyncCredentialSettingKey(normalizedOfficeCode, SyncOfficeCredentialPasswordSuffix)] = string.Empty,
+            [GetSyncCredentialSettingKey(normalizedOfficeCode, SyncOfficeCredentialSavedAtSuffix)] = string.Empty
+        }, ct);
     }
 
     public async Task<int> ClearInvalidOfficeSyncCredentialsAsync(CancellationToken ct = default)
     {
-        var settings = await _db.Settings
+        await using var credentialDb = await CreateIndependentAuthenticationDbAsync(ct);
+        await using var transaction = await credentialDb.BeginRuntimeMutationTransactionAsync(ct);
+        var settings = await credentialDb.Settings
             .Where(setting => setting.Key.StartsWith(SyncOfficeCredentialPrefix))
             .ToListAsync(ct);
         if (settings.Count == 0)
@@ -128,14 +133,18 @@ public sealed partial class LocalStateService
         }
 
         if (mutated)
-            await _db.SaveChangesAsync(ct);
+            await credentialDb.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
+        if (mutated)
+            DetachAuthenticationSettings(settings.Select(row => row.Key));
 
         return clearedOfficeCount;
     }
 
     public async Task<IReadOnlyList<StoredSyncCredential>> GetStoredSyncCredentialsAsync(CancellationToken ct = default)
     {
-        var settings = await _db.Settings.AsNoTracking()
+        await using var credentialDb = await CreateIndependentAuthenticationDbAsync(ct);
+        var settings = await credentialDb.Settings.AsNoTracking()
             .Where(setting => setting.Key.StartsWith(SyncOfficeCredentialPrefix))
             .ToListAsync(ct);
 

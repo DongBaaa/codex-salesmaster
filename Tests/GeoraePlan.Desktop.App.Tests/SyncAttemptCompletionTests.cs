@@ -132,6 +132,82 @@ public sealed class SyncAttemptCompletionTests
         Assert.Equal("", await db.Settings.Where(x => x.Key == "Sync.LastError").Select(x => x.Value).SingleAsync());
     }
 
+    [Theory]
+    [InlineData("USENET", false)]
+    [InlineData("USENET", true)]
+    [InlineData("YEONSU", false)]
+    [InlineData("YEONSU", true)]
+    [InlineData("ITWORLD", false)]
+    [InlineData("ITWORLD", true)]
+    public async Task CleanWholeCacheConfirmsEarlierPostLoginPendingOnly(string office, bool admin)
+    {
+        await using var f = await Fixture.CreateAsync(office, admin);
+        await f.Diagnostics.RecordIssueAsync("post-login-sync", "로그인 후 자동 동기화 확인 필요. dirty=22, backup=ok.");
+        var id = await f.Db.SyncDiagnosticEvents.Select(x => x.Id).SingleAsync();
+        var start = DateTime.UtcNow;
+        using var lease = await f.Session.AcquireSyncScopeCommitLeaseAsync(default);
+        Assert.True((await f.Diagnostics.RecordSyncAttemptCompletionAsync(f.Db, start)).Succeeded);
+        f.Db.ChangeTracker.Clear();
+        var row = await f.Db.SyncDiagnosticEvents.SingleAsync();
+        Assert.Equal(id, row.Id);
+        Assert.Equal("Resolved", row.Status);
+        Assert.True(row.RecoverySucceeded);
+        Assert.NotNull(row.ResolvedAtUtc);
+        Assert.Contains("dirty=22", row.RawMessage);
+        var resolvedAt = row.ResolvedAtUtc;
+        Assert.True((await f.Diagnostics.RecordSyncAttemptCompletionAsync(f.Db, DateTime.UtcNow)).Succeeded);
+        f.Db.ChangeTracker.Clear();
+        Assert.Equal(resolvedAt, (await f.Db.SyncDiagnosticEvents.SingleAsync()).ResolvedAtUtc);
+    }
+
+    [Theory]
+    [InlineData("other-dirty")]
+    [InlineData("other-outbox")]
+    [InlineData("unknown-outbox")]
+    [InlineData("current-dirty")]
+    [InlineData("new-event")]
+    [InlineData("backup-failed")]
+    [InlineData("composite")]
+    [InlineData("wrong-phase")]
+    [InlineData("wrong-scope")]
+    [InlineData("exception")]
+    [InlineData("entity")]
+    [InlineData("zero-dirty")]
+    public async Task PostLoginPendingKeepsUnprovenOrForeignDiagnostics(string condition)
+    {
+        await using var f = await Fixture.CreateAsync("USENET", false);
+        var start = DateTime.UtcNow;
+        var message = condition == "backup-failed" ? "로그인 후 자동 동기화 확인 필요. dirty=22, backup=failed." :
+            condition == "zero-dirty" ? "로그인 후 자동 동기화 확인 필요. dirty=0, backup=ok." :
+            "로그인 후 자동 동기화 확인 필요. dirty=22, backup=ok.";
+        if (condition == "composite") message += " 무결성 오류가 남아 있습니다.";
+        await f.Diagnostics.RecordIssueAsync(condition == "wrong-phase" ? "startup-integrity" : "post-login-sync",
+            message, condition == "exception" ? new InvalidOperationException("Unconfirmed startup failure") : null);
+        var row = await f.Db.SyncDiagnosticEvents.SingleAsync();
+        if (condition != "new-event") row.OccurredAtUtc = row.LastOccurredAtUtc = start.AddMinutes(-1);
+        if (condition == "wrong-scope") { row.OfficeCode="ITWORLD"; row.TenantCode=TenantScopeCatalog.Itworld; }
+        if (condition == "entity") { row.EntityName="Invoice"; row.EntityId=Guid.NewGuid().ToString(); }
+        if (condition is "other-dirty" or "current-dirty")
+        {
+            var other = condition == "other-dirty";
+            f.Db.Customers.Add(new LocalCustomer { Id=Guid.NewGuid(), NameOriginal="preserved pending",
+                TenantCode=other ? TenantScopeCatalog.Itworld : TenantScopeCatalog.UsenetGroup,
+                OfficeCode=other ? "ITWORLD" : "USENET", ResponsibleOfficeCode=other ? "ITWORLD" : "USENET", IsDirty=true });
+        }
+        if (condition is "other-outbox" or "unknown-outbox")
+            f.Db.SyncOutboxEntries.Add(new LocalSyncOutboxEntry { EntityId=Guid.NewGuid(),EntityName="Customer",
+                TenantCode=TenantScopeCatalog.Itworld,OfficeCode="ITWORLD",Status=condition=="other-outbox" ? "Failed" : "Unrecognized" });
+        await f.Db.SaveChangesAsync(); f.Db.ChangeTracker.Clear();
+        using var lease = await f.Session.AcquireSyncScopeCommitLeaseAsync(default);
+        var result = await f.Diagnostics.RecordSyncAttemptCompletionAsync(f.Db, start);
+        Assert.Equal(condition != "current-dirty", result.Succeeded);
+        f.Db.ChangeTracker.Clear();
+        row = await f.Db.SyncDiagnosticEvents.SingleAsync();
+        Assert.Equal("Open",row.Status); Assert.False(row.RecoverySucceeded); Assert.Null(row.ResolvedAtUtc);
+        Assert.All(await f.Db.Customers.ToListAsync(), x => Assert.True(x.IsDirty));
+        Assert.All(await f.Db.SyncOutboxEntries.ToListAsync(), x => Assert.NotEqual("Acknowledged",x.Status));
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         public required LocalDbContext Db { get; init; }

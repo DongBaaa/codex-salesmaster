@@ -297,9 +297,9 @@
                                 <TextBlock Grid.Row="3" Text="설치위치" Margin="0,6,0,0"/>
                                 <TextBox Grid.Row="3" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource EditableTextBoxStyle}" Text="{Binding InstallLocation, UpdateSourceTrigger=PropertyChanged}"/>
                                 <TextBlock Grid.Row="4" Text="보증금" Margin="0,6,0,0"/>
-                                <TextBox Grid.Row="4" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource EditableTextBoxStyle}" Text="{Binding DepositText, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBox Grid.Row="4" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource EditableTextBoxStyle}" IsReadOnly="{Binding AreAmountsReadOnly}" Text="{Binding DepositText, TargetNullValue=비공개, UpdateSourceTrigger=PropertyChanged}"/>
                                 <TextBlock Grid.Row="5" Text="월 렌탈요금" Margin="0,6,0,0"/>
-                                <TextBox Grid.Row="5" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource EditableTextBoxStyle}" Text="{Binding MonthlyFee, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBox Grid.Row="5" Grid.Column="1" Margin="0,6,0,0" Style="{StaticResource EditableTextBoxStyle}" IsReadOnly="{Binding AreAmountsReadOnly}" Text="{Binding MonthlyFee, TargetNullValue=비공개, UpdateSourceTrigger=PropertyChanged}"/>
                             </Grid>
                         </StackPanel>
                     </Border>

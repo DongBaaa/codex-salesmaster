@@ -242,18 +242,29 @@ public sealed partial class LocalStateService
 
         if (includeOutbox)
         {
-        AppendBuckets(
-            buckets,
-            await _db.SyncOutboxEntries
+            var pendingOutbox = await _db.SyncOutboxEntries
                 .AsNoTracking()
                 .Where(entry => entry.Status != "Acknowledged")
-                .Select(entry => new DirtyScopeRow(
-                    string.IsNullOrWhiteSpace(entry.ResponsibleOfficeCode)
+                .Select(entry => new
+                {
+                    entry.EntityName,
+                    OfficeCode = string.IsNullOrWhiteSpace(entry.ResponsibleOfficeCode)
                         ? entry.OfficeCode
                         : entry.ResponsibleOfficeCode,
-                    entry.TenantCode))
-                .ToListAsync(ct),
-            "동기화 전송 확인");
+                    entry.TenantCode
+                })
+                .ToListAsync(ct);
+            foreach (var group in pendingOutbox.GroupBy(entry => entry.EntityName switch
+            {
+                "ItemPriceGrade" => "품목별 가격등급 전송 확인",
+                "PriceGradeOption" => "가격등급 전송 확인",
+                _ => "동기화 전송 확인"
+            }))
+            {
+                AppendBuckets(buckets,
+                    group.Select(entry => new DirtyScopeRow(entry.OfficeCode, entry.TenantCode)),
+                    group.Key);
+            }
         }
 
         var orderedBuckets = buckets
@@ -349,6 +360,14 @@ public sealed partial class LocalStateService
         int pendingCount,
         CancellationToken ct)
     {
+        if (!CanSyncPricePendingBucket(bucket, session))
+        {
+            return new PendingSyncBlockingReason(
+                bucket.ScopeKey, bucket.ScopeDisplayName, bucket.EntityDisplayName, pendingCount,
+                "원인: 가격 변경에는 매출 금액 조회 권한과 해당 품목 또는 환경설정 수정 권한이 필요합니다. 변경은 PC에 보존되어 있으며, 권한이 있는 계정으로 동기화해야 합니다.",
+                ResolveRequiredOfficeCode(bucket.ScopeKey), false, false);
+        }
+
         if (string.Equals(bucket.ScopeKey, "SHARED", StringComparison.OrdinalIgnoreCase))
         {
             var canSyncSharedBucket = CanSyncSharedPendingBucket(bucket, session);
@@ -525,6 +544,9 @@ public sealed partial class LocalStateService
 
     private static bool IsCurrentSessionPendingBucket(PendingSyncBucket bucket, SessionState session)
     {
+        if (!CanSyncPricePendingBucket(bucket, session))
+            return false;
+
         if (string.Equals(bucket.ScopeKey, "SHARED", StringComparison.OrdinalIgnoreCase))
             return CanSyncSharedPendingBucket(bucket, session);
 
@@ -550,6 +572,9 @@ public sealed partial class LocalStateService
 
     private static bool CanSyncSharedPendingBucket(PendingSyncBucket bucket, SessionState session)
     {
+        if (!CanSyncPricePendingBucket(bucket, session))
+            return false;
+
         if (session.HasAdministrativePrivileges || CanWriteSharedOfficeScope(session))
             return true;
 
@@ -565,6 +590,16 @@ public sealed partial class LocalStateService
             _ => false
         };
     }
+
+    private static bool CanSyncPricePendingBucket(PendingSyncBucket bucket, SessionState session)
+        => bucket.EntityDisplayName switch
+        {
+            "가격등급 변경" or "가격등급 전송 확인" => session.HasPermission(AppPermissionNames.SettingsEdit) &&
+                session.HasPermission(AppPermissionNames.AmountViewSales),
+            "품목별 가격등급 변경" or "품목별 가격등급 전송 확인" => CanEditItems(session) &&
+                session.HasPermission(AppPermissionNames.AmountViewSales),
+            _ => true
+        };
 
     private static HashSet<string> GetCurrentLoginSyncOfficeCodes(SessionState session)
     {

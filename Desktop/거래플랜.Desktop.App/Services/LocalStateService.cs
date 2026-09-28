@@ -162,6 +162,8 @@ public sealed partial class LocalStateService
 
 	private readonly SessionState _session;
 
+	private readonly CommonAuthenticationDatabase? _commonAuthenticationDatabase;
+
 	private readonly TimeProvider _timeProvider;
 
 	private readonly TimeSpan _maximumOfflineGrace;
@@ -232,6 +234,15 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			new DesktopDataChangeNotifier())
 	{
 	}
+
+	internal LocalStateService(
+        LocalDbContext db, OfficeAccessService officeAccess, SyncRequestDispatcher syncRequestDispatcher,
+        SessionState session, CommonAuthenticationDatabase commonAuthenticationDatabase)
+        : this(db, officeAccess, syncRequestDispatcher, session)
+    {
+        _commonAuthenticationDatabase = commonAuthenticationDatabase
+            ?? throw new ArgumentNullException(nameof(commonAuthenticationDatabase));
+    }
 
 	private LocalStateService(
 		LocalDbContext db,
@@ -738,7 +749,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			}
 		}
 		contract.FileContent = fileContent;
-		contract.IsDirty = false;
+		// Caching downloaded bytes must preserve pending contract metadata edits.
 		using (SuppressSyncDispatch())
 		{
 			await _db.SaveChangesAsync(ct);
@@ -1914,12 +1925,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		foreach (LocalPayment payment in dirtyPayments)
 		{
 			result.ScannedCount++;
+			// Keep the original pending tombstone stable across sync retries.
+			if (payment.IsDeleted)
+				continue;
 			if (payment.InvoiceId == Guid.Empty || !invoices.TryGetValue(payment.InvoiceId, out var invoice) || invoice.IsDeleted)
 			{
-				if (!payment.IsDeleted)
-				{
-					result.MarkedDeletedMissingInvoiceCount++;
-				}
+				result.MarkedDeletedMissingInvoiceCount++;
 				payment.IsDeleted = true;
 				payment.IsDirty = true;
 				payment.UpdatedAtUtc = now;
@@ -1967,7 +1978,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return await UpsertItemAsync(item, preferredOfficeCode, synchronizeLinkedRentalAssets: true, preserveExistingInventoryStock: false, allowDeletedRestore: false, ct);
 	}
 
-	private async Task<LocalItem> UpsertItemAsync(LocalItem item, string? preferredOfficeCode, bool synchronizeLinkedRentalAssets, bool preserveExistingInventoryStock, bool allowDeletedRestore, CancellationToken ct = default(CancellationToken), bool preserveInventoryEditorHiddenFields = false)
+	private async Task<LocalItem> UpsertItemAsync(LocalItem item, string? preferredOfficeCode, bool synchronizeLinkedRentalAssets, bool preserveExistingInventoryStock, bool allowDeletedRestore, CancellationToken ct = default(CancellationToken), bool preserveInventoryEditorHiddenFields = false, ItemAmountWriteAccess? amountAccess = null)
 	{
 		item.NameOriginal = RentalCatalogValueNormalizer.NormalizeItemNameDisplayName(item.NameOriginal);
 		item.NameMatchKey = RentalCatalogValueNormalizer.NormalizeLooseKey(item.NameOriginal);
@@ -1981,6 +1992,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			.IgnoreQueryFilters()
 			.FirstOrDefaultAsync(current => current.Id == item.Id, ct);
 		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
+		amountAccess?.PreserveHiddenPrices(item, existing);
 		if (existing is { IsDeleted: true } && !item.IsDeleted && !allowDeletedRestore)
 		{
 			throw new InvalidOperationException(
@@ -2031,6 +2043,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			await SynchronizeLinkedRentalAssetItemMetadataForItemSaveAsync(item, previousItemName, previousCategoryName, ct);
 		}
 		await SyncItemWarehouseStocksAsync(item.Id, item.CurrentStock, preferredOfficeCode, !ItemOperationalPolicy.SupportsInventory(item.TrackingType), ct);
+		amountAccess?.EnsureCurrent();
 		await _db.SaveChangesAsync(ct);
 		RaiseInventoryStateChanged();
 		return item;
@@ -2680,6 +2693,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				TaxInvoiceNumber = invoice.TaxInvoiceNumber,
 				InvoiceDate = invoice.InvoiceDate,
 				VoucherType = invoice.VoucherType,
+				AmountsHidden = invoice.AmountsHidden || invoice.Lines.Any(line => !line.IsDeleted && line.AmountsHidden) || invoice.Payments.Any(payment => !payment.IsDeleted && payment.AmountsHidden)
+					|| _db.Transactions.Any(transaction => !transaction.IsDeleted && transaction.LinkedInvoiceId == invoice.Id && transaction.AmountsHidden),
 				TotalAmount = invoice.TotalAmount,
 				SupplyAmount = invoice.SupplyAmount,
 				VatAmount = invoice.VatAmount,
@@ -3340,6 +3355,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				: string.Empty,
 			VoucherType = invoice.VoucherType,
 			InvoiceDate = invoice.InvoiceDate,
+			AmountsHidden = invoice.AmountsHidden || (latest?.AmountsHidden ?? false) || validLines.Any(line => line.AmountsHidden) || invoice.Payments.Any(payment => !payment.IsDeleted && payment.AmountsHidden) || (latest?.Payments.Any(payment => !payment.IsDeleted && payment.AmountsHidden) ?? false),
 			TotalAmount = totalAmount,
 			SupplyAmount = supplyAmount,
 			VatAmount = vatAmount,
@@ -3647,6 +3663,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<LocalPayment> SavePaymentAsync(LocalPayment payment, CancellationToken ct = default(CancellationToken))
 	{
+		if (payment.AmountsHidden)
+			throw new InvalidOperationException("금액이 비공개인 수금/지급은 저장할 수 없습니다. 현재 권한으로 다시 조회해 주세요.");
 		var existing = await _db.Payments.FindAsync(new object[1] { payment.Id }, ct);
 		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
 		var affectedInvoiceIds = new[] { existing?.InvoiceId, payment.InvoiceId }
@@ -3675,6 +3693,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<OfficeMutationResult> SavePaymentAsync(LocalPayment payment, SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		if (payment.AmountsHidden)
+			return OfficeMutationResult.Denied("금액이 비공개인 수금/지급은 저장할 수 없습니다. 현재 권한으로 다시 조회해 주세요.");
 		var invoice = await _db.Invoices.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync((LocalInvoice current) => current.Id == payment.InvoiceId, ct);
 		if (invoice == null || invoice.IsDeleted)
 		{
@@ -3963,6 +3983,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			.ToListAsync(ct);
 		foreach (LocalTransaction transaction in transactions)
 		{
+			if (transaction.AmountsHidden && !transaction.IsDeleted)
+				continue;
 			if (transaction.IsDeleted)
 			{
 				await RemoveLinkedInvoicePaymentAsync(
@@ -4037,9 +4059,20 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 				continue;
 			}
 
-			var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters()
-				.FirstOrDefaultAsync(current => current.Id == billingProfileId, ct);
-			if (profile == null || profile.IsDirty)
+			var profileResult = await _db.RentalBillingProfiles.IgnoreQueryFilters()
+				.Where(current => current.Id == billingProfileId)
+				.Select(current => new
+				{
+					Profile = current,
+					AmountsHidden = _db.Transactions.IgnoreQueryFilters().Any(transaction =>
+						!transaction.IsDeleted && transaction.LinkedRentalBillingProfileId == current.Id && transaction.AmountsHidden)
+						|| _db.Invoices.IgnoreQueryFilters().Any(invoice =>
+							!invoice.IsDeleted && invoice.LinkedRentalBillingProfileId == current.Id &&
+							(invoice.AmountsHidden || invoice.Lines.Any(line => !line.IsDeleted && line.AmountsHidden) ||
+							 invoice.Payments.Any(payment => !payment.IsDeleted && payment.AmountsHidden)))
+				}).FirstOrDefaultAsync(ct);
+			var profile = profileResult?.Profile;
+			if (profile == null || profile.IsDirty || profileResult!.AmountsHidden)
 			{
 				continue;
 			}
@@ -5086,6 +5119,13 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<string?> GetSettingAsync(string key, CancellationToken ct = default(CancellationToken))
 	{
+        if (_commonAuthenticationDatabase is not null && IsCommonAuthenticationSetting(key))
+        {
+            await using var authenticationDb = await CreateIndependentAuthenticationDbAsync(ct);
+            return await authenticationDb.Settings.AsNoTracking().Where(row => row.Key == key)
+                .Select(row => row.Value).SingleOrDefaultAsync(ct);
+        }
+
 		// Sync completion can be committed by another scope while this context keeps
 		// an older tracked setting. Read persisted progress without changing pending edits.
 		if (key is "LastSyncRevision" or "Sync.LastSuccessAt" or PendingMirrorRefreshSettingKey)
@@ -5101,6 +5141,13 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task SetSettingAsync(string key, string value, CancellationToken ct = default(CancellationToken))
 	{
+        EnsureOrdinarySettings([key]);
+        if (_commonAuthenticationDatabase is not null && IsCommonAuthenticationSetting(key))
+        {
+            await SaveSettingsIndependentAsync(new Dictionary<string, string> { [key] = value }, ct);
+            return;
+        }
+
 		const int maximumAttempts = 4;
 		for (int attempt = 0; attempt < maximumAttempts; attempt++)
 		{
@@ -5253,6 +5300,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 	}
 
 	private const string CachedSessionUsernameSuffix = "Username";
+	private const string CachedSessionUserIdSuffix = "UserId";
 	private const string CachedSessionRoleSuffix = "Role";
 	private const string CachedSessionPermissionsSuffix = "Permissions";
 	private const string CachedSessionTenantCodeSuffix = "TenantCode";
@@ -5276,11 +5324,14 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		DateTimeOffset CachedAtUtc,
 		DateTimeOffset LastOnlineValidationAtUtc,
 		DateTimeOffset LastAcceptedOfflineUtc,
-		bool UsesLegacyCache);
+		bool UsesLegacyCache,
+		Guid UserId);
 
 	private sealed class OfflineSessionMetadataEnvelope
 	{
 		public int SchemaVersion { get; set; }
+
+		public Guid UserId { get; set; }
 
 		public string Username { get; set; } = string.Empty;
 
@@ -5314,7 +5365,22 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			scopeType,
 			officeCode,
 			password,
-			ct);
+			ct,
+			_session.IsLoggedIn && !_session.IsOfflineMode &&
+			string.Equals(_session.User?.Username, username, StringComparison.OrdinalIgnoreCase)
+				? _session.User!.UserId : Guid.Empty);
+
+	public Task SaveSessionCacheAsync(UserSessionDto user, string password, CancellationToken ct = default)
+	{
+		ArgumentNullException.ThrowIfNull(user);
+		if (user.UserId == Guid.Empty)
+			throw new ArgumentException("온라인 로그인 응답에 사용자 식별자가 없습니다.", nameof(user));
+		var officeCode = OfficeCodeCatalog.TryNormalizeOfficeCode(user.OfficeCode, out var normalizedOffice)
+			? normalizedOffice
+			: DomainConstants.IsAdminRole(user.Role) ? DomainConstants.OfficeUsenet : DomainConstants.OfficeYeonsu;
+		return SaveSessionCacheIndependentAsync(user.Username, user.Role, user.Permissions,
+			user.TenantCode, user.ScopeType, officeCode, password, ct, user.UserId);
+	}
 
 	public async Task<bool> VerifyCachedSessionPasswordAsync(string username, string password, CancellationToken ct = default(CancellationToken))
 	{
@@ -5347,7 +5413,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		List<string> permissions = cached.PermissionsText.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList();
 		return new UserSessionDto
 		{
-			UserId = Guid.Empty,
+			UserId = cached.UserId,
 			Username = cached.Username,
 			Role = cached.Role,
 			TenantCode = cached.TenantCode,
@@ -5410,10 +5476,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		string cachedAtUtc,
 		string lastOnlineValidationAtUtc,
 		string lastAcceptedOfflineUtc,
-		string passwordProof)
+		string passwordProof,
+		Guid userId)
 		=> new()
 		{
 			SchemaVersion = OfflineSessionCachePolicy.CurrentSchemaVersion,
+			UserId = userId,
 			Username = username,
 			NormalizedUsername = NormalizeUsername(normalizedUsername),
 			Role = role,
@@ -5457,6 +5525,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			OfflineSessionMetadataEnvelope? actual = JsonSerializer.Deserialize<OfflineSessionMetadataEnvelope>(payloadBytes);
 			return actual is not null
 			       && actual.SchemaVersion == expected.SchemaVersion
+			       && actual.UserId == expected.UserId
 			       && string.Equals(actual.Username, expected.Username, StringComparison.Ordinal)
 			       && string.Equals(actual.NormalizedUsername, expected.NormalizedUsername, StringComparison.Ordinal)
 			       && string.Equals(actual.Role, expected.Role, StringComparison.Ordinal)
@@ -5626,6 +5695,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<List<LocalTransaction>> GetStandaloneTransactionsForLedgerAsync(DateOnly? from, DateOnly? to, Guid? customerId, SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		var expectedAccess = FinancialAmountVisibility.CaptureAccess(session);
 		IQueryable<LocalTransaction> query = from transaction in _db.Transactions.AsNoTracking()
 			where !transaction.LinkedInvoiceId.HasValue || transaction.LinkedInvoiceId.Value == Guid.Empty
 			select transaction;
@@ -5646,6 +5716,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		var transactions = await (from transaction in query
 			orderby transaction.TransactionDate descending, transaction.UpdatedAtUtc descending, transaction.CreatedAtUtc descending
 			select transaction).ToListAsync(ct);
+		if (expectedAccess != FinancialAmountVisibility.CaptureAccess(session))
+			return new List<LocalTransaction>();
+		// Evaluate the original kind before legacy display normalization can infer a direction from money.
+		// These are untracked display copies; the stored transaction and dirty state remain unchanged.
+		foreach (var transaction in transactions)
+			transaction.AmountsHidden |= !FinancialAmountVisibility.CanViewTransaction(session, transaction, null);
 		return NormalizeLinkedPaymentTransactionsForDisplay(transactions);
 	}
 
@@ -5698,27 +5774,32 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		return normalized;
 	}
 
-	public async Task<decimal> GetAdvanceBalanceAsync(Guid customerId, SessionState session, CancellationToken ct = default(CancellationToken))
+	public async Task<decimal?> GetAdvanceBalanceAsync(Guid customerId, SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		var access = FinancialAmountVisibility.CaptureAccess(session);
+		if (!session.HasPermission(AppPermissionNames.AmountViewSales)) return null;
 		var customer = await _db.Customers.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync((LocalCustomer current) => current.Id == customerId, ct);
 		if (customer == null)
 		{
-			return default(decimal);
+			return null;
 		}
 		string customerOfficeCode = ResolveResponsibleOfficeScopeForAccess(customer.ResponsibleOfficeCode, customer.OfficeCode);
 		if (!CanAccessCustomer(customerTenantCode: TenantScopeCatalog.NormalizeTenantCodeForOfficeOrDefault(customer.TenantCode, customerOfficeCode), customerId: customer.Id, customerOfficeCode: customer.ResponsibleOfficeCode, session: session, role: session.User?.Role, fallbackOfficeCode: customer.OfficeCode))
 		{
-			return default(decimal);
+			return null;
 		}
 		IQueryable<LocalTransaction> query = from transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
 			where !transaction.IsDeleted && transaction.CustomerId == customerId
 			select transaction;
 		query = ApplyTransactionScope(query, session);
-		return (await query.Select(transaction => transaction.AdvanceDelta).ToListAsync(ct)).Sum();
+		var amounts = await query.Select(transaction => new { transaction.AdvanceDelta, transaction.AmountsHidden }).ToListAsync(ct);
+		return access != FinancialAmountVisibility.CaptureAccess(session) || amounts.Any(row => row.AmountsHidden)
+			? null : amounts.Sum(row => row.AdvanceDelta);
 	}
 
 	public async Task<CustomerFinancialSummary> GetCustomerFinancialSummaryAsync(Guid customerId, SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		var access = FinancialAmountVisibility.CaptureAccess(session);
 		var customer = await _db.Customers.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync((LocalCustomer current) => current.Id == customerId, ct);
 		if (customer == null)
 		{
@@ -5729,25 +5810,31 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return new CustomerFinancialSummary();
 		}
-		List<LocalInvoice> scopedInvoices = (await (from invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking().Include((LocalInvoice invoice) => invoice.Payments.Where((LocalPayment payment) => !payment.IsDeleted))
+		List<LocalInvoice> scopedInvoices = (await (from invoice in _db.Invoices.IgnoreQueryFilters().AsNoTracking().Include((LocalInvoice invoice) => invoice.Payments.Where((LocalPayment payment) => !payment.IsDeleted)).Include(invoice => invoice.Lines.Where(line => !line.IsDeleted)).AsSplitQuery()
 			where invoice.CustomerId == customerId && ((int)invoice.VoucherType == 0 || (int)invoice.VoucherType == 1)
 			select invoice).ToListAsync(ct)).Where((LocalInvoice invoice) => IsCustomerFinancialSummaryInvoice(invoice) && CanAccessInvoice(invoice, session)).ToList();
-		decimal receivableAmount = scopedInvoices.Where((LocalInvoice invoice) => invoice.VoucherType == VoucherType.Sales).Sum((LocalInvoice invoice) => Math.Max(0m, invoice.TotalAmount - invoice.Payments.Where((LocalPayment payment) => !payment.IsDeleted).Sum((LocalPayment payment) => payment.Amount)));
-		decimal payableAmount = scopedInvoices.Where((LocalInvoice invoice) => invoice.VoucherType == VoucherType.Purchase).Sum((LocalInvoice invoice) => Math.Max(0m, invoice.TotalAmount - invoice.Payments.Where((LocalPayment payment) => !payment.IsDeleted).Sum((LocalPayment payment) => payment.Amount)));
 		IQueryable<LocalTransaction> transactionQuery = from transaction in _db.Transactions.IgnoreQueryFilters().AsNoTracking()
 			where !transaction.IsDeleted && transaction.CustomerId == customerId
 			select transaction;
 		transactionQuery = ApplyTransactionScope(transactionQuery, session);
 		List<LocalTransaction> transactions = await transactionQuery.ToListAsync(ct);
-		decimal prepaymentAmount = transactions.Where((LocalTransaction transaction) => transaction.AdvanceDelta > 0m && (transaction.LinkedInvoiceId.HasValue || transaction.LinkedRentalBillingProfileId.HasValue)).Sum((LocalTransaction transaction) => transaction.AdvanceDelta);
-		decimal prepaidAmount = transactions.Sum((LocalTransaction transaction) => transaction.PrepaidDelta);
+		if (access != FinancialAmountVisibility.CaptureAccess(session)) return new CustomerFinancialSummary();
+		var sales = session.HasPermission(AppPermissionNames.AmountViewSales);
+		var purchase = session.HasPermission(AppPermissionNames.AmountViewPurchase);
+		var unknownTransactions = transactions.Any(transaction => transaction.AmountsHidden);
+		decimal? Outstanding(VoucherType type, bool mayView)
+		{
+			var rows = scopedInvoices.Where(invoice => invoice.VoucherType == type).ToList();
+			if (!mayView || rows.Any(invoice => invoice.AmountsHidden || invoice.Lines.Any(line => line.AmountsHidden) || invoice.Payments.Any(payment => payment.AmountsHidden))) return null;
+			return rows.Sum(invoice => Math.Max(0m, invoice.TotalAmount - invoice.Payments.Sum(payment => payment.Amount)));
+		}
 		return new CustomerFinancialSummary
 		{
-			AdvanceBalance = transactions.Sum((LocalTransaction transaction) => transaction.AdvanceDelta),
-			ReceivableAmount = receivableAmount,
-			PayableAmount = payableAmount,
-			PrepaymentAmount = prepaymentAmount,
-			PrepaidAmount = prepaidAmount
+			AdvanceBalance = sales && !unknownTransactions ? transactions.Sum(transaction => transaction.AdvanceDelta) : null,
+			ReceivableAmount = Outstanding(VoucherType.Sales, sales),
+			PayableAmount = Outstanding(VoucherType.Purchase, purchase),
+			PrepaymentAmount = sales && !unknownTransactions ? transactions.Where(transaction => transaction.AdvanceDelta > 0m && (transaction.LinkedInvoiceId.HasValue || transaction.LinkedRentalBillingProfileId.HasValue)).Sum(transaction => transaction.AdvanceDelta) : null,
+			PrepaidAmount = purchase && !unknownTransactions ? transactions.Sum(transaction => transaction.PrepaidDelta) : null
 		};
 	}
 
@@ -5762,12 +5849,15 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<InvoiceSettlementSummary> GetInvoiceSettlementSummaryAsync(Guid invoiceId, SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		var access = FinancialAmountVisibility.CaptureAccess(session);
 		var invoice = await _db.Invoices.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync((LocalInvoice current) => current.Id == invoiceId, ct);
-		if (invoice == null || !CanAccessInvoice(invoice, session))
+		if (invoice == null || !CanAccessInvoice(invoice, session) || !FinancialAmountVisibility.CanViewInvoice(session, invoice.VoucherType)
+			|| await HasHiddenInvoiceSettlementEvidenceAsync(invoice.Id, ct))
 		{
 			return new InvoiceSettlementSummary();
 		}
 		decimal settledAmount = await GetInvoiceSettledAmountCoreAsync(invoiceId, ct);
+		if (access != FinancialAmountVisibility.CaptureAccess(session)) return new InvoiceSettlementSummary();
 		return new InvoiceSettlementSummary
 		{
 			InvoiceTotal = invoice.TotalAmount,
@@ -5783,13 +5873,16 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<RentalSettlementSummary> GetRentalSettlementSummaryAsync(Guid billingProfileId, Guid? billingRunId, decimal? billedAmountOverride, SessionState session, CancellationToken ct = default(CancellationToken))
 	{
+		var access = FinancialAmountVisibility.CaptureAccess(session);
 		var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters().AsNoTracking().FirstOrDefaultAsync((LocalRentalBillingProfile current) => current.Id == billingProfileId, ct);
-		if (profile == null || !CanAccessRentalProfile(profile, session))
+		if (profile == null || !CanAccessRentalProfile(profile, session) || !session.HasPermission(AppPermissionNames.AmountViewSales)
+			|| await HasHiddenRentalSummaryEvidenceAsync(profile, billingRunId, ct))
 		{
 			return new RentalSettlementSummary();
 		}
 		decimal settledAmount = await GetRentalSettledAmountCoreAsync(billingProfileId, billingRunId, ct);
 		decimal billedAmount = await ResolveBillingRunAmountAsync(profile, billingRunId, billedAmountOverride, ct);
+		if (access != FinancialAmountVisibility.CaptureAccess(session)) return new RentalSettlementSummary();
 		decimal outstandingAmount = Math.Max(0m, billedAmount - settledAmount);
 		return new RentalSettlementSummary
 		{
@@ -5810,8 +5903,14 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	public async Task<LocalTransaction> SaveTransactionAsync(LocalTransaction transaction, CancellationToken ct = default(CancellationToken))
 	{
-		var existing = await _db.Transactions.FindAsync(new object[1] { transaction.Id }, ct);
+		if (transaction.AmountsHidden)
+			throw new InvalidOperationException("비공개 수금/지급 금액으로는 저장할 수 없습니다.");
+		var existing = await _db.Transactions.IgnoreQueryFilters().FirstOrDefaultAsync(current => current.Id == transaction.Id, ct);
 		existing = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, existing, ct);
+		if (existing?.AmountsHidden == true)
+			throw new InvalidOperationException("기존 수금/지급 금액이 비공개여서 수정할 수 없습니다.");
+		if (existing?.IsDeleted == true && !transaction.IsDeleted)
+			throw new InvalidOperationException("삭제된 수금/지급 내역은 일반 저장으로 복원할 수 없습니다.");
 		DateTime now = DateTime.UtcNow;
 		await LocalEntityConcurrencyGuard.TryRebaseCandidateRevisionFromAcknowledgedLocalMutationAsync(_db, transaction, existing, ct);
 		if (!LocalEntityConcurrencyGuard.TryPrepareForSave(transaction, existing, "수금/지급 내역", now, out string conflictMessage))
@@ -5883,6 +5982,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Denied("권한이 없어 수금/지급을 저장할 수 없습니다.");
 		}
+		if (transaction.AmountsHidden)
+			return OfficeMutationResult.Denied("비공개 수금/지급 금액으로는 저장할 수 없습니다.");
 		string requestedTransactionKind = transaction.TransactionKind;
 		Guid requestedCustomerId = transaction.CustomerId;
 		string requestedResponsibleOfficeCode = transaction.ResponsibleOfficeCode;
@@ -5920,6 +6021,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 거래처의 수금/지급을 저장할 수 없습니다.");
 		}
+		if (existing != null && !await CanViewTransactionAmountsAsync(existing, session, ct))
+			return OfficeMutationResult.Denied("기존 수금/지급 금액이 비공개여서 수정할 수 없습니다. 금액 조회 권한으로 최신 내역을 확인해 주세요.");
 		_ = existing?.LinkedInvoiceId;
 		Guid? previousLinkedRentalId = existing?.LinkedRentalBillingProfileId;
 		Guid? previousLinkedRentalRunId = existing?.LinkedRentalBillingRunId;
@@ -6041,6 +6144,9 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return OfficeMutationResult.Denied("권한이 없어 해당 거래처의 수금/지급을 저장할 수 없습니다.");
 		}
+		if ((linkedInvoice != null && await HasHiddenInvoiceSettlementEvidenceAsync(linkedInvoice.Id, ct)) ||
+			(linkedRentalProfile != null && await HasHiddenRentalSummaryEvidenceAsync(linkedRentalProfile, transaction.LinkedRentalBillingRunId, ct)))
+			return OfficeMutationResult.Denied("연결 전표/청구 금액이 비공개여서 정산할 수 없습니다. 금액 조회 권한으로 최신 내역을 확인해 주세요.");
 		decimal receiptTotal = Math.Max(0m, transaction.ReceiptTotal);
 		decimal paymentTotal = Math.Max(0m, transaction.PaymentTotal);
 		decimal absoluteAmount = ((receiptTotal > 0m) ? receiptTotal : paymentTotal);
@@ -6346,6 +6452,41 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		};
 	}
 
+	private async Task<bool> HasHiddenInvoiceSettlementEvidenceAsync(Guid invoiceId, CancellationToken ct)
+		=> await _db.Invoices.IgnoreQueryFilters().AsNoTracking().AnyAsync(invoice => invoice.Id == invoiceId &&
+			(invoice.AmountsHidden || invoice.Lines.Any(line => !line.IsDeleted && line.AmountsHidden) ||
+			 invoice.Payments.Any(payment => !payment.IsDeleted && payment.AmountsHidden)), ct)
+		|| await _db.Transactions.IgnoreQueryFilters().AsNoTracking().AnyAsync(transaction =>
+			!transaction.IsDeleted && transaction.LinkedInvoiceId == invoiceId && transaction.AmountsHidden, ct);
+
+	private static bool HasUndisclosedRentalRunEvidence(LocalRentalBillingProfile profile, Guid? billingRunId)
+	{
+		if (profile.AmountsHidden ||
+		    !TryDeserializeBillingRuns(profile.BillingRunsJson, out var runs, allowUndisclosedAmounts: true) ||
+		    RentalBillingRunIdentityPolicy.TryGetIdentityConflict(runs, out _, out _))
+			return true;
+		var runId = billingRunId == Guid.Empty ? null : billingRunId;
+		return runs.Any(run => (!runId.HasValue || run.RunId == runId.Value) && run.AmountsHidden);
+	}
+
+	private async Task<bool> HasHiddenRentalSummaryEvidenceAsync(LocalRentalBillingProfile profile, Guid? billingRunId, CancellationToken ct)
+	{
+		if (HasUndisclosedRentalRunEvidence(profile, billingRunId)) return true;
+		var runId = billingRunId == Guid.Empty ? null : billingRunId;
+		var transactions = await _db.Transactions.IgnoreQueryFilters().AsNoTracking()
+			.Where(row => !row.IsDeleted && row.LinkedRentalBillingProfileId == profile.Id && row.AmountsHidden &&
+				(!runId.HasValue || row.LinkedRentalBillingRunId == runId.Value))
+			.Select(row => new { row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode }).ToListAsync(ct);
+		if (transactions.Any(row => IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))) return true;
+		var invoices = await _db.Invoices.IgnoreQueryFilters().AsNoTracking()
+			.Where(row => !row.IsDeleted && row.IsLatestVersion && row.LinkedRentalBillingProfileId == profile.Id &&
+				(!runId.HasValue || row.LinkedRentalBillingRunId == runId.Value) &&
+				(row.AmountsHidden || row.Lines.Any(line => !line.IsDeleted && line.AmountsHidden) ||
+				 row.Payments.Any(payment => !payment.IsDeleted && payment.AmountsHidden)))
+			.Select(row => new { row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode }).ToListAsync(ct);
+		return invoices.Any(row => IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode));
+	}
+
 	private async Task<decimal> GetInvoiceRemainingAmountForTransactionAsync(Guid invoiceId, Guid transactionId, decimal invoiceTotal, CancellationToken ct)
 	{
 		return Math.Max(0m, invoiceTotal - (await (from payment in _db.Payments.IgnoreQueryFilters().AsNoTracking()
@@ -6533,11 +6674,19 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	private async Task SyncInvoicePaymentFromTransactionAsync(LocalTransaction transaction, LocalInvoice invoice, CancellationToken ct, bool markDirty = true)
 	{
+		if (transaction.AmountsHidden)
+		{
+			if (markDirty)
+				throw new InvalidOperationException("비공개 수금/지급 금액으로는 정산할 수 없습니다.");
+			return;
+		}
 		// Linked entities have independent server revisions. Project business state,
 		// but only a Payment DTO or acknowledgement may set Payment.Revision.
 		decimal amount = Math.Max(0m, transaction.SettlementAmount);
 		var payment = await _db.Payments.IgnoreQueryFilters().FirstOrDefaultAsync((LocalPayment current) => current.Id == transaction.Id, ct);
-		if (!markDirty && payment?.IsDirty == true)
+		// Only an authoritative Payment payload may replace an undisclosed amount.
+		// A transaction projection must not turn that unknown value into zero or a deletion.
+		if (!markDirty && payment != null && (payment.IsDirty || payment.AmountsHidden))
 		{
 			return;
 		}
@@ -6765,7 +6914,19 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		bool preserveDirtyProfile = false)
 	{
 		using var mutationLease = await RentalBillingProfileMutationGate.EnterAsync(_db, billingProfileId, ct);
-		var profile = await _db.RentalBillingProfiles.IgnoreQueryFilters().FirstOrDefaultAsync((LocalRentalBillingProfile current) => current.Id == billingProfileId, ct);
+		var profileResult = await _db.RentalBillingProfiles.IgnoreQueryFilters()
+			.Where(current => current.Id == billingProfileId)
+			.Select(current => new
+			{
+				Profile = current,
+				AmountsHidden = _db.Transactions.IgnoreQueryFilters().Any(transaction =>
+					!transaction.IsDeleted && transaction.LinkedRentalBillingProfileId == current.Id && transaction.AmountsHidden)
+					|| _db.Invoices.IgnoreQueryFilters().Any(invoice =>
+						!invoice.IsDeleted && invoice.LinkedRentalBillingProfileId == current.Id &&
+						(invoice.AmountsHidden || invoice.Lines.Any(line => !line.IsDeleted && line.AmountsHidden) ||
+						 invoice.Payments.Any(payment => !payment.IsDeleted && payment.AmountsHidden)))
+			}).FirstOrDefaultAsync(ct);
+		var profile = profileResult?.Profile;
 		profile = await LocalEntityConcurrencyGuard.ReloadTrackedEntityAsync(_db, profile, ct);
 		if (TestOnlyRentalSettlementRecalculationAfterProfileReloadAsync is { } afterProfileReload)
 		{
@@ -6779,6 +6940,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			return;
 		}
+		if (profileResult!.AmountsHidden || HasUndisclosedRentalRunEvidence(profile, null))
+			return;
 		if (!TryDeserializeBillingRuns(profile.BillingRunsJson, out var storedRuns) ||
 		    RentalBillingRunIdentityPolicy.TryGetIdentityConflict(storedRuns, out _, out _))
 		{
@@ -7113,7 +7276,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 			var billedAmount = evidence.InvoiceAmount is > 0m
 				? evidence.InvoiceAmount.Value
-				: Math.Max(0m, run.BilledAmount);
+				: Math.Max(0m, DisclosedAmount.Require(run.BilledAmount));
 			var settledAmount = Math.Max(0m, evidence.SettledAmount);
 			var outstandingAmount = Math.Max(0m, billedAmount - settledAmount);
 			run.BilledAmount = billedAmount;
@@ -7135,8 +7298,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		}
 
 		var representativeRun = activeRuns.FirstOrDefault(run => activeRunIds.Contains(run.RunId)) ?? activeRuns.First();
-		var representativeBilledAmount = Math.Max(0m, representativeRun.BilledAmount);
-		var representativeSettledAmount = Math.Max(0m, representativeRun.SettledAmount);
+		var representativeBilledAmount = Math.Max(0m, DisclosedAmount.Require(representativeRun.BilledAmount));
+		var representativeSettledAmount = Math.Max(0m, DisclosedAmount.Require(representativeRun.SettledAmount));
 		var representativeOutstandingAmount = Math.Max(0m, representativeBilledAmount - representativeSettledAmount);
 		profile.BillingRunsJson = JsonSerializer.Serialize(remainingRuns, AuditJsonOptions);
 		profile.BillingStatus = representativeRun.Status;
@@ -7156,7 +7319,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			.OrderByDescending(date => date)
 			.FirstOrDefault();
 		profile.RequiresFollowUp = activeRuns.Any(run =>
-			Math.Max(0m, run.BilledAmount - Math.Max(0m, run.SettledAmount)) > 0m &&
+			Math.Max(0m, DisclosedAmount.Require(run.BilledAmount) - Math.Max(0m, DisclosedAmount.Require(run.SettledAmount))) > 0m &&
 			(activeRunIds.Contains(run.RunId) ||
 			 string.Equals(run.Status, PaymentFlowConstants.BillingStatusInProgress, StringComparison.OrdinalIgnoreCase)));
 	}
@@ -7448,6 +7611,8 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 
 	private async Task<decimal> ResolveBillingRunAmountAsync(LocalRentalBillingProfile profile, Guid? billingRunId, decimal? billedAmountOverride, CancellationToken ct)
 	{
+		if (HasUndisclosedRentalRunEvidence(profile, billingRunId))
+			throw new InvalidOperationException("청구 금액이 비공개이거나 이력을 확인할 수 없어 정산 금액을 계산할 수 없습니다.");
 		if (billedAmountOverride.HasValue && billedAmountOverride.Value > 0m)
 		{
 			return billedAmountOverride.Value;
@@ -7475,24 +7640,30 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			.Where(row => IsSameRentalSettlementScope(profile, row.TenantCode, row.ResponsibleOfficeCode, row.OfficeCode))
 			.Select(row => (decimal?)row.TotalAmount)
 			.FirstOrDefault();
-		if (activeInvoiceAmount.HasValue && activeInvoiceAmount.Value > 0m)
+		if (activeInvoiceAmount.HasValue)
 		{
 			return activeInvoiceAmount.Value;
 		}
-		var rentalBillingRunModel = DeserializeBillingRuns(profile.BillingRunsJson).FirstOrDefault((RentalBillingRunModel current) => current.RunId == billingRunId.Value);
-		return (rentalBillingRunModel == null) ? Math.Max(0m, profile.MonthlyAmount) : Math.Max(0m, rentalBillingRunModel.BilledAmount);
+		if (!TryDeserializeBillingRuns(profile.BillingRunsJson, out var runs, allowUndisclosedAmounts: true))
+			throw new InvalidOperationException("청구 이력을 확인할 수 없어 정산 금액을 계산할 수 없습니다.");
+		var rentalBillingRunModel = runs.FirstOrDefault(current => current.RunId == billingRunId.Value);
+		return (rentalBillingRunModel == null) ? Math.Max(0m, profile.MonthlyAmount) : Math.Max(0m, DisclosedAmount.Require(rentalBillingRunModel.BilledAmount));
 	}
 
 	private static bool TryDeserializeBillingRuns(
 		string? json,
-		out List<RentalBillingRunModel> runs)
+		out List<RentalBillingRunModel> runs,
+		bool allowUndisclosedAmounts = false)
 	{
 		runs = new List<RentalBillingRunModel>();
 		if (string.IsNullOrWhiteSpace(json))
 		{
 			return true;
 		}
-		if (!RentalBillingRunTombstonePolicy.Validate(json).IsValid)
+		var validation = allowUndisclosedAmounts
+			? RentalBillingRunTombstonePolicy.ValidateForAmountPrivacyRead(json)
+			: RentalBillingRunTombstonePolicy.Validate(json);
+		if (!validation.IsValid)
 		{
 			return false;
 		}
@@ -7511,9 +7682,6 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			return false;
 		}
 	}
-
-	private static List<RentalBillingRunModel> DeserializeBillingRuns(string? json)
-		=> TryDeserializeBillingRuns(json, out var runs) ? runs : new List<RentalBillingRunModel>();
 
 	private static string DetermineRentalSettlementStatus(string? billingMethod, decimal settledAmount, decimal billedAmount)
 	{
@@ -8447,9 +8615,12 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 		{
 			count -= await _db.Units.IgnoreQueryFilters().CountAsync((LocalUnit entity) => entity.IsDirty, ct);
 			count -= await _db.CustomerCategories.IgnoreQueryFilters().CountAsync((LocalCustomerCategory entity) => entity.IsDirty, ct);
-			count -= await _db.PriceGradeOptions.IgnoreQueryFilters().CountAsync((LocalPriceGradeOption entity) => entity.IsDirty, ct);
 			count -= await _db.TradeTypeOptions.IgnoreQueryFilters().CountAsync((LocalTradeTypeOption entity) => entity.IsDirty, ct);
 			count -= await _db.ItemCategoryOptions.IgnoreQueryFilters().CountAsync((LocalItemCategoryOption entity) => entity.IsDirty, ct);
+		}
+		if (!session.HasPermission(AppPermissionNames.SettingsEdit) || !session.HasPermission(AppPermissionNames.AmountViewSales))
+		{
+			count -= await _db.PriceGradeOptions.IgnoreQueryFilters().CountAsync((LocalPriceGradeOption entity) => entity.IsDirty, ct);
 		}
 		if (!session.HasPermission(AppPermissionNames.RentalSettingsEdit))
 		{
@@ -9908,6 +10079,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			SpecificationOriginal = (line.SpecificationOriginal ?? string.Empty),
 			Unit = (line.Unit ?? string.Empty),
 			Quantity = line.Quantity,
+			AmountsHidden = line.AmountsHidden,
 			UnitPrice = line.UnitPrice,
 			LineAmount = line.LineAmount,
 			Remark = (line.Remark ?? string.Empty),
@@ -9930,6 +10102,7 @@ public LocalStateService(LocalDbContext db, OfficeAccessService officeAccess, Sy
 			InvoiceId = invoiceId,
 			PaymentDate = payment.PaymentDate,
 			Amount = payment.Amount,
+			AmountsHidden = payment.AmountsHidden,
 			Note = payment.Note,
 			IsDeleted = false,
 			IsDirty = true,

@@ -536,7 +536,10 @@ public sealed class RentalSettlementRecalculationService
                     settledAmount,
                     cancellationToken);
                 if (run is not null)
+                {
+                    run.RunKey = ResolveUniqueAuthoritativeRunKey(run, run.RunKey, runs);
                     runs.Add(run);
+                }
             }
 
             if (run is null)
@@ -551,7 +554,7 @@ public sealed class RentalSettlementRecalculationService
                     settledAmount,
                     cancellationToken);
                 if (repairedSchedule is not null)
-                    ApplyAuthoritativeSchedule(run, repairedSchedule);
+                    ApplyAuthoritativeSchedule(run, repairedSchedule, runs);
             }
 
             run.BilledAmount = billedAmount;
@@ -705,7 +708,10 @@ public sealed class RentalSettlementRecalculationService
                     settledAmount,
                     cancellationToken);
                 if (run is not null)
+                {
+                    run.RunKey = ResolveUniqueAuthoritativeRunKey(run, run.RunKey, runs);
                     runs.Add(run);
+                }
             }
 
             if (run is not null)
@@ -719,7 +725,7 @@ public sealed class RentalSettlementRecalculationService
                         settledAmount,
                         cancellationToken);
                     if (repairedSchedule is not null)
-                        ApplyAuthoritativeSchedule(run, repairedSchedule);
+                        ApplyAuthoritativeSchedule(run, repairedSchedule, runs);
                 }
 
                 run.BilledAmount = billedAmount;
@@ -1077,7 +1083,7 @@ public sealed class RentalSettlementRecalculationService
             .ThenByDescending(invoice => invoice.Revision)
             .Select(invoice => (decimal?)invoice.TotalAmount)
             .FirstOrDefaultAsync(cancellationToken);
-        if (activeInvoiceAmount.HasValue && activeInvoiceAmount.Value > 0m)
+        if (activeInvoiceAmount.HasValue && activeInvoiceAmount.Value >= 0m)
             return activeInvoiceAmount.Value;
 
         if (!TryDeserializeBillingRuns(profile.BillingRunsJson, out var runs))
@@ -1169,14 +1175,34 @@ public sealed class RentalSettlementRecalculationService
 
     private static void ApplyAuthoritativeSchedule(
         RentalBillingRunSnapshot target,
-        RentalBillingRunSnapshot source)
+        RentalBillingRunSnapshot source,
+        IReadOnlyCollection<RentalBillingRunSnapshot> runs)
     {
-        target.RunKey = source.RunKey;
+        target.RunKey = ResolveUniqueAuthoritativeRunKey(target, source.RunKey, runs);
         target.ScheduledDate = source.ScheduledDate;
         target.PeriodStartDate = source.PeriodStartDate;
         target.PeriodEndDate = source.PeriodEndDate;
         target.CycleMonths = source.CycleMonths;
         target.PeriodLabel = source.PeriodLabel;
+    }
+
+    private static string ResolveUniqueAuthoritativeRunKey(
+        RentalBillingRunSnapshot target,
+        string proposedKey,
+        IReadOnlyCollection<RentalBillingRunSnapshot> runs)
+    {
+        bool IsAvailable(string key) => !string.IsNullOrWhiteSpace(key) && !runs.Any(other =>
+            !ReferenceEquals(other, target) &&
+            string.Equals(other.RunKey?.Trim(), key.Trim(), StringComparison.OrdinalIgnoreCase));
+
+        if (IsAvailable(proposedKey)) return proposedKey;
+        // Different runs may legitimately have evidence in the same billing period.
+        // Keep their stable identity instead of making the profile's identity graph ambiguous.
+        if (IsAvailable(target.RunKey)) return target.RunKey;
+        var stem = $"{proposedKey}:{target.RunId:N}";
+        var candidate = stem;
+        for (var suffix = 1; !IsAvailable(candidate); suffix++) candidate = $"{stem}:{suffix}";
+        return candidate;
     }
 
     private async Task<DateOnly?> ResolveAuthoritativeLastBilledDateAsync(

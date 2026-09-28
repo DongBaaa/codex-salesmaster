@@ -13,6 +13,33 @@ public sealed partial class EnvironmentSettingsViewModel
 {
     private const string RecycleBinFilterAll = "ALL";
     private const int RecycleBinServerMutationBatchSize = 40;
+    private bool _recycleBinAmountAccessAttached;
+    public void AttachRecycleBinAmountAccess()
+    {
+        if (!_recycleBinAmountAccessAttached)
+        {
+            _session.AccessChanged += RecycleBinAmountAccessChanged;
+            _recycleBinAmountAccessAttached = true;
+        }
+        RecycleBinAmountAccessChanged(this, EventArgs.Empty);
+    }
+
+    public void DetachRecycleBinAmountAccess()
+    {
+        _session.AccessChanged -= RecycleBinAmountAccessChanged;
+        _recycleBinAmountAccessAttached = false;
+    }
+
+    private void RecycleBinAmountAccessChanged(object? sender, EventArgs args)
+    {
+        void Refresh()
+        {
+            foreach (var entry in _allRecycleBinEntries) entry.RefreshAmountAccess();
+        }
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess()) dispatcher.BeginInvoke((Action)Refresh);
+        else Refresh();
+    }
     private List<RecycleBinEntry> _allRecycleBinEntries = new();
 
     internal sealed class RecycleBinMirrorResult

@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Storage;
 using 거래플랜.Desktop.App.Services;
@@ -860,12 +860,24 @@ private const string MergeDuplicateRentalBillingProfilesPostLinkageStepKey = "Mi
         };
         foreach (var (col, def) in invoiceCols)
             await TryAddColumnAsync(db, "Invoices", col, def);
+        await TryAddColumnAsync(db, "Invoices", "AmountsHidden", "INTEGER NOT NULL DEFAULT 0");
+        await TryAddColumnAsync(db, "Payments", "AmountsHidden", "INTEGER NOT NULL DEFAULT 0");
+        await TryAddColumnAsync(db, "Transactions", "AmountsHidden", "INTEGER NOT NULL DEFAULT 0");
+        await TryAddColumnAsync(db, "Items", "PurchaseAmountsHidden", "INTEGER NOT NULL DEFAULT 0");
+        await TryAddColumnAsync(db, "Items", "SalesAmountsHidden", "INTEGER NOT NULL DEFAULT 0");
+        await TryAddColumnAsync(db, "ItemPriceGrades", "AmountsHidden", "INTEGER NOT NULL DEFAULT 0");
+        await TryAddColumnAsync(db, "RentalBillingProfiles", "AmountsHidden", "INTEGER NOT NULL DEFAULT 0");
+        await TryAddColumnAsync(db, "RentalAssets", "PurchaseAmountsHidden", "INTEGER NOT NULL DEFAULT 0");
+        await TryAddColumnAsync(db, "RentalAssets", "SalesAmountsHidden", "INTEGER NOT NULL DEFAULT 0");
+        await TryAddColumnAsync(db, "RentalBillingLogs", "AmountsHidden", "INTEGER NOT NULL DEFAULT 0");
+        await TryAddColumnAsync(db, "RentalAssetAssignmentHistories", "AmountsHidden", "INTEGER NOT NULL DEFAULT 0");
         await TryExecuteSqlAsync(
             db,
             $"UPDATE \"Invoices\" SET \"VatMode\" = '{InvoiceVatModes.Included}' WHERE \"VatMode\" IS NULL OR TRIM(\"VatMode\") = '';");
 
         var invoiceLineCols = new (string col, string def)[]
         {
+            ("AmountsHidden", "INTEGER NOT NULL DEFAULT 0"),
             ("ItemTrackingType", "TEXT NOT NULL DEFAULT '재고'"),
             ("OrderIndex", "INTEGER NOT NULL DEFAULT 0")
         };

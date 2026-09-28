@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using 거래플랜.Server.Api.Domain;
 using 거래플랜.Shared.Contracts;
@@ -607,11 +608,38 @@ public static partial class DbInitializer
 
         normalizedMonthlyAmount = templateItems.Sum(ResolveStartupTemplateMonthlyAmount);
         var serialized = JsonSerializer.Serialize(templateItems, RentalTemplateJsonOptions);
-        if (!string.Equals(serialized, profile.BillingTemplateJson ?? string.Empty, StringComparison.Ordinal))
+        if (HaveEquivalentStartupTemplateJson(profile.BillingTemplateJson, serialized))
+        {
+            // A client may order/format properties differently. Preserve its
+            // original text so a restart does not advance an unchanged row's
+            // revision and create needless conflicts with offline clients.
+            serialized = profile.BillingTemplateJson ?? string.Empty;
+        }
+        else
             changed = true;
 
         normalizedTemplateJson = serialized;
         return changed || profile.MonthlyAmount != normalizedMonthlyAmount;
+    }
+
+    private static bool HaveEquivalentStartupTemplateJson(string? original, string normalized)
+    {
+        if (string.Equals(original, normalized, StringComparison.Ordinal))
+            return true;
+
+        try
+        {
+            return JsonNode.DeepEquals(JsonNode.Parse(original ?? string.Empty), JsonNode.Parse(normalized));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+        catch (ArgumentException)
+        {
+            // Duplicate property names are not unambiguous equivalence proof.
+            return false;
+        }
     }
 
     private static bool NormalizeTemplateAssetCoverageForStartup(
@@ -1386,8 +1414,9 @@ public static partial class DbInitializer
                         preferredTenantCode,
                         StringComparison.OrdinalIgnoreCase))
                 .ToList();
-            if (tenantMatches.Count > 0)
-                return tenantMatches;
+            // An empty tenant scope must remain empty: a same-name customer
+            // in another tenant cannot establish rental ownership.
+            return tenantMatches;
         }
 
         return customers;

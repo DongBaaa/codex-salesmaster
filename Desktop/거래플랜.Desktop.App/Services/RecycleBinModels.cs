@@ -54,9 +54,28 @@ public sealed partial class RecycleBinEntry : ObservableObject
         _ => "휴지통"
     };
 
-    public string Title { get; init; } = string.Empty;
-    public string Subtitle { get; init; } = string.Empty;
-    public string Detail { get; init; } = string.Empty;
+    private string _title = string.Empty, _subtitle = string.Empty, _detail = string.Empty;
+    private string? _hiddenTitle, _hiddenSubtitle, _hiddenDetail;
+    private Func<bool>? _canShowAmounts;
+    private bool ShowAmounts => _canShowAmounts?.Invoke() ?? true;
+    public string Title { get => ShowAmounts ? _title : _hiddenTitle ?? _title; init => _title = value; }
+    public string Subtitle { get => ShowAmounts ? _subtitle : _hiddenSubtitle ?? _subtitle; init => _subtitle = value; }
+    public string Detail { get => ShowAmounts ? _detail : _hiddenDetail ?? _detail; init => _detail = value; }
+
+    internal RecycleBinEntry ProtectAmounts(SessionState session, FinancialAmountVisibility.AccessKey access,
+        bool permitted, string? hiddenTitle = null, string? hiddenSubtitle = null, string? hiddenDetail = null)
+    {
+        _canShowAmounts = () => permitted && session.IsLoggedIn && FinancialAmountVisibility.CaptureAccess(session) == access;
+        _hiddenTitle = hiddenTitle; _hiddenSubtitle = hiddenSubtitle; _hiddenDetail = hiddenDetail;
+        return this;
+    }
+
+    internal void RefreshAmountAccess()
+    {
+        OnPropertyChanged(nameof(Title));
+        OnPropertyChanged(nameof(Subtitle));
+        OnPropertyChanged(nameof(Detail));
+    }
     public DateTime DeletedAtUtc { get; init; }
     public long Revision { get; init; }
     public string DeletedAtLocalText => DeletedAtUtc == default

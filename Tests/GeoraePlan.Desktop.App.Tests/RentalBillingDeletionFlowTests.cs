@@ -12,7 +12,7 @@ using Xunit;
 
 namespace GeoraePlan.Desktop.App.Tests;
 
-public sealed class RentalBillingDeletionFlowTests
+public sealed partial class RentalBillingDeletionFlowTests
 {
     [Fact]
     public async Task ExcludeUnlinkedBillingAsset_HidesFromBillingListButKeepsLinkCandidate()

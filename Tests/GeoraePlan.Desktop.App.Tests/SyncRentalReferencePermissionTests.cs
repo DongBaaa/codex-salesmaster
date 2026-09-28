@@ -744,8 +744,10 @@ public sealed class SyncRentalReferencePermissionTests
                 .SingleAsync());
     }
 
-    [Fact]
-    public async Task FlushPendingChangesAsync_GlobalAdmin_ReferenceOnlyRentalDependencies_DoNotCreateOutboxOrChangeLocalState()
+    [Theory]
+    [InlineData(TenantScopeCatalog.ScopeAdmin)]
+    [InlineData(TenantScopeCatalog.ScopeTenantAll)]
+    public async Task FlushPendingChangesAsync_GlobalAdmin_ReferenceOnlyRentalDependencies_DoNotCreateOutboxOrChangeLocalState(string scopeType)
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -882,7 +884,7 @@ public sealed class SyncRentalReferencePermissionTests
             Role = DomainConstants.RoleAdmin,
             TenantCode = TenantScopeCatalog.UsenetGroup,
             OfficeCode = OfficeCodeCatalog.Usenet,
-            ScopeType = TenantScopeCatalog.ScopeAdmin
+            ScopeType = scopeType
         });
 
         var dispatcher = new SyncRequestDispatcher();
@@ -924,6 +926,19 @@ public sealed class SyncRentalReferencePermissionTests
             billingLogId,
             Assert.Single(push.Request.RentalBillingLogs).Id);
         Assert.Contains(push.Request.Items, item => item.Id == referencedItemId);
+        Assert.All(new SyncEntityDto[]
+        {
+            Assert.Single(push.Request.Items, item => item.Id == referencedItemId),
+            Assert.Single(push.Request.RentalManagementCompanies),
+            Assert.Single(push.Request.RentalBillingProfiles),
+            Assert.Single(push.Request.RentalAssets, asset => asset.Id == referencedAssetId)
+        }, entity => Assert.StartsWith("dependency-v1:", entity.MutationId));
+        Assert.All(new SyncEntityDto[]
+        {
+            Assert.Single(push.Request.RentalAssets, asset => asset.Id == assetId),
+            Assert.Single(push.Request.RentalAssetAssignmentHistories),
+            Assert.Single(push.Request.RentalBillingLogs)
+        }, entity => Assert.False(entity.MutationId.StartsWith("dependency-v1:", StringComparison.Ordinal)));
 
         var storedCompany = await db.RentalManagementCompanies
             .AsNoTracking()
