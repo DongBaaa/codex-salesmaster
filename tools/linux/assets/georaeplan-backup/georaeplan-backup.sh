@@ -214,10 +214,10 @@ central_database="$("${compose[@]}" exec -T postgres sh -ceu 'printf "%s" "${POS
 business_database="$(
   "${compose[@]}" config --environment |
     awk -F= '
-      $1 == "ITWORLD_POSTGRES_DB" {
+      !found && $1 == "ITWORLD_POSTGRES_DB" {
         sub(/^[^=]*=/, "")
         print
-        exit
+        found = 1
       }'
 )"
 business_database="${business_database%$'\r'}"
